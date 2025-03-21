@@ -7,6 +7,9 @@
 #include "../include/geometry/Point2D.h"
 #include "../include/geometry/DomainDimensions.h"
 #include "../include/geometry/LatticeGenerator.h"
+#include "../include/geometry/DomainInfo.h"
+#include "../include/mesh/MeshGenerator.h"
+
 #include "../include/mesh/Triangle.h"
 #include "../include/mesh/ElementTriangle2D.h"
 #include "../include/mesh/MeshGenerator.h"
@@ -23,9 +26,10 @@ int main() {
         nx, ny, lattice_constant, lattice_type);
     
     int original_domain_size = square_points.size();
+    DomainInfo domain_size = compute_domain_size(square_points);
     
-    const std::array<double, 2> offsets = {0.0, 0.0};
-    DomainDimensions domain_dims(nx, ny);
+    const std::array<double, 2> offsets = {lattice_constant, lattice_constant};
+    DomainDimensions domain_dims(domain_size.get_width() , domain_size.get_height());
 
     // Generate periodic copies
     std::vector<Point2D> square_points_periodic = LatticeGenerator::create_periodic_copies(
