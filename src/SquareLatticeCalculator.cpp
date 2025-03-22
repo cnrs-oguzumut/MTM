@@ -1,37 +1,32 @@
-#include "../include/lattice_energy/TriangularLatticeCalculator.h"
+// SquareLatticeCalculator.cpp
+#include "../include/lattice_energy/SquareLatticeCalculator.h"
 
-TriangularLatticeCalculator::TriangularLatticeCalculator(double scale) : 
+SquareLatticeCalculator::SquareLatticeCalculator(double scale) :
     rcut(2.5),
     scal(scale),
     burgers(scale),
     nb_atoms(10),
-    normalisation(std::pow(burgers, 2.0) * std::sqrt(3.0) / 4.0),
-    triangular_basis({{
+    normalisation(std::pow(burgers, 2.0)), // Unit cell area is a²
+    square_basis({{
         {0.0, 0.0}
     }}) {}
 
 // Calculate energy
-double TriangularLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C, 
-                                const std::function<double(double)>& pot, 
-                                double zero) {
+double SquareLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
+                                                const std::function<double(double)>& pot,
+                                                double zero) {
     double phi = 0.0;
-    
-    // In a triangular lattice, points are at positions:
-    // r = m*a₁ + n*a₂ where a₁ = [1,0] and a₂ = [1/2, √3/2]
-    // We transform these coordinates using matrix multiplication
-    
+    // In a square lattice, points are at integer positions
     for (int m = -nb_atoms; m <= nb_atoms; ++m) {
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
-            // For triangular lattice, points are at m*[1,0] + n*[1/2, √3/2]
-            double px = m + 0.5 * n;
-            double py = sqrt(3.)/2. * n; // √3/2 = 0.866025404
+            double px = m;
+            double py = n;
             
             // Skip the origin
             if (std::abs(px) < 1e-10 && std::abs(py) < 1e-10) continue;
             
             Eigen::Vector2d p(px, py);
-            
             // Calculate distance with scaling
             double r_squared = p.transpose() * C * p;
             double r = scal * std::sqrt(r_squared);
@@ -45,21 +40,20 @@ double TriangularLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
 }
 
 // Calculate energy derivative
-Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::Matrix2d& C,
-                                    const std::function<double(double)>& dpot) {
+Eigen::Matrix2d SquareLatticeCalculator::calculate_derivative(const Eigen::Matrix2d& C,
+                                                            const std::function<double(double)>& dpot) {
     Eigen::Matrix2d phi = Eigen::Matrix2d::Zero();
     
     for (int m = -nb_atoms; m <= nb_atoms; ++m) {
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
-            double px = m + 0.5 * n;
-            double py = 0.866025404 * n; // √3/2 = 0.866025404
+            double px = m;
+            double py = n;
             
             // Skip the origin
             if (std::abs(px) < 1e-10 && std::abs(py) < 1e-10) continue;
             
             Eigen::Vector2d p(px, py);
-            
             // Calculate distance with scaling
             double r_squared = p.transpose() * C * p;
             double r = scal * std::sqrt(r_squared);
@@ -67,7 +61,6 @@ Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::M
             if (r <= rcut) {
                 double tmp_d = dpot(r);
                 double dphi = 0.5 * tmp_d / r;
-                
                 phi(0, 0) += 0.5 * dphi * px * px * scal * scal;
                 phi(1, 1) += 0.5 * dphi * py * py * scal * scal;
                 phi(0, 1) += dphi * px * py * scal * scal;
@@ -84,11 +77,11 @@ Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::M
 }
 
 // Helper method to get nearest neighbor distance in perfect lattice
-double TriangularLatticeCalculator::getNearestNeighborDistance() const {
+double SquareLatticeCalculator::getNearestNeighborDistance() const {
     return scal;
 }
 
 // Helper method to get area of unit cell
-double TriangularLatticeCalculator::getUnitCellArea() const {
+double SquareLatticeCalculator::getUnitCellArea() const {
     return normalisation;
 }
