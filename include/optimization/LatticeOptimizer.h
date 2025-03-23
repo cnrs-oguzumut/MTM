@@ -140,7 +140,7 @@ void map_points_to_solver_array(
         int iteration);
 
     // Function to initialize and get active elements
-    const std::vector<size_t>& initialize_active_elements(
+    std::vector<size_t>  initialize_active_elements(
         const std::vector<ElementTriangle2D>& elements,
         const std::vector<std::pair<int, int>>& full_mapping,
         int num_points);

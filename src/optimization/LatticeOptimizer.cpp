@@ -138,15 +138,15 @@ void saveConfigurationToXY(
 }
 
 // Function to initialize and get active elements - returns a reference to a static vector
-const std::vector<size_t>& initialize_active_elements(
+std::vector<size_t> initialize_active_elements(
     const std::vector<ElementTriangle2D>& elements,
     const std::vector<std::pair<int, int>>& full_mapping,
     int num_points) 
 {
     // Static variables that persist between function calls
-    static std::vector<bool> is_dof;
-    static std::vector<size_t> active_elements;
-    static bool is_initialized = false;
+    std::vector<bool> is_dof;
+    std::vector<size_t> active_elements;
+    bool is_initialized = false;
     
     // === DEBUGGING ===
     std::cout << "[DEBUG] is_initialized: " << (is_initialized ? "true" : "false") << std::endl;
@@ -347,9 +347,9 @@ void minimize_energy_with_triangles(
         energy_log << iteration << "," << func-0.5*homogeneous_energy*active_elements.size() << std::endl;
     }
     
-    if (iteration % 10 == 0) {
-        std::cout << "Energy: " << func << " at iteration: " << iteration << std::endl;
-    }
+    // if (iteration % 10 == 0) {
+    //     std::cout << "Energy: " << func << " at iteration: " << iteration << std::endl;
+    // }
     
     // Map forces to gradient array
     map_points_to_solver_array(grad, global_forces, interior_mapping, n_vars);

@@ -84,7 +84,7 @@ std::vector<Point2D> LatticeGenerator::create_periodic_copies(
         // Add translated copies of all original points
         for (const auto& point : original_points) {
             // Create translated point
-            Eigen::Vector2d translated_coord = F_ext*point.coord + trans_vector_def;
+            Eigen::Vector2d translated_coord = point.coord + trans_vector_def;
             all_points.push_back(Point2D(translated_coord.x(), translated_coord.y()));
         }
     }

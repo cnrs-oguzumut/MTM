@@ -5,6 +5,7 @@ ElementTriangle2D::ElementTriangle2D() :
     nn{0, 0, 0}, 
     jacobian_det(0.0), 
     area(0.0),
+    reference_area(0.0),
     use_external_deformation(false),
     shape_derivatives_calculated(false) {
     
@@ -124,15 +125,29 @@ double ElementTriangle2D::calculate_shape_derivatives(const std::vector<Point2D>
     jacobian_det = J.determinant();
     area = std::abs(jacobian_det) / 2.0;
     
+    
     // Calculate shape function derivatives in global coordinates
     if (std::abs(jacobian_det) > 1e-10) {
         Eigen::Matrix2d J_inv = J.inverse();
-        dNdX = dNdxi * J_inv;  // Standard FEM ordering
+        if (reference_area <= 0.0){
+            dNdX = dNdxi ;  // Standard FEM ordering
+            // std::cout<<"dNdX"<<dNdX<<std::endl;
+        }
+        else{
+            dNdX = dNdxi;  // Standard FEM ordering
+            // std::cout<<"dNdX"<<dNdX<<std::endl;
+        }
+
     } else {
         dNdX.setZero();
         std::cerr << "Warning: Near-singular Jacobian detected." << std::endl;
     }
     
+    // Store reference area if not already set
+    if (reference_area <= 0.0) {
+        reference_area = area;
+    }
+
     // Set flag that shape derivatives have been calculated
     shape_derivatives_calculated = true;
     
@@ -189,13 +204,16 @@ std::array<Eigen::Vector2d, 3> ElementTriangle2D::calculate_nodal_forces(const E
         nodal_forces[a].setZero();
     }
     
+    // Use reference area instead of current area
+    double area_to_use = getReferenceArea();
+    
     // For each node (a) and each spatial dimension (i)
     for (int a = 0; a < 3; a++) {
         for (int i = 0; i < 2; i++) {
             // Sum over reference dimensions (j)
             for (int j = 0; j < 2; j++) {
                 // Note we add the contribution from each dimension
-                nodal_forces[a](i) += P(i,j) * dNdX(a,j) * area;
+                nodal_forces[a](i) += P(i,j) * dNdX(a,j) * area_to_use;
             }
         }
     }            

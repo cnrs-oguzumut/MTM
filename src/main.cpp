@@ -12,6 +12,9 @@
 #include "../include/geometry/DomainInfo.h"
 #include "../include/mesh/MeshGenerator.h"
 #include "../include/optimization/LatticeOptimizer.h"
+#include "../include/optimization/LBFGSOptimizer.h"
+
+
 
 #include "../include/interatomic/inter_atomic.h"
 
@@ -25,6 +28,11 @@
 #include "../include/lattice_energy/EnergyFunctions.h"
 #include "../include/lattice_energy/EnergyFunctions.h"
 #include "../include/output/triangulation_to_vtk.h"
+#include "../include/output/configuration_saver.h"
+#include "../include/output/ChangeMeasures.h"
+
+
+
 
 /*
 void example_1_atomistic_square() {
@@ -350,8 +358,8 @@ void debug_deformation_tests() {
 
 void example_1_conti_zanzotto() {
     // Parameters for lattice
-    int nx = 50;
-    int ny = 50;
+    int nx = 100;
+    int ny = 100;
     std::string lattice_type = "square"; // "square" or "triangular"
     
     // Irrelevant in this example
@@ -379,19 +387,13 @@ void example_1_conti_zanzotto() {
     std::vector<Triangle> triangulation;
     std::vector<Point2D> points_used_in_triangulation;
     std::vector<Point2D> original_points;
+
+
     if(pbc==1){
 
         Eigen::Matrix2d F_ext;
         F_ext << 1.0, 0.,
                  0.0, 1.0;        
-
-        
-        // for (const auto& point : square_points) {
-        //     // Create deformed point
-        //     Eigen::Vector2d deformed_coord = F_ext*point.coord;
-        //     original_points.push_back(Point2D(deformed_coord.x(), deformed_coord.y()));
-        // }
-        
         // Generate periodic copies
         std::vector<Point2D> square_points_periodic = LatticeGenerator::create_periodic_copies(
             square_points,
@@ -412,7 +414,10 @@ void example_1_conti_zanzotto() {
     auto [original_domain_map, translation_map] = MeshGenerator::create_domain_maps(
         original_domain_size, domain_dims, offsets);
 
-    // Select unique connected triangles
+    // Select unique connected triangles:
+    // Here,  we use points_used_in_triangulation instead of square_points
+    // we can calculate correctly jacobian determinant (triangles are fully constructed in the
+    // periodic domain) 
     std::vector<Triangle> unique_triangles = MeshGenerator::select_unique_connected_triangles(
         points_used_in_triangulation,
         triangulation,
@@ -425,7 +430,12 @@ void example_1_conti_zanzotto() {
 
 
 
-    // Create element triangles
+    // Create finite element triangles
+    // Here,  we use square_points instead of points_used_in_triangulation
+    // The triangles are constructed in the original domain
+    // Using original_domain_map and translation_map
+    // No need to clean triangles here; it is already done in select_unique_connected_triangles
+
     std::vector<ElementTriangle2D> elements = MeshGenerator::createElementTri2D(
         unique_triangles,
         square_points,
@@ -451,51 +461,32 @@ void example_1_conti_zanzotto() {
     // Using the analytical version that takes a function of metric tensor
     double zero = calculator.calculate_energy(C_I, potential_func, 0);
     std::cout<<"debugging simple shear test"<<std::endl;
-    debug_deformation_tests();
+    //debug_deformation_tests();
     
     std::cout<<"zero enegy value: "<<zero<<std::endl;
 
-    // for (size_t idx = 0; idx < elements.size(); idx++) {
-    //     size_t i = idx; // Use the index directly, not elements[idx]
-        
-    //     if (i >= elements.size()) {
-    //         std::cout << "Error: Element index out of bounds" << std::endl;
-    //         exit(0);
-    //         continue; // This line will never execute due to exit(0)
-    //     }
-        
-    //     auto& element = elements[i];
-    //     Eigen::Matrix2d F_ext;
-    //     F_ext << 1.0, 0.0,
-    //              0.0, 1.0;
-        
-    //     element.setExternalDeformation(F_ext);
-    //     element.calculate_deformation_gradient(square_points);
-    //     Eigen::Matrix2d F = element.getDeformationGradient();
-    //     std::cout << "i: " << i << std::endl;
-
-    //     std::cout << "F: " << F << std::endl;
-        
-    //     Eigen::Matrix2d C = F.transpose() * F;
-    //     std::cout << "C: " << C << std::endl;
-    // }
 
     // Set up alpha values for deformation steps
-    double alpha_min = 0.13;   // Minimum alpha value
+ // Set range boundaries
+    double alpha_min = 0.13;  // Minimum alpha value
     double alpha_max = 1.0;   // Maximum alpha value
-    int num_alpha_points = 1000; // Number of alpha values to test
-    
+
+    // Set desired step size
+    double step_size = 0.0001;
+
+    // Calculate required number of points based on step size
+    int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
+
     // Generate evenly spaced alpha values
     std::vector<double> alpha_values;
     alpha_values.reserve(num_alpha_points);
-    double alpha_step = (alpha_max - alpha_min) / (num_alpha_points - 1);
-    
+
     for (int i = 0; i < num_alpha_points; i++) {
-        alpha_values.push_back(alpha_min + i * alpha_step);
+        alpha_values.push_back(alpha_min + i * step_size);
     }
 
     // Precompute active elements
-    const std::vector<size_t>& active_elements = 
+    std::vector<size_t> active_elements = 
         initialize_active_elements(elements, full_mapping, square_points.size());
     std::cout<<"active_elements.size(): "<<active_elements.size()<<std::endl;
     // Process each alpha value
@@ -524,7 +515,7 @@ void example_1_conti_zanzotto() {
                 
                 // Add noise to the coordinates
                 Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
-                std::cout<<"noise: "<<noise<<std::endl;
+
                 
                 // Apply deformation with noise: x_deformed = F·x + noise
                 square_points[original_idx].coord = F_ext * square_points[original_idx].coord + noise;
@@ -551,40 +542,91 @@ void example_1_conti_zanzotto() {
         alglib::real_1d_array x;
         int n_vars = interior_mapping.size();
         x.setlength(2*n_vars);
-        
+        double total_energy2;
+
         // Apply boundary conditions
         //deform_boundary_nodes(square_points, full_mapping, F_ext);
         
         // Map points to solver array
         map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
-        
-        // Set up minimization parameters
-        alglib::minlbfgsstate state;
-        alglib::minlbfgsreport rep;
+
         double epsg = 0;
         double epsf = 0;
         double epsx = 0;
         alglib::ae_int_t maxits = 0;
+
+        LBFGSOptimizer optimizer(
+            10,     // corrections - history size for L-BFGS
+            epsg,   // epsg - gradient norm stopping condition
+            epsf,   // epsf - function value stopping condition
+            epsx,   // epsx - argument changes stopping condition
+            maxits    // maxits - maximum iterations
+        );
+       
+        // Check if remeshing is necessary based on point changes
+        alglib::real_1d_array original_x;
+        original_x.setlength(x.length());
+        // Store original positions before mapping back (if you need to keep them)
+        for (int i = 0; i < x.length(); i++) {
+            original_x[i] = x[i];
+        }
+
+        optimizer.optimize(x, minimize_energy_with_triangles, &userData);
         
-        // Create and configure optimizer
-        alglib::minlbfgscreate(10, x, state);
-        alglib::minlbfgssetcond(state, epsg, epsf, epsx, maxits);
-        
-        // Run optimization
-        alglib::minlbfgsoptimize(state, minimize_energy_with_triangles, nullptr, &userData);
-        
-        // Get results
-        alglib::minlbfgsresults(state, x, rep);
-        
-        std::cout << "Optimization completed: iterations=" << rep.iterationscount 
-                  << ", termination type=" << rep.terminationtype << std::endl;
         
         // Update points with final optimized positions
         map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+        // Calculate change measures between original and optimized positions
+        ChangeMeasures result = computeChangeMeasures(x, original_x);
+        std::cout<<"relative_change: "<<result.relative_change<<std::endl;
+
+        if (result.relative_change > 2.0){
+            std::cout<<"REMESHING STARTS"<<std::endl;
+            // Generate periodic copies
+            std::vector<Point2D> new_square_points_periodic = LatticeGenerator::create_periodic_copies(
+            square_points,
+            domain_dims,
+            offsets,F_ext);
+            // Create Delaunay triangulation
+            triangulation = MeshGenerator::createTrianglesFromPoints(
+            new_square_points_periodic);
+            //saveConfigurationToXY(original_points, 999);
+            points_used_in_triangulation = new_square_points_periodic;
+
+            unique_triangles = MeshGenerator::select_unique_connected_triangles(
+            points_used_in_triangulation,
+            triangulation,
+            original_domain_map,
+            square_points.size(), // Original domain size
+            1e-6 // Minimum Jacobian threshold
+            );
+
+            elements = MeshGenerator::createElementTri2D(
+            unique_triangles,
+            square_points,
+            original_domain_map,
+            translation_map
+            );
+
+            const std::vector<size_t> new_active_elements = 
+            initialize_active_elements(elements, full_mapping, square_points.size());
+            active_elements = new_active_elements;  // Copy the new elements to the original vector
+            // Calculate shape derivatives
+            for (auto& element : elements) {
+            element.calculate_shape_derivatives(square_points);
+            }
+
+            optimizer.optimize(x, minimize_energy_with_triangles, &userData);
+            map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+
+        }
+        
         
         // Save configuration
-        if(i%30==0){
-            saveConfigurationToXY(square_points, i);
+        if(i%5==0){
+            //saveConfigurationToXY(square_points, i);
+            double total_energy = 0;
+            saveConfigurationWithStressAndEnergy2D(&userData, i, total_energy);
             //write_triangulation_to_vtk(unique_triangles, points_used_in_triangulation, i);
         }
         
