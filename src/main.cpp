@@ -3,6 +3,8 @@
 #include <cmath>
 #include <Eigen/Dense>
 #include <tuple>
+#include <random>
+
 
 #include "../include/geometry/Point2D.h"
 #include "../include/geometry/DomainDimensions.h"
@@ -21,6 +23,9 @@
 #include "../include/lattice_energy/Strain_Energy_LatticeCalculator.h"
 
 #include "../include/lattice_energy/EnergyFunctions.h"
+#include "../include/lattice_energy/EnergyFunctions.h"
+#include "../include/output/triangulation_to_vtk.h"
+
 /*
 void example_1_atomistic_square() {
     // Parameters for lattice
@@ -345,8 +350,8 @@ void debug_deformation_tests() {
 
 void example_1_conti_zanzotto() {
     // Parameters for lattice
-    int nx = 30;
-    int ny = 30;
+    int nx = 50;
+    int ny = 50;
     std::string lattice_type = "square"; // "square" or "triangular"
     
     // Irrelevant in this example
@@ -365,20 +370,37 @@ void example_1_conti_zanzotto() {
     DomainInfo domain_size = compute_domain_size(square_points);
     
     const std::array<double, 2> offsets = {lattice_constant, lattice_constant};
+    std::cout<<"offsets: "<<offsets[0]<<" "<<offsets[1]<<std::endl;
     DomainDimensions domain_dims(domain_size.get_width() , domain_size.get_height());
+    std::cout<<"domain_size.get_width() : "<<domain_size.get_width() <<std::endl;
+    std::cout<<"domain_size.get_height() : "<<domain_size.get_height() <<std::endl;
     
-    int pbc = 0;
+    int pbc = 1;
     std::vector<Triangle> triangulation;
     std::vector<Point2D> points_used_in_triangulation;
+    std::vector<Point2D> original_points;
     if(pbc==1){
+
+        Eigen::Matrix2d F_ext;
+        F_ext << 1.0, 0.,
+                 0.0, 1.0;        
+
+        
+        // for (const auto& point : square_points) {
+        //     // Create deformed point
+        //     Eigen::Vector2d deformed_coord = F_ext*point.coord;
+        //     original_points.push_back(Point2D(deformed_coord.x(), deformed_coord.y()));
+        // }
+        
         // Generate periodic copies
         std::vector<Point2D> square_points_periodic = LatticeGenerator::create_periodic_copies(
             square_points,
             domain_dims,
-            offsets);
+            offsets,F_ext);
         // Create Delaunay triangulation
-        std::vector<Triangle> triangulation = MeshGenerator::createTrianglesFromPoints(
+        triangulation = MeshGenerator::createTrianglesFromPoints(
         square_points_periodic);
+        //saveConfigurationToXY(original_points, 999);
         points_used_in_triangulation = square_points_periodic;
     }
     else{
@@ -398,25 +420,31 @@ void example_1_conti_zanzotto() {
         square_points.size(), // Original domain size
         1e-6 // Minimum Jacobian threshold
     );
+    
+    //write_triangulation_to_vtk(unique_triangles, points_used_in_triangulation, 999);
+
+
 
     // Create element triangles
     std::vector<ElementTriangle2D> elements = MeshGenerator::createElementTri2D(
         unique_triangles,
-        points_used_in_triangulation,
+        square_points,
         original_domain_map,
         translation_map
     );
 
     // Calculate shape derivatives
     for (auto& element : elements) {
-        element.calculate_shape_derivatives(points_used_in_triangulation);
+        element.calculate_shape_derivatives(square_points);
     }
     
     std::cout << "Created " << elements.size() << " element triangles" << std::endl;
     
     // Boundary conditions are implemented here 
-    auto [interior_mapping, full_mapping] = create_dof_mapping_original(points_used_in_triangulation, 0.5*lattice_constant, 0);
-
+    auto [interior_mapping, full_mapping] = create_dof_mapping_original(square_points, 0.5*lattice_constant, pbc);
+    std::cout<<"interior_mapping.size(): "<<interior_mapping.size()<<std::endl;
+    std::cout<<"full_mapping.size(): "<<full_mapping.size()<<std::endl;
+    
     // Create calculator for energy calculations
     Strain_Energy_LatticeCalculator calculator(1.0);
     Eigen::Matrix2d C_I = Eigen::Matrix2d::Identity();
@@ -427,11 +455,35 @@ void example_1_conti_zanzotto() {
     
     std::cout<<"zero enegy value: "<<zero<<std::endl;
 
+    // for (size_t idx = 0; idx < elements.size(); idx++) {
+    //     size_t i = idx; // Use the index directly, not elements[idx]
+        
+    //     if (i >= elements.size()) {
+    //         std::cout << "Error: Element index out of bounds" << std::endl;
+    //         exit(0);
+    //         continue; // This line will never execute due to exit(0)
+    //     }
+        
+    //     auto& element = elements[i];
+    //     Eigen::Matrix2d F_ext;
+    //     F_ext << 1.0, 0.0,
+    //              0.0, 1.0;
+        
+    //     element.setExternalDeformation(F_ext);
+    //     element.calculate_deformation_gradient(square_points);
+    //     Eigen::Matrix2d F = element.getDeformationGradient();
+    //     std::cout << "i: " << i << std::endl;
+
+    //     std::cout << "F: " << F << std::endl;
+        
+    //     Eigen::Matrix2d C = F.transpose() * F;
+    //     std::cout << "C: " << C << std::endl;
+    // }
 
     // Set up alpha values for deformation steps
-    double alpha_min = 0.0;   // Minimum alpha value
+    double alpha_min = 0.13;   // Minimum alpha value
     double alpha_max = 1.0;   // Maximum alpha value
-    int num_alpha_points = 10000; // Number of alpha values to test
+    int num_alpha_points = 1000; // Number of alpha values to test
     
     // Generate evenly spaced alpha values
     std::vector<double> alpha_values;
@@ -444,8 +496,8 @@ void example_1_conti_zanzotto() {
 
     // Precompute active elements
     const std::vector<size_t>& active_elements = 
-        initialize_active_elements(elements, full_mapping, points_used_in_triangulation.size());
-
+        initialize_active_elements(elements, full_mapping, square_points.size());
+    std::cout<<"active_elements.size(): "<<active_elements.size()<<std::endl;
     // Process each alpha value
     for (size_t i = 0; i < alpha_values.size(); i++) {
         double alpha = alpha_values[i];
@@ -454,11 +506,35 @@ void example_1_conti_zanzotto() {
         // Create deformation gradient
         Eigen::Vector2d n1(0., 1.0);
         Eigen::Vector2d a1 = Eigen::Vector2d(1.0, 0.0);
-        Eigen::Matrix2d F_ext = Eigen::Matrix2d::Identity() + alpha * a1 * n1.transpose();
+        Eigen::Matrix2d F_ext;
+        F_ext << 1.0, alpha,
+                 0.0, 1.0;   
+                 
+        if(i==0){
+            // Create random number generator
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            
+            // Create Gaussian distribution with small standard deviation
+            double noise_level = 0.05; // Adjust this value for more/less noise
+            std::normal_distribution<double> noise_dist(0.0, noise_level);
+            
+            for (const auto& pair : full_mapping) {
+                int original_idx = pair.first;
+                
+                // Add noise to the coordinates
+                Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
+                std::cout<<"noise: "<<noise<<std::endl;
+                
+                // Apply deformation with noise: x_deformed = F·x + noise
+                square_points[original_idx].coord = F_ext * square_points[original_idx].coord + noise;
+            }
+        }            
+
         
         // Create user data with current alpha's deformation gradient
         UserData userData(
-            points_used_in_triangulation,
+            square_points,
             elements,
             calculator,
             potential_func,
@@ -477,10 +553,10 @@ void example_1_conti_zanzotto() {
         x.setlength(2*n_vars);
         
         // Apply boundary conditions
-        deform_boundary_nodes(points_used_in_triangulation, full_mapping, F_ext);
+        //deform_boundary_nodes(square_points, full_mapping, F_ext);
         
         // Map points to solver array
-        map_points_to_solver_array(x, points_used_in_triangulation, interior_mapping, n_vars);
+        map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
         
         // Set up minimization parameters
         alglib::minlbfgsstate state;
@@ -504,10 +580,13 @@ void example_1_conti_zanzotto() {
                   << ", termination type=" << rep.terminationtype << std::endl;
         
         // Update points with final optimized positions
-        map_solver_array_to_points(x, points_used_in_triangulation, interior_mapping, n_vars);
+        map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
         
         // Save configuration
-        saveConfigurationToXY(points_used_in_triangulation, i);
+        if(i%30==0){
+            saveConfigurationToXY(square_points, i);
+            //write_triangulation_to_vtk(unique_triangles, points_used_in_triangulation, i);
+        }
         
         std::cout << "Iteration " << i << " completed successfully" << std::endl;
     }

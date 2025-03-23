@@ -71,6 +71,7 @@ MeshGenerator::create_domain_maps(int original_domain_size, const DomainDimensio
                 tx * (domain_dims.size_x + offsets[0]),
                 ty * (domain_dims.size_y + offsets[1])
             };
+            std::cout<<"translation_map[idx]: "<<std::get<0>(translation_map[idx])<<" "<<std::get<1>(translation_map[idx])<<std::endl;
         }
     }
     
@@ -87,6 +88,8 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     // First, collect all triangles that meet our connection criteria
     std::vector<Triangle> connected_triangles;
     std::cout << "Original domain size: " << original_domain_size << std::endl;
+    std::cout << "duplicated_triangles size: " << duplicated_triangles.size() << std::endl;
+
     connected_triangles.clear();
     
     // Process triangles fully within the original domain
@@ -232,16 +235,18 @@ std::vector<ElementTriangle2D> MeshGenerator::createElementTri2D(
         
         // Skip triangles with small or negative Jacobian determinant
         const double min_determinant = 1e-6; // Adjust this threshold as needed
-        if (jacobian_det < min_determinant) {
-            std::cout << "Skipping degenerate triangle with Jacobian determinant: " 
-                      << jacobian_det << std::endl;
-            continue;
-        }
+        // if (jacobian_det < min_determinant) {
+        //     std::cout << "Skipping degenerate triangle with Jacobian determinant: " 
+        //               << jacobian_det << std::endl;
+        //     //continue;
+        // }
         
         // If the Jacobian is acceptable, create the triangle element
         ElementTriangle2D new_tri;
+        // std::cout<<"-------"<<std::endl;
         for (int v = 0; v < 3; v++) {
             new_tri.setNodeIndex(v, original_domain_map[tri.vertex_indices[v]]);
+            // std::cout<<"original_domain_map[tri.vertex_indices[v]]: "<<original_domain_map[tri.vertex_indices[v]]<<std::endl;
             
             // Get the translation from translation_map
             auto& trans = translation_map[tri.vertex_indices[v]];
@@ -250,6 +255,7 @@ std::vector<ElementTriangle2D> MeshGenerator::createElementTri2D(
             Eigen::Vector2d trans_vector;
             trans_vector(0) = std::get<0>(trans);
             trans_vector(1) = std::get<1>(trans);
+            // std::cout<<"trans_vector x: "<<trans_vector<<std::endl;
             
             new_tri.setTranslation(v, trans_vector);
         }

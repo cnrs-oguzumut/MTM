@@ -19,7 +19,8 @@ public:
     static std::vector<Point2D> create_periodic_copies(
         const std::vector<Point2D>& original_points,
         const DomainDimensions& domain_dims,
-        const std::array<double, 2>& offsets);
+        const std::array<double, 2>& offsets,
+        const Eigen::Matrix2d& F_ext = Eigen::Matrix2d::Identity());
 };
 
 #endif // LATTICE_GENERATOR_H

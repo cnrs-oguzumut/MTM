@@ -106,6 +106,7 @@ double ElementTriangle2D::calculate_shape_derivatives(const std::vector<Point2D>
     for (int i = 0; i < 3; i++) {
         // Use effective translation (deformed if active)
         Eigen::Vector2d effective_trans = getEffectiveTranslation(i);
+           
         Eigen::Vector2d coord = reference_points[nn[i]].coord + effective_trans;
         X_e.col(i) = coord;  // Standard FEM notation - store as columns
     }

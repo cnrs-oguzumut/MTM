@@ -54,7 +54,8 @@ std::vector<Point2D> LatticeGenerator::generate_2d_lattice(
 std::vector<Point2D> LatticeGenerator::create_periodic_copies(
     const std::vector<Point2D>& original_points,
     const DomainDimensions& domain_dims,
-    const std::array<double, 2>& offsets) {
+    const std::array<double, 2>& offsets,
+    const Eigen::Matrix2d& F_ext) {
     
     // Define all 9 possible domain translations (including original)
     const std::vector<std::tuple<int, int>> translations = {
@@ -78,11 +79,12 @@ std::vector<Point2D> LatticeGenerator::create_periodic_copies(
         double tx = std::get<0>(translation) * (domain_dims.size_x + offsets[0]);
         double ty = std::get<1>(translation) * (domain_dims.size_y + offsets[1]);
         Eigen::Vector2d trans_vector(tx, ty);
+        Eigen::Vector2d trans_vector_def =F_ext*trans_vector;
         
         // Add translated copies of all original points
         for (const auto& point : original_points) {
             // Create translated point
-            Eigen::Vector2d translated_coord = point.coord + trans_vector;
+            Eigen::Vector2d translated_coord = F_ext*point.coord + trans_vector_def;
             all_points.push_back(Point2D(translated_coord.x(), translated_coord.y()));
         }
     }

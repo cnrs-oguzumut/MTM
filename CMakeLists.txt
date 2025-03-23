@@ -5,6 +5,24 @@ project(LatticeTriangulation)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Set aggressive optimization flags
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    # For GCC, Clang, and AppleClang
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -flto -ffast-math")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -flto -ffast-math")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -flto")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    # For Microsoft Visual C++
+    set(CMAKE_CXX_FLAGS_RELEASE "/O2 /Ob2 /DNDEBUG /GL")
+    set(CMAKE_C_FLAGS_RELEASE "/O2 /Ob2 /DNDEBUG /GL")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG")
+endif()
+
+# Make sure to build in Release mode by default
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
+endif()
+
 # Find required packages
 find_package(Eigen3 REQUIRED)
 find_package(CGAL REQUIRED)
@@ -32,8 +50,11 @@ set(ALGLIB_SOURCES
     ${ALGLIB_DIR}/src/statistics.cpp
 )
 
-# Create ALGLIB library
+# Create ALGLIB library with optimization flags
 add_library(alglib STATIC ${ALGLIB_SOURCES})
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(alglib PRIVATE -O3 -march=native -flto -ffast-math)
+endif()
 
 # Include directories
 include_directories(
@@ -49,16 +70,21 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 # Create a library from source files (excluding main.cpp)
-file(GLOB_RECURSE LIB_SOURCES 
+file(GLOB_RECURSE LIB_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
-
 add_library(lattice_lib STATIC ${LIB_SOURCES})
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(lattice_lib PRIVATE -O3 -march=native -flto -ffast-math)
+endif()
 
 # Create main executable
 add_executable(lattice_triangulation "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
-target_link_libraries(lattice_triangulation 
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(lattice_triangulation PRIVATE -O3 -march=native -flto -ffast-math)
+endif()
+target_link_libraries(lattice_triangulation
     lattice_lib
     ${CGAL_LIBRARIES}
     ${Boost_LIBRARIES}
@@ -75,7 +101,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     file(GLOB TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
     if(TEST_SOURCES)
         add_executable(run_tests ${TEST_SOURCES})
-        target_link_libraries(run_tests 
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+            target_compile_options(run_tests PRIVATE -O3 -march=native -flto -ffast-math)
+        endif()
+        target_link_libraries(run_tests
             lattice_lib
             ${CGAL_LIBRARIES}
             ${Boost_LIBRARIES}
@@ -86,3 +115,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
         endif()
     endif()
 endif()
+
+# Print build type
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+message(STATUS "Release flags: ${CMAKE_CXX_FLAGS_RELEASE}")

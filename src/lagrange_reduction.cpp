@@ -10,7 +10,7 @@ Result reduce(const Eigen::Matrix2d& C) {
     
     // Define the basic transformation matrices
     Eigen::Matrix2d m_identity = Eigen::Matrix2d::Identity();
-    Eigen::Matrix2d m1, m2, m3;
+    static Eigen::Matrix2d m1, m2, m3;
     
     // m1 = [[1, 0], [0, -1]]
     m1 << 1.0, 0.0, 

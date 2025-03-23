@@ -7,6 +7,10 @@
 #include <type_traits> // For std::is_same_v
 #include <Eigen/Dense>
 #include <omp.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <iostream>
+#include <string>
 
 #include "../geometry/Point2D.h"
 #include "../mesh/ElementTriangle2D.h"
@@ -128,6 +132,7 @@ void map_points_to_solver_array(
     //std::cout << "[DEBUG] Completed map_points_to_solver_array successfully" << std::endl;
 }
 
+    bool createFolder(std::string path);
 
     // Save configuration
     void saveConfigurationToXY(

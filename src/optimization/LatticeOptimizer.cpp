@@ -87,14 +87,39 @@ void map_solver_array_to_points(
     }
 }
 
+bool createFolder(std::string path)
+{
+    // Check if folder already exists
+    struct stat info;
+    if (stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode))
+    {
+        std::cout << "Folder already exists" << std::endl;
+        return true;
+    }
+
+    // Create the folder
+    int status = mkdir(path.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    if (status != 0)
+    {
+        std::cerr << "Error creating folder" << std::endl;
+        return false;
+    }
+
+    std::cout << "Folder created successfully" << std::endl;
+    return true;
+}
+
 
 // Save configuration to XY file (2D version)
 void saveConfigurationToXY(
     const std::vector<Point2D>& points,
     int iteration)
 {
+    
+    createFolder("./configurations");
+    
     std::ostringstream filename;
-    filename << "config_" << std::setfill('0') << std::setw(4) << 10000+iteration << ".xy";
+    filename << "./configurations/config_" << std::setfill('0') << std::setw(4) << 10000+iteration << ".xy";
     std::ofstream file(filename.str());
     
     // XY format requires a header line with the number of atoms
@@ -232,7 +257,7 @@ void minimize_energy_with_triangles(
     std::function<double(double)>& derivative_function = userData->derivative_function;
     double zero_energy = userData->zero_energy;
     double ideal_lattice_parameter = userData->ideal_lattice_parameter;
-    const Eigen::Matrix2d F_external = userData->F_external;
+    const Eigen::Matrix2d& F_external = userData->F_external;
     const std::vector<std::pair<int, int>>& interior_mapping = userData->interior_mapping;
     const std::vector<std::pair<int, int>>& full_mapping = userData->full_mapping;
     const std::vector<size_t>& active_elements = userData->active_elements;
@@ -315,7 +340,11 @@ void minimize_energy_with_triangles(
     
     // Save energy to log file
     if (energy_log.is_open()) {
-        energy_log << iteration << "," << func << std::endl;
+        Eigen::Matrix2d C_ext = F_external.transpose() * F_external;
+        lagrange::Result result_ext = lagrange::reduce(C_ext);
+        C_ext = result_ext.C_reduced; 
+        double homogeneous_energy = calculator.calculate_energy(C_ext, energy_function, zero_energy)/normalisation;
+        energy_log << iteration << "," << func-0.5*homogeneous_energy*active_elements.size() << std::endl;
     }
     
     if (iteration % 10 == 0) {
