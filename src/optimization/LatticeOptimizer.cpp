@@ -261,6 +261,7 @@ void minimize_energy_with_triangles(
     const std::vector<std::pair<int, int>>& interior_mapping = userData->interior_mapping;
     const std::vector<std::pair<int, int>>& full_mapping = userData->full_mapping;
     const std::vector<size_t>& active_elements = userData->active_elements;
+    bool third_condition_flag = userData->third_condition_flag;
     
     // For square lattice in 2D
     static double normalisation = pow(ideal_lattice_parameter, 2.0);

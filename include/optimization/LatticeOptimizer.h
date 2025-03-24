@@ -33,8 +33,9 @@ struct UserData {
     const Eigen::Matrix2d& F_external;
     const std::vector<std::pair<int, int>>& interior_mapping;
     const std::vector<std::pair<int, int>>& full_mapping;
-    const std::vector<size_t>& active_elements;  // Added active_elements
-
+    const std::vector<size_t>& active_elements;
+    bool third_condition_flag;  // Flag for third condition in Lagrange reduction
+    
     UserData(std::vector<Point2D>& pts,
              std::vector<ElementTriangle2D>& elems,
              Strain_Energy_LatticeCalculator& calc,
@@ -45,13 +46,22 @@ struct UserData {
              const Eigen::Matrix2d& F_ext,
              const std::vector<std::pair<int, int>>& int_map,
              const std::vector<std::pair<int, int>>& full_map,
-             const std::vector<size_t>& active_elems)  // Added parameter
-        : points(pts), elements(elems), calculator(calc),
-          energy_function(energy_func), derivative_function(deriv_func),
-          zero_energy(zero_e), ideal_lattice_parameter(ideal_lat_param),
-          F_external(F_ext), interior_mapping(int_map), full_mapping(full_map),
-          active_elements(active_elems) {}  // Initialize active_elements
+             const std::vector<size_t>& active_elems,
+             bool third_cond_flag = false)
+        : points(pts), 
+          elements(elems), 
+          calculator(calc),
+          energy_function(energy_func), 
+          derivative_function(deriv_func),
+          zero_energy(zero_e), 
+          ideal_lattice_parameter(ideal_lat_param),
+          F_external(F_ext), 
+          interior_mapping(int_map), 
+          full_mapping(full_map),
+          active_elements(active_elems),
+          third_condition_flag(third_cond_flag) {}
 };
+
 // DOF mapping function
 std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>> 
 create_dof_mapping_original(

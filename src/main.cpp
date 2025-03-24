@@ -501,7 +501,7 @@ void example_1_conti_zanzotto() {
         F_ext << 1.0, alpha,
                  0.0, 1.0;   
                  
-        if(i==0){
+        if(i == 0) {
             // Create random number generator
             std::random_device rd;
             std::mt19937 gen(rd());
@@ -515,15 +515,13 @@ void example_1_conti_zanzotto() {
                 
                 // Add noise to the coordinates
                 Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
-
                 
                 // Apply deformation with noise: x_deformed = F·x + noise
                 square_points[original_idx].coord = F_ext * square_points[original_idx].coord + noise;
             }
-        }            
-
-        
+        }    
         // Create user data with current alpha's deformation gradient
+        bool plasticity = false;
         UserData userData(
             square_points,
             elements,
@@ -535,101 +533,134 @@ void example_1_conti_zanzotto() {
             F_ext, 
             interior_mapping, 
             full_mapping, 
-            active_elements
+            active_elements,
+            plasticity
         );
         
         // Prepare initial point
         alglib::real_1d_array x;
         int n_vars = interior_mapping.size();
         x.setlength(2*n_vars);
-        double total_energy2;
-
-        // Apply boundary conditions
-        //deform_boundary_nodes(square_points, full_mapping, F_ext);
-        
+    
         // Map points to solver array
         map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
-
-        double epsg = 0;
-        double epsf = 0;
-        double epsx = 0;
-        alglib::ae_int_t maxits = 0;
-
-        LBFGSOptimizer optimizer(
-            10,     // corrections - history size for L-BFGS
-            epsg,   // epsg - gradient norm stopping condition
-            epsf,   // epsf - function value stopping condition
-            epsx,   // epsx - argument changes stopping condition
-            maxits    // maxits - maximum iterations
-        );
-       
-        // Check if remeshing is necessary based on point changes
+    
+        // Calculate pre-optimization energy and stress
+        double pre_energy = 0.0;
+        double pre_stress = 0.0;
+        ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy, pre_stress);
+        std::cout << "Pre-optimization - Energy: " << pre_energy << ", Stress: " << pre_stress << std::endl;
+    
+        // Store original positions before optimization
         alglib::real_1d_array original_x;
         original_x.setlength(x.length());
-        // Store original positions before mapping back (if you need to keep them)
-        for (int i = 0; i < x.length(); i++) {
-            original_x[i] = x[i];
+        for (int j = 0; j < x.length(); j++) {
+            original_x[j] = x[j];
         }
-
+    
+        // Run optimization
+        LBFGSOptimizer optimizer(10, 0.000001, 0, 0, 0);
         optimizer.optimize(x, minimize_energy_with_triangles, &userData);
-        
         
         // Update points with final optimized positions
         map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+        
+        // Calculate post-optimization energy and stress
+        double post_energy = 0.0;
+        double post_stress = 0.0;
+        ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, post_stress);
+        std::cout << "Post-optimization - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
+        std::cout << "Energy change: " << (post_energy - pre_energy) << ", Stress change: " << (post_stress - pre_stress) << std::endl;
+        
         // Calculate change measures between original and optimized positions
         ChangeMeasures result = computeChangeMeasures(x, original_x);
-        std::cout<<"relative_change: "<<result.relative_change<<std::endl;
-
-        if (result.relative_change > 2.0){
-            std::cout<<"REMESHING STARTS"<<std::endl;
+        std::cout << "Relative change: " << result.relative_change << std::endl;
+    
+        // Remeshing if needed
+        if (result.relative_change > 2.0) {
+            std::cout << "REMESHING STARTS" << std::endl;
+            post_energy = 0.0;
+            post_stress = 0.0;
+            
             // Generate periodic copies
             std::vector<Point2D> new_square_points_periodic = LatticeGenerator::create_periodic_copies(
-            square_points,
-            domain_dims,
-            offsets,F_ext);
+                square_points,
+                domain_dims,
+                offsets, F_ext);
+                
             // Create Delaunay triangulation
             triangulation = MeshGenerator::createTrianglesFromPoints(
-            new_square_points_periodic);
-            //saveConfigurationToXY(original_points, 999);
+                new_square_points_periodic);
+                
             points_used_in_triangulation = new_square_points_periodic;
-
+        
             unique_triangles = MeshGenerator::select_unique_connected_triangles(
-            points_used_in_triangulation,
-            triangulation,
-            original_domain_map,
-            square_points.size(), // Original domain size
-            1e-6 // Minimum Jacobian threshold
+                points_used_in_triangulation,
+                triangulation,
+                original_domain_map,
+                square_points.size(), // Original domain size
+                1e-6 // Minimum Jacobian threshold
             );
-
+        
             elements = MeshGenerator::createElementTri2D(
-            unique_triangles,
-            square_points,
-            original_domain_map,
-            translation_map
+                unique_triangles,
+                square_points,
+                original_domain_map,
+                translation_map
             );
-
+        
             const std::vector<size_t> new_active_elements = 
-            initialize_active_elements(elements, full_mapping, square_points.size());
+                initialize_active_elements(elements, full_mapping, square_points.size());
             active_elements = new_active_elements;  // Copy the new elements to the original vector
+            
             // Calculate shape derivatives
             for (auto& element : elements) {
-            element.calculate_shape_derivatives(square_points);
+                element.calculate_shape_derivatives(square_points);
             }
-
-            optimizer.optimize(x, minimize_energy_with_triangles, &userData);
+            
+            // Calculate post-remeshing energy and stress
+            double post_remesh_energy = 0.0;
+            double post_remesh_stress = 0.0;
+        
+            // Create updated user data with new mesh
+            plasticity = true;
+            UserData newUserData(
+                square_points,
+                elements,
+                calculator,
+                potential_func,
+                potential_func_der,
+                zero,
+                optimal_lattice_parameter,
+                F_ext, 
+                interior_mapping, 
+                full_mapping, 
+                active_elements,
+                plasticity
+            );
+        
+            optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
             map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+            // After optimization, get the updated value
+            ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, post_stress);
+            std::cout << "Post-remeshing - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
 
+        }   
+        
+        bool updated_plasticity = plasticity;
+
+        // Save configuration only periodically
+        
+        // Log data to file for plotting
+        ConfigurationSaver::logEnergyAndStress(i, alpha, pre_energy, pre_stress, post_energy, post_stress,updated_plasticity);
+     
+        if(i % 10 == 0) {
+            post_energy=0;
+            post_stress=0;
+            ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&userData, i, post_energy, post_stress);
         }
-        
-        
-        // Save configuration
-        if(i%5==0){
-            //saveConfigurationToXY(square_points, i);
-            double total_energy = 0;
-            saveConfigurationWithStressAndEnergy2D(&userData, i, total_energy);
-            //write_triangulation_to_vtk(unique_triangles, points_used_in_triangulation, i);
-        }
-        
+
+
         std::cout << "Iteration " << i << " completed successfully" << std::endl;
     }
 }
