@@ -9,6 +9,7 @@ and generating triangular meshes using Delaunay triangulation.
 - Create periodic copies of lattice points
 - Generate triangular meshes using CGAL Delaunay triangulation
 - Create finite element triangles with periodic boundary conditions
+- Remeshing based on triangle angles
 
 ## Dependencies
 
