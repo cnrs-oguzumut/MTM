@@ -1,7 +1,6 @@
 # Lattice Triangulation Project
 
-This project provides tools for generating 2D lattices, creating periodic boundary conditions, 
-and generating triangular meshes using Delaunay triangulation.
+This project offers comprehensive tools for 2D lattice generation and manipulation. It enables the creation of lattices with or without periodic boundary conditions and produces optimized triangular meshes through Delaunay triangulation. These high-quality meshes serve as the foundation for minimizing strain-energy functionals that possess GL(2,Z) invariance.
 
 ## Features
 
@@ -10,6 +9,8 @@ and generating triangular meshes using Delaunay triangulation.
 - Generate triangular meshes using CGAL Delaunay triangulation
 - Create finite element triangles with periodic boundary conditions
 - Remeshing based on triangle angles
+- Minimize strain-energy functionals using a highly efficient L-BFGS algorithm
+- Includes a coarse-graining procedure to calculate strain-energy functionals from pair interatomic potentials
 
 ## Dependencies
 
@@ -39,7 +40,7 @@ make
 ```
 ## Example: 2D Square Crystal under simple shear load (for the strain-energy density, see Conti&Zanzotto 2024 )
 
-- Stress-field of the  initial dislocated configuration
+- Stress field of the  initial dislocated configuration
 
 <img width="527" alt="Screenshot 2025-03-25 at 00 04 19" src="https://github.com/user-attachments/assets/e16c2de0-439b-498a-933d-20fa60365ce2" />
 
