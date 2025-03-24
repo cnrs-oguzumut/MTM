@@ -64,6 +64,13 @@ public:
         double post_energy, 
         double post_stress,
         bool plasticity_flag);  // Added plasticity flag parameter
+
+    static void writeToVTK(
+        const std::vector<Point2D>& points,
+        const std::vector<ElementTriangle2D>& elements,
+        const UserData* userData,
+        int iteration);
+        
     
 private:
     // Private method to create output directory if it doesn't exist

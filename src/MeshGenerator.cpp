@@ -71,7 +71,7 @@ MeshGenerator::create_domain_maps(int original_domain_size, const DomainDimensio
                 tx * (domain_dims.size_x + offsets[0]),
                 ty * (domain_dims.size_y + offsets[1])
             };
-            std::cout<<"translation_map[idx]: "<<std::get<0>(translation_map[idx])<<" "<<std::get<1>(translation_map[idx])<<std::endl;
+            //std::cout<<"translation_map[idx]: "<<std::get<0>(translation_map[idx])<<" "<<std::get<1>(translation_map[idx])<<std::endl;
         }
     }
     

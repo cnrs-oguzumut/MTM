@@ -4,18 +4,26 @@
 #include <Eigen/Dense>
 
 namespace lagrange {
-    // Define result structure for Lagrange reduction
+    // Structure to store the reduction result
     struct Result {
-        Eigen::Matrix2d C_reduced;         // Reduced metric tensor
-        Eigen::Matrix2d m_matrix;          // Transformation matrix
-        bool third_condition_satisfied;    // Flag indicating if third condition was met
+        Eigen::Matrix2d C_reduced;       // Reduced metric tensor
+        Eigen::Matrix2d m_matrix;        // Transformation matrix
+        bool third_condition_satisfied;  // Flag indicating if third condition was met
     };
 
-    // Main Lagrange reduction function - returns both reduced tensor and transformation matrix
-    Result reduce(const Eigen::Matrix2d& C);
+    // Enhanced structure with count tracking
+    struct ResultWithCount {
+        Eigen::Matrix2d C_reduced;       // Reduced metric tensor
+        Eigen::Matrix2d m_matrix;        // Transformation matrix
+        bool third_condition_satisfied;  // Flag indicating if third condition was met at least once
+        int third_condition_count;       // Count of how many times the third condition was met
+    };
 
-    // Simple version that only returns the reduced metric tensor
+    // Function declarations
+    Result reduce(const Eigen::Matrix2d& C);
+    ResultWithCount reduceAndCount(const Eigen::Matrix2d& C);
     Eigen::Matrix2d reduceTensor(const Eigen::Matrix2d& C);
+
 } // namespace lagrange
 
 #endif // LAGRANGE_REDUCTION_H
