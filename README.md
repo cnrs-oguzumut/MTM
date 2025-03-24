@@ -38,7 +38,9 @@ make
 ```bash
 ./run_tests
 ```
-## Example: 2D Square Crystal under simple shear load (for the strain-energy density, see Conti&Zanzotto 2024 )
+## Example: 2D Square Crystal under simple shear load 
+(for the strain-energy density, see Conti&Zanzotto,  Archive for Rational Mechanics and Analysis, Volume 173, pages 69–88, 2004, also Baggio et al., 
+Phys. Rev. Lett. 123, 205501, 2019)
 
 - Stress field of the  initial dislocated configuration
 
