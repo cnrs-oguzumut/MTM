@@ -595,6 +595,10 @@ void example_1_conti_zanzotto() {
             
             optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
             map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+            //recalculate 
+            std::vector<int> m3_after_remeshed = analyzeElementReduction(elements, square_points, &userData);
+            hasChanges = compareM3Activation(m3_before, m3_after_remeshed);
+    
             
             // Calculate post-remeshing energy and stress
             ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, post_stress);
