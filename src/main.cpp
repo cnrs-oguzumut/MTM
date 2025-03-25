@@ -518,10 +518,17 @@ void example_1_conti_zanzotto() {
             original_x[j] = x[j];
         }
     
+        std::vector<int> m3_before = analyzeElementReduction(elements, square_points, &userData);
         // Run optimization
         LBFGSOptimizer optimizer(10, 0.000001, 0, 0, 0);
         optimizer.optimize(x, minimize_energy_with_triangles, &userData);
         map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+        
+        std::vector<int> m3_after = analyzeElementReduction(elements, square_points, &userData);
+        int hasChanges = compareM3Activation(m3_before, m3_after);
+        if(hasChanges>0){
+            std::cout << "Changes in m3 detected! " << hasChanges<< std::endl;
+        }
         
         // Calculate post-optimization energy and stress
         double post_energy = 0.0;

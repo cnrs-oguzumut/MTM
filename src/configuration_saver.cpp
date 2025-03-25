@@ -313,7 +313,7 @@ void ConfigurationSaver::logEnergyAndStress(
     double pre_stress,
     double post_energy, 
     double post_stress,
-    bool plasticity_flag)  // Added plasticity flag parameter
+    int plasticity_flag)  // Added plasticity flag parameter
 {
     static bool first_call = true;
     static std::ofstream log_file;
@@ -328,9 +328,11 @@ void ConfigurationSaver::logEnergyAndStress(
              << pre_energy << "," << pre_stress << "," 
              << post_energy << "," << post_stress << "," 
              << -(post_energy - pre_energy) << "," << -(post_stress - pre_stress) << ","
-             << (plasticity_flag ? "1" : "0") << "\n";  // Added plasticity flag to CSV
+             << plasticity_flag << "\n";  // Added plasticity flag to CSV
     log_file.flush();
 }
+
+
 
 void ConfigurationSaver::writeToVTK(
     const std::vector<Point2D>& points,
@@ -345,7 +347,7 @@ void ConfigurationSaver::writeToVTK(
     std::stringstream filename;
     filename << "vtk_output/configuration_" << std::setw(5) << std::setfill('0') << iteration << ".vtk";
     
-    // Get original domain points count
+    // Get original domaingit points count
     int original_points_count = points.size();
     
     // Define a custom key for map to handle Eigen::Vector2d

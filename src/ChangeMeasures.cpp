@@ -14,7 +14,7 @@ ChangeMeasures computeChangeMeasures(const alglib::real_1d_array& current_points
     const std::vector<ElementTriangle2D>& elements,
     const std::vector<Point2D>& points,
     bool check_angles,
-    const Eigen::Matrix2d* F_ext ) {  // Fixed extra parenthesis
+    const Eigen::Matrix2d* F_ext) {
 int n = current_points.length();
 if (n != reference_points.length() || n == 0) {
 throw std::invalid_argument("Arrays must be of the same nonzero length");
@@ -90,7 +90,7 @@ double min_angle = std::min({angle1, angle2, angle3});
 // consider the triangle distorted
 if (max_angle > 110.0 || min_angle < 25.0) {
 has_distorted_triangles = true;
-std::cout<<"max_angle: "<<max_angle<<" min_angle: "<<min_angle<<std::endl;
+std::cout << "max_angle: " << max_angle << " min_angle: " << min_angle << std::endl;
 break;
 }
 
@@ -119,29 +119,28 @@ measures.has_distorted_triangles = has_distorted_triangles;
 
 return measures;
 }
-int analyzeElementReduction(
-    std::vector<ElementTriangle2D>& elements, 
+
+
+std::vector<int> analyzeElementReduction(
+    std::vector<ElementTriangle2D>& elements,
     std::vector<Point2D>& points,
-    const UserData* userData) 
+    const UserData* userData)
 {
-    std::cout << "Analyzing Lagrange reduction metrics for finite elements..." << std::endl;
+    std::vector<int> m3_activation;
+    m3_activation.reserve(userData->active_elements.size());
     
-    int total_elements = 0;
-    int elements_with_reduction = 0;
-    int total_third_condition_triggers = 0;
-    int max_triggers_in_element = 0;
-    
-    // For histogram of third condition count occurrences
-    std::map<int, int> count_histogram;
-    
-    // Loop through all elements
+    // Check each element for third reduction operation activation
     for (size_t elem_idx : userData->active_elements) {
-        if (elem_idx >= elements.size()) continue;
+        if (elem_idx >= elements.size()) {
+            m3_activation.push_back(0); // Invalid element index
+            continue;
+        }
         
         auto& element = elements[elem_idx];
-        if (!element.isInitialized()) continue;
-        
-        total_elements++;
+        if (!element.isInitialized()) {
+            m3_activation.push_back(0); // Uninitialized element
+            continue;
+        }
         
         // Set external deformation and calculate deformation gradient
         element.setExternalDeformation(userData->F_external);
@@ -149,28 +148,40 @@ int analyzeElementReduction(
         
         // Get the metric tensor
         Eigen::Matrix2d C = element.getMetricTensor();
-        std::cout << "C: " << C << std::endl;
         
         // Apply Lagrange reduction with counting
         lagrange::ResultWithCount result = lagrange::reduceAndCount(C);
         
-        // Record statistics
-        if (result.third_condition_count > 0) {
-            elements_with_reduction++;
-            total_third_condition_triggers += result.third_condition_count;
-            max_triggers_in_element = std::max(max_triggers_in_element, result.third_condition_count);
-        }
-        
-        // Add to histogram
-        count_histogram[result.third_condition_count]++;
+        // Record if third condition is triggered (1) or not (0)
+        m3_activation.push_back(result.third_condition_count > 0 ? 1 : 0);
     }
     
-    // Print statistics
-    std::cout << "Total elements analyzed: " << total_elements << std::endl;
-    std::cout << "Elements with third condition triggered: " << elements_with_reduction
-              << " (" << (100.0 * elements_with_reduction / total_elements) << "%)" << std::endl;
-    std::cout << "Total third condition triggers: " << total_third_condition_triggers << std::endl;
-    
-    // Return the number of elements with reduction
-    return elements_with_reduction;
+    return m3_activation;
 }
+
+int compareM3Activation(const std::vector<int>& m3_before, const std::vector<int>& m3_after) 
+{
+    
+    // Make sure vectors have the same size
+    if (m3_before.size() != m3_after.size()) {
+        std::cerr << "Error: Vector size mismatch in compareM3Activation" << std::endl;
+        return false;
+    }
+    
+    // Count differences
+    int diff_count = 0;
+    for (size_t i = 0; i < m3_before.size(); i++) {
+        if (m3_before[i] != m3_after[i]) {
+            diff_count++;
+        }
+    }
+    
+    // Report if differences were found
+    if (diff_count > 0) {
+        std::cout << "Found " << diff_count << " differences in M3 activation" << std::endl;
+        //return true;
+    }
+    
+    return diff_count;  // No differences found
+}
+

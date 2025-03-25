@@ -46,7 +46,7 @@ public:
         double& total_energy,
         double& total_stress);
     
-    /**
+    /*
      * Log energy and stress values to CSV file for later analysis
      * 
      * @param iteration Current iteration number
@@ -63,9 +63,9 @@ public:
         double pre_stress,
         double post_energy, 
         double post_stress,
-        bool plasticity_flag);  // Added plasticity flag parameter
-
-    static void writeToVTK(
+        int plasticity_flag);  // Added plasticity flag parameter
+    
+        static void writeToVTK(
         const std::vector<Point2D>& points,
         const std::vector<ElementTriangle2D>& elements,
         const UserData* userData,

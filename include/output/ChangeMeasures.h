@@ -50,7 +50,7 @@ ChangeMeasures computeChangeMeasures(
     const Eigen::Matrix2d* F_ext = nullptr);
     
     
-    /**
+/*
  * Analyzes the reduction metrics for finite elements
  * 
  * @param elements The collection of finite elements to analyze
@@ -58,9 +58,13 @@ ChangeMeasures computeChangeMeasures(
  * @param userData User data containing active elements and other properties
  * @return The number of elements with reduction
  */
-int analyzeElementReduction(
+std::vector<int> analyzeElementReduction(
     std::vector<ElementTriangle2D>& elements,
     std::vector<Point2D>& points,
     const UserData* userData);
+
+
+int compareM3Activation(const std::vector<int>& m3_before, const std::vector<int>& m3_after);
+
 
 #endif // CHANGE_MEASURES_H
