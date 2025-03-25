@@ -606,7 +606,7 @@ void example_1_conti_zanzotto() {
         
         // Log data to file
         ConfigurationSaver::logEnergyAndStress(
-            i, alpha, pre_energy, pre_stress, post_energy, post_stress, updated_plasticity
+            i, alpha, pre_energy, pre_stress, post_energy, post_stress, hasChanges
         );
      
         // Save configuration periodically
@@ -623,4 +623,4 @@ void example_1_conti_zanzotto() {
 int main() {
     example_1_conti_zanzotto();
     return 0;
-}
+}   
