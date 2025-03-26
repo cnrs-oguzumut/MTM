@@ -594,7 +594,8 @@ void example_1_conti_zanzotto() {
             const std::vector<size_t> new_active_elements = 
                 initialize_active_elements(elements, full_mapping, square_points.size());
             active_elements = new_active_elements;
-            
+            std::vector<int> m3_before_remeshed = analyzeElementReduction(elements, square_points, &userData);
+
             // Calculate new shape derivatives
             for (auto& element : elements) {
                 element.calculate_shape_derivatives(square_points);
@@ -612,7 +613,7 @@ void example_1_conti_zanzotto() {
             map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
             //recalculate 
             std::vector<int> m3_after_remeshed = analyzeElementReduction(elements, square_points, &userData);
-            hasChanges = compareM3Activation(m3_before, m3_after_remeshed);
+            hasChanges = compareM3Activation(m3_before_remeshed, m3_after_remeshed);
     
             
             // Calculate post-remeshing energy and stress
