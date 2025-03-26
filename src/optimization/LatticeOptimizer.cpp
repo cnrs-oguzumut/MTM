@@ -230,6 +230,8 @@ void minimize_energy_with_triangles(
 {
     static int iteration = 0;
     static std::ofstream energy_log;
+    static std::vector<std::vector<Eigen::Vector2d>> thread_local_forces;
+    static int last_thread_count = 0;
     
     // Open log file on first iteration
     if (iteration == 0) {
@@ -280,31 +282,31 @@ void minimize_energy_with_triangles(
     
     // Reset energy
     double total_energy = 0.0;
-    
-    // Thread-local storage for forces to avoid race conditions
-    std::vector<std::vector<Eigen::Vector2d>> thread_local_forces;
 
-    // PARALLEL VERSION
+    // Handle thread-local forces ONCE outside parallel region
+    int current_threads = omp_get_max_threads();
+    if (thread_local_forces.size() != current_threads) {
+        thread_local_forces.resize(current_threads, 
+                                std::vector<Eigen::Vector2d>(n_points, 
+                                                            Eigen::Vector2d::Zero()));
+        last_thread_count = current_threads;
+    }
+
     #pragma omp parallel
-    {
+    {               
         int thread_id = omp_get_thread_num();
-        int num_threads = omp_get_num_threads();
         
-        #pragma omp single
-        {
-            thread_local_forces.resize(num_threads, 
-                                     std::vector<Eigen::Vector2d>(global_forces.size(), 
-                                                                 Eigen::Vector2d::Zero()));
-        }
-        
-        #pragma omp for reduction(+:total_energy)
+        // Clear only this thread's forces (no synchronization needed)
+        auto& my_forces = thread_local_forces[thread_id];
+        std::fill(my_forces.begin(), my_forces.end(), Eigen::Vector2d::Zero());        
+        // Dynamic scheduling helps with load imbalance
+        #pragma omp for schedule(dynamic) reduction(+:total_energy)
         for (size_t idx = 0; idx < active_elements.size(); idx++) {
             size_t i = active_elements[idx];
             
             if (i >= elements.size()) {
+                std::cerr << "Error: Element index out of bounds" << std::endl;
                 continue;
-                std::cout<<"Error: Element index out of bounds"<<std::endl;
-                exit(0);
             }
             
             auto& element = elements[i];
@@ -317,19 +319,19 @@ void minimize_energy_with_triangles(
             lagrange::Result result = lagrange::reduce(C);
             C = result.C_reduced; 
 
-            
             double element_energy = calculator.calculate_energy(C, energy_function, zero_energy)/normalisation;
-            total_energy += element_energy * element.getArea(); // Use area instead of volume
+            total_energy += element_energy * element.getArea();
             
             Eigen::Matrix2d dE_dC = calculator.calculate_derivative(C, derivative_function)/normalisation;
             Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
 
             // Add forces to thread-local storage
-            element.assemble_forces(P, thread_local_forces[thread_id]);
+            element.assemble_forces(P, my_forces);
         }
     }
 
-    // Combine thread-local forces
+    // Parallel force combination
+    #pragma omp parallel for
     for (size_t i = 0; i < global_forces.size(); i++) {
         for (size_t t = 0; t < thread_local_forces.size(); t++) {
             global_forces[i] += thread_local_forces[t][i];
@@ -348,20 +350,16 @@ void minimize_energy_with_triangles(
         energy_log << iteration << "," << func-0.5*homogeneous_energy*active_elements.size() << std::endl;
     }
     
-    // if (iteration % 10 == 0) {
-    //     std::cout << "Energy: " << func << " at iteration: " << iteration << std::endl;
-    // }
-    
     // Map forces to gradient array
     map_points_to_solver_array(grad, global_forces, interior_mapping, n_vars);
     
     if (iteration % 10 == 0) {
-        //saveConfigurationToXY(points, iteration);
+        // Optional: save configuration
+        // saveConfigurationToXY(points, iteration);
     }
     
     iteration++;
 }
-
 // Add this implementation to LatticeOptimizer.cpp
 void deform_boundary_nodes(
     std::vector<Point2D>& points,
