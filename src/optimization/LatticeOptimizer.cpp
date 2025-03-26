@@ -304,10 +304,10 @@ void minimize_energy_with_triangles(
         for (size_t idx = 0; idx < active_elements.size(); idx++) {
             size_t i = active_elements[idx];
             
-            if (i >= elements.size()) {
-                std::cerr << "Error: Element index out of bounds" << std::endl;
-                continue;
-            }
+            // if (i >= elements.size()) {
+            //     std::cerr << "Error: Element index out of bounds" << std::endl;
+            //     continue;
+            // }
             
             auto& element = elements[i];
             
@@ -342,13 +342,13 @@ void minimize_energy_with_triangles(
     func = total_energy;
     
     // Save energy to log file
-    if (energy_log.is_open()) {
-        Eigen::Matrix2d C_ext = F_external.transpose() * F_external;
-        lagrange::Result result_ext = lagrange::reduce(C_ext);
-        C_ext = result_ext.C_reduced; 
-        double homogeneous_energy = calculator.calculate_energy(C_ext, energy_function, zero_energy)/normalisation;
-        energy_log << iteration << "," << func-0.5*homogeneous_energy*active_elements.size() << std::endl;
-    }
+    // if (energy_log.is_open()) {
+    //     Eigen::Matrix2d C_ext = F_external.transpose() * F_external;
+    //     lagrange::Result result_ext = lagrange::reduce(C_ext);
+    //     C_ext = result_ext.C_reduced; 
+    //     double homogeneous_energy = calculator.calculate_energy(C_ext, energy_function, zero_energy)/normalisation;
+    //     energy_log << iteration << "," << func-0.5*homogeneous_energy*active_elements.size() << std::endl;
+    // }
     
     // Map forces to gradient array
     map_points_to_solver_array(grad, global_forces, interior_mapping, n_vars);
