@@ -358,8 +358,8 @@ void debug_deformation_tests() {
 
 void example_1_conti_zanzotto() {
     // Parameters for lattice
-    int nx = 100;
-    int ny = 100;
+    int nx = 200;
+    int ny = 200;
     std::string lattice_type = "square"; // "square" or "triangular"
     
     // Energy functions
@@ -450,7 +450,7 @@ void example_1_conti_zanzotto() {
     // Set up alpha values for deformation steps
     double alpha_min = 0.13;
     double alpha_max = 1.0;
-    double step_size = 0.0001;
+    double step_size = 0.00001;
     int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
 
     // Generate evenly spaced alpha values
@@ -476,7 +476,11 @@ void example_1_conti_zanzotto() {
         Eigen::Matrix2d F_ext;
         F_ext << 1.0, alpha,
                  0.0, 1.0;   
-                 
+
+        Eigen::Matrix2d dF_ext;
+        dF_ext << 1.0, step_size,
+                0.0, 1.0;   
+         
         // Apply initial noise (only for first iteration)
         if(i == 0) {
             std::random_device rd;
@@ -484,12 +488,23 @@ void example_1_conti_zanzotto() {
             double noise_level = 0.05;
             std::normal_distribution<double> noise_dist(0.0, noise_level);
             
-            for (const auto& pair : full_mapping) {
-                int original_idx = pair.first;
+            for (size_t i = 0; i < square_points.size(); i++) {
+                // Apply deformation: x_deformed = F·x
                 Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
-                square_points[original_idx].coord = F_ext * square_points[original_idx].coord + noise;
+                square_points[i].coord = F_ext * square_points[i].coord + noise;
+
             }
         }    
+
+        else {
+
+            for (size_t i = 0; i < square_points.size(); i++) {
+                // Apply deformation: x_deformed = dF·x
+                square_points[i].coord = dF_ext * square_points[i].coord;
+            }
+
+
+        }
         
         // Create user data
         bool plasticity = false;
