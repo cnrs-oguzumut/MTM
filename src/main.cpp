@@ -419,7 +419,13 @@ void example_1_conti_zanzotto() {
         square_points.size(),
         1e-6 // Minimum Jacobian threshold
     );
+   
+    // Boundary conditions
+    auto [interior_mapping, full_mapping] = create_dof_mapping_original(square_points, 0.5*lattice_constant, pbc);
+    std::cout << "interior_mapping.size(): " << interior_mapping.size() << std::endl;
+    std::cout << "full_mapping.size(): " << full_mapping.size() << std::endl;
     
+
     // Create finite element triangles
     std::vector<ElementTriangle2D> elements = MeshGenerator::createElementTri2D(
         unique_triangles,
@@ -427,23 +433,30 @@ void example_1_conti_zanzotto() {
         original_domain_map,
         translation_map
     );
+    // Create ALGLIB array for free DOFs (displacements)
+    alglib::real_1d_array free_dofs;
+    int n_free_nodes = square_points.size();
+    free_dofs.setlength(2 * n_free_nodes);  // [u0, u1, ..., v0, v1, ...]
+    map_points_to_solver_array(free_dofs, square_points, interior_mapping, n_free_nodes);
+
+
+    // Initialize elements with reference configuration
+    for (auto& element : elements) {
+        element.set_reference_mesh(square_points);
+        element.set_dof_mapping(full_mapping);     
+        // Calculate shape derivatives with debug prints
+        double jac_det = element.calculate_shape_derivatives(free_dofs);        
+    }
+
     // Sort elements directly by their first node index
     std::sort(elements.begin(), elements.end(), 
     [](const ElementTriangle2D& a, const ElementTriangle2D& b) {
         return a.getNodeIndex(0) < b.getNodeIndex(0);
     });
 
-    // Calculate shape derivatives
-    for (auto& element : elements) {
-        element.calculate_shape_derivatives(square_points);
-    }
-    
+
     std::cout << "Created " << elements.size() << " element triangles" << std::endl;
     
-    // Boundary conditions
-    auto [interior_mapping, full_mapping] = create_dof_mapping_original(square_points, 0.5*lattice_constant, pbc);
-    std::cout << "interior_mapping.size(): " << interior_mapping.size() << std::endl;
-    std::cout << "full_mapping.size(): " << full_mapping.size() << std::endl;
     
     // Setup energy calculation
     Strain_Energy_LatticeCalculator calculator(1.0);
@@ -589,7 +602,7 @@ void example_1_conti_zanzotto() {
         // Determine if remeshing is needed
         bool shouldRemesh = result.has_distorted_triangles ;
         std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
-        
+        shouldRemesh=false;
         // Remeshing if needed
         if (shouldRemesh) {
             std::cout << "REMESHING STARTS" << std::endl;
@@ -614,6 +627,21 @@ void example_1_conti_zanzotto() {
             elements = MeshGenerator::createElementTri2D(
                 unique_triangles, square_points, original_domain_map, translation_map
             );
+
+            // Initialize elements with reference configuration
+            for (auto& element : elements) {
+                element.set_reference_mesh(square_points);
+                element.set_dof_mapping(full_mapping);  // or interior_mapping depending on needs
+                double jac = element.calculate_shape_derivatives(x);  // current positions
+            }
+
+                // Sort elements directly by their first node index
+            std::sort(elements.begin(), elements.end(), 
+            [](const ElementTriangle2D& a, const ElementTriangle2D& b) {
+                return a.getNodeIndex(0) < b.getNodeIndex(0);
+            });
+
+        
             
             // Update active elements
             const std::vector<size_t> new_active_elements = 
@@ -621,11 +649,6 @@ void example_1_conti_zanzotto() {
             active_elements = new_active_elements;
             std::vector<int> m3_before_remeshed = analyzeElementReduction(elements, square_points, &userData);
 
-            // Calculate new shape derivatives
-            for (auto& element : elements) {
-                element.calculate_shape_derivatives(square_points);
-            }
-            
             // Re-optimize with new mesh
             plasticity = true;
             UserData newUserData(
@@ -666,7 +689,6 @@ void example_1_conti_zanzotto() {
     }
 }
 int main() {
-    omp_set_num_threads(6);
     example_1_conti_zanzotto();
     return 0;
 }   

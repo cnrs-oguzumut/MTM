@@ -8,12 +8,7 @@
 #include <iostream>
 #include <Eigen/Dense>
 #include "../geometry/Point2D.h"
-
-#include <Eigen/Dense>
-#include <vector>
-#include <array>
-#include <functional>
-#include <iostream>
+#include "src/ap.h"  // ALGLIB header
 
 class ElementTriangle2D {
 private:
@@ -31,6 +26,10 @@ private:
     Eigen::Matrix2d F;  // Deformation gradient
     Eigen::Matrix2d C;  // Right Cauchy-Green deformation tensor
     Eigen::Matrix2d F_external;  // External deformation gradient
+
+    // Reduced DOF support
+    const std::vector<Point2D>* reference_points_ptr;  // Pointer to reference mesh
+    const std::vector<std::pair<int, int>>* dof_mapping;  // Pointer to DOF mapping
     
 public:
     // Constructor
@@ -49,9 +48,13 @@ public:
     Eigen::Vector2d getTranslation(int position) const;
     Eigen::Vector2d getEffectiveTranslation(int position) const;
     
-    // Reference area methods
+    // Reference configuration methods
     void setReferenceArea(double ref_area) { reference_area = ref_area; }
     double getReferenceArea() const { return reference_area > 0.0 ? reference_area : area; }
+    
+    // Reduced DOF methods
+    void set_reference_mesh(const std::vector<Point2D>& points);
+    void set_dof_mapping(const std::vector<std::pair<int, int>>& mapping);
     
     // Getters
     double getArea() const;
@@ -61,20 +64,24 @@ public:
     const Eigen::Matrix2d& getMetricTensor() const;
     bool isInitialized() const;
     
-    // Calculation methods
+    // Shape derivatives calculation
     double calculate_shape_derivatives(const std::vector<Point2D>& reference_points);
+    double calculate_shape_derivatives(const alglib::real_1d_array& free_dofs);
+    
+    // Deformation gradient calculation
     void calculate_deformation_gradient(const std::vector<Point2D>& current_points);
+    void calculate_deformation_gradient(const alglib::real_1d_array& current_dofs);
+    
+    // Strain calculation
     Eigen::Matrix2d get_green_lagrange_strain() const;
     
-    // Force calculation methods
+    // Force calculations
     std::array<Eigen::Vector2d, 3> calculate_nodal_forces(const Eigen::Matrix2d& P) const;
     std::array<Eigen::Vector2d, 3> calculate_nodal_forces(
         const std::function<Eigen::Matrix2d(const Eigen::Matrix2d&)>& stress_function) const;
+    
+    // Force assembly (standard vector version only)
     void assemble_forces(const Eigen::Matrix2d& P, std::vector<Eigen::Vector2d>& global_forces) const;
-    // New overload for aligned vectors
-    using aligned_vector = std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>;
-    void assemble_forces(const Eigen::Matrix2d& P, aligned_vector& global_forces) const;
-
 };
 
 #endif // ELEMENT_TRIANGLE_2D_H

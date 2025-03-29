@@ -7,7 +7,9 @@ ElementTriangle2D::ElementTriangle2D() :
     area(0.0),
     reference_area(0.0),
     use_external_deformation(false),
-    shape_derivatives_calculated(false) {
+    shape_derivatives_calculated(false),
+    reference_points_ptr(nullptr),
+    dof_mapping(nullptr) {
     
     for (int i = 0; i < 3; i++) {
         trans[i].setZero();
@@ -19,28 +21,34 @@ ElementTriangle2D::ElementTriangle2D() :
     F_external.setIdentity();
 }
 
-// Set external deformation gradient and activate it
+// Reference configuration methods
+void ElementTriangle2D::set_reference_mesh(const std::vector<Point2D>& points) {
+    reference_points_ptr = &points;
+}
+
+void ElementTriangle2D::set_dof_mapping(const std::vector<std::pair<int, int>>& mapping) {
+    dof_mapping = &mapping;
+}
+
+// External deformation methods
 void ElementTriangle2D::setExternalDeformation(const Eigen::Matrix2d& F_ext) {
     F_external = F_ext;
     use_external_deformation = true;
 }
 
-// Disable external deformation (will use identity)
 void ElementTriangle2D::disableExternalDeformation() {
     use_external_deformation = false;
 }
 
-// Get external deformation gradient
 const Eigen::Matrix2d& ElementTriangle2D::getExternalDeformation() const {
     return F_external;
 }
 
-// Check if external deformation is active
 bool ElementTriangle2D::isExternalDeformationActive() const {
     return use_external_deformation;
 }
 
-// Setters for node indices and translations
+// Node management
 void ElementTriangle2D::setNodeIndex(int position, int index) {
     if (position >= 0 && position < 3) {
         nn[position] = index;
@@ -53,7 +61,6 @@ void ElementTriangle2D::setTranslation(int position, const Eigen::Vector2d& tran
     }
 }
 
-// Getters
 int ElementTriangle2D::getNodeIndex(int position) const {
     return (position >= 0 && position < 3) ? nn[position] : -1;
 }
@@ -62,7 +69,6 @@ Eigen::Vector2d ElementTriangle2D::getTranslation(int position) const {
     return (position >= 0 && position < 3) ? trans[position] : Eigen::Vector2d::Zero();
 }
 
-// Get translation vector (deformed if external deformation is active)
 Eigen::Vector2d ElementTriangle2D::getEffectiveTranslation(int position) const {
     if (position >= 0 && position < 3) {
         if (use_external_deformation) {
@@ -74,6 +80,7 @@ Eigen::Vector2d ElementTriangle2D::getEffectiveTranslation(int position) const {
     return Eigen::Vector2d::Zero();
 }
 
+// Property accessors
 double ElementTriangle2D::getArea() const { 
     return area; 
 }
@@ -98,162 +105,203 @@ bool ElementTriangle2D::isInitialized() const {
     return shape_derivatives_calculated; 
 }
 
-// Calculate shape function derivatives using reference configuration
-double ElementTriangle2D::calculate_shape_derivatives(const std::vector<Point2D>& reference_points) {
-    // Create matrix to hold reference coordinates
-    Eigen::Matrix<double, 2, 3> X_e;
-    
-    // Fill the matrix with coordinates from reference configuration
-    for (int i = 0; i < 3; i++) {
-        // Use effective translation (deformed if active)
-        Eigen::Vector2d effective_trans = getEffectiveTranslation(i);
-           
-        Eigen::Vector2d coord = reference_points[nn[i]].coord + effective_trans;
-        X_e.col(i) = coord;  // Standard FEM notation - store as columns
+// Shape derivatives calculation
+double ElementTriangle2D::calculate_shape_derivatives(const alglib::real_1d_array& free_dofs) {
+    if (!dof_mapping || !reference_points_ptr) {
+        std::cerr << "Error: DOF mapping or reference mesh not set." << std::endl;
+        return 0.0;
     }
-    
-    // Define shape functions in natural coordinates
+
+    Eigen::Matrix<double, 2, 3> X_e;
+    const int n_free = free_dofs.length() / 2;
+    for (int i = 0; i < 3; i++) {
+        // Get effective translation
+        Eigen::Vector2d effective_trans = getEffectiveTranslation(i);
+        
+        // Get the node index
+        const int global_node_idx = nn[i];
+        const auto& [original_idx, solver_idx] = (*dof_mapping)[global_node_idx];
+        
+        Eigen::Vector2d coord;
+        if (solver_idx == -1) {
+            // For fixed nodes, use reference position
+            coord = (*reference_points_ptr)[original_idx].coord;
+        } else {
+            // For free nodes, use the position directly from free_dofs
+            coord = Eigen::Vector2d(free_dofs[solver_idx], free_dofs[n_free + solver_idx]);
+        }
+        
+        // Add effective translation
+        coord += effective_trans;
+        
+        // Store as columns
+        X_e.col(i) = coord;
+    }    // for (int i = 0; i < 3; i++) {
+    //     const int global_node_idx = nn[i];
+    //     const auto& [original_idx, solver_idx] = (*dof_mapping)[global_node_idx];
+    //     Eigen::Vector2d coord;
+        
+    //     if (solver_idx == -1) {
+    //         // For fixed nodes, use reference position
+    //         coord = (*reference_points_ptr)[original_idx].coord;
+    //     } else {
+    //         // For free nodes, directly use the position from free_dofs
+    //         coord = Eigen::Vector2d(free_dofs[solver_idx], free_dofs[n_free + solver_idx]);
+    //     }
+        
+    //     // Add effective translation
+    //     coord += getEffectiveTranslation(i);
+    //     X_e.col(i) = coord;
+    // }
     Eigen::Matrix<double, 3, 2> dNdxi;
-    dNdxi << -1.0, -1.0,     // dN1/d(xi,eta)
-                1.0,  0.0,     // dN2/d(xi,eta)
-                0.0,  1.0;     // dN3/d(xi,eta)
+    dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
     
-    // Calculate Jacobian matrix (standard FEM notation)
     Eigen::Matrix2d J = X_e * dNdxi;
-    
-    // Calculate determinant and area
     jacobian_det = J.determinant();
     area = std::abs(jacobian_det) / 2.0;
-    
-    
-    // Calculate shape function derivatives in global coordinates
-    if (std::abs(jacobian_det) > 1e-10) {
-        Eigen::Matrix2d J_inv = J.inverse();
-        if (reference_area <= 0.0){
-            dNdX = dNdxi ;  // Standard FEM ordering
-            // std::cout<<"dNdX"<<dNdX<<std::endl;
-        }
-        else{
-            dNdX = dNdxi;  // Standard FEM ordering
-            // std::cout<<"dNdX"<<dNdX<<std::endl;
-        }
 
+    if (std::abs(jacobian_det) > 1e-10) {
+        dNdX = dNdxi * J.inverse();
+        //dNdX = dNdxi ;
     } else {
         dNdX.setZero();
         std::cerr << "Warning: Near-singular Jacobian detected." << std::endl;
     }
-    
-    // Store reference area if not already set
+
     if (reference_area <= 0.0) {
         reference_area = area;
     }
 
-    // Set flag that shape derivatives have been calculated
     shape_derivatives_calculated = true;
-    
     return jacobian_det;
 }
 
-// Calculate deformation gradient using current configuration
-void ElementTriangle2D::calculate_deformation_gradient(const std::vector<Point2D>& current_points) {
-    // Check if shape derivatives have been calculated
+double ElementTriangle2D::calculate_shape_derivatives(const std::vector<Point2D>& reference_points) {
+    Eigen::Matrix<double, 2, 3> X_e;
+    
+    for (int i = 0; i < 3; i++) {
+        Eigen::Vector2d effective_trans = getEffectiveTranslation(i);    
+        std::cout << "Node " << i << " (global idx: " << nn[i] << ") effective translation: (" 
+        << effective_trans.x() << ", " << effective_trans.y() << ")\n";
+   
+        Eigen::Vector2d coord = reference_points[nn[i]].coord + effective_trans;
+        X_e.col(i) = coord;
+    }
+    
+    Eigen::Matrix<double, 3, 2> dNdxi;
+    dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
+    
+    Eigen::Matrix2d J = X_e * dNdxi;
+    jacobian_det = J.determinant();
+    area = std::abs(jacobian_det) / 2.0;
+
+    if (std::abs(jacobian_det) > 1e-10) {
+        dNdX = dNdxi * J.inverse();
+        //dNdX = dNdxi ;
+    } else {
+        dNdX.setZero();
+        std::cerr << "Warning: Near-singular Jacobian detected." << std::endl;
+    }
+
+    if (reference_area <= 0.0) {
+        reference_area = area;
+    }
+
+    shape_derivatives_calculated = true;
+    return jacobian_det;
+}
+
+// Deformation gradient calculation
+void ElementTriangle2D::calculate_deformation_gradient(const alglib::real_1d_array& free_dofs) {
     if (!shape_derivatives_calculated) {
-        std::cerr << "Error: Shape derivatives not calculated. Call calculate_shape_derivatives first." << std::endl;
+        std::cerr << "Error: Shape derivatives not calculated." << std::endl;
         return;
     }
-    
-    // Create matrix to hold current coordinates
-    Eigen::Matrix<double, 2, 3> x_e;
-    
-    // Fill the matrix with coordinates from current configuration
-    for (int i = 0; i < 3; i++) {
-        // Use effective translation (deformed if active)
-        Eigen::Vector2d effective_trans = getEffectiveTranslation(i);
-        Eigen::Vector2d coord = current_points[nn[i]].coord + effective_trans;
-        x_e.col(i) = coord;  // Store as columns for standard FEM notation
+    if (!dof_mapping || !reference_points_ptr) {
+        std::cerr << "Error: DOF mapping or reference mesh not set." << std::endl;
+        return;
     }
-    
-    // Calculate deformation gradient (standard FEM notation)
+
+    Eigen::Matrix<double, 2, 3> x_e;
+    const int n_free = free_dofs.length() / 2;
+
+    for (int i = 0; i < 3; i++) {
+        const int global_node_idx = nn[i];
+        const auto& [original_idx, solver_idx] = (*dof_mapping)[global_node_idx];
+        Eigen::Vector2d coord;
+        
+        if (solver_idx == -1) {
+            // For fixed nodes, use reference position
+            coord = (*reference_points_ptr)[original_idx].coord;
+        } else {
+            // For free nodes, use the position directly instead of treating as displacement
+            coord = Eigen::Vector2d(free_dofs[solver_idx], free_dofs[n_free + solver_idx]);
+        }
+        
+        coord += getEffectiveTranslation(i);
+        x_e.col(i) = coord;
+    }
+
     F = x_e * dNdX;
-    
-    // Calculate right Cauchy-Green deformation tensor
     C = F.transpose() * F;
 }
 
-// Get Green-Lagrange strain tensor
+void ElementTriangle2D::calculate_deformation_gradient(const std::vector<Point2D>& current_points) {
+    if (!shape_derivatives_calculated) {
+        std::cerr << "Error: Shape derivatives not calculated." << std::endl;
+        return;
+    }
+    
+    Eigen::Matrix<double, 2, 3> x_e;
+    
+    for (int i = 0; i < 3; i++) {
+        Eigen::Vector2d effective_trans = getEffectiveTranslation(i);
+        Eigen::Vector2d coord = current_points[nn[i]].coord + effective_trans;
+        x_e.col(i) = coord;
+    }
+    
+    F = x_e * dNdX;
+    C = F.transpose() * F;
+}
+
+// Strain calculation
 Eigen::Matrix2d ElementTriangle2D::get_green_lagrange_strain() const {
     Eigen::Matrix2d I = Eigen::Matrix2d::Identity();
     return 0.5 * (C - I);
 }
 
-// Calculate nodal forces from first Piola-Kirchhoff stress tensor
+// Force calculations
 std::array<Eigen::Vector2d, 3> ElementTriangle2D::calculate_nodal_forces(const Eigen::Matrix2d& P) const {
     std::array<Eigen::Vector2d, 3> nodal_forces;
     
-    // Check if shape derivatives have been calculated
     if (!shape_derivatives_calculated) {
-        std::cerr << "Error: Shape derivatives not calculated. Cannot compute nodal forces." << std::endl;
-        for (int i = 0; i < 3; i++) {
-            nodal_forces[i].setZero();
-        }
+        std::cerr << "Error: Shape derivatives not calculated." << std::endl;
+        for (auto& f : nodal_forces) f.setZero();
         return nodal_forces;
     }
     
-    // Initialize all force vectors to zero
+    double area_to_use = reference_area > 0.0 ? reference_area : area;
+    
     for (int a = 0; a < 3; a++) {
-        nodal_forces[a].setZero();
+        nodal_forces[a] = (P * dNdX.row(a).transpose()) * area_to_use;
     }
-    
-    // Use reference area instead of current area
-    double area_to_use = getReferenceArea();
-    
-    // For each node (a) and each spatial dimension (i)
-    for (int a = 0; a < 3; a++) {
-        for (int i = 0; i < 2; i++) {
-            // Sum over reference dimensions (j)
-            for (int j = 0; j < 2; j++) {
-                // Note we add the contribution from each dimension
-                nodal_forces[a](i) += P(i,j) * dNdX(a,j) * area_to_use;
-            }
-        }
-    }            
+            
     return nodal_forces;
 }
 
-// Overloaded version that takes a stress function (for variable stress within element)
 std::array<Eigen::Vector2d, 3> ElementTriangle2D::calculate_nodal_forces(
     const std::function<Eigen::Matrix2d(const Eigen::Matrix2d&)>& stress_function) const {
-    // Calculate stress tensor from current deformation gradient
-    Eigen::Matrix2d P = stress_function(F);
-    
-    // Use the existing method to calculate nodal forces
-    return calculate_nodal_forces(P);
+    return calculate_nodal_forces(stress_function(F));
 }
 
-// Implement both versions with the same code
+// Force assembly
 void ElementTriangle2D::assemble_forces(const Eigen::Matrix2d& P, std::vector<Eigen::Vector2d>& global_forces) const {
     if (!shape_derivatives_calculated) {
-        std::cerr << "Error: Shape derivatives not calculated. Cannot assemble forces." << std::endl;
+        std::cerr << "Error: Shape derivatives not calculated." << std::endl;
         return;
     }
     
-    std::array<Eigen::Vector2d, 3> element_forces = calculate_nodal_forces(P);
-    
-    for (int i = 0; i < 3; i++) {
-        global_forces[nn[i]] += element_forces[i];
-    }
-}
-
-// Implement the aligned version
-using aligned_vector = std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>;
-void ElementTriangle2D::assemble_forces(const Eigen::Matrix2d& P, aligned_vector& global_forces) const {
-    if (!shape_derivatives_calculated) {
-        std::cerr << "Error: Shape derivatives not calculated. Cannot assemble forces." << std::endl;
-        return;
-    }
-    
-    std::array<Eigen::Vector2d, 3> element_forces = calculate_nodal_forces(P);
-    
+    auto element_forces = calculate_nodal_forces(P);
     for (int i = 0; i < 3; i++) {
         global_forces[nn[i]] += element_forces[i];
     }

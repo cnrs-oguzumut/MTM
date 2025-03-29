@@ -16,30 +16,28 @@ std::vector<Point2D> LatticeGenerator::generate_2d_lattice(
     
     if (lattice_type == "square") {
         // Generate square lattice points
-        for (int i = 0; i < nx; i++) {
-            for (int j = 0; j < ny; j++) {
-                double x = i * lattice_constant;
-                double y = j * lattice_constant;
-                
-                // Add point
-                points.push_back(Point2D(x, y));
-            }
+        for (int i = 0; i < nx * ny; i++) {
+            int iy = i / nx;
+            int ix = i % nx;
+            double x = ix * lattice_constant;
+            double y = iy * lattice_constant;
+            
+            // Add point
+            points.push_back(Point2D(x, y));
         }
     }
     else if (lattice_type == "triangular") {
         // Generate triangular lattice points
-        // Triangular lattice has the second row offset by a/2
-        // where a is the lattice constant
         double hex_height = lattice_constant * std::sqrt(3.0) / 2.0;
         
-        for (int i = 0; i < nx; i++) {
-            for (int j = 0; j < ny; j++) {
-                double x = i * lattice_constant + (j % 2) * (lattice_constant / 2.0);
-                double y = j * hex_height;
-                
-                // Add point
-                points.push_back(Point2D(x, y));
-            }
+        for (int i = 0; i < nx * ny; i++) {
+            int iy = i / nx;
+            int ix = i % nx;
+            double x = ix * lattice_constant + (iy % 2) * (lattice_constant / 2.0);
+            double y = iy * hex_height;
+            
+            // Add point
+            points.push_back(Point2D(x, y));
         }
     }
     else {
