@@ -660,12 +660,13 @@ void example_1_conti_zanzotto() {
             post_stress = 0;
             ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&userData, i, post_energy, post_stress);
             ConfigurationSaver::writeToVTK(userData.points, userData.elements, &userData, i);
-        }
+          }
 
         std::cout << "Iteration " << i << " completed successfully" << std::endl;
     }
 }
 int main() {
+    omp_set_num_threads(6);
     example_1_conti_zanzotto();
     return 0;
 }   

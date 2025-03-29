@@ -1,39 +1,69 @@
 cmake_minimum_required(VERSION 3.10)
 project(LatticeTriangulation)
 
-# Set C++ standard
+#-----------------------------------------------------------------------------
+# Global Settings
+#-----------------------------------------------------------------------------
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Set aggressive optimization flags
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    # For GCC, Clang, and AppleClang
-    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -flto -ffast-math")
-    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -flto -ffast-math")
-    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -flto")
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    # For Microsoft Visual C++
-    set(CMAKE_CXX_FLAGS_RELEASE "/O2 /Ob2 /DNDEBUG /GL")
-    set(CMAKE_C_FLAGS_RELEASE "/O2 /Ob2 /DNDEBUG /GL")
-    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG")
-endif()
-
-# Make sure to build in Release mode by default
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
 endif()
 
-# Find required packages
+#-----------------------------------------------------------------------------
+# Compiler-Specific Optimizations
+#-----------------------------------------------------------------------------
+
+function(set_target_optimizations TARGET)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(${TARGET} PRIVATE 
+            -O3
+            -march=native
+            -flto
+            -ffast-math
+            -funroll-loops
+            -fstrict-aliasing
+            -fvisibility=hidden
+        )
+        if(APPLE)
+            target_link_options(${TARGET} PRIVATE -dead_strip)
+        endif()
+    elseif(MSVC)
+        target_compile_options(${TARGET} PRIVATE /O2 /Ob2 /GL /fp:fast)
+        target_link_options(${TARGET} PRIVATE /LTCG)
+    endif()
+endfunction()
+
+# Global release flags
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto")
+elseif(MSVC)
+    set(CMAKE_CXX_FLAGS_RELEASE "/O2 /Ob2 /DNDEBUG /GL")
+    set(CMAKE_C_FLAGS_RELEASE "/O2 /Ob2 /DNDEBUG /GL")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "/LTCG")
+endif()
+
+#-----------------------------------------------------------------------------
+# Dependencies
+#-----------------------------------------------------------------------------
+
 find_package(Eigen3 REQUIRED)
 find_package(CGAL REQUIRED)
 find_package(Boost REQUIRED)
 find_package(OpenMP)
 
-# Set ALGLIB directory
+#-----------------------------------------------------------------------------
+# ALGLIB Library
+#-----------------------------------------------------------------------------
+
 set(ALGLIB_DIR "/Users/usalman/programming/alglib-cpp")
 include_directories(${ALGLIB_DIR})
 
-# Add ALGLIB source files
 set(ALGLIB_SOURCES
     ${ALGLIB_DIR}/src/alglibinternal.cpp
     ${ALGLIB_DIR}/src/alglibmisc.cpp
@@ -50,13 +80,14 @@ set(ALGLIB_SOURCES
     ${ALGLIB_DIR}/src/statistics.cpp
 )
 
-# Create ALGLIB library with optimization flags
 add_library(alglib STATIC ${ALGLIB_SOURCES})
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    target_compile_options(alglib PRIVATE -O3 -march=native -flto -ffast-math)
-endif()
+set_target_optimizations(alglib)
+target_include_directories(alglib PUBLIC ${ALGLIB_DIR})
 
-# Include directories
+#-----------------------------------------------------------------------------
+# Main Library
+#-----------------------------------------------------------------------------
+
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
@@ -64,59 +95,42 @@ include_directories(
     ${Boost_INCLUDE_DIRS}
 )
 
-# Add OpenMP flags if available
-if(OpenMP_CXX_FOUND)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-endif()
-
-# Create a library from source files (excluding main.cpp)
-file(GLOB_RECURSE LIB_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-)
+file(GLOB_RECURSE LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
+
 add_library(lattice_lib STATIC ${LIB_SOURCES})
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    target_compile_options(lattice_lib PRIVATE -O3 -march=native -flto -ffast-math)
-endif()
+set_target_optimizations(lattice_lib)
+target_link_libraries(lattice_lib PUBLIC ${CGAL_LIBRARIES} ${Boost_LIBRARIES})
 
-# Create main executable
-add_executable(lattice_triangulation "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    target_compile_options(lattice_triangulation PRIVATE -O3 -march=native -flto -ffast-math)
-endif()
-target_link_libraries(lattice_triangulation
-    lattice_lib
-    ${CGAL_LIBRARIES}
-    ${Boost_LIBRARIES}
-    alglib
-)
-
-# Add OpenMP if available
 if(OpenMP_CXX_FOUND)
-    target_link_libraries(lattice_triangulation OpenMP::OpenMP_CXX)
+    target_link_libraries(lattice_lib PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
-# Add test executable if tests directory exists
+#-----------------------------------------------------------------------------
+# Main Executable
+#-----------------------------------------------------------------------------
+
+add_executable(lattice_triangulation "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
+set_target_optimizations(lattice_triangulation)
+target_link_libraries(lattice_triangulation PRIVATE lattice_lib alglib)
+
+#-----------------------------------------------------------------------------
+# Tests (if present)
+#-----------------------------------------------------------------------------
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     file(GLOB TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
     if(TEST_SOURCES)
         add_executable(run_tests ${TEST_SOURCES})
-        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-            target_compile_options(run_tests PRIVATE -O3 -march=native -flto -ffast-math)
-        endif()
-        target_link_libraries(run_tests
-            lattice_lib
-            ${CGAL_LIBRARIES}
-            ${Boost_LIBRARIES}
-            alglib
-        )
-        if(OpenMP_CXX_FOUND)
-            target_link_libraries(run_tests OpenMP::OpenMP_CXX)
-        endif()
+        set_target_optimizations(run_tests)
+        target_link_libraries(run_tests PRIVATE lattice_lib alglib)
     endif()
 endif()
 
-# Print build type
+#-----------------------------------------------------------------------------
+# Build Information
+#-----------------------------------------------------------------------------
+
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "Release flags: ${CMAKE_CXX_FLAGS_RELEASE}")
