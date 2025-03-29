@@ -230,18 +230,30 @@ std::array<Eigen::Vector2d, 3> ElementTriangle2D::calculate_nodal_forces(
     return calculate_nodal_forces(P);
 }
 
-// Calculate and assemble nodal forces into a global force vector
+// Implement both versions with the same code
 void ElementTriangle2D::assemble_forces(const Eigen::Matrix2d& P, std::vector<Eigen::Vector2d>& global_forces) const {
-    // Check if shape derivatives have been calculated
     if (!shape_derivatives_calculated) {
         std::cerr << "Error: Shape derivatives not calculated. Cannot assemble forces." << std::endl;
         return;
     }
     
-    // Calculate nodal forces
     std::array<Eigen::Vector2d, 3> element_forces = calculate_nodal_forces(P);
     
-    // Assemble to global force vector
+    for (int i = 0; i < 3; i++) {
+        global_forces[nn[i]] += element_forces[i];
+    }
+}
+
+// Implement the aligned version
+using aligned_vector = std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>;
+void ElementTriangle2D::assemble_forces(const Eigen::Matrix2d& P, aligned_vector& global_forces) const {
+    if (!shape_derivatives_calculated) {
+        std::cerr << "Error: Shape derivatives not calculated. Cannot assemble forces." << std::endl;
+        return;
+    }
+    
+    std::array<Eigen::Vector2d, 3> element_forces = calculate_nodal_forces(P);
+    
     for (int i = 0; i < 3; i++) {
         global_forces[nn[i]] += element_forces[i];
     }

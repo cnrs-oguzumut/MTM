@@ -427,6 +427,11 @@ void example_1_conti_zanzotto() {
         original_domain_map,
         translation_map
     );
+    // Sort elements directly by their first node index
+    std::sort(elements.begin(), elements.end(), 
+    [](const ElementTriangle2D& a, const ElementTriangle2D& b) {
+        return a.getNodeIndex(0) < b.getNodeIndex(0);
+    });
 
     // Calculate shape derivatives
     for (auto& element : elements) {
@@ -535,8 +540,28 @@ void example_1_conti_zanzotto() {
     
         std::vector<int> m3_before = analyzeElementReduction(elements, square_points, &userData);
         // Run optimization
-        LBFGSOptimizer optimizer(10, 0.000001, 0, 0, 0);
+        // --- Start timing ---
+        auto wall_start = std::chrono::high_resolution_clock::now();
+        clock_t cpu_start = clock();
+
+        // Run optimization
+        LBFGSOptimizer optimizer(10, 0, pow(10,-13), 0, 0);
         optimizer.optimize(x, minimize_energy_with_triangles, &userData);
+
+        // --- Stop timing ---
+        auto wall_end = std::chrono::high_resolution_clock::now();
+        clock_t cpu_end = clock();
+
+        // Compute durations
+        double wall_time = std::chrono::duration<double>(wall_end - wall_start).count();
+        double cpu_time = (double)(cpu_end - cpu_start) / CLOCKS_PER_SEC;
+
+        // Print results
+        std::cout << "Optimization wall-clock time: " << wall_time << " seconds\n";
+        std::cout << "Optimization CPU time: " << cpu_time << " seconds\n";   
+        std::cout << "Optimization Ratio: " << cpu_time/wall_time << " seconds\n";   
+        
+    
         map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
         
         std::vector<int> m3_after = analyzeElementReduction(elements, square_points, &userData);

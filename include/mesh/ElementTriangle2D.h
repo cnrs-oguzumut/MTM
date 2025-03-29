@@ -71,6 +71,10 @@ public:
     std::array<Eigen::Vector2d, 3> calculate_nodal_forces(
         const std::function<Eigen::Matrix2d(const Eigen::Matrix2d&)>& stress_function) const;
     void assemble_forces(const Eigen::Matrix2d& P, std::vector<Eigen::Vector2d>& global_forces) const;
+    // New overload for aligned vectors
+    using aligned_vector = std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>;
+    void assemble_forces(const Eigen::Matrix2d& P, aligned_vector& global_forces) const;
+
 };
 
 #endif // ELEMENT_TRIANGLE_2D_H

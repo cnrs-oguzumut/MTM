@@ -230,7 +230,7 @@ void minimize_energy_with_triangles(
 {
     static int iteration = 0;
     static std::ofstream energy_log;
-    static std::vector<std::vector<Eigen::Vector2d>> thread_local_forces;
+    //static std::vector<std::vector<Eigen::Vector2d>> thread_local_forces;
     static int last_thread_count = 0;
     
     // Open log file on first iteration
@@ -284,59 +284,120 @@ void minimize_energy_with_triangles(
     double total_energy = 0.0;
 
     // Handle thread-local forces ONCE outside parallel region
-    int current_threads = omp_get_max_threads();
-    if (thread_local_forces.size() != current_threads) {
-        thread_local_forces.resize(current_threads, 
-                                std::vector<Eigen::Vector2d>(n_points, 
-                                                            Eigen::Vector2d::Zero()));
-        last_thread_count = current_threads;
+    // int current_threads = omp_get_max_threads();
+    // if (thread_local_forces.size() != current_threads) {
+    //     thread_local_forces.resize(current_threads, 
+    //                             std::vector<Eigen::Vector2d>(n_points, 
+    //                                                         Eigen::Vector2d::Zero()));
+    //     last_thread_count = current_threads;
+    // }
+
+// Keep the original declaration
+// using aligned_vector = std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>;
+// static std::vector<aligned_vector> thread_local_forces;
+// // Handle thread-local forces outside parallel region
+// // Handle thread-local forces outside parallel region
+// int current_threads = omp_get_max_threads();
+// if (thread_local_forces.size() != current_threads) {
+//     thread_local_forces.resize(current_threads,
+//         aligned_vector(n_points, Eigen::Vector2d::Zero())); // Changed to aligned_vector
+//     last_thread_count = current_threads;
+// }
+
+// Using standard vectors without the aligned allocator
+static std::vector<std::vector<Eigen::Vector2d>> thread_local_forces;
+
+// Handle thread-local forces outside parallel region
+int current_threads = omp_get_max_threads();
+if (thread_local_forces.size() != current_threads) {
+    thread_local_forces.resize(current_threads,
+        std::vector<Eigen::Vector2d>(n_points, Eigen::Vector2d::Zero()));
+    last_thread_count = current_threads;
+}
+#pragma omp parallel
+{
+    int thread_id = omp_get_thread_num();
+    // Clear only this thread's forces (no synchronization needed)
+    auto& my_forces = thread_local_forces[thread_id];
+    std::fill(my_forces.begin(), my_forces.end(), Eigen::Vector2d::Zero());
+    
+    // Guided scheduling helps with load imbalance
+    #pragma omp for schedule(guided) reduction(+:total_energy)
+    for (size_t idx = 0; idx < active_elements.size(); idx++) {
+        size_t i = active_elements[idx];
+        auto& element = elements[i];
+        element.setExternalDeformation(F_external);
+        element.calculate_deformation_gradient(points);
+        Eigen::Matrix2d F = element.getDeformationGradient();
+        Eigen::Matrix2d C = element.getMetricTensor();
+        lagrange::Result result = lagrange::reduce(C);
+        C = result.C_reduced;
+        double element_energy = calculator.calculate_energy(C, energy_function, zero_energy)/normalisation;
+        total_energy += element_energy * element.getArea();
+        Eigen::Matrix2d dE_dC = calculator.calculate_derivative(C, derivative_function)/normalisation;
+        Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+        // Add forces to thread-local storage
+        element.assemble_forces(P, my_forces);
     }
+}
 
-    #pragma omp parallel
-    {               
-        int thread_id = omp_get_thread_num();
-        
-        // Clear only this thread's forces (no synchronization needed)
-        auto& my_forces = thread_local_forces[thread_id];
-        std::fill(my_forces.begin(), my_forces.end(), Eigen::Vector2d::Zero());        
-        // Dynamic scheduling helps with load imbalance
-        #pragma omp for schedule(dynamic) reduction(+:total_energy)
-        for (size_t idx = 0; idx < active_elements.size(); idx++) {
-            size_t i = active_elements[idx];
-            
-            // if (i >= elements.size()) {
-            //     std::cerr << "Error: Element index out of bounds" << std::endl;
-            //     continue;
-            // }
-            
-            auto& element = elements[i];
-            
-            element.setExternalDeformation(F_external);
-            element.calculate_deformation_gradient(points);
-            Eigen::Matrix2d F = element.getDeformationGradient();
-            
-            Eigen::Matrix2d C = element.getMetricTensor();
-            lagrange::Result result = lagrange::reduce(C);
-            C = result.C_reduced; 
-
-            double element_energy = calculator.calculate_energy(C, energy_function, zero_energy)/normalisation;
-            total_energy += element_energy * element.getArea();
-            
-            Eigen::Matrix2d dE_dC = calculator.calculate_derivative(C, derivative_function)/normalisation;
-            Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
-
-            // Add forces to thread-local storage
-            element.assemble_forces(P, my_forces);
-        }
-    }
-
-    // Parallel force combination
-    #pragma omp parallel for
-    for (size_t i = 0; i < global_forces.size(); i++) {
+// Optimized force combination using block-based approach for better cache behavior
+const int BLOCK_SIZE = 64; // Adjust based on your L1 cache size
+#pragma omp parallel for
+for (size_t b = 0; b < global_forces.size(); b += BLOCK_SIZE) {
+    const size_t end = std::min(b + BLOCK_SIZE, global_forces.size());
+    for (size_t i = b; i < end; i++) {
+        Eigen::Vector2d sum = Eigen::Vector2d::Zero();
         for (size_t t = 0; t < thread_local_forces.size(); t++) {
-            global_forces[i] += thread_local_forces[t][i];
+            sum += thread_local_forces[t][i];
         }
+        global_forces[i] = sum;
     }
+}    // #pragma omp parallel
+    // {               
+    //     int thread_id = omp_get_thread_num();
+        
+    //     // Clear only this thread's forces (no synchronization needed)
+    //     auto& my_forces = thread_local_forces[thread_id];
+    //     std::fill(my_forces.begin(), my_forces.end(), Eigen::Vector2d::Zero());        
+    //     // Dynamic scheduling helps with load imbalance
+    //     #pragma omp for schedule(dynamic) reduction(+:total_energy)
+    //     for (size_t idx = 0; idx < active_elements.size(); idx++) {
+    //         size_t i = active_elements[idx];
+            
+    //         // if (i >= elements.size()) {
+    //         //     std::cerr << "Error: Element index out of bounds" << std::endl;
+    //         //     continue;
+    //         // }
+            
+    //         auto& element = elements[i];
+            
+    //         element.setExternalDeformation(F_external);
+    //         element.calculate_deformation_gradient(points);
+    //         Eigen::Matrix2d F = element.getDeformationGradient();
+            
+    //         Eigen::Matrix2d C = element.getMetricTensor();
+    //         lagrange::Result result = lagrange::reduce(C);
+    //         C = result.C_reduced; 
+
+    //         double element_energy = calculator.calculate_energy(C, energy_function, zero_energy)/normalisation;
+    //         total_energy += element_energy * element.getArea();
+            
+    //         Eigen::Matrix2d dE_dC = calculator.calculate_derivative(C, derivative_function)/normalisation;
+    //         Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+
+    //         // Add forces to thread-local storage
+    //         element.assemble_forces(P, my_forces);
+    //     }
+    // }
+
+    // // Parallel force combination
+    // #pragma omp parallel for
+    // for (size_t i = 0; i < global_forces.size(); i++) {
+    //     for (size_t t = 0; t < thread_local_forces.size(); t++) {
+    //         global_forces[i] += thread_local_forces[t][i];
+    //     }
+    // }   
     
     // Set function value to total energy
     func = total_energy;
