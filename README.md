@@ -11,6 +11,7 @@ This project offers comprehensive tools for 2D lattice generation and manipulati
 - Remeshing based on triangle angles
 - Minimize strain-energy functionals using a highly efficient L-BFGS algorithm
 - Includes a coarse-graining procedure to calculate strain-energy functionals from pair interatomic potentials
+- Nano indentation  can now be applied and crystal orientation can be chosen 
 
 ## Dependencies
 
@@ -53,3 +54,7 @@ Phys. Rev. Lett. 123, 205501, 2019)
 - Stress-field on the mesh  after 100% of deformation
 
 <img width="612" alt="Screenshot 2025-03-25 at 00 00 41" src="https://github.com/user-attachments/assets/54654d83-4e9f-492c-bc60-df7bc3c5cb7d" />
+
+- Nano-indentation of a Lennard-Jones crystal
+
+<img width="779" alt="Screenshot 2025-04-14 at 01 13 26" src="https://github.com/user-attachments/assets/7ca8c635-8c63-451d-8176-92c2ed6694d9" />
