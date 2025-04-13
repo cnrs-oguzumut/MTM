@@ -55,10 +55,11 @@ if (check_angles && !elements.empty() && !points.empty()) {
      const ElementTriangle2D* element_to_use = &element;
 
     // this is a security to avoid meshing due the Boundary triangles
-    if(temp_element.getBoundaryNodeNumber() >0) {
-        continue; // Skip boundary touching elements 
-        std::cout << "Skipping element with fewer than 3 nodes." << std::endl;
-    }
+    // if(temp_element.getBoundaryNodeNumber() < 3) {
+    //     std::cout << "Skipping element with fewer than 3 nodes." << std::endl;
+
+    //     continue; // Skip boundary touching elements 
+    // }
 
     // Apply external deformation to the temporary element if provided
     if (F_ext != nullptr) {
@@ -104,8 +105,10 @@ if (check_angles && !elements.empty() && !points.empty()) {
     v_min_angle.push_back(min_angle);
     // If the largest angle is over 110 degrees or smallest angle is under 25 degrees,
     // consider the triangle distorted
-    if (max_angle > 119 || min_angle < 31.0) {
+    //if (max_angle > 119 || min_angle < 31.0) { inden
     //if (max_angle > 100.0 || min_angle < 40.0) {
+        if (max_angle > 110.0 || min_angle < 25.0) {
+
         has_distorted_triangles = true;
         std::cout << "max_angle: " << max_angle << " min_angle: " << min_angle << std::endl;
         break;

@@ -10,7 +10,7 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     UserData* userData,
     int iteration, 
     double& total_energy,
-    double& total_stress) {
+    double& total_stress,bool reduction) {
         
     // Perform null check
     if (!userData) {
@@ -33,7 +33,9 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     const std::vector<size_t>& active_elements = userData->active_elements;
     
     // For square lattice in 2D - match the normalization from minimize_energy_with_triangles
-    double normalisation = pow(ideal_lattice_parameter, 2.0);    
+    //double normalisation = pow(ideal_lattice_parameter, 2.0); 
+    double normalisation = calculator.getUnitCellArea();
+   
     
     // Create directory if it doesn't exist
     std::filesystem::create_directory("trajectory");
@@ -77,7 +79,9 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         }
         
         auto& element = elements[elem_idx]; // Remove const to allow setting external deformation
-        
+        Eigen::Matrix2d P;
+        lagrange::Result result;
+
         // Skip if the element isn't initialized
         if (!element.isInitialized()) {
             std::cout << "DEBUG: Element " << elem_idx << " is not initialized." << std::endl;
@@ -92,8 +96,13 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         const Eigen::Matrix2d& F = element.getDeformationGradient();
         Eigen::Matrix2d C = element.getMetricTensor();
         
-        // Apply Lagrange reduction like in minimize_energy_with_triangles
-        lagrange::Result result = lagrange::reduce(C);
+        if(reduction==true) {
+            // Apply Lagrange reduction
+            result = lagrange::reduce(C);
+            C = result.C_reduced;
+        }
+        
+
         //C = result.C_reduced;
         
         // Use reference area instead of current area
@@ -108,7 +117,12 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         
         // Calculate first Piola-Kirchhoff stress tensor with Lagrange reduction
         Eigen::Matrix2d dE_dC = calculator.calculate_derivative(C, derivative_function)/normalisation;
-        Eigen::Matrix2d P = 2.0 * F * dE_dC ;
+        if(reduction==true) {
+            P= 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+        }
+        else {
+            P = 2.0 * F * dE_dC;
+        }
 
         // Calculate Cauchy stress tensor from PK1
         // σ = (1/det(F)) * P * F^T
@@ -225,7 +239,7 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
 
 void ConfigurationSaver::calculateEnergyAndStress(UserData* userData, 
     double& total_energy, 
-    Eigen::Matrix2d& total_stress) {
+    Eigen::Matrix2d& total_stress, bool reduction) {
     // Check if userData is valid
     if (!userData) {
     std::cerr << "Error: userData is null in calculateEnergyAndStress" << std::endl;
@@ -262,6 +276,9 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
             continue;
         }
         auto& element = elements[elem_idx];
+        Eigen::Matrix2d P;
+        lagrange::Result result;
+        
 
         // Skip if the element isn't initialized
         if (!element.isInitialized()) {
@@ -275,6 +292,12 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
         // Get the deformation gradient and metric tensor
         const Eigen::Matrix2d& F = element.getDeformationGradient();
         Eigen::Matrix2d C = element.getMetricTensor();
+        if(reduction==true) {
+            // Apply Lagrange reduction
+            result = lagrange::reduce(C);
+            C = result.C_reduced;
+        }
+
 
         // Use reference area instead of current area
         double element_area = element.getReferenceArea();
@@ -286,7 +309,14 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
 
         // Calculate first Piola-Kirchhoff stress tensor
         Eigen::Matrix2d dE_dC = calculator.calculate_derivative(C, derivative_function)/normalisation;
-        Eigen::Matrix2d P = 2.0 * F * dE_dC;
+        
+        if(reduction==true) {
+            P= 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+        }
+        else {
+            P = 2.0 * F * dE_dC;
+        }
+
 
         // Calculate Cauchy stress tensor
         double detF = F.determinant();
@@ -336,7 +366,7 @@ void ConfigurationSaver::writeToVTK(
     const std::vector<Point2D>& points,
     const std::vector<ElementTriangle2D>& elements,
     const UserData* userData,
-    int iteration)
+    int iteration, bool reduction)
 {
     // Create directory if it doesn't exist
     std::filesystem::create_directory("vtk_output");
@@ -427,10 +457,16 @@ for (const auto& entry : node_map) {
         // Calculate element quantities
         const Eigen::Matrix2d& F = element.getDeformationGradient();
         Eigen::Matrix2d C = element.getMetricTensor();
+        lagrange::Result result;
+        Eigen::Matrix2d P;
+    
         
-        // Apply Lagrange reduction
-        //lagrange::Result result = lagrange::reduce(C);
-        //C = result.C_reduced;
+        // Apply Lagrange reduction 
+        if(reduction==true) {
+            result = lagrange::reduce(C);
+            C = result.C_reduced;
+        }
+        C = result.C_reduced;
         
         
         // Calculate element energy
@@ -445,7 +481,12 @@ for (const auto& entry : node_map) {
             C, userData->derivative_function
         ) / pow(userData->ideal_lattice_parameter, 2.0);
  //       Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
-        Eigen::Matrix2d P = 2.0 * F  * dE_dC ;
+        if(reduction==true) {
+            P= 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+        }
+        else {
+            P = 2.0 * F * dE_dC;
+        }
 
         double detF = F.determinant();
         Eigen::Matrix2d cauchy_stress = (1.0 / detF) * P * F.transpose();

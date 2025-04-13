@@ -935,12 +935,24 @@ void example_2_conti_zanzotto_triangular() {
     }
 }
 
+Eigen::Matrix<double, 3, 2> calculateShapeDerivatives(
+    const Eigen::Vector2d& p1, 
+    const Eigen::Vector2d& p2, 
+    const Eigen::Vector2d& p3);
+    
 
 void example_1_conti_zanzotto() {
     // Parameters for lattice
-    int nx = 200;
-    int ny = 200;
+    int nx = 100;
+    int ny = 100;
     std::string lattice_type = "square"; // "square" or "triangular"
+    double h=1.0;
+    Eigen::Vector2d p1(0, 0);
+    Eigen::Vector2d p2(h, 0);
+    Eigen::Vector2d p3(0, h);
+    Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1,p2,p3);
+    std::cout<<dndx<<std::endl;
+
     
     // Energy functions
     std::function<double(double)> potential_func = square_energy;
@@ -1015,7 +1027,7 @@ void example_1_conti_zanzotto() {
     );
     // Create ALGLIB array for free DOFs (displacements)
     alglib::real_1d_array free_dofs;
-    int n_free_nodes = square_points.size();
+    int n_free_nodes = interior_mapping.size();
     free_dofs.setlength(2 * n_free_nodes);  // [u0, u1, ..., v0, v1, ...]
     map_points_to_solver_array(free_dofs, square_points, interior_mapping, n_free_nodes);
 
@@ -1023,9 +1035,20 @@ void example_1_conti_zanzotto() {
     // Initialize elements with reference configuration
     for (auto& element : elements) {
         element.set_reference_mesh(square_points);
-        element.set_dof_mapping(full_mapping);     
+        element.set_dof_mapping(full_mapping);  
+        element.set_shape_derivatives(dndx);
+        element.setBoundaryNodeNumber(3);
+        element.calculate_deformation_gradient(free_dofs);
+        // Also update area calculations
+        element.calculateReferenceArea(square_points);
+        element.calculateCurrentArea(free_dofs);
+
         // Calculate shape derivatives with debug prints
-        double jac_det = element.calculate_shape_derivatives(free_dofs);        
+        //double jac_det = element.calculate_shape_derivatives(free_dofs); 
+        
+        
+
+       
     }
 
     // Sort elements directly by their first node index
@@ -1040,13 +1063,15 @@ void example_1_conti_zanzotto() {
     
     // Setup energy calculation
     Strain_Energy_LatticeCalculator calculator(1.0);
+
     Eigen::Matrix2d C_I = Eigen::Matrix2d::Identity();
     double zero = calculator.calculate_energy(C_I, potential_func, 0);
     std::cout << "debugging simple shear test" << std::endl;
     std::cout << "zero energy value: " << zero << std::endl;
+    debug_deformation_tests();
 
     // Set up alpha values for deformation steps
-    double alpha_min = 0.13;
+    double alpha_min = 0.14;
     double alpha_max = 1.0;
     double step_size = 0.00001;
     int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
@@ -1084,7 +1109,7 @@ void example_1_conti_zanzotto() {
             std::random_device rd;
             std::mt19937 gen(rd());
             double noise_level = 0.05;
-            std::normal_distribution<double> noise_dist(0.0, noise_level);
+            std::normal_distribution<double> noise_dist(0.0, 0.05);
             
             for (size_t i = 0; i < square_points.size(); i++) {
                 // Apply deformation: x_deformed = F·x
@@ -1112,9 +1137,9 @@ void example_1_conti_zanzotto() {
             full_mapping, active_elements, plasticity
         );
         
+        
 
-
-
+    
         // Prepare for optimization
         alglib::real_1d_array x;
         int n_vars = interior_mapping.size();
@@ -1126,10 +1151,8 @@ void example_1_conti_zanzotto() {
         double pre_stress = 0.0;
         Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
             
-        ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy, stress_tensor);
+        ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy, stress_tensor,1);
         pre_stress = stress_tensor(0,1);
-
-
         
         std::cout << "Pre-optimization - Energy: " << pre_energy << ", Stress: " << pre_stress << std::endl;
     
@@ -1177,7 +1200,7 @@ void example_1_conti_zanzotto() {
         double post_stress = 0.0;
         stress_tensor.setZero();
             
-        ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor);
+        ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor,1);
         post_stress = stress_tensor(0,1);
 
         std::cout << "Post-optimization - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
@@ -1197,10 +1220,17 @@ void example_1_conti_zanzotto() {
         // Determine if remeshing is needed
         bool shouldRemesh = result.has_distorted_triangles ;
         std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
-        //shouldRemesh=false;
+        int mesh_iteration = 0;
         // Remeshing if needed
-        if (shouldRemesh) {
-            std::cout << "REMESHING STARTS" << std::endl;
+        while (shouldRemesh) {
+            std::cout << "REMESHING STARTS iteration: " << mesh_iteration++<<std::endl;
+            
+            alglib::real_1d_array original_x_remesh;
+            original_x_remesh.setlength(x.length());
+            for (int j = 0; j < x.length(); j++) {
+                original_x_remesh[j] = x[j];
+            }
+    
             post_energy = 0.0;
             post_stress = 0.0;
             
@@ -1227,7 +1257,15 @@ void example_1_conti_zanzotto() {
             for (auto& element : elements) {
                 element.set_reference_mesh(square_points);
                 element.set_dof_mapping(full_mapping);  // or interior_mapping depending on needs
-                double jac = element.calculate_shape_derivatives(x);  // current positions
+                //double jac_det = element.calculate_shape_derivatives(free_dofs); 
+                element.set_shape_derivatives(dndx);
+                element.setBoundaryNodeNumber(3);
+
+                element.calculate_deformation_gradient(x);
+                // Also update area calculations
+                element.calculateReferenceArea(square_points);
+                element.calculateCurrentArea(x);
+    
             }
 
                 // Sort elements directly by their first node index
@@ -1252,19 +1290,49 @@ void example_1_conti_zanzotto() {
                 full_mapping, active_elements, plasticity
             );
             
-            optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
+            LBFGSOptimizer optimizer_remesh(10, 0, pow(10,-13), 0, 0);
+            optimizer_remesh.optimize(x, minimize_energy_with_triangles, &newUserData);
             map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
             //recalculate 
             std::vector<int> m3_after_remeshed = analyzeElementReduction(elements, square_points, &userData);
-            hasChanges = compareM3Activation(m3_before_remeshed, m3_after_remeshed);
+            hasChanges += compareM3Activation(m3_before_remeshed, m3_after_remeshed);
     
+       
+            ///////////////////////////
+            ChangeMeasures result = computeChangeMeasures(
+                x, original_x, lattice_constant, elements, &userData, square_points, true, &F_ext
+            );        
+    
+            std::cout << "max_abs_change: " << result.max_abs_change << std::endl;
+            if (result.has_distorted_triangles) {
+                std::cout << "Distorted triangles detected!" << std::endl;
+            }
+            
+    
+            // Determine if remeshing is needed
+            shouldRemesh = result.has_distorted_triangles ;
+            std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
+
+
+            /////////
+    
+
+
             
             // Calculate post-remeshing energy and stress
-            stress_tensor.setZero();
+            if(!shouldRemesh){
+                // ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, post_stress);
+                post_energy = 0.0;
+                post_stress = 0.0;
+                stress_tensor.setZero();
+                    
+                ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor,1);
+                post_stress = stress_tensor(0,1);
+                std::cout << "Post-remeshing - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
+
+        
             
-            ConfigurationSaver::calculateEnergyAndStress(&newUserData, post_energy, stress_tensor);
-            post_stress = stress_tensor(0,1);
-            std::cout << "Post-remeshing - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
+            }
         }   
         
         // Update plasticity flag for logging
@@ -1276,12 +1344,19 @@ void example_1_conti_zanzotto() {
         );
      
         // Save configuration periodically
-        if(i % 10 == 0) {
+        if(hasChanges > 10 || i % 1000 == 0) {
+            UserData finalUserData(
+                square_points, elements, calculator, potential_func, potential_func_der,
+                zero, optimal_lattice_parameter, F_ext, interior_mapping, 
+                full_mapping, active_elements, plasticity
+            );
+
             post_energy = 0;
             post_stress = 0;
-            ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&userData, i, post_energy, post_stress);
-            ConfigurationSaver::writeToVTK(userData.points, userData.elements, &userData, i);
+            ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&finalUserData, i, post_energy, post_stress,1);
+            ConfigurationSaver::writeToVTK(finalUserData.points, finalUserData.elements, &finalUserData, i,1);
           }
+
 
         std::cout << "Iteration " << i << " completed successfully" << std::endl;
     }
@@ -2930,6 +3005,9 @@ int main() {
     // TensorExample example;
     // example.run();
     // exit(0);
+    example_1_conti_zanzotto();
+    exit(0);
+
     indentation();
     return 0;
 }   

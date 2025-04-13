@@ -30,7 +30,7 @@ public:
     static void calculateEnergyAndStress(
         UserData* userData, 
         double& total_energy, 
-        Eigen::Matrix2d& total_stress);
+        Eigen::Matrix2d& total_stress, bool reduction=false);
     
     /**
      * Save configuration with nodal stress and energy values to XYZ file for OVITO
@@ -44,7 +44,7 @@ public:
         UserData* userData,
         int iteration,
         double& total_energy,
-        double& total_stress);
+        double& total_stress, bool reduction=false);
     
     /*
      * Log energy and stress values to CSV file for later analysis
@@ -69,7 +69,7 @@ public:
         const std::vector<Point2D>& points,
         const std::vector<ElementTriangle2D>& elements,
         const UserData* userData,
-        int iteration);
+        int iteration,bool reduction=false);
         
     
 private:
