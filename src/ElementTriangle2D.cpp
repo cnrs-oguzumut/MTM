@@ -8,6 +8,7 @@ ElementTriangle2D::ElementTriangle2D() :
     reference_area(0.0),
     use_external_deformation(false),
     shape_derivatives_calculated(false),
+    use_manual_shape_derivatives(false),  // NEW: Initialize the flag
     reference_points_ptr(nullptr),
     dof_mapping(nullptr) {
     
@@ -60,6 +61,14 @@ void ElementTriangle2D::setTranslation(int position, const Eigen::Vector2d& tran
         trans[position] = translation;
     }
 }
+void  ElementTriangle2D::setBoundaryNodeNumber(int number){
+
+    boundary_node_number = number;
+
+}
+int  ElementTriangle2D::getBoundaryNodeNumber(){
+    return boundary_node_number;
+}
 
 int ElementTriangle2D::getNodeIndex(int position) const {
     return (position >= 0 && position < 3) ? nn[position] : -1;
@@ -105,8 +114,76 @@ bool ElementTriangle2D::isInitialized() const {
     return shape_derivatives_calculated; 
 }
 
+// NEW: Methods for manual shape derivatives
+void ElementTriangle2D::set_shape_derivatives(const Eigen::Matrix<double, 3, 2>& dNdX_manual) {
+    dNdX = dNdX_manual;
+    use_manual_shape_derivatives = true;
+    shape_derivatives_calculated = true;
+    
+    // We need to calculate area and jacobian_det based on the current configuration
+    // This requires a call to calculate_shape_derivatives with the current positions
+    // For simplicity, we'll initialize these values here, but they should be updated
+    // by calling calculate_shape_derivatives or calculate_deformation_gradient
+    area = 1.0;  // Placeholder
+    jacobian_det = 1.0;  // Placeholder
+}
+
+bool ElementTriangle2D::has_manual_shape_derivatives() const {
+    return use_manual_shape_derivatives;
+}
+
+void ElementTriangle2D::reset_manual_shape_derivatives() {
+    use_manual_shape_derivatives = false;
+    shape_derivatives_calculated = false;
+    dNdX.setZero();
+}
+
 // Shape derivatives calculation
 double ElementTriangle2D::calculate_shape_derivatives(const alglib::real_1d_array& free_dofs) {
+    // If using manual shape derivatives, just calculate the Jacobian and area
+    if (use_manual_shape_derivatives) {
+        // We still need to calculate the Jacobian determinant and area
+        // based on the manual shape derivatives and current positions
+        Eigen::Matrix<double, 2, 3> X_e;
+        const int n_free = free_dofs.length() / 2;
+        
+        for (int i = 0; i < 3; i++) {
+            // Get effective translation
+            Eigen::Vector2d effective_trans = getEffectiveTranslation(i);
+            
+            // Get the node index
+            const int global_node_idx = nn[i];
+            const auto& [original_idx, solver_idx] = (*dof_mapping)[global_node_idx];
+            
+            Eigen::Vector2d coord;
+            if (solver_idx == -1) {
+                // For fixed nodes, use reference position
+                coord = (*reference_points_ptr)[original_idx].coord;
+            } else {
+                // For free nodes, use the position directly from free_dofs
+                coord = Eigen::Vector2d(free_dofs[solver_idx], free_dofs[n_free + solver_idx]);
+            }
+            
+            // Add effective translation
+            coord += effective_trans;
+            
+            // Store as columns
+            X_e.col(i) = coord;
+        }
+        
+        // Use the manual shape derivatives to compute the Jacobian
+        Eigen::Matrix2d J = X_e * dNdX;
+        jacobian_det = J.determinant();
+        area = std::abs(jacobian_det) / 2.0;
+        
+        if (reference_area <= 0.0) {
+            reference_area = area;
+        }
+        
+        return jacobian_det;
+    }
+    
+    // Original implementation when not using manual shape derivatives
     if (!dof_mapping || !reference_points_ptr) {
         std::cerr << "Error: DOF mapping or reference mesh not set." << std::endl;
         return 0.0;
@@ -136,33 +213,21 @@ double ElementTriangle2D::calculate_shape_derivatives(const alglib::real_1d_arra
         
         // Store as columns
         X_e.col(i) = coord;
-    }    // for (int i = 0; i < 3; i++) {
-    //     const int global_node_idx = nn[i];
-    //     const auto& [original_idx, solver_idx] = (*dof_mapping)[global_node_idx];
-    //     Eigen::Vector2d coord;
-        
-    //     if (solver_idx == -1) {
-    //         // For fixed nodes, use reference position
-    //         coord = (*reference_points_ptr)[original_idx].coord;
-    //     } else {
-    //         // For free nodes, directly use the position from free_dofs
-    //         coord = Eigen::Vector2d(free_dofs[solver_idx], free_dofs[n_free + solver_idx]);
-    //     }
-        
-    //     // Add effective translation
-    //     coord += getEffectiveTranslation(i);
-    //     X_e.col(i) = coord;
-    // }
+    }    
+
     Eigen::Matrix<double, 3, 2> dNdxi;
-    dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
+    //dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
+    dNdxi <<  1.45517103161025, 0.840143386817131 ,-1.45517103161025 ,0.840143386817131,
+    0, -1.68028677363426;
+
     
     Eigen::Matrix2d J = X_e * dNdxi;
     jacobian_det = J.determinant();
     area = std::abs(jacobian_det) / 2.0;
 
     if (std::abs(jacobian_det) > 1e-10) {
-        dNdX = dNdxi * J.inverse();
-        //dNdX = dNdxi ;
+        //dNdX = dNdxi * J.inverse();
+        dNdX = dNdxi; 
     } else {
         dNdX.setZero();
         std::cerr << "Warning: Near-singular Jacobian detected." << std::endl;
@@ -177,6 +242,31 @@ double ElementTriangle2D::calculate_shape_derivatives(const alglib::real_1d_arra
 }
 
 double ElementTriangle2D::calculate_shape_derivatives(const std::vector<Point2D>& reference_points) {
+    // If using manual shape derivatives, just calculate the Jacobian and area
+    if (use_manual_shape_derivatives) {
+        // We still need to calculate the Jacobian determinant and area
+        // based on the manual shape derivatives and current positions
+        Eigen::Matrix<double, 2, 3> X_e;
+        
+        for (int i = 0; i < 3; i++) {
+            Eigen::Vector2d effective_trans = getEffectiveTranslation(i);    
+            Eigen::Vector2d coord = reference_points[nn[i]].coord + effective_trans;
+            X_e.col(i) = coord;
+        }
+        
+        // Use the manual shape derivatives to compute the Jacobian
+        Eigen::Matrix2d J = X_e * dNdX;
+        jacobian_det = J.determinant();
+        area = std::abs(jacobian_det) / 2.0;
+        
+        if (reference_area <= 0.0) {
+            reference_area = area;
+        }
+        
+        return jacobian_det;
+    }
+    
+    // Original implementation when not using manual shape derivatives
     Eigen::Matrix<double, 2, 3> X_e;
     
     for (int i = 0; i < 3; i++) {
@@ -189,15 +279,18 @@ double ElementTriangle2D::calculate_shape_derivatives(const std::vector<Point2D>
     }
     
     Eigen::Matrix<double, 3, 2> dNdxi;
-    dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
+    //dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
+    dNdxi <<  1.45517103161025, 0.840143386817131 ,-1.45517103161025 ,0.840143386817131,
+    0, -1.68028677363426;
+
     
     Eigen::Matrix2d J = X_e * dNdxi;
     jacobian_det = J.determinant();
     area = std::abs(jacobian_det) / 2.0;
 
     if (std::abs(jacobian_det) > 1e-10) {
-        dNdX = dNdxi * J.inverse();
-        //dNdX = dNdxi ;
+        //dNdX = dNdxi * J.inverse();
+        dNdX = dNdxi ;
     } else {
         dNdX.setZero();
         std::cerr << "Warning: Near-singular Jacobian detected." << std::endl;
@@ -305,4 +398,66 @@ void ElementTriangle2D::assemble_forces(const Eigen::Matrix2d& P, std::vector<Ei
     for (int i = 0; i < 3; i++) {
         global_forces[nn[i]] += element_forces[i];
     }
+}
+// Implementation of the new area calculation methods
+
+double ElementTriangle2D::calculateReferenceArea(const std::vector<Point2D>& reference_points) {
+    // Get node positions without translations
+    Eigen::Vector2d p0 = reference_points[nn[0]].coord;
+    Eigen::Vector2d p1 = reference_points[nn[1]].coord;
+    Eigen::Vector2d p2 = reference_points[nn[2]].coord;
+    
+    // Calculate area using cross product
+    double area_value = 0.5 * std::abs((p1 - p0).x() * (p2 - p0).y() - (p1 - p0).y() * (p2 - p0).x());
+    
+    // Store as reference area
+    reference_area = area_value;
+    
+    return reference_area;
+}
+
+double ElementTriangle2D::calculateCurrentArea(const std::vector<Point2D>& current_points) {
+    // Get node positions with effective translations
+    Eigen::Vector2d p0 = current_points[nn[0]].coord + getEffectiveTranslation(0);
+    Eigen::Vector2d p1 = current_points[nn[1]].coord + getEffectiveTranslation(1);
+    Eigen::Vector2d p2 = current_points[nn[2]].coord + getEffectiveTranslation(2);
+    
+    // Calculate area using cross product
+    area = 0.5 * std::abs((p1 - p0).x() * (p2 - p0).y() - (p1 - p0).y() * (p2 - p0).x());
+    
+    return area;
+}
+
+double ElementTriangle2D::calculateCurrentArea(const alglib::real_1d_array& current_dofs) {
+    if (!dof_mapping || !reference_points_ptr) {
+        std::cerr << "Error: DOF mapping or reference mesh not set." << std::endl;
+        return 0.0;
+    }
+    
+    const int n_free = current_dofs.length() / 2;
+    Eigen::Vector2d positions[3];
+    
+    for (int i = 0; i < 3; i++) {
+        const int global_node_idx = nn[i];
+        const auto& [original_idx, solver_idx] = (*dof_mapping)[global_node_idx];
+        
+        if (solver_idx == -1) {
+            // For fixed nodes, use reference position
+            positions[i] = (*reference_points_ptr)[original_idx].coord;
+        } else {
+            // For free nodes, use the position directly from current_dofs
+            positions[i] = Eigen::Vector2d(current_dofs[solver_idx], current_dofs[n_free + solver_idx]);
+        }
+        
+        // Add effective translation
+        positions[i] += getEffectiveTranslation(i);
+    }
+    
+    // Calculate area using cross product
+    area = 0.5 * std::abs(
+        (positions[1] - positions[0]).x() * (positions[2] - positions[0]).y() - 
+        (positions[1] - positions[0]).y() * (positions[2] - positions[0]).x()
+    );
+    
+    return area;
 }

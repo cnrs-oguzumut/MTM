@@ -83,7 +83,8 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     const std::vector<Triangle>& duplicated_triangles,
     const std::vector<int>& original_domain_map,
     int original_domain_size,
-    double min_jacobian_threshold) {
+    double min_jacobian_threshold,
+    double max_edge_length ) {  // Default to negative value to indicate no length filtering
     
     // First, collect all triangles that meet our connection criteria
     std::vector<Triangle> connected_triangles;
@@ -149,8 +150,18 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     std::vector<Triangle> selected_triangles;
     std::set<std::array<int, 3>> unique_node_combinations;
     int rejected_by_jacobian = 0;
+    int rejected_by_edge_length = 0;  // Counter for edge length rejections
+    
+    // Check if edge length filtering is enabled
+    bool filter_by_edge_length = (max_edge_length > 0.0);
+    if (filter_by_edge_length) {
+        std::cout << "Edge length filtering enabled with max length: " << max_edge_length << std::endl;
+    }
     
     for (const auto& tri : connected_triangles) {
+
+
+
         // Create normalized representation for uniqueness checking
         std::array<int, 3> normalized_nodes;
         for (int j = 0; j < 3; j++) {
@@ -161,10 +172,23 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
         
         // Add only if this is a new combination
         if (unique_node_combinations.find(normalized_nodes) == unique_node_combinations.end()) {
-            // Calculate Jacobian
+            // Get vertices
             const Point2D& v0 = all_points[tri.vertex_indices[0]];
             const Point2D& v1 = all_points[tri.vertex_indices[1]];
             const Point2D& v2 = all_points[tri.vertex_indices[2]];
+            
+            // Check edge lengths only if filtering is enabled
+            if (filter_by_edge_length) {
+                double edge1 = (v1.coord - v0.coord).norm();
+                double edge2 = (v2.coord - v1.coord).norm();
+                double edge3 = (v0.coord - v2.coord).norm();
+                
+                // Check if any edge exceeds the maximum length
+                if ((edge1 > max_edge_length || edge2 > max_edge_length || edge3 > max_edge_length) ) {
+                    rejected_by_edge_length++;
+                    continue;
+                }
+            }
             
             // Calculate Jacobian for triangle
             Eigen::Vector2d e1 = Eigen::Vector2d(v1.coord.x() - v0.coord.x(), v1.coord.y() - v0.coord.y());
@@ -189,9 +213,12 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     std::cout << "Triangles after uniqueness filtering: " << selected_triangles.size() << std::endl;
     std::cout << "Rejected triangles with small/negative Jacobians: " << rejected_by_jacobian << std::endl;
     
+    if (filter_by_edge_length) {
+        std::cout << "Rejected triangles with edges exceeding max length: " << rejected_by_edge_length << std::endl;
+    }
+    
     return selected_triangles;
 }
-
 std::vector<ElementTriangle2D> MeshGenerator::createElementTri2D(
     const std::vector<Triangle>& unique_triangles,
     const std::vector<Point2D>& points,

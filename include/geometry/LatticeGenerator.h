@@ -21,6 +21,10 @@ public:
         const DomainDimensions& domain_dims,
         const std::array<double, 2>& offsets,
         const Eigen::Matrix2d& F_ext = Eigen::Matrix2d::Identity());
+    
+        static std::vector<Point2D> generate_2d_lattice_rotated(
+        int nx, int ny, double lattice_constant, std::string lattice_type, double rotation_angle_degrees) ;
+
 };
 
 #endif // LATTICE_GENERATOR_H

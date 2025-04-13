@@ -21,7 +21,8 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     // Extract needed values from userData with non-const references
     std::vector<Point2D>& points = userData->points;
     std::vector<ElementTriangle2D>& elements = userData->elements;
-    Strain_Energy_LatticeCalculator& calculator = userData->calculator;
+    //TriangularLatticeCalculator& calculator = userData->calculator;
+    BaseLatticeCalculator& calculator = userData->calculator;
     std::function<double(double)>& energy_function = userData->energy_function;
     std::function<double(double)>& derivative_function = userData->derivative_function;
     double zero_energy = userData->zero_energy;
@@ -93,10 +94,12 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         
         // Apply Lagrange reduction like in minimize_energy_with_triangles
         lagrange::Result result = lagrange::reduce(C);
-        C = result.C_reduced;
+        //C = result.C_reduced;
         
         // Use reference area instead of current area
         double element_area = element.getReferenceArea();
+
+        //std::cout<<elements[elem_idx].getArea()<<" "<<elements[elem_idx].getReferenceArea()<<std::endl;
         
         // Calculate element energy
         double element_energy = calculator.calculate_energy(C, energy_function, zero_energy)/normalisation;
@@ -105,8 +108,8 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         
         // Calculate first Piola-Kirchhoff stress tensor with Lagrange reduction
         Eigen::Matrix2d dE_dC = calculator.calculate_derivative(C, derivative_function)/normalisation;
-        Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
-        
+        Eigen::Matrix2d P = 2.0 * F * dE_dC ;
+
         // Calculate Cauchy stress tensor from PK1
         // σ = (1/det(F)) * P * F^T
         double detF = F.determinant();
@@ -117,9 +120,11 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         dF_d_alpha(0, 1) = 1.0;
         double stress_value = P.cwiseProduct(dF_d_alpha).sum();
         
-        // Accumulate total stress weighted by element area
-        recalculated_total_stress += stress_value * element_area;
-        
+        // Accumulate total cauchy stress weighted by element area
+        //recalculated_total_stress += stress_value * element.getArea();
+        double current_area = element.calculateCurrentArea(points);
+        recalculated_total_stress += cauchy_stress(0,1) * current_area;
+
         // Distribute to all nodes of this element
         for (int node_idx = 0; node_idx < 3; node_idx++) {
             int global_idx = element.getNodeIndex(node_idx);
@@ -144,12 +149,12 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     double total_area = 0.0;
     for (size_t elem_idx : active_elements) {
         if (elem_idx < elements.size()) {
-            total_area += elements[elem_idx].getReferenceArea();
+            total_area += elements[elem_idx].calculateCurrentArea(points);
         }
     }
     if (total_area > 0.0) {
         double avg_stress = recalculated_total_stress / total_area;
-        std::cout << "DEBUG: Average stress (total/area): " << avg_stress << std::endl;
+        //std::cout << "DEBUG: Average stress (total/area): " << avg_stress << std::endl;
     }
     
     // DEBUG: Print number of elements that were actually processed
@@ -218,93 +223,86 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     std::cout << "Energy range: [" << min_energy << ", " << max_energy << "]" << std::endl;
 }
 
-void ConfigurationSaver::calculateEnergyAndStress(UserData* userData, double& total_energy, double& total_stress) {
+void ConfigurationSaver::calculateEnergyAndStress(UserData* userData, 
+    double& total_energy, 
+    Eigen::Matrix2d& total_stress) {
     // Check if userData is valid
     if (!userData) {
-        std::cerr << "Error: userData is null in calculateEnergyAndStress" << std::endl;
-        total_energy = 0.0;
-        total_stress = 0.0;
-        return;
+    std::cerr << "Error: userData is null in calculateEnergyAndStress" << std::endl;
+    total_energy = 0.0;
+    total_stress.setZero();
+    return;
     }
-    
+
     // Extract needed values from userData
     std::vector<Point2D>& points = userData->points;
     std::vector<ElementTriangle2D>& elements = userData->elements;
-    Strain_Energy_LatticeCalculator& calculator = userData->calculator;
+    //TriangularLatticeCalculator& calculator = userData->calculator;
+    BaseLatticeCalculator& calculator = userData->calculator;
     std::function<double(double)>& energy_function = userData->energy_function;
     std::function<double(double)>& derivative_function = userData->derivative_function;
     double zero_energy = userData->zero_energy;
     double ideal_lattice_parameter = userData->ideal_lattice_parameter;
     const Eigen::Matrix2d& F_ext = userData->F_external;
     const std::vector<size_t>& active_elements = userData->active_elements;
-    
+
     // For square lattice in 2D - match the normalization from minimize_energy_with_triangles
-    double normalisation = pow(ideal_lattice_parameter, 2.0);
-    
+    double normalisation = calculator.getUnitCellArea();
+    //normalisation = sqrt(3.)/2.*pow(ideal_lattice_parameter, 2.0);
+
     // Initialize totals
     total_energy = 0.0;
-    total_stress = 0.0;
-    
+    total_stress.setZero();
+    double total_area = 0.0;
+
     // Loop through active elements to calculate energy and stress
     for (size_t elem_idx : active_elements) {
         if (elem_idx >= elements.size()) {
             std::cerr << "Warning: Element index " << elem_idx << " out of range." << std::endl;
             continue;
         }
-        
         auto& element = elements[elem_idx];
-        
+
         // Skip if the element isn't initialized
         if (!element.isInitialized()) {
             continue;
         }
-        
+
         // Set external deformation and recalculate deformation gradient
         element.setExternalDeformation(F_ext);
         element.calculate_deformation_gradient(points);
-        
+
         // Get the deformation gradient and metric tensor
         const Eigen::Matrix2d& F = element.getDeformationGradient();
         Eigen::Matrix2d C = element.getMetricTensor();
-        
-        // Apply Lagrange reduction like in minimize_energy_with_triangles
-        lagrange::Result result = lagrange::reduce(C);
-        C = result.C_reduced;
-        
+
         // Use reference area instead of current area
         double element_area = element.getReferenceArea();
-        
+
         // Calculate element energy
         double element_energy = calculator.calculate_energy(C, energy_function, zero_energy)/normalisation;
-        element_energy *= element_area;  // Use reference area
+        element_energy *= element_area; // Use reference area
         total_energy += element_energy;
-        
-        // Calculate first Piola-Kirchhoff stress tensor with Lagrange reduction
+
+        // Calculate first Piola-Kirchhoff stress tensor
         Eigen::Matrix2d dE_dC = calculator.calculate_derivative(C, derivative_function)/normalisation;
-        Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
-        
+        Eigen::Matrix2d P = 2.0 * F * dE_dC;
+
         // Calculate Cauchy stress tensor
         double detF = F.determinant();
-        Eigen::Matrix2d cauchy_stress = (1.0 / detF) * P * F.transpose();
-        
-        // Use the (1,2) component of Cauchy stress tensor (xy component)
-        double stress_value = cauchy_stress(0, 1);  // Using 0-based indexing for xy component
-        
+        Eigen::Matrix2d cauchy_stress = (1.0 / detF) * F * P.transpose();
+
         // Accumulate total stress weighted by element area
-        total_stress += stress_value * element_area;
-    }
-    
-    // Optional: Normalize stress by total area if desired
-    double total_area = 0.0;
-    for (size_t elem_idx : active_elements) {
-        if (elem_idx < elements.size()) {
-            total_area += elements[elem_idx].getReferenceArea();
+        double current_area = element.calculateCurrentArea(points);
+        total_stress += cauchy_stress*current_area;
+        total_area += current_area;
+        }
+
+        // Normalize stress by total area
+        if (total_area > 0.0) {
+            total_stress /= total_area; // Normalize to get average stress
         }
     }
-    if (total_area > 0.0) {
-        total_stress /= total_area;  // Normalize to get average stress
-    }
-}
 
 void ConfigurationSaver::logEnergyAndStress(
     int iteration, 
@@ -431,8 +429,9 @@ for (const auto& entry : node_map) {
         Eigen::Matrix2d C = element.getMetricTensor();
         
         // Apply Lagrange reduction
-        lagrange::Result result = lagrange::reduce(C);
-        C = result.C_reduced;
+        //lagrange::Result result = lagrange::reduce(C);
+        //C = result.C_reduced;
+        
         
         // Calculate element energy
         double element_area = element.getReferenceArea();
@@ -445,7 +444,9 @@ for (const auto& entry : node_map) {
         Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
             C, userData->derivative_function
         ) / pow(userData->ideal_lattice_parameter, 2.0);
-        Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+ //       Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+        Eigen::Matrix2d P = 2.0 * F  * dE_dC ;
+
         double detF = F.determinant();
         Eigen::Matrix2d cauchy_stress = (1.0 / detF) * P * F.transpose();
         

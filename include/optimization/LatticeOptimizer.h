@@ -25,7 +25,7 @@
 struct UserData {
     std::vector<Point2D>& points;
     std::vector<ElementTriangle2D>& elements;
-    Strain_Energy_LatticeCalculator& calculator;
+    BaseLatticeCalculator& calculator;
     std::function<double(double)>& energy_function;
     std::function<double(double)>& derivative_function;
     double zero_energy;
@@ -33,12 +33,12 @@ struct UserData {
     const Eigen::Matrix2d& F_external;
     const std::vector<std::pair<int, int>>& interior_mapping;
     const std::vector<std::pair<int, int>>& full_mapping;
-    const std::vector<size_t>& active_elements;
+    std::vector<size_t>& active_elements;
     bool third_condition_flag;  // Flag for third condition in Lagrange reduction
     
     UserData(std::vector<Point2D>& pts,
              std::vector<ElementTriangle2D>& elems,
-             Strain_Energy_LatticeCalculator& calc,
+             BaseLatticeCalculator&  calc,
              std::function<double(double)>& energy_func,
              std::function<double(double)>& deriv_func,
              double zero_e,
@@ -46,7 +46,7 @@ struct UserData {
              const Eigen::Matrix2d& F_ext,
              const std::vector<std::pair<int, int>>& int_map,
              const std::vector<std::pair<int, int>>& full_map,
-             const std::vector<size_t>& active_elems,
+            std::vector<size_t>& active_elems,
              bool third_cond_flag = false)
         : points(pts), 
           elements(elems), 
@@ -68,7 +68,20 @@ create_dof_mapping_original(
     const std::vector<Point2D>& points,
     double boundary_tolerance, 
     int pbc);
+    
+std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>>
+create_dof_mapping_with_radius(
+    const std::vector<Point2D>& points,
+    double radius, 
+    int pbc);
 
+std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>> 
+create_dof_mapping_with_boundaries(
+    const std::vector<Point2D>& points,
+    std::vector<ElementTriangle2D>& element_triangles,
+    const std::vector<int>& fixed_atoms_from_indenter,
+    const std::vector<int>& boundary_fixed_nodes  // New parameter
+);        
 // Helper functions
 void map_solver_array_to_points(
     const alglib::real_1d_array &x, 
@@ -149,13 +162,11 @@ void map_points_to_solver_array(
         const std::vector<Point2D>& points, 
         int iteration);
 
-    // Function to initialize and get active elements
-    std::vector<size_t>  initialize_active_elements(
+    std::vector<size_t> initialize_active_elements(
         const std::vector<ElementTriangle2D>& elements,
         const std::vector<std::pair<int, int>>& full_mapping,
-        int num_points);
-
-    
+        size_t num_points  // Changed from int to size_t
+    );    
     // Main optimization function
     void minimize_energy_with_triangles(
         const alglib::real_1d_array &x, 
@@ -163,13 +174,27 @@ void map_points_to_solver_array(
         alglib::real_1d_array &grad, 
         void *ptr);
 
+            // Main optimization function
+    void minimize_energy_with_triangles_noreduction(
+        const alglib::real_1d_array &x, 
+        double &func, 
+        alglib::real_1d_array &grad, 
+        void *ptr);
+
+
     // Add this declaration to LatticeOptimizer.h
     void deform_boundary_nodes(
         std::vector<Point2D>& points,
         const std::vector<std::pair<int, int>>& dof_mapping,
         const Eigen::Matrix2d& F_ext);
 
- double find_optimal_lattice_parameter(const std::function<double(double)>& potential, std::string& lattice_type);
+    void deform_boundary_nodes_ref(
+        std::vector<Point2D>& points,
+        const std::vector<Point2D>& points_ref,
+        const std::vector<std::pair<int, int>>& dof_mapping,
+        const Eigen::Matrix2d& F_ext);
+        
+    double find_optimal_lattice_parameter(const std::function<double(double)>& potential, std::string& lattice_type);
 
 
 #endif // LATTICE_OPTIMIZER_H

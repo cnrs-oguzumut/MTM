@@ -30,7 +30,7 @@ public:
     static void calculateEnergyAndStress(
         UserData* userData, 
         double& total_energy, 
-        double& total_stress);
+        Eigen::Matrix2d& total_stress);
     
     /**
      * Save configuration with nodal stress and energy values to XYZ file for OVITO

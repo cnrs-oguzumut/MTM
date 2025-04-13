@@ -45,6 +45,7 @@ ChangeMeasures computeChangeMeasures(
     const alglib::real_1d_array& reference_points,
     double lattice_constant = 1.0,
     const std::vector<ElementTriangle2D>& elements = {},  // Keep as const
+    const UserData* userData= {},
     const std::vector<Point2D>& points = {},
     bool check_angles = false,
     const Eigen::Matrix2d* F_ext = nullptr);

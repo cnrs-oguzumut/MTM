@@ -5,7 +5,7 @@ TriangularLatticeCalculator::TriangularLatticeCalculator(double scale) :
     scal(scale),
     burgers(scale),
     nb_atoms(10),
-    normalisation(std::pow(burgers, 2.0) * std::sqrt(3.0) / 4.0),
+    normalisation(std::pow(burgers, 2.0) * std::sqrt(3.0) / 2.0),
     triangular_basis({{
         {0.0, 0.0}
     }}) {}

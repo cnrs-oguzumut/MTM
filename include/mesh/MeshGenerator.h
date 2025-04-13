@@ -29,7 +29,8 @@ public:
         const std::vector<Triangle>& duplicated_triangles,
         const std::vector<int>& original_domain_map,
         int original_domain_size,
-        double min_jacobian_threshold = 1e-6);
+        double min_jacobian_threshold = 1e-6,
+        double max_edge_length = -1.0); // Default to negative value to indicate no length filtering
     
     // Create ElementTriangle2D objects from triangles
     static std::vector<ElementTriangle2D> createElementTri2D(

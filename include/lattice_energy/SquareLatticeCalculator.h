@@ -1,23 +1,25 @@
 #ifndef SQUARE_LATTICE_CALCULATOR_H
 #define SQUARE_LATTICE_CALCULATOR_H
 
+#include "BaseLatticeCalculator.h"
 #include <Eigen/Dense>
 #include <functional>
 #include <vector>
 
-class SquareLatticeCalculator {
+class SquareLatticeCalculator : public BaseLatticeCalculator {
 public:
     SquareLatticeCalculator(double scale);
     
     double calculate_energy(const Eigen::Matrix2d& C,
                            const std::function<double(double)>& pot,
-                           double zero);
+                           double zero) override;
                            
     Eigen::Matrix2d calculate_derivative(const Eigen::Matrix2d& C,
-                                        const std::function<double(double)>& dpot);
-                                        
-    double getNearestNeighborDistance() const;
-    double getUnitCellArea() const;
+                                       const std::function<double(double)>& dpot) override;
+                                       
+    double getNearestNeighborDistance() const override;
+    
+    double getUnitCellArea() const override;
     
 private:
     const double rcut;

@@ -13,7 +13,7 @@ namespace energy_functions {
 // Energy function that calculates strain energy from metric tensor C
 inline auto phi_func = [](const Eigen::Matrix2d& C) -> double {
     double burgers = 1.0;
-    double beta = -0.25;
+    double beta = 4.;
     double K = 1.0;
     
     // Extract components from metric tensor
@@ -34,7 +34,7 @@ inline auto phi_func = [](const Eigen::Matrix2d& C) -> double {
 // Derivative function that calculates derivative of strain energy with respect to metric tensor C
 inline auto dphi_func = [](const Eigen::Matrix2d& C) -> Eigen::Matrix2d {
     double burgers = 1.0;
-    double beta = -0.25;
+    double beta = 4.;
     double K = 1.0;
     
     // Extract components from metric tensor
