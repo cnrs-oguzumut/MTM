@@ -941,10 +941,118 @@ Eigen::Matrix<double, 3, 2> calculateShapeDerivatives(
     const Eigen::Vector2d& p3);
     
 
+    std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
+        alglib::real_1d_array& x,
+        const UserData* userData,
+        const std::vector<int>& contact_atoms,
+        const std::vector<int>& boundary_fixed_nodes,
+        const Eigen::Matrix2d& F_ext,
+        const Eigen::Matrix<double, 3, 2>& dndx,
+        const std::array<double, 2>& offsets,
+        const std::vector<int>& original_domain_map,
+        const const std::vector<std::tuple<double, double>>& translation_map,
+        const Point2D& domain_dims_point,
+        int& has_changes,
+        int max_iterations = 100,
+        double reference_area=0.5
+         
+    ) {
+        bool should_remesh = true;
+        int mesh_iteration = 0;
+        double final_energy = 0.0;
+        double final_stress = 0.0;
+        Eigen::Matrix2d stress_tensor;
+        // const int n_vars = x.length();
+        
+        
+        std::vector<Point2D>& square_points = userData->points;
+        std::vector<ElementTriangle2D>& elements = userData->elements;
+        std::vector<size_t>& active_elements = userData->active_elements;
+        const auto& interior_mapping = userData->interior_mapping;
+        const auto& full_mapping = userData->full_mapping;
+        const int n_vars = interior_mapping.size();
+        const int n_points = userData->points.size();
+        //const double normalisation = pow(userData->ideal_lattice_parameter, 2.0);
+        std::function<double(double)>& potential_func = userData->energy_function;
+        std::function<double(double)>& potential_func_der = userData->derivative_function;
+        double zero = userData->zero_energy;
+        double ideal_lattice_parameter = userData->ideal_lattice_parameter;
+        double plasticity; 
+        // TriangularLatticeCalculator calculator(ideal_lattice_parameter);
+    
+        std::cout << "REMESHING STARTED "  << std::endl;
+        
+        while (should_remesh && mesh_iteration < max_iterations) {
+            std::cout << "REMESHING iteration: " << mesh_iteration << std::endl;
+    
+    
+            // 2. Generate new mesh (using existing mesher)
+                // 1. Create the AdaptiveMesher instance
+            AdaptiveMesher mesher(
+                domain_dims_point,
+                offsets,
+                original_domain_map,
+                translation_map,
+                full_mapping,
+                1e-6,  // Tolerance
+                true
+            );
+            mesher.setUsePeriodicCopies(true);  // Switch to using original domain only
+    
+            // 1. Save original state
+            alglib::real_1d_array original_x_remesh = mesher.saveOriginalPositions(x);
+            std::tie(elements, active_elements) = mesher.createMesh(square_points, x, F_ext, &dndx);
+            for (auto& element : elements) {
+                element.setReferenceArea(reference_area);  // or interior_mapping depending on needs
+            }
+
+            // It is called to find the number of nodes inside elements that touch the boundary
+            // This is requited in mesh filtering
+            // auto [interior_mapping_dummy, full_mapping_dummy] = create_dof_mapping_with_boundaries(
+            //     square_points, elements,contact_atoms,boundary_fixed_nodes);
+
+            // // 3. Re-optimize with new mesh
+            std::vector<int> m3_before_remeshed = analyzeElementReduction(elements, square_points, userData);
+
+            UserData newUserData(
+                square_points, elements, userData->calculator, potential_func, potential_func_der,
+                zero, ideal_lattice_parameter, F_ext, interior_mapping, 
+                full_mapping, active_elements, plasticity
+            );
+    
+    
+            std::cout<<"optimization in  REMESHING loop"<<std::endl;
+            LBFGSOptimizer optimizer(10, 0, 1e-13, 0, 0);
+            optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
+            map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+
+            std::vector<int> m3_after_remeshed = analyzeElementReduction(elements, square_points, userData);
+
+            has_changes+= compareM3Activation(m3_before_remeshed, m3_after_remeshed);
+            // // 4. Check convergence
+            auto change_result = computeChangeMeasures(
+                x, original_x_remesh, userData->ideal_lattice_parameter, 
+                elements, &newUserData, square_points, true, &F_ext
+            );
+            should_remesh = change_result.has_distorted_triangles;
+    
+            if (!should_remesh) {
+                
+                ConfigurationSaver::calculateEnergyAndStress(&newUserData, final_energy, stress_tensor);
+                final_stress = stress_tensor(0, 1);
+                break;
+            }
+    
+            mesh_iteration++;
+        }
+    
+        return {final_energy, stress_tensor, mesh_iteration};
+    }
+    
 void example_1_conti_zanzotto() {
     // Parameters for lattice
-    int nx = 100;
-    int ny = 100;
+    int nx = 200;
+    int ny = 200;
     std::string lattice_type = "square"; // "square" or "triangular"
     double h=1.0;
     Eigen::Vector2d p1(0, 0);
@@ -977,85 +1085,39 @@ void example_1_conti_zanzotto() {
     
     // Setup triangulation variables
     int pbc = 1;
-    std::vector<Triangle> triangulation;
-    std::vector<Point2D> points_used_in_triangulation;
-    std::vector<Point2D> original_points;
-
-    // Generate initial triangulation
-    if(pbc == 1) {
-        Eigen::Matrix2d F_ext;
-        F_ext << 1.0, 0.0,
-                 0.0, 1.0;        
-        
-        // Generate periodic copies
-        std::vector<Point2D> square_points_periodic = LatticeGenerator::create_periodic_copies(
-            square_points, domain_dims, offsets, F_ext);
-            
-        // Create Delaunay triangulation
-        triangulation = MeshGenerator::createTrianglesFromPoints(square_points_periodic);
-        points_used_in_triangulation = square_points_periodic;
-    } else {
-        triangulation = MeshGenerator::createTrianglesFromPoints(square_points);
-        points_used_in_triangulation = square_points;
-    }
 
     // Create domain maps
     auto [original_domain_map, translation_map] = MeshGenerator::create_domain_maps(
         original_domain_size, domain_dims, offsets);
 
-    // Select unique connected triangles
-    std::vector<Triangle> unique_triangles = MeshGenerator::select_unique_connected_triangles(
-        points_used_in_triangulation,
-        triangulation,
-        original_domain_map,
-        square_points.size(),
-        1e-6 // Minimum Jacobian threshold
-    );
    
     // Boundary conditions
     auto [interior_mapping, full_mapping] = create_dof_mapping_original(square_points, 0.5*lattice_constant, pbc);
     std::cout << "interior_mapping.size(): " << interior_mapping.size() << std::endl;
     std::cout << "full_mapping.size(): " << full_mapping.size() << std::endl;
     
+    Point2D domain_dims_point(domain_dims.size_x, domain_dims.size_y);
 
-    // Create finite element triangles
-    std::vector<ElementTriangle2D> elements = MeshGenerator::createElementTri2D(
-        unique_triangles,
-        square_points,
+    // 1. Create the AdaptiveMesher instance
+    AdaptiveMesher mesher(
+        domain_dims_point,
+        offsets,
         original_domain_map,
-        translation_map
+        translation_map,
+        full_mapping,
+        1e-6  // Tolerance
     );
-    // Create ALGLIB array for free DOFs (displacements)
+    mesher.setUsePeriodicCopies(pbc);  // Switch to using original domain only
     alglib::real_1d_array free_dofs;
     int n_free_nodes = interior_mapping.size();
-    free_dofs.setlength(2 * n_free_nodes);  // [u0, u1, ..., v0, v1, ...]
+    free_dofs.setlength(2 * interior_mapping.size());  // [u0, u1, ..., v0, v1, ...]
     map_points_to_solver_array(free_dofs, square_points, interior_mapping, n_free_nodes);
 
-
-    // Initialize elements with reference configuration
-    for (auto& element : elements) {
-        element.set_reference_mesh(square_points);
-        element.set_dof_mapping(full_mapping);  
-        element.set_shape_derivatives(dndx);
-        element.setBoundaryNodeNumber(3);
-        element.calculate_deformation_gradient(free_dofs);
-        // Also update area calculations
-        element.calculateReferenceArea(square_points);
-        element.calculateCurrentArea(free_dofs);
-
-        // Calculate shape derivatives with debug prints
-        //double jac_det = element.calculate_shape_derivatives(free_dofs); 
-        
-        
-
-       
-    }
-
-    // Sort elements directly by their first node index
-    std::sort(elements.begin(), elements.end(), 
-    [](const ElementTriangle2D& a, const ElementTriangle2D& b) {
-        return a.getNodeIndex(0) < b.getNodeIndex(0);
-    });
+    alglib::real_1d_array original_x_remesh = mesher.saveOriginalPositions(free_dofs);
+    
+    auto [elements, active_elements] = mesher.createMesh(square_points, free_dofs,Eigen::Matrix2d::Identity(), &dndx);
+    double element_area =  elements[0].getReferenceArea();
+           // or interior_mapping depending on needs
 
 
     std::cout << "Created " << elements.size() << " element triangles" << std::endl;
@@ -1071,7 +1133,7 @@ void example_1_conti_zanzotto() {
     debug_deformation_tests();
 
     // Set up alpha values for deformation steps
-    double alpha_min = 0.14;
+    double alpha_min = 0.13;
     double alpha_max = 1.0;
     double step_size = 0.00001;
     int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
@@ -1083,10 +1145,6 @@ void example_1_conti_zanzotto() {
         alpha_values.push_back(alpha_min + i * step_size);
     }
 
-    // Precompute active elements
-    std::vector<size_t> active_elements = 
-        initialize_active_elements(elements, full_mapping, square_points.size());
-    std::cout << "active_elements.size(): " << active_elements.size() << std::endl;
     
     // Process each alpha value
     for (size_t i = 0; i < alpha_values.size(); i++) {
@@ -1221,118 +1279,54 @@ void example_1_conti_zanzotto() {
         bool shouldRemesh = result.has_distorted_triangles ;
         std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
         int mesh_iteration = 0;
-        // Remeshing if needed
-        while (shouldRemesh) {
+       // Remeshing if needed
+        if (shouldRemesh) {
             std::cout << "REMESHING STARTS iteration: " << mesh_iteration++<<std::endl;
             
-            alglib::real_1d_array original_x_remesh;
-            original_x_remesh.setlength(x.length());
             for (int j = 0; j < x.length(); j++) {
                 original_x_remesh[j] = x[j];
             }
     
             post_energy = 0.0;
             post_stress = 0.0;
-            
-            // Generate new periodic copies with current deformation
-            std::vector<Point2D> new_square_points_periodic = LatticeGenerator::create_periodic_copies(
-                square_points, domain_dims, offsets, F_ext);
-                
-            // Create new triangulation
-            triangulation = MeshGenerator::createTrianglesFromPoints(new_square_points_periodic);
-            points_used_in_triangulation = new_square_points_periodic;
-            
-            // Select new unique triangles
-            unique_triangles = MeshGenerator::select_unique_connected_triangles(
-                points_used_in_triangulation, triangulation, original_domain_map,
-                square_points.size(), 1e-6
-            );
-            
-            // Create new finite elements
-            elements = MeshGenerator::createElementTri2D(
-                unique_triangles, square_points, original_domain_map, translation_map
-            );
+            std::vector<int> contact_atoms ;
+            contact_atoms.resize(0);
+            std::vector<int> boundary_fixed_nodes ;
+            boundary_fixed_nodes.resize(0);
+            int max_iterations=1000;
+            // std::vector<int> m3_before_remeshed = analyzeElementReduction(elements, square_points, &userData);
 
-            // Initialize elements with reference configuration
+            
+            auto [post_energy_re, stress_tensor_re, iterations] = perform_remeshing_loop_reduction(
+                x,
+                &userData,  // Note: removed & if userData is already a pointer
+                contact_atoms,
+                boundary_fixed_nodes,
+                F_ext,
+                dndx,
+                offsets,
+                original_domain_map,
+                translation_map,
+                domain_dims_point,
+                hasChanges,
+                max_iterations,
+                element_area
+            );           
+
+
+            //this is crucial; to be resolved
             for (auto& element : elements) {
-                element.set_reference_mesh(square_points);
+                // element.set_reference_mesh(square_points);
                 element.set_dof_mapping(full_mapping);  // or interior_mapping depending on needs
-                //double jac_det = element.calculate_shape_derivatives(free_dofs); 
-                element.set_shape_derivatives(dndx);
-                element.setBoundaryNodeNumber(3);
-
-                element.calculate_deformation_gradient(x);
-                // Also update area calculations
-                element.calculateReferenceArea(square_points);
-                element.calculateCurrentArea(x);
-    
+                //double jac = element.calculate_shape_derivatives(x);  // current positions
             }
+    
+            post_energy = post_energy_re;
+            post_stress = stress_tensor_re(0,1);
+            std::cout << "Post-remeshing - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
 
-                // Sort elements directly by their first node index
-            std::sort(elements.begin(), elements.end(), 
-            [](const ElementTriangle2D& a, const ElementTriangle2D& b) {
-                return a.getNodeIndex(0) < b.getNodeIndex(0);
-            });
-
+    
         
-            
-            // Update active elements
-            const std::vector<size_t> new_active_elements = 
-                initialize_active_elements(elements, full_mapping, square_points.size());
-            active_elements = new_active_elements;
-            std::vector<int> m3_before_remeshed = analyzeElementReduction(elements, square_points, &userData);
-
-            // Re-optimize with new mesh
-            plasticity = true;
-            UserData newUserData(
-                square_points, elements, calculator, potential_func, potential_func_der,
-                zero, optimal_lattice_parameter, F_ext, interior_mapping, 
-                full_mapping, active_elements, plasticity
-            );
-            
-            LBFGSOptimizer optimizer_remesh(10, 0, pow(10,-13), 0, 0);
-            optimizer_remesh.optimize(x, minimize_energy_with_triangles, &newUserData);
-            map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-            //recalculate 
-            std::vector<int> m3_after_remeshed = analyzeElementReduction(elements, square_points, &userData);
-            hasChanges += compareM3Activation(m3_before_remeshed, m3_after_remeshed);
-    
-       
-            ///////////////////////////
-            ChangeMeasures result = computeChangeMeasures(
-                x, original_x, lattice_constant, elements, &userData, square_points, true, &F_ext
-            );        
-    
-            std::cout << "max_abs_change: " << result.max_abs_change << std::endl;
-            if (result.has_distorted_triangles) {
-                std::cout << "Distorted triangles detected!" << std::endl;
-            }
-            
-    
-            // Determine if remeshing is needed
-            shouldRemesh = result.has_distorted_triangles ;
-            std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
-
-
-            /////////
-    
-
-
-            
-            // Calculate post-remeshing energy and stress
-            if(!shouldRemesh){
-                // ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, post_stress);
-                post_energy = 0.0;
-                post_stress = 0.0;
-                stress_tensor.setZero();
-                    
-                ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor,1);
-                post_stress = stress_tensor(0,1);
-                std::cout << "Post-remeshing - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
-
-        
-            
-            }
         }   
         
         // Update plasticity flag for logging
@@ -1980,7 +1974,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
     const std::vector<int>& original_domain_map,
     const const std::vector<std::tuple<double, double>>& translation_map,
     const Point2D& domain_dims_point,
-    int max_iterations = 100
+    int max_iterations = 100,
+    double reference_area=0.5
 ) {
     bool should_remesh = true;
     int mesh_iteration = 0;
@@ -2027,13 +2022,11 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
         mesher.setUsePeriodicCopies(false);  // Switch to using original domain only
 
         alglib::real_1d_array original_x_remesh = mesher.saveOriginalPositions(x);
-    
-        auto [new_elements, new_active_elements] = mesher.createMesh(
-            square_points, x, F_ext, &dndx
-        );
-        elements = new_elements;                  // Update in-place
-        active_elements = new_active_elements;    // Update in-place
-    
+        std::tie(elements, active_elements) = mesher.createMesh(square_points, x, F_ext, &dndx);
+        for (auto& element : elements) {
+            element.setReferenceArea(reference_area);  // or interior_mapping depending on needs
+        }
+
         // It is called to find the number of nodes inside elements that touch the boundary
         // This is requited in mesh filtering
         auto [interior_mapping_dummy, full_mapping_dummy] = create_dof_mapping_with_boundaries(
@@ -2745,6 +2738,7 @@ void indentation() {
 
 
     auto [elements, active_elements] = mesher.createMesh(square_points, free_dofs,Eigen::Matrix2d::Identity(), &dndx);
+    double element_area =  elements[0].getReferenceArea();
 
     int pbc = 0;
 
@@ -2953,7 +2947,8 @@ void indentation() {
                 original_domain_map,
                 translation_map,
                 domain_dims_point,
-                max_iterations
+                max_iterations,
+                element_area
             );           
             post_energy = post_energy_re;
             post_stress_tensor = post_stress_tensor_re; // Extract xy component for backward compatibility

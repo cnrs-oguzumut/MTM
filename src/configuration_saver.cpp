@@ -240,6 +240,7 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
 void ConfigurationSaver::calculateEnergyAndStress(UserData* userData, 
     double& total_energy, 
     Eigen::Matrix2d& total_stress, bool reduction) {
+        
     // Check if userData is valid
     if (!userData) {
     std::cerr << "Error: userData is null in calculateEnergyAndStress" << std::endl;

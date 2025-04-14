@@ -57,6 +57,7 @@ public:
     double calculateReferenceArea(const std::vector<Point2D>& reference_points);
     double calculateCurrentArea(const std::vector<Point2D>& current_points);
     double calculateCurrentArea(const alglib::real_1d_array& current_dofs);
+
     
     // Reduced DOF methods
     void set_reference_mesh(const std::vector<Point2D>& points);

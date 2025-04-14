@@ -216,9 +216,9 @@ double ElementTriangle2D::calculate_shape_derivatives(const alglib::real_1d_arra
     }    
 
     Eigen::Matrix<double, 3, 2> dNdxi;
-    //dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
-    dNdxi <<  1.45517103161025, 0.840143386817131 ,-1.45517103161025 ,0.840143386817131,
-    0, -1.68028677363426;
+    dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
+    //dNdxi <<  1.45517103161025, 0.840143386817131 ,-1.45517103161025 ,0.840143386817131,
+    //0, -1.68028677363426;
 
     
     Eigen::Matrix2d J = X_e * dNdxi;
@@ -279,9 +279,9 @@ double ElementTriangle2D::calculate_shape_derivatives(const std::vector<Point2D>
     }
     
     Eigen::Matrix<double, 3, 2> dNdxi;
-    //dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
-    dNdxi <<  1.45517103161025, 0.840143386817131 ,-1.45517103161025 ,0.840143386817131,
-    0, -1.68028677363426;
+    dNdxi << -1.0, -1.0, 1.0, 0.0, 0.0, 1.0;
+    //dNdxi <<  1.45517103161025, 0.840143386817131 ,-1.45517103161025 ,0.840143386817131,
+    //0, -1.68028677363426;
 
     
     Eigen::Matrix2d J = X_e * dNdxi;
@@ -403,18 +403,21 @@ void ElementTriangle2D::assemble_forces(const Eigen::Matrix2d& P, std::vector<Ei
 
 double ElementTriangle2D::calculateReferenceArea(const std::vector<Point2D>& reference_points) {
     // Get node positions without translations
-    Eigen::Vector2d p0 = reference_points[nn[0]].coord;
-    Eigen::Vector2d p1 = reference_points[nn[1]].coord;
-    Eigen::Vector2d p2 = reference_points[nn[2]].coord;
+    Eigen::Vector2d p0 = reference_points[nn[0]].coord + getEffectiveTranslation(0);
+    Eigen::Vector2d p1 = reference_points[nn[1]].coord + getEffectiveTranslation(1);
+    Eigen::Vector2d p2 = reference_points[nn[2]].coord + getEffectiveTranslation(2);
     
     // Calculate area using cross product
     double area_value = 0.5 * std::abs((p1 - p0).x() * (p2 - p0).y() - (p1 - p0).y() * (p2 - p0).x());
     
     // Store as reference area
+    
     reference_area = area_value;
     
     return reference_area;
 }
+
+
 
 double ElementTriangle2D::calculateCurrentArea(const std::vector<Point2D>& current_points) {
     // Get node positions with effective translations

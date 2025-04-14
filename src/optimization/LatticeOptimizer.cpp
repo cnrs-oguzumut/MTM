@@ -406,10 +406,8 @@ void minimize_energy_with_triangles(
     const auto& interior_mapping = userData->interior_mapping;
     const int n_vars = interior_mapping.size();
     const int n_points = userData->points.size();
-    //const double normalisation = pow(userData->ideal_lattice_parameter, 2.0);
-    //const double normalisation = 1.;// (sqrt(3.)/2.)*pow(userData->ideal_lattice_parameter, 2.0);
+    const double normalisation = pow(userData->ideal_lattice_parameter, 2.0);
 
-    const double normalisation = userData->calculator.getUnitCellArea();
     // Initialize thread storage (forces for all points, including boundaries)
     #pragma omp parallel
     {
@@ -444,7 +442,7 @@ void minimize_energy_with_triangles(
             element.calculate_deformation_gradient(x);
             
             const Eigen::Matrix2d F = element.getDeformationGradient();
-            const Eigen::Matrix2d C =  element.getMetricTensor(); //F.transpose() * F;
+            Eigen::Matrix2d C = F.transpose() * F;
             
             const auto result = lagrange::reduce(C);
             const double element_energy = userData->calculator.calculate_energy(
@@ -482,7 +480,6 @@ void minimize_energy_with_triangles(
     
     iteration++;
 }
-
 
 void minimize_energy_with_triangles_noreduction(
     const alglib::real_1d_array &x, 

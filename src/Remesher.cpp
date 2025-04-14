@@ -88,6 +88,8 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
         // If manual shape derivative is provided, use it for all elements
         if (manual_shape_derivative) {
             element.set_shape_derivatives(*manual_shape_derivative);
+            element.setExternalDeformation(F_ext);
+
             // Calculate deformation gradient with current positions
             element.calculate_deformation_gradient(x);
             // Also update area calculations
@@ -96,6 +98,7 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
         } else {
             // Otherwise calculate shape derivatives normally
             double jac = element.calculate_shape_derivatives(x);
+            element.setExternalDeformation(F_ext);
         }
     }
 
