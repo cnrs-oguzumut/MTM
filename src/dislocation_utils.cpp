@@ -3,7 +3,6 @@
 #include <iostream>
 
 // Nabarro smoothing factor implementation
-// Modified smoothing factor for better dislocation preservation
 double NabarroSmoothing::smoothingFactor(
     double distance,
     double core_radius
@@ -35,78 +34,73 @@ double NabarroSmoothing::smoothingFactor(
         return core_radius / distance;
     }
 }
-// Volterra displacement calculation
-class VolterraDisplacement {
-public:
-static Eigen::Vector2d calculateEdgeDisplacement(
+
+// Volterra displacement calculation implementation
+Eigen::Vector2d VolterraDisplacement::calculateEdgeDisplacement(
     const Eigen::Vector2d& position,
     const Eigen::Vector2d& burgers_vector,
-    double poisson_ratio = 0.3 // Typical value, can be material-specific
+    double poisson_ratio
 ) {
-        // Extract coordinates
-        double xx = position.x();
-        double yy = position.y();
-        
-        // Calculate r^2 to avoid repeated calculation
-        double r2 = xx*xx + yy*yy;
-        
-        // Prevent division by zero
-        if (r2 < 1e-10) {
-            return Eigen::Vector2d::Zero();
-        }
-        
-        // Get Burgers vector magnitude (assuming x-component is the one we care about)
-        double b = burgers_vector.x();
-        double nu = poisson_ratio;
-        
-        // Calculate displacement using the provided formula
-        double term1_x = std::atan2(yy, xx);
-        double term2_x = (1 + nu) * xx * yy / (2.0 * r2);
-        double ux = (b / (2.0 * M_PI)) * (term1_x + term2_x);
-        
-        double term1_y = (1 - nu) * 0.25 * std::log(r2);
-        double term2_y = (1 + nu) * (xx * xx - yy * yy) / (4.0 * r2);
-        double uy = -(b / (2.0 * M_PI)) * (term1_y + term2_y);
-        
-        return Eigen::Vector2d(ux, uy);
+    // Extract coordinates
+    double xx = position.x();
+    double yy = position.y();
+    
+    // Calculate r^2 to avoid repeated calculation
+    double r2 = xx*xx + yy*yy;
+    
+    // Prevent division by zero
+    if (r2 < 1e-10) {
+        return Eigen::Vector2d::Zero();
     }
-};
+    
+    // Get Burgers vector magnitude (assuming x-component is the one we care about)
+    double b = burgers_vector.x();
+    double nu = poisson_ratio;
+    
+    // Calculate displacement using the provided formula
+    double term1_x = std::atan2(yy, xx);
+    double term2_x = (1 + nu) * xx * yy / (2.0 * r2);
+    double ux = (b / (2.0 * M_PI)) * (term1_x + term2_x);
+    
+    double term1_y = (1 - nu) * 0.25 * std::log(r2);
+    double term2_y = (1 + nu) * (xx * xx - yy * yy) / (4.0 * r2);
+    double uy = -(b / (2.0 * M_PI)) * (term1_y + term2_y);
+    
+    return Eigen::Vector2d(ux, uy);
+}
 
-// Non-singular dislocation displacement calculation
-class NonSingularDisplacement {
-    public:
-    static Eigen::Vector2d calculateEdgeDisplacement(
-        const Eigen::Vector2d& position,
-        const Eigen::Vector2d& burgers_vector,
-        double core_radius,
-        double poisson_ratio = 0.3
-    ) {
-        // Extract coordinates
-        double xx = position.x();
-        double yy = position.y();
-        
-        // Calculate r^2 to avoid repeated calculation
-        double r2 = xx*xx + yy*yy;
-        
-        // Add core radius squared to smooth the singularity
-        double r2_smoothed = r2 + core_radius*core_radius;
-        
-        // Get Burgers vector magnitude
-        double b = burgers_vector.x();
-        double nu = poisson_ratio;
-        
-        // Calculate smoothed displacement using modified formula
-        double term1_x = std::atan2(yy, xx); // Arc tangent is already well-behaved
-        double term2_x = (1 + nu) * xx * yy / (2.0 * r2_smoothed);
-        double ux = (b / (2.0 * M_PI)) * (term1_x + term2_x);
-        
-        double term1_y = (1 - nu) * 0.25 * std::log(r2_smoothed);
-        double term2_y = (1 + nu) * (xx * xx - yy * yy) / (4.0 * r2_smoothed);
-        double uy = -(b / (2.0 * M_PI)) * (term1_y + term2_y);
-        
-        return Eigen::Vector2d(ux, uy);
-    }
-};
+// Non-singular dislocation displacement calculation implementation
+Eigen::Vector2d NonSingularDisplacement::calculateEdgeDisplacement(
+    const Eigen::Vector2d& position,
+    const Eigen::Vector2d& burgers_vector,
+    double core_radius,
+    double poisson_ratio
+) {
+    // Extract coordinates
+    double xx = position.x();
+    double yy = position.y();
+    
+    // Calculate r^2 to avoid repeated calculation
+    double r2 = xx*xx + yy*yy;
+    
+    // Add core radius squared to smooth the singularity
+    double r2_smoothed = r2 + core_radius*core_radius;
+    
+    // Get Burgers vector magnitude
+    double b = burgers_vector.x();
+    double nu = poisson_ratio;
+    
+    // Calculate smoothed displacement using modified formula
+    double term1_x = std::atan2(yy, xx); // Arc tangent is already well-behaved
+    double term2_x = (1 + nu) * xx * yy / (2.0 * r2_smoothed);
+    double ux = (b / (2.0 * M_PI)) * (term1_x + term2_x);
+    
+    double term1_y = (1 - nu) * 0.25 * std::log(r2_smoothed);
+    double term2_y = (1 + nu) * (xx * xx - yy * yy) / (4.0 * r2_smoothed);
+    double uy = -(b / (2.0 * M_PI)) * (term1_y + term2_y);
+    
+    return Eigen::Vector2d(ux, uy);
+}
 
 // Create single dislocation implementation
 std::vector<Point2D> createSingleDislocation(
@@ -142,9 +136,10 @@ std::vector<Point2D> createSingleDislocation(
         
         // Calculate Volterra displacement
         Eigen::Vector2d volterra_disp = 
-        NonSingularDisplacement::calculateEdgeDisplacement(
+            NonSingularDisplacement::calculateEdgeDisplacement(
                 relative_pos, 
                 burgers_vector, 
+                core_radius,
                 poisson_ratio
             );
         
@@ -160,7 +155,7 @@ std::vector<Point2D> createSingleDislocation(
     
     return modified_points;
 }
-// Create dislocation dipole implementation
+
 // Create dislocation dipole implementation centered around a point
 std::vector<Point2D> createDislocationDipole(
     const std::vector<Point2D>& original_points,

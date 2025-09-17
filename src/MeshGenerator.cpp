@@ -1,6 +1,58 @@
 #include "../include/mesh/MeshGenerator.h"
 #include "../include/mesh/MeshGenerator.h"
 
+// std::vector<Triangle> MeshGenerator::createTrianglesFromPoints_original(const std::vector<Point2D>& points) {
+//     // Convert to CGAL points
+//     std::vector<CGALPoint> cgal_points;
+//     cgal_points.reserve(points.size());
+//     for (const auto& p : points) {
+//         cgal_points.push_back(p.to_cgal_point());
+//     }
+    
+//     // Create triangulation with vertex info
+//     Delaunay triangulation;
+    
+//     // Insert points and assign indices
+//     std::vector<std::pair<CGALPoint, int>> points_with_info;
+//     points_with_info.reserve(cgal_points.size());
+    
+//     for (size_t i = 0; i < cgal_points.size(); ++i) {
+//         points_with_info.emplace_back(cgal_points[i], i);
+//     }
+    
+//     triangulation.insert(points_with_info.begin(), points_with_info.end());
+    
+//     // Extract triangles
+//     std::vector<Triangle> triangles;
+//     triangles.reserve(triangulation.number_of_faces());
+    
+//     for (auto face_it = triangulation.finite_faces_begin();
+//          face_it != triangulation.finite_faces_end(); ++face_it) {
+//         int v0 = face_it->vertex(0)->info();
+//         int v1 = face_it->vertex(1)->info();
+//         int v2 = face_it->vertex(2)->info();
+//         // Ensure counter-clockwise ordering using cross product
+//         const Point2D& p0 = points[v0];
+//         const Point2D& p1 = points[v1];
+//         const Point2D& p2 = points[v2];
+
+//         // Cross product: (p1-p0) × (p2-p0)
+//         double cross_product = (p1.coord.x() - p0.coord.x()) * (p2.coord.y() - p0.coord.y()) - 
+//                             (p2.coord.x() - p0.coord.x()) * (p1.coord.y() - p0.coord.y());
+
+//         if (cross_product > 0.0) {
+//             // Counter-clockwise - correct order
+//             triangles.emplace_back(v0, v1, v2);
+//         } else {
+//             // Clockwise - swap v1 and v2 to make counter-clockwise
+//             triangles.emplace_back(v0, v2, v1);
+//         }        
+//                 //triangles.emplace_back(v0, v1, v2);
+//     }
+    
+//     return triangles;
+// }
+
 std::vector<Triangle> MeshGenerator::createTrianglesFromPoints(const std::vector<Point2D>& points) {
     // Convert to CGAL points
     std::vector<CGALPoint> cgal_points;
@@ -15,28 +67,236 @@ std::vector<Triangle> MeshGenerator::createTrianglesFromPoints(const std::vector
     // Insert points and assign indices
     std::vector<std::pair<CGALPoint, int>> points_with_info;
     points_with_info.reserve(cgal_points.size());
-    
     for (size_t i = 0; i < cgal_points.size(); ++i) {
         points_with_info.emplace_back(cgal_points[i], i);
     }
-    
     triangulation.insert(points_with_info.begin(), points_with_info.end());
     
-    // Extract triangles
+    // Helper function to reorder triangle with shortest edges from origin
+    auto reorderToRightTriangle = [&](int v0, int v1, int v2) -> std::array<int, 3> {
+        std::array<int, 3> vertices = {v0, v1, v2};
+        
+        // Calculate all three edge lengths
+        struct EdgeInfo {
+            int from, to;
+            double length;
+            EdgeInfo(int f, int t, double l) : from(f), to(t), length(l) {}
+        };
+        
+        std::vector<EdgeInfo> edges;
+        for (int i = 0; i < 3; ++i) {
+            int v_from = vertices[i];
+            int v_to = vertices[(i+1)%3];
+            
+            double dx = points[v_to].coord.x() - points[v_from].coord.x();
+            double dy = points[v_to].coord.y() - points[v_from].coord.y();
+            double length = std::sqrt(dx*dx + dy*dy);
+            
+            edges.emplace_back(v_from, v_to, length);
+        }
+        
+        // Sort edges by length (shortest first)
+        std::sort(edges.begin(), edges.end(), 
+                  [](const EdgeInfo& a, const EdgeInfo& b) { return a.length < b.length; });
+        
+        // Find the vertex that is connected to the two shortest edges
+        // This vertex will be our origin
+        int origin = -1;
+        
+        // Check if the two shortest edges share a vertex
+        if (edges[0].from == edges[1].from || edges[0].from == edges[1].to) {
+            origin = edges[0].from;
+        } else if (edges[0].to == edges[1].from || edges[0].to == edges[1].to) {
+            origin = edges[0].to;
+        }
+        
+        if (origin == -1) {
+            // Fallback: shouldn't happen in a triangle, but use first vertex
+            origin = vertices[0];
+        }
+        
+        // Find the other two vertices
+        std::vector<int> others;
+        for (int v : vertices) {
+            if (v != origin) {
+                others.push_back(v);
+            }
+        }
+        
+        // Order the other two vertices by distance from origin (shortest first)
+        Point2D origin_pos = points[origin];
+        
+        auto distance = [&](int vertex) {
+            double dx = points[vertex].coord.x() - origin_pos.coord.x();
+            double dy = points[vertex].coord.y() - origin_pos.coord.y();
+            return std::sqrt(dx*dx + dy*dy);
+        };
+        
+        if (distance(others[0]) <= distance(others[1])) {
+            return {origin, others[0], others[1]}; // origin -> closest -> farthest
+        } else {
+            return {origin, others[1], others[0]}; // origin -> closest -> farthest
+        }
+    };
+    
+    // Extract triangles with right triangle ordering
     std::vector<Triangle> triangles;
     triangles.reserve(triangulation.number_of_faces());
     
     for (auto face_it = triangulation.finite_faces_begin();
          face_it != triangulation.finite_faces_end(); ++face_it) {
+        
         int v0 = face_it->vertex(0)->info();
         int v1 = face_it->vertex(1)->info();
         int v2 = face_it->vertex(2)->info();
         
-        triangles.emplace_back(v0, v1, v2);
+        // Reorder to match right triangle pattern
+        auto ordered = reorderToRightTriangle(v0, v1, v2);
+        
+        // Ensure counter-clockwise orientation
+        const Point2D& p0 = points[ordered[0]];
+        const Point2D& p1 = points[ordered[1]];
+        const Point2D& p2 = points[ordered[2]];
+        
+        double cross_product = (p1.coord.x() - p0.coord.x()) * (p2.coord.y() - p0.coord.y()) -
+                              (p2.coord.x() - p0.coord.x()) * (p1.coord.y() - p0.coord.y());
+        
+        if (cross_product > 0.0) {
+            triangles.emplace_back(ordered[0], ordered[1], ordered[2]);
+        } else {
+            // Flip to maintain CCW while keeping origin first
+            triangles.emplace_back(ordered[0], ordered[2], ordered[1]);
+        }
     }
     
     return triangles;
 }
+
+// std::vector<Triangle> MeshGenerator::createTrianglesFromPoints(const std::vector<Point2D>& points) {
+//     // Convert to CGAL points
+//     std::vector<CGALPoint> cgal_points;
+//     cgal_points.reserve(points.size());
+//     for (const auto& p : points) {
+//         cgal_points.push_back(p.to_cgal_point());
+//     }
+    
+//     // Create triangulation with vertex info
+//     Delaunay triangulation;
+    
+//     // Insert points and assign indices
+//     std::vector<std::pair<CGALPoint, int>> points_with_info;
+//     points_with_info.reserve(cgal_points.size());
+//     for (size_t i = 0; i < cgal_points.size(); ++i) {
+//         points_with_info.emplace_back(cgal_points[i], i);
+//     }
+//     triangulation.insert(points_with_info.begin(), points_with_info.end());
+    
+//     // Helper function to reorder triangle to match right triangle pattern
+//     auto reorderToRightTriangle = [&](int v0, int v1, int v2) -> std::array<int, 3> {
+//         std::array<int, 3> vertices = {v0, v1, v2};
+        
+//         // First try to find the vertex that forms a right angle
+//         for (int i = 0; i < 3; ++i) {
+//             int curr = vertices[i];
+//             int next = vertices[(i+1)%3];
+//             int prev = vertices[(i+2)%3];
+            
+//             // Vectors from current vertex to the other two
+//             Point2D vec1(points[next].coord.x() - points[curr].coord.x(),
+//                         points[next].coord.y() - points[curr].coord.y());
+//             Point2D vec2(points[prev].coord.x() - points[curr].coord.x(),
+//                         points[prev].coord.y() - points[curr].coord.y());
+            
+//             // Check if vectors are perpendicular (dot product ≈ 0)
+//             double dot_product = vec1.coord.x() * vec2.coord.x() + vec1.coord.y() * vec2.coord.y();
+            
+//             if (std::abs(dot_product) < 0.1) { // Nearly perpendicular (right angle found)
+//                 // This vertex forms the right angle - make it the origin
+//                 // Determine which of the other two should be "horizontal" vs "vertical"
+                
+//                 // Check which vector is more aligned with coordinate axes
+//                 bool vec1_more_horizontal = std::abs(vec1.coord.x()) > std::abs(vec1.coord.y());
+//                 bool vec2_more_horizontal = std::abs(vec2.coord.x()) > std::abs(vec2.coord.y());
+                
+//                 if (vec1_more_horizontal && !vec2_more_horizontal) {
+//                     // vec1 is horizontal, vec2 is vertical
+//                     return {curr, next, prev}; // origin -> horizontal -> vertical
+//                 } else if (!vec1_more_horizontal && vec2_more_horizontal) {
+//                     // vec2 is horizontal, vec1 is vertical  
+//                     return {curr, prev, next}; // origin -> horizontal -> vertical
+//                 } else {
+//                     // Both similar - use the one pointing more "right" as horizontal
+//                     if (vec1.coord.x() > vec2.coord.x()) {
+//                         return {curr, next, prev};
+//                     } else {
+//                         return {curr, prev, next};
+//                     }
+//                 }
+//             }
+//         }
+        
+//         // Fallback: No clear right angle found, use minimum coordinate sum approach
+//         int origin_idx = 0;
+//         double min_sum = points[vertices[0]].coord.x() + points[vertices[0]].coord.y();
+//         for (int i = 1; i < 3; ++i) {
+//             double sum = points[vertices[i]].coord.x() + points[vertices[i]].coord.y();
+//             if (sum < min_sum) {
+//                 min_sum = sum;
+//                 origin_idx = i;
+//             }
+//         }
+        
+//         // Get the three vertices with origin first
+//         int origin = vertices[origin_idx];
+//         int other1 = vertices[(origin_idx + 1) % 3];
+//         int other2 = vertices[(origin_idx + 2) % 3];
+        
+//         // Calculate vectors from origin
+//         Point2D vec1(points[other1].coord.x() - points[origin].coord.x(),
+//                     points[other1].coord.y() - points[origin].coord.y());
+//         Point2D vec2(points[other2].coord.x() - points[origin].coord.x(),
+//                     points[other2].coord.y() - points[origin].coord.y());
+        
+//         // Order by which is more horizontal
+//         if (std::abs(vec1.coord.x()) > std::abs(vec1.coord.y())) {
+//             return {origin, other1, other2}; // origin -> horizontal -> vertical
+//         } else {
+//             return {origin, other2, other1}; // origin -> horizontal -> vertical
+//         }
+//     };
+    
+//     // Extract triangles with right triangle ordering
+//     std::vector<Triangle> triangles;
+//     triangles.reserve(triangulation.number_of_faces());
+    
+//     for (auto face_it = triangulation.finite_faces_begin();
+//          face_it != triangulation.finite_faces_end(); ++face_it) {
+        
+//         int v0 = face_it->vertex(0)->info();
+//         int v1 = face_it->vertex(1)->info();
+//         int v2 = face_it->vertex(2)->info();
+        
+//         // Reorder to match right triangle pattern
+//         auto ordered = reorderToRightTriangle(v0, v1, v2);
+        
+//         // Ensure counter-clockwise orientation
+//         const Point2D& p0 = points[ordered[0]];
+//         const Point2D& p1 = points[ordered[1]];
+//         const Point2D& p2 = points[ordered[2]];
+        
+//         double cross_product = (p1.coord.x() - p0.coord.x()) * (p2.coord.y() - p0.coord.y()) -
+//                               (p2.coord.x() - p0.coord.x()) * (p1.coord.y() - p0.coord.y());
+        
+//         if (cross_product > 0.0) {
+//             triangles.emplace_back(ordered[0], ordered[1], ordered[2]);
+//         } else {
+//             // Flip to maintain CCW while keeping origin first
+//             triangles.emplace_back(ordered[0], ordered[2], ordered[1]);
+//         }
+//     }
+    
+//     return triangles;
+// }
 
 std::pair<std::vector<int>, std::vector<std::tuple<double, double>>>
 MeshGenerator::create_domain_maps(int original_domain_size, const DomainDimensions& domain_dims, 
