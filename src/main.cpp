@@ -611,13 +611,13 @@ void example_2_conti_zanzotto_triangular() {
     std::cout << "domain_size.get_height(): " << domain_size.get_height() << std::endl;
     
     // Setup triangulation variables
-    int pbc = 1;
+    bool pbc = true;
     std::vector<Triangle> triangulation;
     std::vector<Point2D> points_used_in_triangulation;
     std::vector<Point2D> original_points;
 
     // Generate initial triangulation
-    if(pbc == 1) {
+    if(pbc ) {
         Eigen::Matrix2d F_ext;
         F_ext << 1.0, 0.0,
                  0.0, 1.0;        
@@ -644,7 +644,8 @@ void example_2_conti_zanzotto_triangular() {
         triangulation,
         original_domain_map,
         square_points.size(),
-        1e-6 // Minimum Jacobian threshold
+        1e-6, // Minimum Jacobian threshold,
+        pbc
     );
    
     // Boundary conditions
@@ -999,7 +1000,8 @@ Eigen::Matrix<double, 3, 2> calculateShapeDerivatives(
         const Point2D& domain_dims_point,
         int& has_changes,
         int max_iterations = 100,
-        double reference_area=0.5
+        double reference_area=0.5,
+        bool pbc = false
          
     ) {
         bool should_remesh = true;
@@ -1040,9 +1042,9 @@ Eigen::Matrix<double, 3, 2> calculateShapeDerivatives(
                 translation_map,
                 full_mapping,
                 1e-6,  // Tolerance
-                false // Use periodic copies
+                pbc // Use periodic copies
             );
-            //mesher.setUsePeriodicCopies(false);  // Switch to using original domain only
+            mesher.setUsePeriodicCopies(pbc);  // Switch to using original domain only
     
             // 1. Save original state
             alglib::real_1d_array original_x_remesh = mesher.saveOriginalPositions(x);
@@ -1068,7 +1070,7 @@ Eigen::Matrix<double, 3, 2> calculateShapeDerivatives(
     
             std::cout<<"optimization in  REMESHING loop"<<std::endl;
             LBFGSOptimizer optimizer(10, 0, 1e-13, 0, 0);
-            //optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
+            optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
             map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
 
             std::vector<int> m3_after_remeshed = analyzeElementReduction(elements, square_points, userData);
@@ -1079,7 +1081,8 @@ Eigen::Matrix<double, 3, 2> calculateShapeDerivatives(
                 x, original_x_remesh, userData->ideal_lattice_parameter, 
                 elements, &newUserData, square_points, true, &F_ext
             );
-            should_remesh = change_result.has_distorted_triangles;
+            //should_remesh = change_result.has_distorted_triangles;
+            should_remesh=checkSquareDomainViolation(elements);
     
             if (!should_remesh) {
                 
@@ -1157,7 +1160,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     std::cout << "domain_size.get_height(): " << domain_size.get_height() << std::endl;
     
     // Setup triangulation variables
-    int pbc = 1;
+    bool pbc = true;
 
     // Create domain maps
     auto [original_domain_map, translation_map] = MeshGenerator::create_domain_maps(
@@ -1214,7 +1217,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         translation_map,
         full_mapping,
         1e-6,  // Tolerance
-        true  // Use periodic copies
+        pbc  // Use periodic copies
     );
     mesher.setUsePeriodicCopies(true);  // Switch to using original domain only
     alglib::real_1d_array free_dofs;
@@ -1451,7 +1454,8 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         
         
         // Determine if remeshing is needed
-        bool shouldRemesh = result.has_distorted_triangles ;
+        //bool shouldRemesh = result.has_distorted_triangles ;
+        bool shouldRemesh=checkSquareDomainViolation(elements);
         std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
         int mesh_iteration = 0;
         // shouldRemesh=false;
@@ -1486,7 +1490,8 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
                 domain_dims_point,
                 hasChanges,
                 max_iterations,
-                element_area
+                element_area,
+                pbc
             );           
 
 
@@ -1585,7 +1590,8 @@ void example_1_shifting(int caller_id, int nx, int ny) {
     writeSizesToFile(nx, ny);
     std::string lattice_type = "square"; // "square" or "triangular"
     double symmetry_constantx = 1.;
-    //symmetry_constantx = pow(4. / 3., 1. / 4.);
+    if(lattice_type == "triangular")
+        symmetry_constantx = pow(4. / 3., 1. / 4.);
     double h=symmetry_constantx;
     Eigen::Vector2d p1(0, 0);
     Eigen::Vector2d p2(h, 0);
@@ -1627,7 +1633,7 @@ void example_1_shifting(int caller_id, int nx, int ny) {
     std::cout << "domain_size.get_height(): " << domain_size.get_height() << std::endl;
     
     // Setup triangulation variables
-    int pbc = 0;
+    bool pbc = false;
 
     // Create domain maps
     auto [original_domain_map, translation_map] = MeshGenerator::create_domain_maps(
@@ -1901,13 +1907,18 @@ void example_1_shifting(int caller_id, int nx, int ny) {
         
         
         // Determine if remeshing is needed
-        bool shouldRemesh = result.has_distorted_triangles ;
+        bool shouldRemesh = false;//result.has_distorted_triangles ;
         std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
         int mesh_iteration = 0;
-        shouldRemesh=true;
+        shouldRemesh=checkSquareDomainViolation(elements);
+        if(!shouldRemesh){
+            std::cout << "No remeshing needed based on domain check." << std::endl;
+        }
+       
+
         
        // Remeshing if needed
-        if (shouldRemesh) {
+        if (shouldRemesh || i ==0) {
             std::cout << "REMESHING STARTS iteration: " << mesh_iteration++<<std::endl;
             
             for (int j = 0; j < x.length(); j++) {
@@ -1936,7 +1947,8 @@ void example_1_shifting(int caller_id, int nx, int ny) {
                 domain_dims_point,
                 hasChanges,
                 max_iterations,
-                element_area
+                element_area,
+                pbc
             );           
 
 
@@ -3306,10 +3318,10 @@ void indentation() {
     DomainDimensions domain_dims(domain_size.get_width(), domain_size.get_height());
     std::cout << "domain_size.get_width(): " << domain_size.get_width() << std::endl;
     std::cout << "domain_size.get_height(): " << domain_size.get_height() << std::endl;
-    
+    bool pbc=true;
     // Update DOF mapping for pbc
     auto [interior_mapping, full_mapping] = create_dof_mapping_original(
-    square_points,0.001,1);    // Create domain maps
+    square_points,0.001,pbc);    // Create domain maps
     
     auto [original_domain_map, translation_map] = MeshGenerator::create_domain_maps(
         original_domain_size, domain_dims, offsets);
@@ -3327,9 +3339,10 @@ void indentation() {
         original_domain_map,
         translation_map,
         full_mapping,
-        1e-6  // Tolerance
+        1e-6,  // Tolerance,
+        pbc
     );
-    mesher.setUsePeriodicCopies(false);  // Switch to using original domain only
+    mesher.setUsePeriodicCopies(pbc);  // Switch to using original domain only
     alglib::real_1d_array free_dofs;
     int n_free_nodes = interior_mapping.size();
     free_dofs.setlength(2 * interior_mapping.size());  // [u0, u1, ..., v0, v1, ...]
@@ -3344,7 +3357,6 @@ void indentation() {
     auto [elements, active_elements] = mesher.createMesh(square_points, free_dofs,Eigen::Matrix2d::Identity(), &dndx);
     double element_area =  elements[0].getReferenceArea();
 
-    int pbc = 0;
 
     
     std::cout << "Created " << elements.size() << " element triangles" << std::endl;
@@ -3602,7 +3614,8 @@ int main() {
     // example.run();
     // exit(0);
     //for (int caller_id = 0; caller_id <= 0; ++caller_id) {
-        example_1_shifting(0,20,20);
+        //example_1_shifting(0,20,20);
+        example_1_conti_zanzotto(0,150,150);
     //}
     //indentation();
     exit(0);

@@ -8,6 +8,49 @@
 #include "../include/output/ChangeMeasures.h"
 
 
+
+// bool checkSquareDomainViolation(const std::vector<ElementTriangle2D>& elements) {
+//     for (const auto& element : elements) {
+//         if (!element.isInitialized()) continue;
+        
+//         const Eigen::Matrix2d& C = element.getMetricTensor();
+//         double c11 = C(0, 0);
+//         double c22 = C(1, 1); 
+//         double c12 = C(0, 1);
+        
+//         // Check both conditions: C12 ≥ 0 and 2|C12| ≤ min(C11, C22)
+//         if (c12 < 0.0 || 2.0 * std::abs(c12) > std::min(c11, c22)) {
+            
+//             return true;
+//         }
+//     }
+//     return false;
+// }
+
+//checkTriangularDomainViolation
+bool checkSquareDomainViolation(const std::vector<ElementTriangle2D>& elements) {
+    for (const auto& element : elements) {
+        if (!element.isInitialized()) continue;
+        
+        const Eigen::Matrix2d& C = element.getMetricTensor();
+        double detC = C.determinant();
+        
+        // Early exit for non-physical deformation
+        if (detC <= 0.0) return true;
+        
+        double inv_sqrt_detC = 1.0 / sqrt(detC);
+        double c11 = C(0, 0) * inv_sqrt_detC;
+        double c22 = C(1, 1) * inv_sqrt_detC;
+        double c12 = C(0, 1) * inv_sqrt_detC;
+        
+        // Check triangular lattice domain condition: 0 ≤ C12 ≤ min(C11, C22)
+        if (c12 < -0.1 || c12 > std::min(c11, c22)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 ChangeMeasures computeChangeMeasures(const alglib::real_1d_array& current_points,
     const alglib::real_1d_array& reference_points,
     double lattice_constant,

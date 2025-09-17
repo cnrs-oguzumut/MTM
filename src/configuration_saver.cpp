@@ -403,7 +403,8 @@ void ConfigurationSaver::saveTriangleData(
 
 
         const Eigen::Matrix<double, 3, 2>& dndx = element.getDNdX();
-        if(element.getDeformationGradient().determinant() <0 )  {
+        double detF = element.getDeformationGradient().determinant();
+        if(detF <0 )  {
             std::cerr << "Warning: Negative determinant detected for element " << elem_idx << ", reflecting the triangle." << std::endl;
             std::cerr << "Warning: Negative determinant detected for element " << element.getDeformationGradient().determinant()  << ", reflecting the triangle." << std::endl;
             
@@ -423,12 +424,14 @@ void ConfigurationSaver::saveTriangleData(
         continue;
     }
 
+
+
     file << std::fixed << std::setprecision(16)
         << elem_idx << " "                                    // Element number
-        << F(0,0) << " "                                      // F11
-        << F(0,1) << " "                                      // F12
-        << F(1,0) << " "                                      // F21
-        << F(1,1) << " "                                      // F22
+        << F(0,0)/detF << " "                                      // F11
+        << F(0,1)/detF << " "                                      // F12
+        << F(1,0)/detF << " "                                      // F21
+        << F(1,1)/detF << " "                                      // F22
         << element.getNodeIndex(0) << " "                     // Global index of node 1
         << element.getNodeIndex(1) << " "                     // Global index of node 2
         << element.getNodeIndex(2) << " "                     // Global index of node 3

@@ -17,6 +17,7 @@
 #include "src/optimization.h" // This path is relative to ALGLIB_DIR
 #include "src/ap.h" // This path is relative to ALGLIB_DIR
 
+
 // Structure to store various measures of change between point sets
 struct ChangeMeasures {
     double euclidean_norm;
@@ -27,6 +28,8 @@ struct ChangeMeasures {
     bool displacement_exceeds_half_lattice;
     bool has_distorted_triangles;
 };
+
+bool checkSquareDomainViolation(const std::vector<ElementTriangle2D>& ) ;
 
 /*
  * Computes various measures of change between two alglib arrays

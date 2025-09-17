@@ -8,7 +8,7 @@
 std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>> 
 create_dof_mapping_original(
     const std::vector<Point2D>& points,
-    double boundary_tolerance, int pbc)
+    double boundary_tolerance, bool pbc)
 {
     // Interior points mapping (original_idx, solver_idx)
     std::vector<std::pair<int, int>> interior_mapping;
@@ -48,7 +48,7 @@ create_dof_mapping_original(
             std::abs(p.coord.y() - min_y) <= boundary_tolerance ||
             std::abs(p.coord.y() - max_y) <= boundary_tolerance;
             
-        if(pbc==1)
+        if(pbc==true)
             is_boundary = false;
             
         if (is_boundary) {
