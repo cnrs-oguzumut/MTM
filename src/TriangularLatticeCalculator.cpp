@@ -6,6 +6,7 @@ TriangularLatticeCalculator::TriangularLatticeCalculator(double scale) :
     burgers(scale),
     nb_atoms(10),
     normalisation(std::pow(burgers, 2.0) * std::sqrt(3.0) / 2.0),
+    r_cutoff_sq(4.5 * 4.5),  // Added cutoff radius squared for efficiency
     triangular_basis({{
         {0.0, 0.0}
     }}) {}
@@ -81,6 +82,130 @@ Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::M
     phi(1, 0) *= 0.5;
     
     return phi;
+}
+
+// UNIFORM INTERFACE: Calculate second derivatives as 4th order ITensor
+itensor::ITensor TriangularLatticeCalculator::calculate_dseconderivative(const Eigen::Matrix2d& C,
+                                                                        const std::function<double(double)>& dpot,
+                                                                        const std::function<double(double)>& d2pot) {
+    // For this implementation, we'll use a dummy pot function since we only need dpot and d2pot
+    auto dummy_pot = [](double r) { return 0.0; };
+    
+    HessianComponents hess = calculate_hessian_components(C, dummy_pot, dpot, d2pot);
+    return hessianComponentsToITensor(hess);
+}
+
+// Private helper method: Calculate second derivatives (Hessian) of energy w.r.t. metric tensor components
+HessianComponents TriangularLatticeCalculator::calculate_hessian_components(const Eigen::Matrix2d& C,
+                                                                           const std::function<double(double)>& pot,
+                                                                           const std::function<double(double)>& dpot,
+                                                                           const std::function<double(double)>& d2pot) {
+    HessianComponents hessian;
+    
+    // Loop over lattice points (adapted from square lattice for triangular geometry)
+    for (int m = -nb_atoms; m <= nb_atoms; ++m) {
+        for (int n = -nb_atoms; n <= nb_atoms; ++n) {
+            // Skip the origin
+            if (m == 0 && n == 0) continue;
+            
+            // Convert from lattice coordinates to Cartesian coordinates
+            // For triangular lattice: px = m + 0.5*n, py = √3/2 * n
+            double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
+            double py = 0.866025404 * static_cast<double>(n); // √3/2
+            
+            // Calculate squared distance using metric tensor
+            double r2 = px * px * C(0,0) + py * py * C(1,1) + 2.0 * px * py * C(0,1);
+            
+            // Apply cutoff
+            if (r2 >= r_cutoff_sq) continue;
+            
+            double r = std::sqrt(r2) * scal;
+            
+            // Calculate potential derivatives
+            double tempf = 0.5 * dpot(r) / r;        // First derivative factor
+            double tempf2 = 0.5 * d2pot(r) / r;     // Second derivative factor
+            
+            // Calculate geometric factors using triangular lattice coordinates
+            double A = px * px * px * px;        // px⁴
+            double B = py * py * py * py;        // py⁴  
+            double C_geom = px * px * py * py;   // px²py²
+            double D = px * px * px * py;        // px³py
+            double E = py * py * py * px;        // py³px
+            
+            // Calculate Hessian components (same formulas as square lattice)
+            hessian.c11_c11 += 0.25 * tempf2 * A / r - 0.25 * tempf * A / (r * r);
+            hessian.c22_c22 += 0.25 * tempf2 * B / r - 0.25 * tempf * B / (r * r);
+            hessian.c12_c12 += tempf2 * C_geom / r - tempf * C_geom / (r * r);
+            
+            hessian.c11_c12 += 0.5 * tempf2 * D / r - 0.5 * tempf * D / (r * r);
+            hessian.c22_c12 += 0.5 * tempf2 * E / r - 0.5 * tempf * E / (r * r);
+            hessian.c11_c22 += 0.25 * tempf2 * C_geom / r - 0.25 * tempf * C_geom / (r * r);
+        }
+    }
+    
+    return hessian;
+}
+
+// Private helper method: Convert HessianComponents to 4th order ITensor
+itensor::ITensor TriangularLatticeCalculator::hessianComponentsToITensor(const HessianComponents& hess) const {
+    // Create indices for the 4th order tensor (i,j,k,l) where ∂²E/∂C_ij∂C_kl
+    auto i = itensor::Index(2, "i");
+    auto j = itensor::Index(2, "j");
+    auto k = itensor::Index(2, "k");
+    auto l = itensor::Index(2, "l");
+    
+    itensor::ITensor tensor(i, j, k, l);
+    
+    // Set tensor components based on Hessian components
+    // Note: ITensor uses 1-based indexing
+    tensor.set(i=1, j=1, k=1, l=1, hess.c11_c11);  // ∂²E/∂c₁₁²
+    tensor.set(i=2, j=2, k=2, l=2, hess.c22_c22);  // ∂²E/∂c₂₂²
+    tensor.set(i=1, j=2, k=1, l=2, hess.c12_c12);  // ∂²E/∂c₁₂²
+    tensor.set(i=2, j=1, k=2, l=1, hess.c12_c12);  // ∂²E/∂c₂₁² (symmetry)
+    
+    // Mixed derivatives
+    tensor.set(i=1, j=1, k=2, l=2, hess.c11_c22);  // ∂²E/∂c₁₁∂c₂₂
+    tensor.set(i=2, j=2, k=1, l=1, hess.c11_c22);  // ∂²E/∂c₂₂∂c₁₁ (symmetry)
+    
+    tensor.set(i=1, j=1, k=1, l=2, hess.c11_c12);  // ∂²E/∂c₁₁∂c₁₂
+    tensor.set(i=1, j=1, k=2, l=1, hess.c11_c12);  // ∂²E/∂c₁₁∂c₂₁ (symmetry)
+    tensor.set(i=1, j=2, k=1, l=1, hess.c11_c12);  // ∂²E/∂c₁₂∂c₁₁ (symmetry)
+    tensor.set(i=2, j=1, k=1, l=1, hess.c11_c12);  // ∂²E/∂c₂₁∂c₁₁ (symmetry)
+    
+    tensor.set(i=2, j=2, k=1, l=2, hess.c22_c12);  // ∂²E/∂c₂₂∂c₁₂
+    tensor.set(i=2, j=2, k=2, l=1, hess.c22_c12);  // ∂²E/∂c₂₂∂c₂₁ (symmetry)
+    tensor.set(i=1, j=2, k=2, l=2, hess.c22_c12);  // ∂²E/∂c₁₂∂c₂₂ (symmetry)
+    tensor.set(i=2, j=1, k=2, l=2, hess.c22_c12);  // ∂²E/∂c₂₁∂c₂₂ (symmetry)
+    
+    return tensor;
+}
+
+// Calculate acoustic tensor components as 2x2 blocks
+std::vector<Eigen::Matrix2d> TriangularLatticeCalculator::calculateAcousticTensorBlocks(const Eigen::Matrix2d& C,
+                                                                                       const std::function<double(double)>& pot,
+                                                                                       const std::function<double(double)>& dpot,
+                                                                                       const std::function<double(double)>& d2pot) {
+    HessianComponents hess = calculate_hessian_components(C, pot, dpot, d2pot);
+    
+    std::vector<Eigen::Matrix2d> blocks(4);
+    
+    // Block (0,0): ∂²E/∂c₁ᵢ∂c₁ⱼ
+    blocks[0] << hess.c11_c11, hess.c11_c12,
+                 hess.c11_c12, hess.c12_c12;
+    
+    // Block (0,1): ∂²E/∂c₁ᵢ∂c₂ⱼ  
+    blocks[1] << hess.c11_c12, hess.c11_c22,
+                 hess.c12_c12, hess.c22_c12;
+    
+    // Block (1,0): ∂²E/∂c₂ᵢ∂c₁ⱼ (should be transpose of block (0,1))
+    blocks[2] << hess.c11_c12, hess.c12_c12,
+                 hess.c11_c22, hess.c22_c12;
+    
+    // Block (1,1): ∂²E/∂c₂ᵢ∂c₂ⱼ
+    blocks[3] << hess.c12_c12, hess.c22_c12,
+                 hess.c22_c12, hess.c22_c22;
+    
+    return blocks;
 }
 
 // Helper method to get nearest neighbor distance in perfect lattice

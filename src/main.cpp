@@ -38,6 +38,7 @@
 #include "../include/utils/dislocation_utils.h"
 #include "../include/loading/NanoIndenter.h"
 
+#include "../include/acoustic_tensor.h"
 
 
 
@@ -415,9 +416,10 @@ size_t findMiddleAtom(const std::vector<Point2D>& points, bool verbose = false) 
 void debug_deformation_tests_triangular() {
 
       // Create calculator with scale = 1.0
-      TriangularLatticeCalculator calculator(0.687204444204349);
-      std::function<double(double)> potential_func = lennard_jones_energy_v2;
-      std::function<double(double)> potential_func_der = lennard_jones_energy_der_v2;
+      //TriangularLatticeCalculator calculator(0.687204444204349);
+      TriangularLatticeCalculator calculator(1.);
+      std::function<double(double)> potential_func = lennard_jones_energy_v3;
+      std::function<double(double)> potential_func_der = lennard_jones_energy_der_v3;
   
     // Identity matrix as reference state
     // Eigen::Matrix2d F_I ;
@@ -492,39 +494,56 @@ void debug_deformation_tests_triangular() {
             outFile << "# lambda, volume_ratio, C11, C22, C11_reduced, C12_reduced, C22_reduced, raw_energy, energy_minus_zero" << std::endl;
             
             // Calculate energy for different lambda values
-            for (double lambda = 0.7; lambda <= 2.2; lambda += 0.01) {
-                // Create deformation gradient for isotropic volume change: F = [lambda 0; 0 lambda]
-                Eigen::Matrix2d F;
-                F << lambda, 0.0,
-                     0.0, lambda;
-                
-                // Calculate metric tensor C = F^T * F
-                Eigen::Matrix2d C = F.transpose() * F;
-                
-                // Calculate volume ratio (det(F) in 2D)
-                double volume_ratio = F.determinant();
-                
-                // Apply Lagrange reduction
-                //Eigen::Matrix2d C_reduced = calculator.lagrange_reduction(C);
-                Eigen::Matrix2d C_reduced=C;
-                
-                // Calculate energy
-                double raw_energy = calculator.calculate_energy(C_reduced, potential_func, 0);
-                double energy = raw_energy - zero;
-                
-                // Write to file
-                outFile << std::fixed << std::setprecision(6)
-                        << lambda << ", " 
-                        << volume_ratio << ", "
-                        << C(0, 0) << ", " 
-                        << C(1, 1) << ", "
-                        << C_reduced(0, 0) << ", " 
-                        << C_reduced(0, 1) << ", " 
-                        << C_reduced(1, 1) << ", "
-                        << raw_energy << ", " 
-                        << energy << std::endl;
+        // Variables to track minimum energy and corresponding lambda
+        double min_energy = std::numeric_limits<double>::max();
+        double optimal_lambda = 0.0;
+
+        for (double lambda = 0.99; lambda <= 0.999; lambda += 0.000001) {
+            // Create deformation gradient for isotropic volume change: F = [lambda 0; 0 lambda]
+            Eigen::Matrix2d F;
+            F << lambda, 0.0,
+                0.0, lambda;
+            
+            // Calculate metric tensor C = F^T * F
+            Eigen::Matrix2d C = F.transpose() * F;
+            
+            // Calculate volume ratio (det(F) in 2D)
+            double volume_ratio = F.determinant();
+            
+            // Apply Lagrange reduction
+            //Eigen::Matrix2d C_reduced = calculator.lagrange_reduction(C);
+            Eigen::Matrix2d C_reduced = C;
+            
+            // Calculate energy
+            double raw_energy = calculator.calculate_energy(C_reduced, potential_func, 0);
+            double energy = raw_energy - zero;
+            
+            // Check if this is the minimum energy found so far
+            if (energy < min_energy) {
+                min_energy = energy;
+                optimal_lambda = lambda;
             }
             
+            // Write to file
+            outFile << std::fixed << std::setprecision(6)
+                    << lambda << ", "
+                    << volume_ratio << ", "
+                    << C(0, 0) << ", "
+                    << C(1, 1) << ", "
+                    << C_reduced(0, 0) << ", "
+                    << C_reduced(0, 1) << ", "
+                    << C_reduced(1, 1) << ", "
+                    << raw_energy << ", "
+                    << energy << std::endl;
+        }
+
+        // Output the results
+        std::cout << "Optimal lambda (minimum energy): " << std::fixed << std::setprecision(16) << optimal_lambda << std::endl;
+        std::cout << "Minimum energy: " << std::fixed << std::setprecision(16) << min_energy << std::endl;
+        std::cout << "Equilibrium lattice distance: " << std::fixed << std::setprecision(16) << optimal_lambda << std::endl;
+
+        // Return the optimal lambda (if this is inside a function)
+        // return optimal_lambda;            
             outFile.close();
             std::cout << "Debug data written to volume_change_F_debug.txt" << std::endl;
         }
@@ -1001,7 +1020,8 @@ Eigen::Matrix<double, 3, 2> calculateShapeDerivatives(
         int& has_changes,
         int max_iterations = 100,
         double reference_area=0.5,
-        bool pbc = false
+        bool pbc = false,
+        bool optimize_interior = true
          
     ) {
         bool should_remesh = true;
@@ -1070,7 +1090,8 @@ Eigen::Matrix<double, 3, 2> calculateShapeDerivatives(
     
             std::cout<<"optimization in  REMESHING loop"<<std::endl;
             LBFGSOptimizer optimizer(10, 0, 1e-13, 0, 0);
-            optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
+            if(optimize_interior)
+                optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
             map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
 
             std::vector<int> m3_after_remeshed = analyzeElementReduction(elements, square_points, userData);
@@ -1132,7 +1153,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     //double optimal_lattice_parameter = 1.;
     //double lattice_constant = optimal_lattice_parameter;
     
-    double symmetry_constantx = 1.;//pow(4. / 3., 1. / 4.);
+    double symmetry_constantx = (lattice_type == "triangular") ?  pow(4. / 3., 1. / 4.) : 1.0;    
     double optimal_lattice_parameter = symmetry_constantx * 1.0;
     double lattice_constant = optimal_lattice_parameter;
 
@@ -1150,8 +1171,10 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         
     int original_domain_size = square_points.size();
     DomainInfo domain_size = compute_domain_size(square_points);
-    
-    const std::array<double, 2> offsets = {lattice_constant, lattice_constant};
+    const std::array<double, 2> offsets = (lattice_type == "square") ? 
+    std::array<double, 2>{lattice_constant, lattice_constant} :
+    std::array<double, 2>{lattice_constant, (sqrt(3.)/2.)*lattice_constant};
+
     //const std::array<double, 2> offsets = {lattice_constant, sqrt(3.)/2*lattice_constant};
 
     std::cout << "offsets: " << offsets[0] << " " << offsets[1] << std::endl;
@@ -1219,7 +1242,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         1e-6,  // Tolerance
         pbc  // Use periodic copies
     );
-    mesher.setUsePeriodicCopies(true);  // Switch to using original domain only
+    mesher.setUsePeriodicCopies(pbc);  // Switch to using original domain only not necessary
     alglib::real_1d_array free_dofs;
     int n_free_nodes = interior_mapping.size();
     free_dofs.setlength(2 * interior_mapping.size());  // [u0, u1, ..., v0, v1, ...]
@@ -1266,9 +1289,9 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     //debug_deformation_tests();
 
     // Set up alpha values for deformation steps
-    double alpha_min = 0.13;
+    double alpha_min = 0.0;
     double alpha_max = 0.2;
-    double step_size = 1e-4;
+    double step_size = 5e-5;
     int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
     std::cout << "num_alpha_points: " << num_alpha_points << std::endl;
     //num_alpha_points = 1;
@@ -1280,10 +1303,6 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     }
 
 
-
-
-
- 
     // Process each alpha value
     for (size_t i = 0; i < alpha_values.size(); i++) {
         double alpha = alpha_values[i];
@@ -1455,7 +1474,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         
         // Determine if remeshing is needed
         //bool shouldRemesh = result.has_distorted_triangles ;
-        bool shouldRemesh=checkSquareDomainViolation(elements);
+        bool shouldRemesh=false;//checkSquareDomainViolation(elements);
         std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
         int mesh_iteration = 0;
         // shouldRemesh=false;
@@ -1590,8 +1609,8 @@ void example_1_shifting(int caller_id, int nx, int ny) {
     writeSizesToFile(nx, ny);
     std::string lattice_type = "square"; // "square" or "triangular"
     double symmetry_constantx = 1.;
-    if(lattice_type == "triangular")
-        symmetry_constantx = pow(4. / 3., 1. / 4.);
+    // if(lattice_type == "triangular")
+    //     symmetry_constantx = pow(4. / 3., 1. / 4.);
     double h=symmetry_constantx;
     Eigen::Vector2d p1(0, 0);
     Eigen::Vector2d p2(h, 0);
@@ -1658,9 +1677,9 @@ void example_1_shifting(int caller_id, int nx, int ny) {
         translation_map,
         full_mapping,
         1e-6,  // Tolerance
-        false  // Use periodic copies
+        pbc  // Use periodic copies
     );
-    mesher.setUsePeriodicCopies(false);  // Switch to using original domain only
+    mesher.setUsePeriodicCopies(pbc);  // Switch to using original domain only
     alglib::real_1d_array free_dofs;
     int n_free_nodes = interior_mapping.size();
     free_dofs.setlength(2 * interior_mapping.size());  // [u0, u1, ..., v0, v1, ...]
@@ -1740,8 +1759,8 @@ void example_1_shifting(int caller_id, int nx, int ny) {
 
     // Set up alpha values for deformation steps
     double alpha_min = 0.;
-    double alpha_max = 4.0;
-    double step_size = 5e-2;
+    double alpha_max = -1.0;
+    double step_size = -5e-2;
     int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
     std::cout << "num_alpha_points: " << num_alpha_points << std::endl;
     //num_alpha_points = 1;
@@ -1948,7 +1967,8 @@ void example_1_shifting(int caller_id, int nx, int ny) {
                 hasChanges,
                 max_iterations,
                 element_area,
-                pbc
+                pbc,
+                false
             );           
 
 
@@ -2680,27 +2700,55 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
     return {final_energy, stress_tensor, mesh_iteration};
 }
 void single_dislo_LJ() {
+    
+    
+    
     // Parameters for lattice
     std::string lattice_type = "triangular"; // "square" or "triangular"
     
+    auto compute_even_ny = [](int nx) {
+        int ny = std::round(2.0 * nx / std::sqrt(3));
+        return (ny % 2 == 0) ? ny : ny + 1; // Ensure ny is even
+    };
+    
+    int nx = 120;
+    int ny = compute_even_ny(nx);
+
+
+
     // Energy functions (dumb)
-    std::function<double(double)> potential_func = lennard_jones_energy_v2;
-    std::function<double(double)> potential_func_der = lennard_jones_energy_der_v2;
+    std::function<double(double)> potential_func = lennard_jones_energy_v3;
+    std::function<double(double)> potential_func_der = lennard_jones_energy_der_v3;
 
     std::cout << "STEP 1: Finding optimal lattice parameter...\n";
     double h=1.;
-    double optimal_lattice_parameter =  0.6872044091828517;
-    double lattice_constant = 0.6872044091828517;
+    double optimal_lattice_parameter =  0.996407146941421;
+    double lattice_constant = 0.996407146941421;
     Eigen::Vector2d p1(0, 0);
     Eigen::Vector2d p2(h*lattice_constant, 0);
     Eigen::Vector2d p3(h*0.5*lattice_constant, h*sqrt(3)*lattice_constant/2);
     Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1,p2,p3);
     std::cout<<dndx<<std::endl;
+
+    // double symmetry_constantx = (lattice_type == "triangular") ?  pow(4. / 3., 1. / 4.) : 1.0;    
+    // double optimal_lattice_parameter = symmetry_constantx * 1.0;
+    // double lattice_constant = optimal_lattice_parameter;
+
+
+
+    // Generate initial lattice
+    // std::vector<Point2D> square_points = LatticeGenerator::generate_2d_lattice(
+    //     nx, ny, lattice_constant, lattice_type);
+    // std::vector<Point2D> square_points_ref = LatticeGenerator::generate_2d_lattice(
+    //         nx, ny, lattice_constant, lattice_type);
+
+
     
     
     // Using the lambda function:
-    std::string filename_ref = "/Users/usalman/programming/FEM_2D/factorized/lattice_triangulation/single/R30_ref.dat";
-    std::string filename = "/Users/usalman/programming/FEM_2D/factorized/lattice_triangulation/single/R30.dat";
+    
+    std::string filename_ref = "/Users/usalman/draft_MTM_MS/Rfree_90/LocalState_Single_dislocation_cluster_0_Perfect_Crystal.dump";
+    std::string filename = "/Users/usalman/draft_MTM_MS/Rfree_90/LocalState_Single_dislocation_cluster_1_With_Dislocation_Field.dump";
 
     std::vector<Point2D> square_points_ref = readPositionsFromFile(filename);
     std::vector<Point2D> square_points = readPositionsFromFile(filename_ref);
@@ -2711,7 +2759,7 @@ void single_dislo_LJ() {
     }
 
 
-
+    bool pbc = false;
 
     //RowResults registery = processPointRows(square_points, lattice_constant);
     //RowResults registery_diso = processPointRows(square_points_ref, lattice_constant);
@@ -2742,12 +2790,28 @@ void single_dislo_LJ() {
     std::cout << "domain_size.get_height(): " << domain_size.get_height() << std::endl;
     
     // Boundary conditions
-    double raduis=30*h;
-    auto [interior_mapping, full_mapping] =create_dof_mapping_with_radius(
-        square_points,raduis,0);
+    double radius=90*h;
+    auto [interior_mapping, full_mapping] =create_dof_mapping_with_radius(square_points,radius,pbc);
     // Create domain maps
     auto [original_domain_map, translation_map] = MeshGenerator::create_domain_maps(
         original_domain_size, domain_dims, offsets);
+
+    Eigen::Vector2d burgers_vector(lattice_constant, 0.0); // Example: unit Burgers vector in x-direction
+    double core_radius = 1.0; // Example core radius value
+    double poisson_ratio = 0.3; // Typical value for many materials
+    
+    // Call the function
+    // std::vector<Point2D> dislocated_points = createSingleDislocation(
+    //     square_points_ref,
+    //     burgers_vector,
+    //     middle_atom_index,
+    //     core_radius,
+    //     poisson_ratio
+    // );
+    
+    // square_points = dislocated_points;
+
+
 
     // Create ALGLIB array for free DOFs (displacements)
     alglib::real_1d_array free_dofs;
@@ -2758,7 +2822,7 @@ void single_dislo_LJ() {
     // Setup triangulation variables
     // Create a Point2D from your DomainDimensions locally
     Point2D domain_dims_point(domain_dims.size_x, domain_dims.size_y);
-
+    
     // 1. Create the AdaptiveMesher instance
     AdaptiveMesher mesher(
         domain_dims_point,
@@ -2766,10 +2830,11 @@ void single_dislo_LJ() {
         original_domain_map,
         translation_map,
         full_mapping,
-        1e-6  // Tolerance
+        1e-6,  // Tolerance
+        pbc
     );
     
-    mesher.setUsePeriodicCopies(false);  // Switch to using original domain only
+    mesher.setUsePeriodicCopies(pbc);  // Switch to using original domain only
 
     alglib::real_1d_array original_x_remesh = mesher.saveOriginalPositions(free_dofs);
         
@@ -2780,28 +2845,8 @@ void single_dislo_LJ() {
 
     auto [elements, active_elements] = mesher.createMesh(square_points, free_dofs,Eigen::Matrix2d::Identity(), &dndx);
 
-    int pbc = 0;
 
 
-
-
-
-
-
-    // Eigen::Vector2d burgers_vector(lattice_constant, 0.0); // Example: unit Burgers vector in x-direction
-    // double core_radius = 1.0; // Example core radius value
-    // double poisson_ratio = 0.3; // Typical value for many materials
-    
-    // // Call the function
-    // std::vector<Point2D> dislocated_points = createSingleDislocation(
-    //     square_points_ref,
-    //     burgers_vector,
-    //     middle_atom_index,
-    //     core_radius,
-    //     poisson_ratio
-    // );
-    
-    // square_points = dislocated_points;
     
     std::cout << "Created " << elements.size() << " element triangles" << std::endl;
     
@@ -2814,16 +2859,18 @@ void single_dislo_LJ() {
         square_points[i].coord(0) += u[i].coord(0);  // Add x-component
         square_points[i].coord(1) += u[i].coord(1);  // Add y-component
     }    
-    auto dipole_points = createDislocationDipole(
-        square_points_ref,
-        Eigen::Vector2d(lattice_constant, 0.0),
-        Eigen::Vector2d(0.0, 0.0),
-        40.0,  // separation distance
-        2.0,  // core radius
-        0.33,  // Poisson's ratio
-        Eigen::Vector2d(1.0, 0.0) // dipole direction (45 degrees)
-    );    
-    //square_points =dipole_points;
+    // auto dipole_points = createDislocationDipole(
+    //     square_points_ref,
+    //     Eigen::Vector2d(lattice_constant, 0.0),
+    //     Eigen::Vector2d(0.0, 0.0),
+    //     40.0,  // separation distance
+    //     2.0,  // core radius
+    //     0.33,  // Poisson's ratio
+    //     Eigen::Vector2d(1.0, 0.0) // dipole direction (45 degrees)
+    // );    
+    // square_points =dipole_points;
+    
+    
     // Setup energy calculation
     TriangularLatticeCalculator calculator(lattice_constant);
     
@@ -2834,8 +2881,11 @@ void single_dislo_LJ() {
     double zero = calculator.calculate_energy(C_I, potential_func, 0);
     std::cout << "debugging simple shear test" << std::endl;
     std::cout << "zero energy value: " << zero << std::endl;
-     debug_deformation_tests_triangular() ;
-     std::cout << "debug_deformation_tests_triangular completed: "  << std::endl;
+    
+    //use this to find equlibrium atomistic distance
+    //debug_deformation_tests_triangular() ;
+    //std::cout << "debug_deformation_tests_triangular completed: "  << std::endl;
+    // exit(0);
 
     // Prepare for optimization
     alglib::real_1d_array x;
@@ -2989,7 +3039,9 @@ void single_dislo_LJ() {
         shouldRemesh=false;
         // Remeshing if needed
         int mesh_iteration = 0;
-        //shouldRemesh=true;
+        shouldRemesh=true;
+        shouldRemesh=checkSquareDomainViolation(elements);
+        //shouldRemesh=false;
         const int MAX_ITERATIONS = 100;
         
         // 4. Remeshing loop
@@ -3031,7 +3083,8 @@ void single_dislo_LJ() {
             
     
             // Determine if remeshing is needed
-            shouldRemesh = result.has_distorted_triangles ;
+            //shouldRemesh = result.has_distorted_triangles ;
+            shouldRemesh=checkSquareDomainViolation(elements);
             std::cout << "shouldRemesh: " << shouldRemesh << std::endl;
             
             mesh_iteration++;
@@ -3070,6 +3123,8 @@ void single_dislo_LJ() {
             ConfigurationSaver::writeToVTK(finalUserData.points, finalUserData.elements, &finalUserData, i);
         }
 
+        exit(0);
+        
         std::cout << "Stress tensor [MPa]:" << std::endl;
         std::cout << "  σxx = " << post_stress_tensor(0,0) << std::endl;
         std::cout << "  σxy = " << post_stress_tensor(0,1) << std::endl;
@@ -3607,17 +3662,260 @@ void indentation() {
 
     }
 }
+void parametricAcousticStudy_v1() {
+    std::cout << "Starting parametric acoustic tensor study with Lagrange reduction..." << std::endl;
+    
+
+        Eigen::Matrix2d F;
+    F << 1.0, 0.0,    // 5% stretch in x, 2% shear
+         0.0, 1;    // 1% shear, 2% compression in y
+    
+    // Cell matrix C (metric tensor - represents current configuration)
+    Eigen::Matrix2d C;
+    // C << 1.1025, 0.0301,   // C = F^T * F for this example
+    //      0.0301, 0.9605;
+    C = F.transpose() * F;
+    
+    // Material properties matrix Z (elastic constants)
+    Eigen::Matrix2d Z;
+    Z << 1.0, 0.0,     // Material stiffness parameters
+         0.0, 1.0;
+    
+    std::cout << "=== Acoustic Tensor Analysis with Strain Energy ===" << std::endl;
+    std::cout << "\nInput matrices:" << std::endl;
+    std::cout << "Deformation gradient F:\n" << F << std::endl;
+    std::cout << "\nCell matrix C:\n" << C << std::endl;
+    std::cout << "\nMaterial matrix Z:\n" << Z << std::endl;
+    
+    // 2. Create strain energy calculator
+    double scale = 1.0;
+    Strain_Energy_LatticeCalculator strain_calculator(scale);
+    
+    // 3. Define dummy potential functions (ignored by strain energy calculator)
+    auto dummy_pot = [](double r) -> double { return 0.0; };
+    auto dummy_dpot = [](double r) -> double { return 1.0; };  // Dummy first derivative
+    auto dummy_d2pot = [](double r) -> double { return 0.1; }; // Dummy second derivative
+    
+    // 4. Create acoustic tensor object
+    AcousticTensor acoustic_tensor(F, C, Z);
+  
+      // 5. Compute energy derivatives using the uniform interface
+    double normalisation = strain_calculator.getUnitCellArea();
+    
+    std::cout << "\n=== Computing Energy Derivatives ===" << std::endl;
+    std::cout << "Using Strain_Energy_LatticeCalculator with uniform interface..." << std::endl;
+    
+        // auto dummy_dpot = [](double r) -> double { return 1.0; };
+        // auto dummy_d2pot = [](double r) -> double { return 0.1; };
+
+        acoustic_tensor.computeEnergyDerivatives(
+            strain_calculator,
+            dummy_dpot,          // Lambda accepted directly
+            dummy_d2pot,         // Lambda accepted directly
+            normalisation
+        );
+    
+    std::cout << "✓ First and second derivatives computed analytically" << std::endl;
+        // 6. Display computed derivatives
+    std::cout << "\nFirst energy derivative dE/dC:\n" 
+              << acoustic_tensor.getEnergyDerivative() << std::endl;
 
 
+        std::cout << "Second derivative tensor norm: " 
+              << itensor::norm(acoustic_tensor.getEnergySecondDerivative()) << std::endl;
+    
+std::cout << "Second derivative tensor (full):" << std::endl;
+itensor::ITensor d2E_dC2 = acoustic_tensor.getEnergySecondDerivative();
+
+// Print tensor order and dimensions
+std::cout << "Tensor order: " << itensor::order(d2E_dC2) << std::endl;
+std::cout << "Tensor dimensions: ";
+for (auto& idx : itensor::inds(d2E_dC2)) {
+    std::cout << idx.dim() << " ";
+}
+
+// Print all tensor elements (assuming it's 2x2x2x2)
+std::cout << "Tensor elements:" << std::endl;
+for (int i = 1; i <= 2; i++) {
+    for (int j = 1; j <= 2; j++) {
+        for (int k = 1; k <= 2; k++) {
+            for (int l = 1; l <= 2; l++) {
+                try {
+                    double val = d2E_dC2.elt(i, j, k, l);  // Direct element access
+                    std::cout << "d2E_dC2(" << i << "," << j << "," << k << "," << l << ") = " << val << std::endl;
+                } catch (const std::exception& e) {
+                    std::cout << "Error accessing element (" << i << "," << j << "," << k << "," << l << "): " << e.what() << std::endl;
+                }
+            }
+        }
+    }
+}
+std::cout << std::endl;
+
+    // 7. Perform acoustic tensor analysis
+    std::cout << "\n=== Acoustic Tensor Analysis ===" << std::endl;
+    
+    // Parameters for analysis
+    double alpha = 1.0;  // Scaling parameter
+    double theta = 0.0;  // Angle parameter
+    
+    std::cout << "Running analysis with alpha = " << alpha << ", theta = " << theta << std::endl;
+    // Calculate acoustic tensor determinant
+    AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(alpha, theta);
+    
+    // 8. Display results
+    std::cout << "\n=== Results ===" << std::endl;
+    std::cout << "Minimum acoustic tensor determinant: " << result.detAc << std::endl;
+    std::cout << "Angle at minimum (degrees): " << result.xsi << std::endl;
+    
+
+
+}
+
+
+void parametricAcousticStudy() {
+    std::cout << "Starting parametric acoustic tensor study with Lagrange reduction..." << std::endl;
+    
+    // Create output file
+    std::ofstream file("acoustic_study_results.dat");
+    file << std::scientific << std::setprecision(8);
+    file << "# t p c11 c22 c12 c11_red c22_red c12_red min_detAc angle_deg third_condition" << std::endl;
+    
+    // Create strain energy calculator once (outside the loop)
+    double scale = 1.0;
+    Strain_Energy_LatticeCalculator strain_calculator(scale);
+    double normalisation = strain_calculator.getUnitCellArea();
+    
+    // Define dummy potential functions once (ignored by strain energy calculator)
+    auto dummy_dpot = [](double r) -> double { return 1.0; };
+    auto dummy_d2pot = [](double r) -> double { return 0.1; };
+    
+    int count = 0;
+    
+    // Main parametric loop - same structure as your working code but in a loop
+    for (double t = 0.0; t <= 0.5; t += 0.01) {
+        for (double p = -M_PI; p <= M_PI; p += M_PI/32) {
+            
+            try {
+                // Compute C matrix components exactly as specified
+                double c11 = cosh(t) + sinh(t) * sin(p);
+                double c22 = cosh(t) - sinh(t) * sin(p);
+                double c12 = sinh(t) * cos(p);
+                
+                // Construct original C matrix
+                Eigen::Matrix2d C_original;
+                C_original << c11, c12,
+                              c12, c22;
+                
+                // Check if C is positive definite
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> eigensolver(C_original);
+                if (eigensolver.eigenvalues().minCoeff() <= 1e-10) {
+                    continue; // Skip non-positive definite matrices
+                }
+                
+                // Apply Lagrange reduction to get Z matrix and reduced C
+                lagrange::Result reduction_result = lagrange::reduce(C_original);
+                Eigen::Matrix2d C = reduction_result.C_reduced;  // Use reduced C
+                Eigen::Matrix2d Z = reduction_result.m_matrix;   // Z from reduction
+                bool third_condition = reduction_result.third_condition_satisfied;
+                
+                // Polar decomposition: find F such that C = F^T * F
+                // Using your working approach
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> C_eigensolver(C);
+                if (C_eigensolver.eigenvalues().minCoeff() <= 1e-10) {
+                    continue;
+                }
+                
+                Eigen::Matrix2d S_sqrt = C_eigensolver.eigenvalues().cwiseSqrt().asDiagonal();
+                Eigen::Matrix2d F = C_eigensolver.eigenvectors() * S_sqrt * C_eigensolver.eigenvectors().transpose();
+                
+
+
+
+                // Verify: C should equal F^T * F
+                Eigen::Matrix2d C_check = F.transpose() * F;
+                if ((C - C_check).norm() > 1e-10) {
+                    std::cout << "Warning: Polar decomposition check failed at t=" << t << ", p=" << p << std::endl;
+                }
+  
+                
+                    // std::cout << "\n=== DEBUG: Point " << count+1 << " at t=" << t << ", p=" << p << " ===" << std::endl;
+                    // std::cout << "Original C matrix:\n" << C_original << std::endl;
+                    // std::cout << "Reduced C matrix:\n" << C << std::endl;
+                    // std::cout << "F matrix:\n" << F << std::endl;
+                    // std::cout << "Z matrix (from reduction):\n" << Z << std::endl;
+                    // std::cout << "F^T * F check:\n" << C_check << std::endl;
+                    // std::cout << "C - F^T*F norm: " << (C - C_check).norm() << std::endl;
+                    // std::cout << "C eigenvalues: " << C_eigensolver.eigenvalues().transpose() << std::endl;
+                    // std::cout << "C determinant: " << C.determinant() << std::endl;
+                    // std::cout << "Z determinant: " << Z.determinant() << std::endl;
+                    // std::cout << "About to create AcousticTensor..." << std::endl;
+
+
+                // Create acoustic tensor object (same as your working code)
+                AcousticTensor acoustic_tensor(F, C, Z);
+                
+                // Compute energy derivatives using the uniform interface (same as working code)
+                acoustic_tensor.computeEnergyDerivatives(
+                    strain_calculator,
+                    dummy_dpot,
+                    dummy_d2pot,
+                    normalisation
+                );
+                
+                // Perform acoustic tensor analysis (same as working code)
+                double alpha = 1.0;
+                double theta = 0.0;
+                AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(alpha, theta);
+                
+                // Write results to file
+                file << t << " " 
+                     << p << " " 
+                     << c11 << " "                // Original C components
+                     << c22 << " " 
+                     << c12 << " " 
+                     << C(0,0) << " "             // Reduced C components
+                     << C(1,1) << " " 
+                     << C(0,1) << " " 
+                     << result.detAc << " " 
+                     << result.xsi << " "
+                     << (third_condition ? 1 : 0) << std::endl;
+                
+                count++;
+                
+                // Progress update
+                if (count % 100 == 0) {
+                    std::cout << "Processed " << count << " points successfully. Current: t=" 
+                              << std::fixed << std::setprecision(3) << t 
+                              << ", p=" << p << std::endl;
+                }
+                
+            } catch (const std::exception& e) {
+                std::cout << "Error at t=" << t << ", p=" << p << ": " << e.what() << std::endl;
+                continue;
+            }
+        }
+    }
+    
+    file.close();
+    std::cout << "Parametric study completed successfully!" << std::endl;
+    std::cout << "Total points processed: " << count << std::endl;
+    std::cout << "Results saved to 'acoustic_study_results.dat'" << std::endl;
+}
 int main() {
     // TensorExample example;
     // example.run();
     // exit(0);
     //for (int caller_id = 0; caller_id <= 0; ++caller_id) {
         //example_1_shifting(0,20,20);
-        example_1_conti_zanzotto(0,150,150);
+        //single_dislo_LJ();
+        //example_1_conti_zanzotto(0,200,200);
     //}
     //indentation();
+  
+    //parametricAcousticStudy_v1();
+    parametricAcousticStudy();
+
     exit(0);
 
     indentation();

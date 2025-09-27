@@ -71,7 +71,7 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
         // Use all triangles if not using periodic copies
         unique_triangles = MeshGenerator::select_unique_connected_triangles(
             points_used, triangulation, original_domain_map,
-            square_points.size(), unique_triangle_tolerance, false);
+            square_points.size(), unique_triangle_tolerance, sqrt(2)+0.001);
 
     }
     

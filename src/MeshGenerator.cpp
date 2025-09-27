@@ -270,6 +270,136 @@ std::vector<Triangle> MeshGenerator::createTrianglesFromPoints(const std::vector
     return triangles;
 }
 
+//chooses the ordering such that vectors from origin have the largest angle between them <90
+
+// std::vector<Triangle> MeshGenerator::createTrianglesFromPoints(const std::vector<Point2D>& points) {
+//     // Convert to CGAL points
+//     std::vector<CGALPoint> cgal_points;
+//     cgal_points.reserve(points.size());
+//     for (const auto& p : points) {
+//         cgal_points.push_back(p.to_cgal_point());
+//     }
+    
+//     // Create triangulation with vertex info
+//     Delaunay triangulation;
+    
+//     // Insert points and assign indices
+//     std::vector<std::pair<CGALPoint, int>> points_with_info;
+//     points_with_info.reserve(cgal_points.size());
+//     for (size_t i = 0; i < cgal_points.size(); ++i) {
+//         points_with_info.emplace_back(cgal_points[i], i);
+//     }
+//     triangulation.insert(points_with_info.begin(), points_with_info.end());
+    
+//     // Helper function to reorder triangle for maximum angle ≤ 90° between vectors from origin
+//     auto reorderForMaxAngle = [&](int v0, int v1, int v2) -> std::array<int, 3> {
+//         std::array<int, 3> vertices = {v0, v1, v2};
+        
+//         // Try each vertex as origin and find the one that gives maximum angle ≤ 90°
+//         double max_valid_angle = -1.0;  // Maximum angle ≤ π/2
+//         std::array<int, 3> best_ordering = {v0, v1, v2};
+        
+//         for (int origin_idx = 0; origin_idx < 3; ++origin_idx) {
+//             int origin = vertices[origin_idx];
+//             int other1 = vertices[(origin_idx + 1) % 3];
+//             int other2 = vertices[(origin_idx + 2) % 3];
+            
+//             // Calculate vectors from origin to the other two vertices
+//             Point2D origin_pos = points[origin];
+//             Point2D vec1(points[other1].coord.x() - origin_pos.coord.x(),
+//                         points[other1].coord.y() - origin_pos.coord.y());
+//             Point2D vec2(points[other2].coord.x() - origin_pos.coord.x(),
+//                         points[other2].coord.y() - origin_pos.coord.y());
+            
+//             // Calculate angle between vectors using dot product
+//             double dot_product = vec1.coord.x() * vec2.coord.x() + vec1.coord.y() * vec2.coord.y();
+//             double mag1 = std::sqrt(vec1.coord.x() * vec1.coord.x() + vec1.coord.y() * vec1.coord.y());
+//             double mag2 = std::sqrt(vec2.coord.x() * vec2.coord.x() + vec2.coord.y() * vec2.coord.y());
+            
+//             if (mag1 > 1e-12 && mag2 > 1e-12) { // Avoid division by zero
+//                 double cos_angle = dot_product / (mag1 * mag2);
+//                 // Clamp to [-1, 1] to handle numerical errors
+//                 cos_angle = std::max(-1.0, std::min(1.0, cos_angle));
+//                 double angle = std::acos(cos_angle); // Angle in radians [0, π]
+                
+//                 // Only consider angles ≤ π/2 (90 degrees) to ensure C12 ≥ 0
+//                 if (angle <= M_PI/2 + 1e-9) { // Small tolerance for numerical errors
+//                     if (angle > max_valid_angle) {
+//                         max_valid_angle = angle;
+//                         best_ordering = {origin, other1, other2};
+//                     }
+//                 }
+//             }
+//         }
+        
+//         // If no valid angle ≤ 90° was found, fall back to smallest angle > 90°
+//         // (this handles degenerate cases where all angles are obtuse)
+//         if (max_valid_angle < 0) {
+//             double min_obtuse_angle = M_PI + 1.0; // Initialize to > π
+            
+//             for (int origin_idx = 0; origin_idx < 3; ++origin_idx) {
+//                 int origin = vertices[origin_idx];
+//                 int other1 = vertices[(origin_idx + 1) % 3];
+//                 int other2 = vertices[(origin_idx + 2) % 3];
+                
+//                 Point2D origin_pos = points[origin];
+//                 Point2D vec1(points[other1].coord.x() - origin_pos.coord.x(),
+//                             points[other1].coord.y() - origin_pos.coord.y());
+//                 Point2D vec2(points[other2].coord.x() - origin_pos.coord.x(),
+//                             points[other2].coord.y() - origin_pos.coord.y());
+                
+//                 double dot_product = vec1.coord.x() * vec2.coord.x() + vec1.coord.y() * vec2.coord.y();
+//                 double mag1 = std::sqrt(vec1.coord.x() * vec1.coord.x() + vec1.coord.y() * vec1.coord.y());
+//                 double mag2 = std::sqrt(vec2.coord.x() * vec2.coord.x() + vec2.coord.y() * vec2.coord.y());
+                
+//                 if (mag1 > 1e-12 && mag2 > 1e-12) {
+//                     double cos_angle = dot_product / (mag1 * mag2);
+//                     cos_angle = std::max(-1.0, std::min(1.0, cos_angle));
+//                     double angle = std::acos(cos_angle);
+                    
+//                     if (angle > M_PI/2 && angle < min_obtuse_angle) {
+//                         min_obtuse_angle = angle;
+//                         best_ordering = {origin, other1, other2};
+//                     }
+//                 }
+//             }
+//         }
+        
+//         return best_ordering;
+//     };
+    
+//     // Extract triangles with maximum angle ordering
+//     std::vector<Triangle> triangles;
+//     triangles.reserve(triangulation.number_of_faces());
+    
+//     for (auto face_it = triangulation.finite_faces_begin();
+//          face_it != triangulation.finite_faces_end(); ++face_it) {
+        
+//         int v0 = face_it->vertex(0)->info();
+//         int v1 = face_it->vertex(1)->info();
+//         int v2 = face_it->vertex(2)->info();
+        
+//         // Reorder for maximum angle ≤ 90° between vectors from origin
+//         auto ordered = reorderForMaxAngle(v0, v1, v2);
+        
+//         // Ensure counter-clockwise orientation
+//         const Point2D& p0 = points[ordered[0]];
+//         const Point2D& p1 = points[ordered[1]];
+//         const Point2D& p2 = points[ordered[2]];
+        
+//         double cross_product = (p1.coord.x() - p0.coord.x()) * (p2.coord.y() - p0.coord.y()) -
+//                               (p2.coord.x() - p0.coord.x()) * (p1.coord.y() - p0.coord.y());
+        
+//         if (cross_product > 0.0) {
+//             triangles.emplace_back(ordered[0], ordered[1], ordered[2]);
+//         } else {
+//             // Flip to maintain CCW while keeping origin first
+//             triangles.emplace_back(ordered[0], ordered[2], ordered[1]);
+//         }
+//     }
+    
+//     return triangles;
+// }
 
 std::pair<std::vector<int>, std::vector<std::tuple<double, double>>>
 MeshGenerator::create_domain_maps(int original_domain_size, const DomainDimensions& domain_dims, 

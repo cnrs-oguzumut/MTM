@@ -284,7 +284,9 @@ std::sort(sorted_rows.begin(), sorted_rows.end(),
 
 // Find middle row
 size_t middle_row_idx = sorted_rows.size() / 2;
-int rows_to_show = 5; // Number of rows to show above and below middle
+std::cout<<"middle_row_idx: " << middle_row_idx << std::endl;
+
+int rows_to_show =3; // Number of rows to show above and below middle
 
 // Output each row to a separate file
 for (int r = -rows_to_show; r <= rows_to_show; r++) {
@@ -625,6 +627,7 @@ void ConfigurationSaver::logEnergyAndStress(
 
 
 
+// Start of the modified function body
 void ConfigurationSaver::writeToVTK(
     const std::vector<Point2D>& points,
     const std::vector<ElementTriangle2D>& elements,
@@ -667,12 +670,6 @@ void ConfigurationSaver::writeToVTK(
         for (int i = 0; i < 3; i++) {
             int node_idx = element.getNodeIndex(i);
             Eigen::Vector2d translation = element.getTranslation(i);
-        //             if(translation.x() != 0 || translation.y() != 0) {
-        
-        //     std::cout<<"translation x "<<translation.x()<<std::endl;
-        //     std::cout<<"translation y "<<translation.y()<<std::endl;
-        // }
-
             PairKey node_key(node_idx, translation);
             if (node_map.find(node_key) == node_map.end()) {
                 node_map[node_key] = extended_point_count++;
@@ -686,41 +683,29 @@ void ConfigurationSaver::writeToVTK(
     // Prepare arrays for extended point coordinates
     std::vector<Eigen::Vector2d> extended_points(extended_point_count);
     
-// Inside the writeToVTK function, when filling extended point coordinates:
-
-// Fill extended point coordinates
-for (const auto& entry : node_map) {
-    int original_idx = entry.first.index;
-    Eigen::Vector2d translation(entry.first.tx, entry.first.ty);
-    int extended_idx = entry.second;
-    
-    // Apply translation to the original point
-    if (original_idx < original_points_count) {
-        // Apply external deformation to the translation vector
-        Eigen::Vector2d deformed_translation = userData->F_external * translation;
-        // if(translation.x() != 0 || translation.y() != 0) {
+    // Fill extended point coordinates
+    for (const auto& entry : node_map) {
+        int original_idx = entry.first.index;
+        Eigen::Vector2d translation(entry.first.tx, entry.first.ty);
+        int extended_idx = entry.second;
         
-        //     std::cout<<"translation x "<<translation.x()<<std::endl;
-        //     std::cout<<"translation y "<<translation.y()<<std::endl;
-        // }
-        
-        // Add the deformed translation to the original point
-        extended_points[extended_idx] = points[original_idx].coord + deformed_translation;
-    } else {
-        std::cerr << "Warning: Invalid point index " << original_idx << std::endl;
-        extended_points[extended_idx] = Eigen::Vector2d::Zero();
-    }
-}    
-    // Prepare nodal data vectors
-    std::vector<double> nodal_energy(extended_point_count, 0.0);
-    std::vector<double> nodal_cauchy_xy(extended_point_count, 0.0);
-    std::vector<double> nodal_cauchy_xx(extended_point_count, 0.0);
-    std::vector<double> nodal_cauchy_yy(extended_point_count, 0.0);
-    std::vector<double> nodal_stress(extended_point_count, 0.0);
-    std::vector<int> triangle_count(extended_point_count, 0);
-    std::vector<int> node_count(extended_point_count, 0);
+        // Apply translation to the original point
+        if (original_idx < original_points_count) {
+            // Apply external deformation to the translation vector
+            Eigen::Vector2d deformed_translation = userData->F_external * translation;
+            extended_points[extended_idx] = points[original_idx].coord + deformed_translation;
+        } else {
+            std::cerr << "Warning: Invalid point index " << original_idx << std::endl;
+            extended_points[extended_idx] = Eigen::Vector2d::Zero();
+        }
+    }    
     
-    // Count triangles per node and calculate nodal values
+    // Prepare vectors to store element-wise data
+    std::vector<double> element_energy_values;
+    std::vector<Eigen::Matrix2d> element_cauchy_stress_tensors;
+    std::vector<double> element_projected_stress_values;
+    
+    // Loop over active elements to calculate and store values
     for (size_t elem_idx : userData->active_elements) {
         if (elem_idx >= elements.size()) continue;
         
@@ -733,14 +718,11 @@ for (const auto& entry : node_map) {
         lagrange::Result result;
         Eigen::Matrix2d P;
     
-        
         // Apply Lagrange reduction 
         if(reduction==true) {
             result = lagrange::reduce(C);
             C = result.C_reduced;
         }
-        C = result.C_reduced;
-        
         
         // Calculate element energy
         double element_area = element.getReferenceArea();
@@ -748,56 +730,28 @@ for (const auto& entry : node_map) {
             C, userData->energy_function, userData->zero_energy
         ) / pow(userData->ideal_lattice_parameter, 2.0);
         element_energy *= element_area;
+        element_energy_values.push_back(element_energy);
         
         // Calculate Cauchy stress
         Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
             C, userData->derivative_function
         ) / pow(userData->ideal_lattice_parameter, 2.0);
- //       Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+        
         if(reduction==true) {
-            P= 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
-        }
-        else {
+            P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+        } else {
             P = 2.0 * F * dE_dC;
         }
 
         double detF = F.determinant();
         Eigen::Matrix2d cauchy_stress = (1.0 / detF) * P * F.transpose();
+        element_cauchy_stress_tensors.push_back(cauchy_stress);
         
         // Calculate projected stress
         Eigen::Matrix2d dF_d_alpha = Eigen::Matrix2d::Zero();
         dF_d_alpha(0, 1) = 1.0;
         double stress_value = P.cwiseProduct(dF_d_alpha).sum();
-        
-        // Distribute to nodes (using the extended node indices)
-        for (int node_idx = 0; node_idx < 3; node_idx++) {
-            int original_idx = element.getNodeIndex(node_idx);
-            Eigen::Vector2d translation = element.getTranslation(node_idx);
-            
-            PairKey node_key(original_idx, translation);
-            int extended_idx = node_map[node_key];
-            
-            triangle_count[extended_idx]++;
-            nodal_energy[extended_idx] += element_energy / 3.0;
-            nodal_cauchy_xy[extended_idx] += cauchy_stress(0, 1);
-            nodal_cauchy_xx[extended_idx] += cauchy_stress(0, 0);
-            nodal_cauchy_yy[extended_idx] += cauchy_stress(1, 1);
-
-            nodal_stress[extended_idx] += stress_value;
-            node_count[extended_idx]++;
-        }
-    }
-    
-    // Average nodal values
-    for (int i = 0; i < extended_point_count; i++) {
-        if (node_count[i] > 0) {
-            nodal_energy[i] /= node_count[i];
-            nodal_cauchy_xy[i] /= node_count[i];
-            nodal_cauchy_xx[i] /= node_count[i];
-            nodal_cauchy_yy[i] /= node_count[i];
-
-            nodal_stress[i] /= node_count[i];
-        }
+        element_projected_stress_values.push_back(stress_value);
     }
     
     // Open file for writing
@@ -853,74 +807,30 @@ for (const auto& entry : node_map) {
         file << "5\n"; // Triangle type
     }
     
-    // Write point data
-    file << "POINT_DATA " << extended_point_count << "\n";
+    // --- Write Cell Data (Per-Element Values) ---
+    file << "\nCELL_DATA " << valid_elements << "\n";
     
-    // Energy data
-    file << "SCALARS Energy float\n";
+    // Element Energy
+    file << "SCALARS ElementEnergy float 1\n";
     file << "LOOKUP_TABLE default\n";
-    for (int i = 0; i < extended_point_count; i++) {
-        file << nodal_energy[i] << "\n";
+    for (double val : element_energy_values) {
+        file << val << "\n";
     }
     
-    // Cauchy stress xy component
-    file << "SCALARS cauchy_xy float\n";
+    // Element Projected Stress
+    file << "SCALARS ElementProjectedStress float 1\n";
     file << "LOOKUP_TABLE default\n";
-    for (int i = 0; i < extended_point_count; i++) {
-        file << nodal_cauchy_xy[i] << "\n";
+    for (double val : element_projected_stress_values) {
+        file << val << "\n";
     }
     
-    // Cauchy stress xx component
-    file << "SCALARS cauchy_xx float\n";
-    file << "LOOKUP_TABLE default\n";
-    for (int i = 0; i < extended_point_count; i++) {
-        file << nodal_cauchy_xx[i] << "\n";
+    // Element Cauchy Stress Tensor
+    file << "TENSORS CauchyStress float\n";
+    for (const auto& stress : element_cauchy_stress_tensors) {
+        file << stress(0, 0) << " " << stress(0, 1) << " " << 0.0 << "\n";
+        file << stress(1, 0) << " " << stress(1, 1) << " " << 0.0 << "\n";
+        file << 0.0 << " " << 0.0 << " " << 0.0 << "\n\n";
     }
-
-    // Cauchy stress xx component
-    file << "SCALARS cauchy_yy float\n";
-    file << "LOOKUP_TABLE default\n";
-    for (int i = 0; i < extended_point_count; i++) {
-        file << nodal_cauchy_yy[i] << "\n";
-    }
-
-    // Projected stress
-    file << "SCALARS projected_stress float\n";
-    file << "LOOKUP_TABLE default\n";
-    for (int i = 0; i < extended_point_count; i++) {
-        file << nodal_stress[i] << "\n";
-    }
-    
-    // // Triangle count for topological analysis
-    file << "SCALARS coordination int\n";
-    file << "LOOKUP_TABLE default\n";
-    for (int i = 0; i < extended_point_count; i++) {
-        // Adjust this condition for your specific coordination criteria
-        int coordination = triangle_count[i];
-        if (coordination != 5 && coordination != 7) {
-            coordination = 0;
-        }
-        file << coordination << "\n";
-    }
-    
-    // // Write cell data
-    // file << "CELL_DATA " << valid_elements << "\n";
-    // file << "TENSORS Stress float\n";
-    
-    // for (size_t elem_idx : userData->active_elements) {
-    //     if (elem_idx >= elements.size() || !elements[elem_idx].isInitialized()) continue;
-        
-    //     const auto& element = elements[elem_idx];
-        
-    //     // Get stress tensors and other element data
-    //     Eigen::Matrix2d C = element.getMetricTensor();
-    //     lagrange::Result result = lagrange::reduce(C);
-        
-    //     // Write tensor data in VTK format (3x3 even for 2D)
-    //     file << C(0, 1) << " " << C(0, 0) << " " << C(1, 1) << "\n";
-    //     file << "0 " << result.third_condition_satisfied << " " << "0" << "\n";
-    //     file << result.C_reduced(0, 1) << " " << C(0, 1) << " " << userData->F_external(0, 1) << "\n\n";
-    // }
     
     file.close();
     std::cout << "Saved VTK file: " << filename.str() << std::endl;

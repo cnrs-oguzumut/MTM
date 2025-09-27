@@ -38,15 +38,27 @@ bool checkSquareDomainViolation(const std::vector<ElementTriangle2D>& elements) 
         // Early exit for non-physical deformation
         if (detC <= 0.0) return true;
         
-        double inv_sqrt_detC = 1.0 / sqrt(detC);
+        double inv_sqrt_detC = 1.0 ;// sqrt(detC);
         double c11 = C(0, 0) * inv_sqrt_detC;
         double c22 = C(1, 1) * inv_sqrt_detC;
         double c12 = C(0, 1) * inv_sqrt_detC;
+        double threshold = 0.;
         
-        // Check triangular lattice domain condition: 0 ≤ C12 ≤ min(C11, C22)
-        if (c12 < -0.1 || c12 > std::min(c11, c22)) {
+        // Check triangular lattice domain condition with threshold: 
+        // -threshold ≤ C12 ≤ min(C11, C22) + threshold
+        //if (std::abs(c12) < -threshold || c12 > std::min(c11, c22) ) {
+        if (std::abs(c12) > std::min(c11, c22) ) {
+        //if (2.0 * c12 > std::min(c11, c22)){
+            
+            std::cout << "c11: " << c11 << ", c22: " << c22 << ", c12: " << c12 << std::endl;
             return true;
         }
+
+
+        // if (std::abs(c12) > std::min(c11, c22) + threshold) {
+        //     std::cout << "c11: " << c11 << ", c22: " << c22 << ", c12: " << c12 << std::endl;
+        //     return true;
+        // }
     }
     return false;
 }

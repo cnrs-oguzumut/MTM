@@ -67,7 +67,7 @@ std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>>
 create_dof_mapping_original(
     const std::vector<Point2D>& points,
     double boundary_tolerance, 
-    int pbc);
+    bool pbc);
     
 std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>>
 create_dof_mapping_with_radius(

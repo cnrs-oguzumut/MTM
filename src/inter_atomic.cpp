@@ -119,4 +119,104 @@ double square_energy_der(double r) {
     
     return repulsive_der + attractive_der1 + attractive_der2;
 }
+
+#include <cmath>
+
+// Potential energy function U(r)
+double lennard_jones_energy_v3(double r) {
+    // Constants
+    const double sigma = 1.0;
+    const double rc = 1.86602540378444;  // sigma*((sqrt(3)+2)/2)
+    const double A = -4.47124703217530;
+    const double B = -90.2632082644540;
+    const double C2p0 = -5530.88442798764;
+    const double C2p1 = 20688.7278150076;
+    const double C2p2 = -34486.6459222351;
+    const double C2p3 = 32704.6608372787;
+    const double C2p4 = -18879.7974113434;
+    const double C2p5 = 6595.54667916880;
+    const double C2p6 = -1286.11734180526;
+    const double C2p7 = 107.717810684010;
+    
+    double energy = 0.0;
+    
+    if (r < sigma) {
+        // U1 = -2/r^4 + r^(-8)
+        double r4 = r * r * r * r;
+        double r8 = r4 * r4;
+        energy = -2.0 / r4 + 1.0 / r8;
+    }
+    else if (r >= sigma && r < rc) {
+        // U2 = A/r^8 - B/r^4 + polynomial
+        double r2 = r * r;
+        double r3 = r2 * r;
+        double r4 = r3 * r;
+        double r5 = r4 * r;
+        double r6 = r5 * r;
+        double r7 = r6 * r;
+        double r8 = r7 * r;
+        
+        energy = A / r8 - B / r4 + 
+                C2p0 + C2p1 * r + C2p2 * r2 + C2p3 * r3 + 
+                C2p4 * r4 + C2p5 * r5 + C2p6 * r6 + C2p7 * r7;
+    }
+    else if (r >= rc) {
+        // U3 = 0
+        energy = 0.0;
+    }
+    
+    return energy;
+}
+
+// Derivative of potential energy function U'(r)
+double lennard_jones_energy_der_v3(double r) {
+    // Constants
+    const double sigma = 1.0;
+    const double rc = 1.86602540378444;  // sigma*((sqrt(3)+2)/2)
+    const double A = -4.47124703217530;
+    const double B = -90.2632082644540;
+    const double C2p0 = -5530.88442798764;
+    const double C2p1 = 20688.7278150076;
+    const double C2p2 = -34486.6459222351;
+    const double C2p3 = 32704.6608372787;
+    const double C2p4 = -18879.7974113434;
+    const double C2p5 = 6595.54667916880;
+    const double C2p6 = -1286.11734180526;
+    const double C2p7 = 107.717810684010;
+    
+    double derivative = 0.0;
+    
+    if (r < sigma) {
+        // U1' = 8/r^5 - 8/r^9
+        double r5 = r * r * r * r * r;
+        double r9 = r5 * r * r * r * r;
+        derivative = 8.0 / r5 - 8.0 / r9;
+    }
+    else if (r >= sigma && r < rc) {
+        // U2' = -8A/r^9 + 4B/r^5 + derivative of polynomial
+        double r2 = r * r;
+        double r3 = r2 * r;
+        double r4 = r3 * r;
+        double r5 = r4 * r;
+        double r6 = r5 * r;
+        double r9 = r5 * r4;
+        
+        derivative = -8.0 * A / r9 + 4.0 * B / r5 +
+                    C2p1 + 2.0 * C2p2 * r + 3.0 * C2p3 * r2 + 
+                    4.0 * C2p4 * r3 + 5.0 * C2p5 * r4 + 
+                    6.0 * C2p6 * r5 + 7.0 * C2p7 * r6;
+    }
+    else if (r >= rc) {
+        // U3' = 0
+        derivative = 0.0;
+    }
+    
+    return derivative;
+}
+
+
+
+
+
+
 #endif // INTER_ATOMIC_H

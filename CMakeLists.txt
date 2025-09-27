@@ -29,6 +29,74 @@ find_package(CGAL REQUIRED)
 find_package(Boost REQUIRED)
 find_package(OpenMP)
 
+# Option to enable/disable ITensor support
+option(USE_ITENSOR "Enable ITensor support" ON)
+
+# ITensor detection (optional)
+set(ITENSOR_FOUND FALSE)
+set(ITENSOR_LIBRARIES "")
+
+if(USE_ITENSOR)
+    # Set ITensor directory - adjust path as needed
+    set(ITENSOR_DIR "/Users/usalman/programming/itensor")
+    set(ITENSOR_INCLUDE_DIR "${ITENSOR_DIR}")
+    set(ITENSOR_LIB_DIR "${ITENSOR_DIR}/lib")
+    
+    # Check if ITensor directory exists
+    if(EXISTS "${ITENSOR_DIR}" AND EXISTS "${ITENSOR_INCLUDE_DIR}/itensor")
+        # Check if ITensor library exists
+        if(EXISTS "${ITENSOR_LIB_DIR}/libitensor-g.a")
+            set(ITENSOR_LIBRARY "${ITENSOR_LIB_DIR}/libitensor-g.a")
+            set(ITENSOR_FOUND TRUE)
+            message(STATUS "Found ITensor debug library: ${ITENSOR_LIBRARY}")
+        elseif(EXISTS "${ITENSOR_LIB_DIR}/libitensor.a")
+            set(ITENSOR_LIBRARY "${ITENSOR_LIB_DIR}/libitensor.a")
+            set(ITENSOR_FOUND TRUE)
+            message(STATUS "Found ITensor release library: ${ITENSOR_LIBRARY}")
+        else()
+            message(WARNING "ITensor library not found in ${ITENSOR_LIB_DIR}")
+            message(WARNING "ITensor support will be disabled")
+        endif()
+    else()
+        message(WARNING "ITensor directory not found at ${ITENSOR_DIR}")
+        message(WARNING "ITensor support will be disabled")
+    endif()
+    
+    # Try to find BLAS/LAPACK for ITensor if ITensor was found
+    if(ITENSOR_FOUND)
+        find_package(BLAS)
+        find_package(LAPACK)
+        
+        # Set up ITensor linking libraries
+        set(ITENSOR_LIBRARIES ${ITENSOR_LIBRARY})
+        
+        # Add BLAS/LAPACK libraries if found (ITensor dependency)
+        if(BLAS_FOUND AND LAPACK_FOUND)
+            list(APPEND ITENSOR_LIBRARIES ${LAPACK_LIBRARIES} ${BLAS_LIBRARIES})
+            message(STATUS "Using BLAS/LAPACK for ITensor")
+        else()
+            # Try to find common BLAS implementations
+            find_library(OPENBLAS_LIB openblas)
+            find_library(CBLAS_LIB cblas)
+            find_library(BLAS_LIB blas)
+            
+            if(OPENBLAS_LIB)
+                list(APPEND ITENSOR_LIBRARIES ${OPENBLAS_LIB})
+                message(STATUS "Using OpenBLAS for ITensor: ${OPENBLAS_LIB}")
+            elseif(CBLAS_LIB AND BLAS_LIB)
+                list(APPEND ITENSOR_LIBRARIES ${CBLAS_LIB} ${BLAS_LIB})
+                message(STATUS "Using CBLAS/BLAS for ITensor")
+            else()
+                message(WARNING "No BLAS/LAPACK found - ITensor may not link properly")
+                set(ITENSOR_FOUND FALSE)
+                message(WARNING "ITensor support disabled due to missing BLAS/LAPACK")
+            endif()
+        endif()
+    endif()
+else()
+    message(STATUS "ITensor support manually disabled")
+endif()
+
 # Set ALGLIB directory
 set(ALGLIB_DIR "/Users/usalman/programming/alglib-cpp")
 include_directories(${ALGLIB_DIR})
@@ -57,12 +125,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
 endif()
 
 # Include directories
-include_directories(
+set(INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
     ${CGAL_INCLUDE_DIRS}
     ${Boost_INCLUDE_DIRS}
 )
+
+# Add ITensor include directory if found
+if(ITENSOR_FOUND)
+    list(APPEND INCLUDE_DIRS ${ITENSOR_INCLUDE_DIR})
+endif()
+
+include_directories(${INCLUDE_DIRS})
 
 # Add OpenMP flags if available
 if(OpenMP_CXX_FOUND)
@@ -75,8 +150,18 @@ file(GLOB_RECURSE LIB_SOURCES
 )
 list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
 add_library(lattice_lib STATIC ${LIB_SOURCES})
+
+# Add compiler flags and definitions
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(lattice_lib PRIVATE -O3 -march=native -flto -ffast-math)
+endif()
+
+# Add ITensor preprocessor definition if found
+if(ITENSOR_FOUND)
+    target_compile_definitions(lattice_lib PRIVATE USE_ITENSOR=1)
+    message(STATUS "ITensor support ENABLED - USE_ITENSOR=1 defined")
+else()
+    message(STATUS "ITensor support DISABLED")
 endif()
 
 # Create main executable
@@ -84,12 +169,27 @@ add_executable(lattice_triangulation "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(lattice_triangulation PRIVATE -O3 -march=native -flto -ffast-math)
 endif()
-target_link_libraries(lattice_triangulation
+
+# Add ITensor definition to main executable too
+if(ITENSOR_FOUND)
+    target_compile_definitions(lattice_triangulation PRIVATE USE_ITENSOR=1)
+endif()
+
+# Set up base libraries for linking
+set(BASE_LIBRARIES
     lattice_lib
     ${CGAL_LIBRARIES}
     ${Boost_LIBRARIES}
     alglib
 )
+
+# Add ITensor libraries if found
+if(ITENSOR_FOUND)
+    list(APPEND BASE_LIBRARIES ${ITENSOR_LIBRARIES})
+endif()
+
+# Link libraries to main executable
+target_link_libraries(lattice_triangulation ${BASE_LIBRARIES})
 
 # Add OpenMP if available
 if(OpenMP_CXX_FOUND)
@@ -106,6 +206,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
         endif()
         target_link_libraries(run_tests
             lattice_lib
+            ${ITENSOR_LIBRARIES}
             ${CGAL_LIBRARIES}
             ${Boost_LIBRARIES}
             alglib
@@ -116,7 +217,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     endif()
 endif()
 
-# Print build type
+# Print build information
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "Release flags: ${CMAKE_CXX_FLAGS_RELEASE}")
+message(STATUS "ITensor directory: ${ITENSOR_DIR}")
+message(STATUS "ITensor library: ${ITENSOR_LIBRARY}")
