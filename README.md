@@ -18,6 +18,7 @@ This project offers comprehensive tools for 2D lattice generation and manipulati
 - Eigen3
 - CGAL
 - Boost
+- ITensor (for tensor computations in acoustic analysis)
 
 ## Building
 
