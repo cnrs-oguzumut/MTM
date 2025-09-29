@@ -1,12 +1,12 @@
 #include "../include/lattice_energy/TriangularLatticeCalculator.h"
 
-TriangularLatticeCalculator::TriangularLatticeCalculator(double scale) : 
-    rcut(2.5),
+TriangularLatticeCalculator::TriangularLatticeCalculator(double scale,double cutoff_radius) : 
+    rcut(cutoff_radius),
     scal(scale),
     burgers(scale),
     nb_atoms(10),
     normalisation(std::pow(burgers, 2.0) * std::sqrt(3.0) / 2.0),
-    r_cutoff_sq(4.5 * 4.5),  // Added cutoff radius squared for efficiency
+    r_cutoff_sq(rcut*rcut),  // Added cutoff radius squared for efficiency
     triangular_basis({{
         {0.0, 0.0}
     }}) {}
@@ -25,8 +25,11 @@ double TriangularLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
             // For triangular lattice, points are at m*[1,0] + n*[1/2, √3/2]
-            double px = m + 0.5 * n;
-            double py = sqrt(3.)/2. * n; // √3/2 = 0.866025404
+            //double px = m + 0.5 * n;
+            //double py = sqrt(3.)/2. * n; // √3/2 = 0.866025404
+            double px = m;
+            double py = n;
+
             
             // Skip the origin
             if (std::abs(px) < 1e-10 && std::abs(py) < 1e-10) continue;
@@ -53,8 +56,12 @@ Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::M
     for (int m = -nb_atoms; m <= nb_atoms; ++m) {
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
-            double px = m + 0.5 * n;
-            double py = 0.866025404 * n; // √3/2 = 0.866025404
+            // double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
+            // double py = sqrt(3.)/2 * static_cast<double>(n); // √3/2
+
+            double px = m;
+            double py = n;
+
             
             // Skip the origin
             if (std::abs(px) < 1e-10 && std::abs(py) < 1e-10) continue;
@@ -78,8 +85,8 @@ Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::M
     }
     
     // Apply symmetry factors
-    phi(0, 1) *= 0.5;
-    phi(1, 0) *= 0.5;
+    // phi(0, 1) *= 0.5;
+    // phi(1, 0) *= 0.5;
     
     return phi;
 }
@@ -110,19 +117,25 @@ HessianComponents TriangularLatticeCalculator::calculate_hessian_components(cons
             
             // Convert from lattice coordinates to Cartesian coordinates
             // For triangular lattice: px = m + 0.5*n, py = √3/2 * n
-            double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
-            double py = 0.866025404 * static_cast<double>(n); // √3/2
-            
+            //double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
+            //double py = sqrt(3.)/2 * static_cast<double>(n); // √3/2
+
+            double px = m;
+            double py = n;
+
+
             // Calculate squared distance using metric tensor
-            double r2 = px * px * C(0,0) + py * py * C(1,1) + 2.0 * px * py * C(0,1);
+            // double r2 = px * px * C(0,0) + py * py * C(1,1) + 2.0 * px * py * C(0,1);
+            Eigen::Vector2d p(px, py);
+            double r_squared = p.transpose() * C * p;
             
             // Apply cutoff
-            if (r2 >= r_cutoff_sq) continue;
-            
-            double r = std::sqrt(r2) * scal;
+            double r = std::sqrt(r_squared) * scal;
+            if (r > rcut)
+                continue;
             
             // Calculate potential derivatives
-            double tempf = 0.5 * dpot(r) / r;        // First derivative factor
+            double tempf  = 0.5 * dpot(r) / r;        // First derivative factor
             double tempf2 = 0.5 * d2pot(r) / r;     // Second derivative factor
             
             // Calculate geometric factors using triangular lattice coordinates

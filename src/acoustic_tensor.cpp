@@ -114,8 +114,8 @@ void AcousticTensor::computeJacobian(itensor::ITensor& dPhi) {
     // std::cout << "Computing Jacobian from calculated first derivative..." << std::endl;
   
         dPhi.set(k_=1, l_=1, dE_dC_(0,0));
-        dPhi.set(k_=1, l_=2, dE_dC_(0,1));
-        dPhi.set(k_=2, l_=1, dE_dC_(1,0));
+        dPhi.set(k_=1, l_=2, dE_dC_(0,1)/2.);
+        dPhi.set(k_=2, l_=1, dE_dC_(1,0)/2.);
         dPhi.set(k_=2, l_=2, dE_dC_(1,1));
 
 
@@ -135,17 +135,44 @@ void AcousticTensor::computeJacobian(itensor::ITensor& dPhi) {
 
 // Fix computeHessian to properly map calculated d²E/dC²
 void AcousticTensor::computeHessian(itensor::ITensor& ddPhi) {
-    // dE2_dC2_ is already an ITensor - just use it directly!
-    ddPhi = dE2_dC2_;
+    double div1 = 0.5;
+    double div2 = 0.25;  // 0.5 * 0.5
+    
+    for (int k = 1; k <= 2; k++) {
+        for (int l = 1; l <= 2; l++) {
+            for (int w3 = 1; w3 <= 2; w3++) {
+                for (int w4 = 1; w4 <= 2; w4++) {
+                    double hess_val = dE2_dC2_.elt(k, l, w3, w4);
+                    
+                    // Determine division factor based on off-diagonal components
+                    double factor = 1.0;
+                    
+                    // Count how many indices are off-diagonal (i.e., k≠l or w3≠w4)
+                    bool kl_offdiag = (k != l);   // True if (k,l) = (1,2) or (2,1)
+                    bool w3w4_offdiag = (w3 != w4); // True if (w3,w4) = (1,2) or (2,1)
+                    
+                    if (kl_offdiag && w3w4_offdiag) {
+                        // Both are off-diagonal (c12.c12 type): use div2
+                        factor = div2;
+                    } else if (kl_offdiag || w3w4_offdiag) {
+                        // One is off-diagonal (mixed type): use div1
+                        factor = div1;
+                    }
+                    // else: both diagonal (c11.c11, c22.c22, c11.c22 type): factor = 1.0
+                    
+                    ddPhi.set(k_=k, l_=l, w3_=w3, w4_=w4, factor * hess_val);
+                }
+            }
+        }
+    }
 }
-
 
 
 // Rest of the implementation remains the same...
 // Replace the problematic analyzeAcousticTensor method in acoustic_tensor.cpp with this simpler version:
 
 // MOST IMPORTANT: Replace analyzeAcousticTensor with original working physics
-AcousticAnalysis AcousticTensor::analyzeAcousticTensor(double alpha, double theta) {
+AcousticAnalysis AcousticTensor::analyzeAcousticTensor(bool lagrangian) {
     // std::cout << "Computing acoustic tensor using original working physics..." << std::endl;
     
     // T54 tensor using member indices
@@ -169,19 +196,7 @@ AcousticAnalysis AcousticTensor::analyzeAcousticTensor(double alpha, double thet
     auto ddPhi = itensor::ITensor(k_, l_, w3_, w4_);
     ddPhi.fill(0.0);  // Explicit zero fill
     
-    // Copy values manually since dE2_dC2_ has different index objects
-    for (int k = 1; k <= 2; k++) {
-        for (int l = 1; l <= 2; l++) {
-            for (int w3 = 1; w3 <= 2; w3++) {
-                for (int w4 = 1; w4 <= 2; w4++) {
-                    // Extract value from dE2_dC2_ using its actual indices
-                    // Since it has 4 indices, try this pattern:
-                    double hess_val = dE2_dC2_.elt(k, l, w3, w4);  // Direct index access
-                    ddPhi.set(k_=k, l_=l, w3_=w3, w4_=w4, hess_val);
-                }
-            }
-        }
-    }
+    computeHessian(ddPhi);
     
     // std::cout << "Mapped dE2_dC2_ to ddPhi. ddPhi order: " << itensor::order(ddPhi) << std::endl;
     
@@ -205,29 +220,85 @@ AcousticAnalysis AcousticTensor::analyzeAcousticTensor(double alpha, double thet
     auto f2 = mm1 * mm2 * T53 * T53_2 * mm3 * mm4 * ddPhi;  // Now ddPhi has the right indices
     
     auto final_tensor = f1 + f2;
-    
-    // Direction vector and search using member indices
-    auto N = itensor::ITensor(s_);
     AcousticAnalysis result;
     result.detAc = 100000.0;
-    
-    for (double ksi = -M_PI/4; ksi < 1.5*M_PI; ksi += 0.001) {
-        N.set(s_=1, cos(ksi));
-        N.set(s_=2, sin(ksi));
+
+    // Create additional indices for Eulerian transformation
+    if(!lagrangian){
+        auto p = itensor::Index(2, "p");
+        auto q = itensor::Index(2, "q");
         
-        auto acoustic = final_tensor * N * N * itensor::delta(s_, j_);
+        // Create gradient tensors from deformation gradient F_
+        auto gradF = itensor::ITensor(p, r_);
+        auto gradFr = itensor::ITensor(q, i_);
         
-        double detAc = acoustic.elt(r_=1, i_=1) * acoustic.elt(r_=2, i_=2) 
-                     - acoustic.elt(r_=1, i_=2) * acoustic.elt(r_=2, i_=1);
+        gradF.set(p=1, r_=1, F_(0,0));
+        gradF.set(p=1, r_=2, F_(0,1));
+        gradF.set(p=2, r_=1, F_(1,0));
+        gradF.set(p=2, r_=2, F_(1,1));
         
-        if (detAc <= -500) detAc = -500;
-        if (detAc >= 800) detAc = 800;
+        gradFr.set(q=1, i_=1, F_(0,0));
+        gradFr.set(q=1, i_=2, F_(0,1));
+        gradFr.set(q=2, i_=1, F_(1,0));
+        gradFr.set(q=2, i_=2, F_(1,1));
         
-        if (detAc < result.detAc) {
-            result.detAc = detAc;
-            result.xsi = toDegrees(ksi);
+        // Permute to correct index order
+        final_tensor = itensor::permute(final_tensor, {r_, s_, i_, j_});
+        
+        // Transform to Eulerian frame
+        auto final_tensor_euler = gradF * gradFr * final_tensor;
+        final_tensor_euler = itensor::permute(final_tensor_euler, {p, s_, q, j_});
+        
+        // Direction vectors in Eulerian frame
+        auto N1 = itensor::ITensor(p);
+        auto N2 = itensor::ITensor(q);
+        
+        
+        for (double ksi = 0; ksi < 2*M_PI; ksi += M_PI / 60.0) {
+            N1.set(p=1, cos(ksi));
+            N1.set(p=2, sin(ksi));
+            N2.set(q=1, cos(ksi));
+            N2.set(q=2, sin(ksi));
+            
+            auto acoustic = final_tensor_euler * N1 * N2;
+            
+            double detAc = acoustic.elt(s_=1, j_=1) * acoustic.elt(s_=2, j_=2) 
+                        - acoustic.elt(s_=1, j_=2) * acoustic.elt(s_=2, j_=1);
+            
+            if (detAc <= -500) detAc = -500;
+            if (detAc >= 800) detAc = 800;
+            
+            if (detAc < result.detAc) {
+                result.detAc = detAc;
+                result.xsi = toDegrees(ksi);
+            }
+        }
+    }   
+    // Direction vector and search using member indices
+    else if(lagrangian){
+        auto N = itensor::ITensor(s_);
+        
+        //for (double ksi = -M_PI; ksi < M_PI; ksi += 0.01) {
+        for (double ksi = 0; ksi < 2*M_PI; ksi += 0.01) {
+
+            N.set(s_=1, cos(ksi));
+            N.set(s_=2, sin(ksi));
+            
+            auto acoustic = final_tensor * N * N * itensor::delta(s_, j_);
+            
+            double detAc = acoustic.elt(r_=1, i_=1) * acoustic.elt(r_=2, i_=2) 
+                        - acoustic.elt(r_=1, i_=2) * acoustic.elt(r_=2, i_=1);
+            
+            if (detAc <= -500) detAc = -500;
+            if (detAc >= 800) detAc = 800;
+            
+            if (detAc < result.detAc) {
+                result.detAc = detAc;
+                result.xsi = toDegrees(ksi);
+            }
         }
     }
+        
     
     return result;
 }

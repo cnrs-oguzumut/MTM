@@ -166,7 +166,7 @@ public:
      * @param theta Angle parameter 
      * @return AcousticAnalysis results
      */
-    AcousticAnalysis analyzeAcousticTensor(double alpha, double theta);
+    AcousticAnalysis analyzeAcousticTensor(bool lagrangian);
 
     /**
      * Compute Aijkl component - equivalent to Aijkl() function.

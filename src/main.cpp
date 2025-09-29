@@ -3662,116 +3662,6 @@ void indentation() {
 
     }
 }
-void parametricAcousticStudy_v1() {
-    std::cout << "Starting parametric acoustic tensor study with Lagrange reduction..." << std::endl;
-    
-
-        Eigen::Matrix2d F;
-    F << 1.0, 0.0,    // 5% stretch in x, 2% shear
-         0.0, 1;    // 1% shear, 2% compression in y
-    
-    // Cell matrix C (metric tensor - represents current configuration)
-    Eigen::Matrix2d C;
-    // C << 1.1025, 0.0301,   // C = F^T * F for this example
-    //      0.0301, 0.9605;
-    C = F.transpose() * F;
-    
-    // Material properties matrix Z (elastic constants)
-    Eigen::Matrix2d Z;
-    Z << 1.0, 0.0,     // Material stiffness parameters
-         0.0, 1.0;
-    
-    std::cout << "=== Acoustic Tensor Analysis with Strain Energy ===" << std::endl;
-    std::cout << "\nInput matrices:" << std::endl;
-    std::cout << "Deformation gradient F:\n" << F << std::endl;
-    std::cout << "\nCell matrix C:\n" << C << std::endl;
-    std::cout << "\nMaterial matrix Z:\n" << Z << std::endl;
-    
-    // 2. Create strain energy calculator
-    double scale = 1.0;
-    Strain_Energy_LatticeCalculator strain_calculator(scale);
-    
-    // 3. Define dummy potential functions (ignored by strain energy calculator)
-    auto dummy_pot = [](double r) -> double { return 0.0; };
-    auto dummy_dpot = [](double r) -> double { return 1.0; };  // Dummy first derivative
-    auto dummy_d2pot = [](double r) -> double { return 0.1; }; // Dummy second derivative
-    
-    // 4. Create acoustic tensor object
-    AcousticTensor acoustic_tensor(F, C, Z);
-  
-      // 5. Compute energy derivatives using the uniform interface
-    double normalisation = strain_calculator.getUnitCellArea();
-    
-    std::cout << "\n=== Computing Energy Derivatives ===" << std::endl;
-    std::cout << "Using Strain_Energy_LatticeCalculator with uniform interface..." << std::endl;
-    
-        // auto dummy_dpot = [](double r) -> double { return 1.0; };
-        // auto dummy_d2pot = [](double r) -> double { return 0.1; };
-
-        acoustic_tensor.computeEnergyDerivatives(
-            strain_calculator,
-            dummy_dpot,          // Lambda accepted directly
-            dummy_d2pot,         // Lambda accepted directly
-            normalisation
-        );
-    
-    std::cout << "✓ First and second derivatives computed analytically" << std::endl;
-        // 6. Display computed derivatives
-    std::cout << "\nFirst energy derivative dE/dC:\n" 
-              << acoustic_tensor.getEnergyDerivative() << std::endl;
-
-
-        std::cout << "Second derivative tensor norm: " 
-              << itensor::norm(acoustic_tensor.getEnergySecondDerivative()) << std::endl;
-    
-std::cout << "Second derivative tensor (full):" << std::endl;
-itensor::ITensor d2E_dC2 = acoustic_tensor.getEnergySecondDerivative();
-
-// Print tensor order and dimensions
-std::cout << "Tensor order: " << itensor::order(d2E_dC2) << std::endl;
-std::cout << "Tensor dimensions: ";
-for (auto& idx : itensor::inds(d2E_dC2)) {
-    std::cout << idx.dim() << " ";
-}
-
-// Print all tensor elements (assuming it's 2x2x2x2)
-std::cout << "Tensor elements:" << std::endl;
-for (int i = 1; i <= 2; i++) {
-    for (int j = 1; j <= 2; j++) {
-        for (int k = 1; k <= 2; k++) {
-            for (int l = 1; l <= 2; l++) {
-                try {
-                    double val = d2E_dC2.elt(i, j, k, l);  // Direct element access
-                    std::cout << "d2E_dC2(" << i << "," << j << "," << k << "," << l << ") = " << val << std::endl;
-                } catch (const std::exception& e) {
-                    std::cout << "Error accessing element (" << i << "," << j << "," << k << "," << l << "): " << e.what() << std::endl;
-                }
-            }
-        }
-    }
-}
-std::cout << std::endl;
-
-    // 7. Perform acoustic tensor analysis
-    std::cout << "\n=== Acoustic Tensor Analysis ===" << std::endl;
-    
-    // Parameters for analysis
-    double alpha = 1.0;  // Scaling parameter
-    double theta = 0.0;  // Angle parameter
-    
-    std::cout << "Running analysis with alpha = " << alpha << ", theta = " << theta << std::endl;
-    // Calculate acoustic tensor determinant
-    AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(alpha, theta);
-    
-    // 8. Display results
-    std::cout << "\n=== Results ===" << std::endl;
-    std::cout << "Minimum acoustic tensor determinant: " << result.detAc << std::endl;
-    std::cout << "Angle at minimum (degrees): " << result.xsi << std::endl;
-    
-
-
-}
-
 
 void parametricAcousticStudy() {
     std::cout << "Starting parametric acoustic tensor study with Lagrange reduction..." << std::endl;
@@ -3782,30 +3672,114 @@ void parametricAcousticStudy() {
     file << "# t p c11 c22 c12 c11_red c22_red c12_red min_detAc angle_deg third_condition" << std::endl;
     
     // Create strain energy calculator once (outside the loop)
-    double scale = 1.0;
-    Strain_Energy_LatticeCalculator strain_calculator(scale);
-    double normalisation = strain_calculator.getUnitCellArea();
+    // double scale = 1.0;
+    // Strain_Energy_LatticeCalculator strain_calculator(scale);
+    // double normalisation = strain_calculator.getUnitCellArea();
+    double gamma =  pow(4. / 3., 1. / 4.);
+    Eigen::Matrix2d H;
+    H << 1.0,           0.5,
+     0.0,           std::sqrt(3.0)/2.0; 
+ 
+//  H << 0.5,            -0.5,
+//              std::sqrt(3.0)/2.0,  std::sqrt(3.0)/2.0;
+ 
+    H = gamma*H;
+    H.setIdentity();
+    //H=H.transpose();
+
+// H << gamma * std::sqrt(2.0 + std::sqrt(3.0)) / 2.0,  gamma * std::sqrt(2.0 - std::sqrt(3.0)) / 2.0,
+//      gamma * std::sqrt(2.0 - std::sqrt(3.0)) / 2.0,  gamma * std::sqrt(2.0 + std::sqrt(3.0)) / 2.0;
+//      H=H.transpose();
+//     //  H.setIdentity();
+
+
+    //double scale = 0.687204444204349/gamma;
     
+
+    int mode = 2;
+
+    double scale;
+    double normalisation;
+    double r_cutoff;
+    std::function<double(double)> potential_func;
+    std::function<double(double)> potential_func_der;
+    std::function<double(double)> potential_func_sder;
+
+
+    gamma  = 1.0;
+
+      if (mode == 1) {
+
+        scale = 0.687204444204349 ;
+        r_cutoff = 2.5;
+
+        potential_func = lennard_jones_energy_v2;
+        potential_func_der = lennard_jones_energy_der_v2;
+        potential_func_sder = lennard_jones_energy_sder_v2;
+
+      }
+
+
+      else if (mode == 2) {
+        scale = 0.996407146941421 ;
+        r_cutoff = 1.86602540378444;
+
+
+        potential_func = lennard_jones_energy_v3;
+        potential_func_der = lennard_jones_energy_der_v3;
+        potential_func_sder = lennard_jones_energy_sder_v3;
+
+      }
+
+
+      else if (mode == 3) {
+        scale = 1. ;
+        r_cutoff = 1.86602540378444;
+
+        potential_func = [](double r) -> double { return 1.0; };
+        potential_func_der = [](double r) -> double { return 1.0; };
+        potential_func_sder = [](double r) -> double { return 1.0; };
+
+      }
+
+
+
+        TriangularLatticeCalculator strain_calculator(scale,r_cutoff);
+        normalisation = strain_calculator.getUnitCellArea();
+
+
+        // Strain_Energy_LatticeCalculator strain_calculator(scale);
+        // double normalisation = strain_calculator.getUnitCellArea();
+
+
+
+
+
     // Define dummy potential functions once (ignored by strain energy calculator)
-    auto dummy_dpot = [](double r) -> double { return 1.0; };
-    auto dummy_d2pot = [](double r) -> double { return 0.1; };
+    // auto dummy_dpot = [](double r) -> double { return 1.0; };
+    // auto dummy_d2pot = [](double r) -> double { return 0.1; };
     
+
+
     int count = 0;
     
+    
     // Main parametric loop - same structure as your working code but in a loop
-    for (double t = 0.0; t <= 0.5; t += 0.01) {
-        for (double p = -M_PI; p <= M_PI; p += M_PI/32) {
+    for (double t = 0.0; t <= 1.; t += 0.001) {
+        for (double p = -M_PI; p <= M_PI; p += M_PI/128) {
             
             try {
                 // Compute C matrix components exactly as specified
                 double c11 = cosh(t) + sinh(t) * sin(p);
                 double c22 = cosh(t) - sinh(t) * sin(p);
                 double c12 = sinh(t) * cos(p);
+                if(c12<0) continue; // only need half the space due to symmetry
                 
                 // Construct original C matrix
                 Eigen::Matrix2d C_original;
                 C_original << c11, c12,
                               c12, c22;
+                //Eigen::Matrix2d C_original = H.transpose() * C_original * H;
                 
                 // Check if C is positive definite
                 Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> eigensolver(C_original);
@@ -3817,11 +3791,14 @@ void parametricAcousticStudy() {
                 lagrange::Result reduction_result = lagrange::reduce(C_original);
                 Eigen::Matrix2d C = reduction_result.C_reduced;  // Use reduced C
                 Eigen::Matrix2d Z = reduction_result.m_matrix;   // Z from reduction
+                // C = C_original;
+                // Z.setIdentity();
+
                 bool third_condition = reduction_result.third_condition_satisfied;
                 
                 // Polar decomposition: find F such that C = F^T * F
                 // Using your working approach
-                Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> C_eigensolver(C);
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> C_eigensolver(C_original);
                 if (C_eigensolver.eigenvalues().minCoeff() <= 1e-10) {
                     continue;
                 }
@@ -3834,7 +3811,7 @@ void parametricAcousticStudy() {
 
                 // Verify: C should equal F^T * F
                 Eigen::Matrix2d C_check = F.transpose() * F;
-                if ((C - C_check).norm() > 1e-10) {
+                if ((C_original - C_check).norm() > 1e-10) {
                     std::cout << "Warning: Polar decomposition check failed at t=" << t << ", p=" << p << std::endl;
                 }
   
@@ -3858,22 +3835,24 @@ void parametricAcousticStudy() {
                 // Compute energy derivatives using the uniform interface (same as working code)
                 acoustic_tensor.computeEnergyDerivatives(
                     strain_calculator,
-                    dummy_dpot,
-                    dummy_d2pot,
+                    potential_func_der,
+                    potential_func_sder,
                     normalisation
                 );
                 
                 // Perform acoustic tensor analysis (same as working code)
                 double alpha = 1.0;
                 double theta = 0.0;
-                AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(alpha, theta);
-                
+                bool lagrangian = true;
+                AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(lagrangian);
+                Eigen::Matrix2d C_original_new = H.transpose() * C_original * H;
+
                 // Write results to file
                 file << t << " " 
                      << p << " " 
-                     << c11 << " "                // Original C components
-                     << c22 << " " 
-                     << c12 << " " 
+                     << C_original_new(0,0) << " "                // Original C components
+                     << C_original_new(1,1) << " " 
+                     << C_original_new(0,1) << " " 
                      << C(0,0) << " "             // Reduced C components
                      << C(1,1) << " " 
                      << C(0,1) << " " 

@@ -10,7 +10,7 @@
 
 class TriangularLatticeCalculator : public BaseLatticeCalculator {
 public:
-    TriangularLatticeCalculator(double scale);
+    TriangularLatticeCalculator(double scale,double cutoff_radius=2.5);
     
     double calculate_energy(const Eigen::Matrix2d& C,
                            const std::function<double(double)>& pot,
