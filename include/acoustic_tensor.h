@@ -238,6 +238,10 @@ public:
      */
     void printInfo() const;
 
+    void printHessianComponents();
+
+    itensor::ITensor getAcousticTensor(bool lagrangian = true);
+
 private:
     /**
      * Initialize ITensor indices.

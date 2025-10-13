@@ -1,7 +1,9 @@
 #pragma once
 #ifndef INTER_ATOMIC_H
 #define INTER_ATOMIC_H
-#include "interatomic/inter_atomic.h"
+//#include "interatomic/inter_atomic.h"
+#include "../include/interatomic/inter_atomic.h"
+
 #include "src/optimization.h" // This path is relative to ALGLIB_DIR
 
 #include <cmath>
@@ -229,7 +231,7 @@ double lennard_jones_energy_v3(double r) {
         double r8 = r4 * r4;
         energy = -2.0 / r4 + 1.0 / r8;
     }
-    else if (r >= sigma && r < rc) {
+    else if (r >= sigma && r <= rc) {
         // U2 = A/r^8 - B/r^4 + polynomial
         double r2 = r * r;
         double r3 = r2 * r;
@@ -243,7 +245,7 @@ double lennard_jones_energy_v3(double r) {
                 C2p0 + C2p1 * r + C2p2 * r2 + C2p3 * r3 + 
                 C2p4 * r4 + C2p5 * r5 + C2p6 * r6 + C2p7 * r7;
     }
-    else if (r >= rc) {
+    else if (r > rc) {
         // U3 = 0
         energy = 0.0;
     }
@@ -275,7 +277,7 @@ double lennard_jones_energy_der_v3(double r) {
         double r9 = r5 * r * r * r * r;
         derivative = 8.0 / r5 - 8.0 / r9;
     }
-    else if (r >= sigma && r < rc) {
+    else if (r >= sigma && r <= rc) {
         // U2' = -8A/r^9 + 4B/r^5 + derivative of polynomial
         double r2 = r * r;
         double r3 = r2 * r;
@@ -289,7 +291,7 @@ double lennard_jones_energy_der_v3(double r) {
                     4.0 * C2p4 * r3 + 5.0 * C2p5 * r4 + 
                     6.0 * C2p6 * r5 + 7.0 * C2p7 * r6;
     }
-    else if (r >= rc) {
+    else if (r > rc) {
         // U3' = 0
         derivative = 0.0;
     }
@@ -324,7 +326,7 @@ double lennard_jones_energy_sder_v3(double r) {
         double r10 = r6 * r * r * r * r;
         second_derivative = -40.0 / r6 + 72.0 / r10;
     }
-    else if (r >= sigma && r < rc) {
+    else if (r >= sigma && r <= rc) {
         // U2 = A/r^8 - B/r^4 + polynomial
         // dU2/dr = -8A/r^9 + 4B/r^5 + C2p1 + 2*C2p2*r + 3*C2p3*r^2 + 4*C2p4*r^3 + 5*C2p5*r^4 + 6*C2p6*r^5 + 7*C2p7*r^6
         // d²U2/dr² = 72A/r^10 - 20B/r^6 + 2*C2p2 + 6*C2p3*r + 12*C2p4*r^2 + 20*C2p5*r^3 + 30*C2p6*r^4 + 42*C2p7*r^5
@@ -340,7 +342,7 @@ double lennard_jones_energy_sder_v3(double r) {
                            2.0 * C2p2 + 6.0 * C2p3 * r + 12.0 * C2p4 * r2 +
                            20.0 * C2p5 * r3 + 30.0 * C2p6 * r4 + 42.0 * C2p7 * r5;
     }
-    else if (r >= rc) {
+    else if (r > rc) {
         // U3 = 0
         // d²U3/dr² = 0
         second_derivative = 0.0;

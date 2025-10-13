@@ -3683,7 +3683,7 @@ void parametricAcousticStudy() {
 //  H << 0.5,            -0.5,
 //              std::sqrt(3.0)/2.0,  std::sqrt(3.0)/2.0;
  
-    H = gamma*H;
+    // H = gamma*H;
     H.setIdentity();
     //H=H.transpose();
 
@@ -3696,7 +3696,7 @@ void parametricAcousticStudy() {
     //double scale = 0.687204444204349/gamma;
     
 
-    int mode = 2;
+    int mode = 1;
 
     double scale;
     double normalisation;
@@ -3710,7 +3710,7 @@ void parametricAcousticStudy() {
 
       if (mode == 1) {
 
-        scale = 0.687204444204349 ;
+        scale =  0.6872044091828517;//0.687204444204349 ;
         r_cutoff = 2.5;
 
         potential_func = lennard_jones_energy_v2;
@@ -3721,6 +3721,7 @@ void parametricAcousticStudy() {
 
 
       else if (mode == 2) {
+
         scale = 0.996407146941421 ;
         r_cutoff = 1.86602540378444;
 
@@ -3733,6 +3734,7 @@ void parametricAcousticStudy() {
 
 
       else if (mode == 3) {
+        //dummies
         scale = 1. ;
         r_cutoff = 1.86602540378444;
 
@@ -3744,12 +3746,16 @@ void parametricAcousticStudy() {
 
 
 
-        TriangularLatticeCalculator strain_calculator(scale,r_cutoff);
+        SquareLatticeCalculator strain_calculator(scale,r_cutoff);
+        //TriangularLatticeCalculator strain_calculator(scale,r_cutoff);
         normalisation = strain_calculator.getUnitCellArea();
+        //since I use triangular lattice vectors
+        normalisation *= sqrt(3.)/2.; 
+        std::cout << "normalisation: " << normalisation << std::endl;
 
 
         // Strain_Energy_LatticeCalculator strain_calculator(scale);
-        // double normalisation = strain_calculator.getUnitCellArea();
+        // normalisation = strain_calculator.getUnitCellArea();
 
 
 
@@ -3762,18 +3768,38 @@ void parametricAcousticStudy() {
 
 
     int count = 0;
-    
-    
+
+    Eigen::Matrix2d C_ref;
+    Eigen::Matrix2d F_ref;
+    Eigen::Matrix2d Z_ref;
+    C_ref.setIdentity();
+    F_ref.setIdentity();
+    Z_ref.setIdentity();
+
+    F_ref.setIdentity();       
+    C_ref = F_ref.transpose()*F_ref;
+
+    AcousticTensor acoustic_tensor(F_ref, C_ref, Z_ref);
+    acoustic_tensor.computeEnergyDerivatives(
+    strain_calculator,
+    potential_func_der,
+    potential_func_sder,
+    normalisation
+    );
+// Cxxxx = Cyyyy = 37.2120020466688
+// Cxxyy = Cxxyy = 12.4040009178261
+    acoustic_tensor.printHessianComponents();
+
     // Main parametric loop - same structure as your working code but in a loop
-    for (double t = 0.0; t <= 1.; t += 0.001) {
-        for (double p = -M_PI; p <= M_PI; p += M_PI/128) {
+    for (double t = 0.0; t <= 1.; t += 0.002) { //radius 
+        for (double p = -M_PI; p <= M_PI; p += M_PI/128) { // angle
             
             try {
                 // Compute C matrix components exactly as specified
                 double c11 = cosh(t) + sinh(t) * sin(p);
                 double c22 = cosh(t) - sinh(t) * sin(p);
                 double c12 = sinh(t) * cos(p);
-                if(c12<0) continue; // only need half the space due to symmetry
+                //if(c12<0) continue; // only need half the space due to symmetry
                 
                 // Construct original C matrix
                 Eigen::Matrix2d C_original;
@@ -3789,10 +3815,23 @@ void parametricAcousticStudy() {
                 
                 // Apply Lagrange reduction to get Z matrix and reduced C
                 lagrange::Result reduction_result = lagrange::reduce(C_original);
-                Eigen::Matrix2d C = reduction_result.C_reduced;  // Use reduced C
-                Eigen::Matrix2d Z = reduction_result.m_matrix;   // Z from reduction
-                // C = C_original;
-                // Z.setIdentity();
+                
+                Eigen::Matrix2d C,Z;
+
+                if (mode == 1 || mode == 2) {
+                    // use original C and identity Z
+                    C = C_original;
+                    Z = Eigen::Matrix2d::Identity();
+                    C = reduction_result.C_reduced;
+                    Z = reduction_result.m_matrix;
+
+
+                } else {
+                    // For mode 3 (or any other mode), Use reduced C and Z from reduction result 
+                    C = reduction_result.C_reduced;
+                    Z = reduction_result.m_matrix;
+                }
+
 
                 bool third_condition = reduction_result.third_condition_satisfied;
                 
@@ -3804,6 +3843,7 @@ void parametricAcousticStudy() {
                 }
                 
                 Eigen::Matrix2d S_sqrt = C_eigensolver.eigenvalues().cwiseSqrt().asDiagonal();
+                // This F is indeed U such that F=QU
                 Eigen::Matrix2d F = C_eigensolver.eigenvectors() * S_sqrt * C_eigensolver.eigenvectors().transpose();
                 
 
@@ -3841,9 +3881,7 @@ void parametricAcousticStudy() {
                 );
                 
                 // Perform acoustic tensor analysis (same as working code)
-                double alpha = 1.0;
-                double theta = 0.0;
-                bool lagrangian = true;
+                bool lagrangian = false;
                 AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(lagrangian);
                 Eigen::Matrix2d C_original_new = H.transpose() * C_original * H;
 

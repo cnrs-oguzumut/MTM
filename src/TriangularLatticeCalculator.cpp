@@ -25,10 +25,10 @@ double TriangularLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
             // For triangular lattice, points are at m*[1,0] + n*[1/2, √3/2]
-            //double px = m + 0.5 * n;
-            //double py = sqrt(3.)/2. * n; // √3/2 = 0.866025404
-            double px = m;
-            double py = n;
+            double px = m + 0.5 * n;
+            double py = sqrt(3.)/2. * n; // √3/2 = 0.866025404
+            // double px = m;
+            // double py = n;
 
             
             // Skip the origin
@@ -56,11 +56,11 @@ Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::M
     for (int m = -nb_atoms; m <= nb_atoms; ++m) {
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
-            // double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
-            // double py = sqrt(3.)/2 * static_cast<double>(n); // √3/2
+            double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
+            double py = sqrt(3.)/2 * static_cast<double>(n); // √3/2
 
-            double px = m;
-            double py = n;
+            // double px = m;
+            // double py = n;
 
             
             // Skip the origin
@@ -85,6 +85,7 @@ Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::M
     }
     
     // Apply symmetry factors
+    // it brings us from DE/DX to J; we dont do it for Hessian
     // phi(0, 1) *= 0.5;
     // phi(1, 0) *= 0.5;
     
@@ -108,6 +109,7 @@ HessianComponents TriangularLatticeCalculator::calculate_hessian_components(cons
                                                                            const std::function<double(double)>& dpot,
                                                                            const std::function<double(double)>& d2pot) {
     HessianComponents hessian;
+    double scale_4 = scal * scal * scal * scal; // (scal^4) factor for Hessian terms
     
     // Loop over lattice points (adapted from square lattice for triangular geometry)
     for (int m = -nb_atoms; m <= nb_atoms; ++m) {
@@ -117,11 +119,11 @@ HessianComponents TriangularLatticeCalculator::calculate_hessian_components(cons
             
             // Convert from lattice coordinates to Cartesian coordinates
             // For triangular lattice: px = m + 0.5*n, py = √3/2 * n
-            //double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
-            //double py = sqrt(3.)/2 * static_cast<double>(n); // √3/2
+            double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
+            double py = sqrt(3.)/2 * static_cast<double>(n); // √3/2
 
-            double px = m;
-            double py = n;
+            // double px = m;
+            // double py = n;
 
 
             // Calculate squared distance using metric tensor
@@ -139,11 +141,11 @@ HessianComponents TriangularLatticeCalculator::calculate_hessian_components(cons
             double tempf2 = 0.5 * d2pot(r) / r;     // Second derivative factor
             
             // Calculate geometric factors using triangular lattice coordinates
-            double A = px * px * px * px;        // px⁴
-            double B = py * py * py * py;        // py⁴  
-            double C_geom = px * px * py * py;   // px²py²
-            double D = px * px * px * py;        // px³py
-            double E = py * py * py * px;        // py³px
+            double A = px * px * px * px*scale_4;        // px⁴
+            double B = py * py * py * py*scale_4;        // py⁴  
+            double C_geom = px * px * py * py*scale_4;   // px²py²
+            double D = px * px * px * py*scale_4;        // px³py
+            double E = py * py * py * px*scale_4;        // py³px
             
             // Calculate Hessian components (same formulas as square lattice)
             hessian.c11_c11 += 0.25 * tempf2 * A / r - 0.25 * tempf * A / (r * r);

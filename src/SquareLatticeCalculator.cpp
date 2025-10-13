@@ -1,25 +1,31 @@
 // SquareLatticeCalculator.cpp
 #include "../include/lattice_energy/SquareLatticeCalculator.h"
 
-SquareLatticeCalculator::SquareLatticeCalculator(double scale) :
-    rcut(2.5),
+SquareLatticeCalculator::SquareLatticeCalculator(double scale, double cutoff_radius) :
+    rcut(cutoff_radius),
     scal(scale),
     burgers(scale),
     nb_atoms(10),
-    normalisation(std::pow(burgers, 2.0)), // Unit cell area is a²
+    normalisation(std::pow(scale, 2.0)),  // Unit cell area is b² for square lattice
+    r_cutoff_sq(rcut*rcut),  // Added cutoff radius squared for efficiency
     square_basis({{
         {0.0, 0.0}
     }}) {}
 
 // Calculate energy
-double SquareLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
-                                                const std::function<double(double)>& pot,
-                                                double zero) {
+double SquareLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C, 
+                                const std::function<double(double)>& pot, 
+                                double zero) {
     double phi = 0.0;
-    // In a square lattice, points are at integer positions
+    
+    // In a square lattice, points are at positions:
+    // r = m*a₁ + n*a₂ where a₁ = [1,0] and a₂ = [0,1]
+    // We transform these coordinates using matrix multiplication
+    
     for (int m = -nb_atoms; m <= nb_atoms; ++m) {
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
+            // For square lattice, points are at m*[1,0] + n*[0,1]
             double px = m;
             double py = n;
             
@@ -27,6 +33,7 @@ double SquareLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
             if (std::abs(px) < 1e-10 && std::abs(py) < 1e-10) continue;
             
             Eigen::Vector2d p(px, py);
+            
             // Calculate distance with scaling
             double r_squared = p.transpose() * C * p;
             double r = scal * std::sqrt(r_squared);
@@ -41,19 +48,20 @@ double SquareLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
 
 // Calculate energy derivative
 Eigen::Matrix2d SquareLatticeCalculator::calculate_derivative(const Eigen::Matrix2d& C,
-                                                            const std::function<double(double)>& dpot) {
+                                    const std::function<double(double)>& dpot) {
     Eigen::Matrix2d phi = Eigen::Matrix2d::Zero();
     
     for (int m = -nb_atoms; m <= nb_atoms; ++m) {
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
-            double px = m;
-            double py = n;
+            double px = static_cast<double>(m);
+            double py = static_cast<double>(n);
             
             // Skip the origin
             if (std::abs(px) < 1e-10 && std::abs(py) < 1e-10) continue;
             
             Eigen::Vector2d p(px, py);
+            
             // Calculate distance with scaling
             double r_squared = p.transpose() * C * p;
             double r = scal * std::sqrt(r_squared);
@@ -61,6 +69,7 @@ Eigen::Matrix2d SquareLatticeCalculator::calculate_derivative(const Eigen::Matri
             if (r <= rcut) {
                 double tmp_d = dpot(r);
                 double dphi = 0.5 * tmp_d / r;
+                
                 phi(0, 0) += 0.5 * dphi * px * px * scal * scal;
                 phi(1, 1) += 0.5 * dphi * py * py * scal * scal;
                 phi(0, 1) += dphi * px * py * scal * scal;
@@ -70,49 +79,64 @@ Eigen::Matrix2d SquareLatticeCalculator::calculate_derivative(const Eigen::Matri
     }
     
     // Apply symmetry factors
-    phi(0, 1) *= 0.5;
-    phi(1, 0) *= 0.5;
+    // it brings us from DE/DX to J; we dont do it for Hessian
+    // phi(0, 1) *= 0.5;
+    // phi(1, 0) *= 0.5;
     
     return phi;
 }
 
-// Calculate second derivatives (Hessian) of energy w.r.t. metric tensor components
+// UNIFORM INTERFACE: Calculate second derivatives as 4th order ITensor
+itensor::ITensor SquareLatticeCalculator::calculate_dseconderivative(const Eigen::Matrix2d& C,
+                                                                    const std::function<double(double)>& dpot,
+                                                                    const std::function<double(double)>& d2pot) {
+    // For this implementation, we'll use a dummy pot function since we only need dpot and d2pot
+    auto dummy_pot = [](double r) { return 0.0; };
+    
+    HessianComponents hess = calculate_hessian_components(C, dummy_pot, dpot, d2pot);
+    return hessianComponentsToITensor(hess);
+}
+
+// Private helper method: Calculate second derivatives (Hessian) of energy w.r.t. metric tensor components
 HessianComponents SquareLatticeCalculator::calculate_hessian_components(const Eigen::Matrix2d& C,
                                                                        const std::function<double(double)>& pot,
                                                                        const std::function<double(double)>& dpot,
                                                                        const std::function<double(double)>& d2pot) {
     HessianComponents hessian;
+    double scale_4 = scal * scal * scal * scal; // (scal^4) factor for Hessian terms
     
-    // Loop over lattice points (similar to the original C code)
+    // Loop over lattice points (adapted from triangular lattice for square geometry)
     for (int m = -nb_atoms; m <= nb_atoms; ++m) {
         for (int n = -nb_atoms; n <= nb_atoms; ++n) {
             // Skip the origin
             if (m == 0 && n == 0) continue;
             
             // Convert from lattice coordinates to Cartesian coordinates
-            double dx2 = static_cast<double>(m);
-            double dy2 = static_cast<double>(n);
+            // For square lattice: px = m, py = n
+            double px = static_cast<double>(m);
+            double py = static_cast<double>(n);
             
             // Calculate squared distance using metric tensor
-            double r2 = dx2 * dx2 * C(0,0) + dy2 * dy2 * C(1,1) + 2.0 * dx2 * dy2 * C(0,1);
+            Eigen::Vector2d p(px, py);
+            double r_squared = p.transpose() * C * p;
             
             // Apply cutoff
-            if (r2 >= r_cutoff_sq) continue;
-            
-            double r = std::sqrt(r2) * scal;
+            double r = std::sqrt(r_squared) * scal;
+            if (r > rcut)
+                continue;
             
             // Calculate potential derivatives
-            double tempf = 0.5 * dpot(r) / r;        // First derivative factor
-            double tempf2 = 0.5 * d2pot(r) / r;     // Second derivative factor
+            double tempf  = 0.5 * dpot(r) / r;        // First derivative factor
+            double tempf2 = 0.5 * d2pot(r) / r;       // Second derivative factor
             
-            // Calculate geometric factors (same as A, B, C, D, E in original code)
-            double A = dx2 * dx2 * dx2 * dx2;        // dx⁴
-            double B = dy2 * dy2 * dy2 * dy2;        // dy⁴  
-            double C_geom = dx2 * dx2 * dy2 * dy2;   // dx²dy²
-            double D = dx2 * dx2 * dx2 * dy2;        // dx³dy
-            double E = dy2 * dy2 * dy2 * dx2;        // dy³dx
+            // Calculate geometric factors using square lattice coordinates
+            double A = px * px * px * px * scale_4;        // px⁴
+            double B = py * py * py * py * scale_4;        // py⁴  
+            double C_geom = px * px * py * py * scale_4;   // px²py²
+            double D = px * px * px * py * scale_4;        // px³py
+            double E = py * py * py * px * scale_4;        // py³px
             
-            // Calculate Hessian components (following the original formulas)
+            // Calculate Hessian components (same formulas as triangular lattice)
             hessian.c11_c11 += 0.25 * tempf2 * A / r - 0.25 * tempf * A / (r * r);
             hessian.c22_c22 += 0.25 * tempf2 * B / r - 0.25 * tempf * B / (r * r);
             hessian.c12_c12 += tempf2 * C_geom / r - tempf * C_geom / (r * r);
@@ -126,18 +150,7 @@ HessianComponents SquareLatticeCalculator::calculate_hessian_components(const Ei
     return hessian;
 }
 
-// Calculate second derivatives as 4th order ITensor
-itensor::ITensor SquareLatticeCalculator::calculate_dseconderivative(const Eigen::Matrix2d& C,
-                                                                    const std::function<double(double)>& dpot,
-                                                                    const std::function<double(double)>& d2pot) {
-    // For this implementation, we'll use a dummy pot function since we only need dpot and d2pot
-    auto dummy_pot = [](double r) { return 0.0; };
-    
-    HessianComponents hess = calculate_hessian_components(C, dummy_pot, dpot, d2pot);
-    return hessianComponentsToITensor(hess);
-}
-
-// Convert HessianComponents to 4th order ITensor
+// Private helper method: Convert HessianComponents to 4th order ITensor
 itensor::ITensor SquareLatticeCalculator::hessianComponentsToITensor(const HessianComponents& hess) const {
     // Create indices for the 4th order tensor (i,j,k,l) where ∂²E/∂C_ij∂C_kl
     auto i = itensor::Index(2, "i");

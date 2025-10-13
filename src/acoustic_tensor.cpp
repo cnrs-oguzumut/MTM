@@ -137,6 +137,9 @@ void AcousticTensor::computeJacobian(itensor::ITensor& dPhi) {
 void AcousticTensor::computeHessian(itensor::ITensor& ddPhi) {
     double div1 = 0.5;
     double div2 = 0.25;  // 0.5 * 0.5
+    // div1=1;
+    // div2=1;    
+    
     
     for (int k = 1; k <= 2; k++) {
         for (int l = 1; l <= 2; l++) {
@@ -254,7 +257,7 @@ AcousticAnalysis AcousticTensor::analyzeAcousticTensor(bool lagrangian) {
         auto N2 = itensor::ITensor(q);
         
         
-        for (double ksi = 0; ksi < 2*M_PI; ksi += M_PI / 60.0) {
+        for (double ksi = 0; ksi < 2*M_PI; ksi += M_PI / 50.0) {
             N1.set(p=1, cos(ksi));
             N1.set(p=2, sin(ksi));
             N2.set(q=1, cos(ksi));
@@ -279,7 +282,7 @@ AcousticAnalysis AcousticTensor::analyzeAcousticTensor(bool lagrangian) {
         auto N = itensor::ITensor(s_);
         
         //for (double ksi = -M_PI; ksi < M_PI; ksi += 0.01) {
-        for (double ksi = 0; ksi < 2*M_PI; ksi += 0.01) {
+        for (double ksi = 0; ksi < 2*M_PI; ksi += M_PI / 60) {
 
             N.set(s_=1, cos(ksi));
             N.set(s_=2, sin(ksi));
@@ -302,32 +305,51 @@ AcousticAnalysis AcousticTensor::analyzeAcousticTensor(bool lagrangian) {
     
     return result;
 }
-// Also add this simpler implementation for findMinDetAcousticTensor:
 
-AcousticAnalysis AcousticTensor::findMinDetAcousticTensor(double xsi) {
-    if (xsi >= 10.0) {
-        // Search mode - find global minimum
-        std::cout << "Performing global minimum search..." << std::endl;
-        return analyzeAcousticTensor(1.0, 0.0);  // The search is already built into analyzeAcousticTensor
-    } else {
-        // Specific angle mode
-        std::cout << "Computing at specific angle: " << xsi << " degrees" << std::endl;
-        double angle_rad = xsi * M_PI / 180.0;
-        
-        // Use the same computation as analyzeAcousticTensor but for specific angle
-        Eigen::Vector2d n(cos(angle_rad), sin(angle_rad));
-        
-        // Simplified acoustic tensor computation for this specific direction
-        Eigen::Matrix2d stress_term = F_ * dE_dC_;
-        Eigen::Matrix2d acoustic_matrix = Z_ * stress_term;
-        
-        AcousticAnalysis result;
-        result.detAc = acoustic_matrix.determinant();
-        result.xsi = xsi;
-        
-        return result;
-    }
+void AcousticTensor::printHessianComponents() {
+    // Create ddPhi tensor with proper indices
+    auto ddPhi = itensor::ITensor(k_, l_, w3_, w4_);
+    ddPhi.fill(0.0);
+    
+    // Compute the Hessian
+    computeHessian(ddPhi);
+    
+    // Print components with the same factors as in your example
+    std::cout << "\n=== Hessian (ddPhi) Components ===" << std::endl;
+    std::cout << "ddPhi(1,1,1,1) = " << 4*ddPhi.elt(k_=1, l_=1, w3_=1, w4_=1) << std::endl;
+    std::cout << "ddPhi(2,2,2,2) = " << 4*ddPhi.elt(k_=2, l_=2, w3_=2, w4_=2) << std::endl;
+    std::cout << "ddPhi(1,2,1,2) = " << 4*ddPhi.elt(k_=1, l_=2, w3_=1, w4_=2) << std::endl;
+    std::cout << "ddPhi(1,1,2,2) = " << 4*ddPhi.elt(k_=1, l_=1, w3_=2, w4_=2) << std::endl;
+    std::cout << "ddPhi(1,1,1,2) = " << 4*ddPhi.elt(k_=1, l_=1, w3_=1, w4_=2) << std::endl;
+    std::cout << "ddPhi(2,2,1,2) = " << 4*ddPhi.elt(k_=2, l_=2, w3_=1, w4_=2) << std::endl;
+    std::cout << "==================================\n" << std::endl;
 }
+// // Also add this simpler implementation for findMinDetAcousticTensor:
+
+// AcousticAnalysis AcousticTensor::findMinDetAcousticTensor(double xsi) {
+//     if (xsi >= 10.0) {
+//         // Search mode - find global minimum
+//         std::cout << "Performing global minimum search..." << std::endl;
+//         return analyzeAcousticTensor(1.0, 0.0);  // The search is already built into analyzeAcousticTensor
+//     } else {
+//         // Specific angle mode
+//         std::cout << "Computing at specific angle: " << xsi << " degrees" << std::endl;
+//         double angle_rad = xsi * M_PI / 180.0;
+        
+//         // Use the same computation as analyzeAcousticTensor but for specific angle
+//         Eigen::Vector2d n(cos(angle_rad), sin(angle_rad));
+        
+//         // Simplified acoustic tensor computation for this specific direction
+//         Eigen::Matrix2d stress_term = F_ * dE_dC_;
+//         Eigen::Matrix2d acoustic_matrix = Z_ * stress_term;
+        
+//         AcousticAnalysis result;
+//         result.detAc = acoustic_matrix.determinant();
+//         result.xsi = xsi;
+        
+//         return result;
+//     }
+// }
 // Include other methods (computeAijkl, findMinDetAcousticTensor, etc.) from previous implementation...
 // [I'll skip them here for brevity as they follow the same pattern]
 
@@ -364,4 +386,65 @@ double AcousticTensor::findMinValue(const std::vector<double>& vec) const {
 
 size_t AcousticTensor::findMinIndex(const std::vector<double>& vec) const {
     return std::distance(vec.begin(), std::min_element(vec.begin(), vec.end()));
+}
+
+itensor::ITensor AcousticTensor::getAcousticTensor(bool lagrangian) {
+    // Build acoustic tensor exactly as in analyzeAcousticTensor
+    auto T54 = itensor::ITensor(m_, n_, r_, s_, i_, j_);
+    T54.fill(0.0);
+    createT54(T54);
+    
+    auto F = itensor::ITensor(i_, j_);
+    auto T53 = itensor::ITensor(m_, n_, i_, j_);
+    T53.fill(0.0);
+    createT53(T53, F);
+    
+    auto dPhi = itensor::ITensor(k_, l_);
+    dPhi.fill(0.0);
+    computeJacobian(dPhi);
+    
+    auto ddPhi = itensor::ITensor(k_, l_, w3_, w4_);
+    ddPhi.fill(0.0);
+    computeHessian(ddPhi);
+    
+    auto mm = itensor::ITensor(i_, j_);
+    mm.set(i_=1, j_=1, Z_(0,0));
+    mm.set(i_=1, j_=2, Z_(0,1));
+    mm.set(i_=2, j_=1, Z_(1,0));
+    mm.set(i_=2, j_=2, Z_(1,1));
+    
+    auto mm2 = mm * itensor::delta(i_, n_) * itensor::delta(j_, l_);
+    auto mm1 = mm * itensor::delta(i_, m_) * itensor::delta(j_, k_);
+    auto mm3 = mm * itensor::delta(i_, w1_) * itensor::delta(j_, w3_);
+    auto mm4 = mm * itensor::delta(i_, w2_) * itensor::delta(j_, w4_);
+    
+    auto f1 = mm1 * mm2 * dPhi * T54;
+    auto T53_2 = T53 * itensor::delta(m_, w1_) * itensor::delta(n_, w2_) * 
+                 itensor::delta(i_, r_) * itensor::delta(j_, s_);
+    auto f2 = mm1 * mm2 * T53 * T53_2 * mm3 * mm4 * ddPhi;
+    
+    auto final_tensor = f1 + f2;
+    
+    if (!lagrangian) {
+        auto p = itensor::Index(2, "p");
+        auto q = itensor::Index(2, "q");
+        auto gradF = itensor::ITensor(p, r_);
+        auto gradFr = itensor::ITensor(q, i_);
+        
+        gradF.set(p=1, r_=1, F_(0,0));
+        gradF.set(p=1, r_=2, F_(0,1));
+        gradF.set(p=2, r_=1, F_(1,0));
+        gradF.set(p=2, r_=2, F_(1,1));
+        
+        gradFr.set(q=1, i_=1, F_(0,0));
+        gradFr.set(q=1, i_=2, F_(0,1));
+        gradFr.set(q=2, i_=1, F_(1,0));
+        gradFr.set(q=2, i_=2, F_(1,1));
+        
+        final_tensor = itensor::permute(final_tensor, {r_, s_, i_, j_});
+        auto final_tensor_euler = gradF * gradFr * final_tensor;
+        return itensor::permute(final_tensor_euler, {p, s_, q, j_});
+    }
+    
+    return final_tensor;
 }
