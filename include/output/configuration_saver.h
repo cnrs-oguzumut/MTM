@@ -106,7 +106,19 @@ public:
         const std::vector<ElementTriangle2D>& elements,
         const UserData* userData,
         int iteration,
-        bool reduction = false);
+        bool reduction = false,
+        const std::vector<int>& coordination= std::vector<int>());
+
+
+    static void writeToVTK_DefectAnalysis(
+        const std::vector<Point2D>& points,
+        const std::vector<ElementTriangle2D>& elements,
+        const UserData* userData,
+        int iteration);
+
+    static void logDislocationData(
+        double alpha,
+        int num_dislocations);
     
 private:
     /**

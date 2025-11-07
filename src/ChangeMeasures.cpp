@@ -29,6 +29,7 @@
 
 //checkTriangularDomainViolation
 bool checkSquareDomainViolation(const std::vector<ElementTriangle2D>& elements) {
+    
     for (const auto& element : elements) {
         if (!element.isInitialized()) continue;
         
@@ -36,31 +37,58 @@ bool checkSquareDomainViolation(const std::vector<ElementTriangle2D>& elements) 
         double detC = C.determinant();
         
         // Early exit for non-physical deformation
-        if (detC <= 0.0) return true;
+        if (detC <= 0.0) {
+            std::cout << "Violation: Non-physical deformation (det(C) <= 0)" << std::endl;
+            return true;
+        }
         
-        double inv_sqrt_detC = 1.0 ;// sqrt(detC);
+        // Normalize metric tensor components
+        double inv_sqrt_detC = 1.0;  // Set to 1.0/sqrt(detC) if normalization needed
         double c11 = C(0, 0) * inv_sqrt_detC;
         double c22 = C(1, 1) * inv_sqrt_detC;
         double c12 = C(0, 1) * inv_sqrt_detC;
-        double threshold = 0.;
         
-        // Check triangular lattice domain condition with threshold: 
-        // -threshold ≤ C12 ≤ min(C11, C22) + threshold
-        //if (std::abs(c12) < -threshold || c12 > std::min(c11, c22) ) {
-        if (std::abs(c12) > std::min(c11, c22) ) {
-        //if (2.0 * c12 > std::min(c11, c22)){
-            
-            std::cout << "c11: " << c11 << ", c22: " << c22 << ", c12: " << c12 << std::endl;
+        double min_val = std::min(c11, c22);
+        
+        bool condition1 = (c12 > 0 && c12 < min_val);
+        bool condition2 = (c12 < 0 && 2 * std::abs(c12) < min_val);
+
+        
+        // Violation if either condition is NOT satisfied
+        bool violation_found = (!condition2 && !condition1 );
+        
+        // if( !condition1 &&  condition2 ){
+        //     violation_found = false;
+        // }
+
+        // if( !condition1 && !condition2 ){
+        //     violation_found = true;
+        // }
+
+        // if( condition1 &&  condition2 ){
+        //     violation_found = false;
+        // }
+        
+        // if( condition1 &&  !condition2 ){
+        //     violation_found = false;
+        // }
+
+
+
+
+
+
+        if (violation_found) {
+            // std::cout << "Violation found:" << std::endl;
+            // std::cout << "  c11: " << c11 << ", c22: " << c22 << ", c12: " << c12 << std::endl;
+            // std::cout << "  min(c11,c22): " << min_val << std::endl;
+            // std::cout << "  Condition 1 (0 < c12 < min): " << (condition1 ? "PASS" : "FAIL") << std::endl;
+            // std::cout << "  Condition 2 (c122|c12| < min): " << (condition2 ? "PASS" : "FAIL") << std::endl;
             return true;
         }
-
-
-        // if (std::abs(c12) > std::min(c11, c22) + threshold) {
-        //     std::cout << "c11: " << c11 << ", c22: " << c22 << ", c12: " << c12 << std::endl;
-        //     return true;
-        // }
     }
-    return false;
+    
+    return false;  // No violation found in any element
 }
 
 ChangeMeasures computeChangeMeasures(const alglib::real_1d_array& current_points,

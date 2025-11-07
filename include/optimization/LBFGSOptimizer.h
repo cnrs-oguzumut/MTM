@@ -2,6 +2,7 @@
 #define LBFGS_OPTIMIZER_H
 
 #include "src/optimization.h" // This path is relative to ALGLIB_DIR
+#include "../include/optimization/LatticeOptimizer.h"
 
 class LBFGSOptimizer {
 private:

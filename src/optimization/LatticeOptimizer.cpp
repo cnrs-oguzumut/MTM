@@ -1,4 +1,6 @@
 #include "../include/optimization/LatticeOptimizer.h"
+#include "../include/output/ChangeMeasures.h"
+
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -475,8 +477,14 @@ void minimize_energy_with_triangles(
 
     // Set energy result
     func = total_energy;
-
-
+    bool shouldLeave=checkSquareDomainViolation(elements);
+    userData->third_condition_flag = false; 
+    // if(shouldLeave){
+    //     std::cout << "[INFO] Requesting termination at iteration " << iteration << std::endl;
+    //     userData->third_condition_flag = true; 
+    //     alglib::minlbfgsrequesttermination(*userData->optimizer_state);  // Add * here!
+    //     //return;  // Exit callback immediately
+    // }
     
     iteration++;
 }

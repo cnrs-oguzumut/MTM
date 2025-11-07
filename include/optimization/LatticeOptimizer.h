@@ -20,6 +20,7 @@
 #include "../include/reductions/LagrangeReduction.h"
 
 
+
 #include "src/optimization.h" // This path is relative to ALGLIB_DIR
 // UserData structure for optimization
 struct UserData {
@@ -35,6 +36,8 @@ struct UserData {
     const std::vector<std::pair<int, int>>& full_mapping;
     std::vector<size_t>& active_elements;
     bool third_condition_flag;  // Flag for third condition in Lagrange reduction
+    alglib::minlbfgsstate* optimizer_state;  // Pointer to ALGLIB state
+
     
     UserData(std::vector<Point2D>& pts,
              std::vector<ElementTriangle2D>& elems,
@@ -59,7 +62,9 @@ struct UserData {
           interior_mapping(int_map), 
           full_mapping(full_map),
           active_elements(active_elems),
-          third_condition_flag(third_cond_flag) {}
+          third_condition_flag(third_cond_flag),
+          optimizer_state(nullptr)      // Initialize 
+          {}
 };
 
 // DOF mapping function

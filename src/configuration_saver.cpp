@@ -632,7 +632,9 @@ void ConfigurationSaver::writeToVTK(
     const std::vector<Point2D>& points,
     const std::vector<ElementTriangle2D>& elements,
     const UserData* userData,
-    int iteration, bool reduction)
+    int iteration, 
+    bool reduction,
+    const std::vector<int>& coordination)  // NEW: Optional coordination vector
 {
     // Create directory if it doesn't exist
     std::filesystem::create_directory("vtk_output");
@@ -641,7 +643,7 @@ void ConfigurationSaver::writeToVTK(
     std::stringstream filename;
     filename << "vtk_output/configuration_" << std::setw(5) << std::setfill('0') << iteration << ".vtk";
     
-    // Get original domaingit points count
+    // Get original domain points count
     int original_points_count = points.size();
     
     // Define a custom key for map to handle Eigen::Vector2d
@@ -700,11 +702,35 @@ void ConfigurationSaver::writeToVTK(
         }
     }    
     
+    // NEW: Map coordination from original points to extended points (if provided)
+    std::vector<int> extended_coordination;
+    bool has_coordination = !coordination.empty() && 
+                           coordination.size() == static_cast<size_t>(original_points_count);
+    
+    if (has_coordination) {
+        extended_coordination.resize(extended_point_count, 6);  // Default to 6
+        for (const auto& entry : node_map) {
+            int original_idx = entry.first.index;
+            int extended_idx = entry.second;
+            if (original_idx < static_cast<int>(coordination.size())) {
+                extended_coordination[extended_idx] = coordination[original_idx];
+            }
+        }
+    }
+    
     // Prepare vectors to store element-wise data
     std::vector<double> element_energy_values;
     std::vector<Eigen::Matrix2d> element_cauchy_stress_tensors;
     std::vector<double> element_projected_stress_values;
     
+    // Initialize nodal value arrays
+    std::vector<double> nodal_energy(extended_point_count, 0.0);
+    std::vector<double> nodal_projected_stress(extended_point_count, 0.0);
+    std::vector<double> nodal_cauchy_xx(extended_point_count, 0.0);
+    std::vector<double> nodal_cauchy_xy(extended_point_count, 0.0);
+    std::vector<double> nodal_cauchy_yy(extended_point_count, 0.0);
+    std::vector<int> node_count(extended_point_count, 0);
+
     // Loop over active elements to calculate and store values
     for (size_t elem_idx : userData->active_elements) {
         if (elem_idx >= elements.size()) continue;
@@ -752,6 +778,31 @@ void ConfigurationSaver::writeToVTK(
         dF_d_alpha(0, 1) = 1.0;
         double stress_value = P.cwiseProduct(dF_d_alpha).sum();
         element_projected_stress_values.push_back(stress_value);
+        
+        // Distribute to all 3 nodes of this triangle
+        for (int i = 0; i < 3; i++) {
+            int original_idx = element.getNodeIndex(i);
+            Eigen::Vector2d translation = element.getTranslation(i);
+            PairKey node_key(original_idx, translation);
+            int extended_idx = node_map[node_key];
+            
+            nodal_energy[extended_idx] += element_energy / 3.0;  // Divide by 3 nodes
+            nodal_projected_stress[extended_idx] += stress_value;
+            nodal_cauchy_xx[extended_idx] += cauchy_stress(0, 0);
+            nodal_cauchy_xy[extended_idx] += cauchy_stress(0, 1);
+            nodal_cauchy_yy[extended_idx] += cauchy_stress(1, 1);
+            node_count[extended_idx]++;
+        }
+    }
+    
+    // Average the stress values where nodes were counted multiple times
+    for (int i = 0; i < extended_point_count; i++) {
+        if (node_count[i] > 0) {
+            nodal_projected_stress[i] /= node_count[i];
+            nodal_cauchy_xx[i] /= node_count[i];
+            nodal_cauchy_xy[i] /= node_count[i];
+            nodal_cauchy_yy[i] /= node_count[i];
+        }
     }
     
     // Open file for writing
@@ -832,6 +883,336 @@ void ConfigurationSaver::writeToVTK(
         file << 0.0 << " " << 0.0 << " " << 0.0 << "\n\n";
     }
     
+    // --- Write Point Data (Per-Node Values) ---
+    file << "\nPOINT_DATA " << extended_point_count << "\n";
+    
+    // Nodal Energy
+    file << "SCALARS NodalEnergy float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (double val : nodal_energy) {
+        file << val << "\n";
+    }
+
+    // Nodal Projected Stress
+    file << "SCALARS NodalProjectedStress float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (double val : nodal_projected_stress) {
+        file << val << "\n";
+    }
+
+    // Number of Elements per Node (Valence/Coordination) - from mesh
+    file << "SCALARS NodeValence float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int val : node_count) {
+        file << (val < 5 ? 6 : val) << "\n";
+    }
+    
+    // NEW: Reference Coordination - from defect analysis (if provided)
+    if (has_coordination) {
+        file << "SCALARS ReferenceCoordination float 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (int val : extended_coordination) {
+            file << (val < 5 ? 6 : val) << "\n";
+        }
+        std::cout << "  Included ReferenceCoordination field from defect analysis" << std::endl;
+    }
+
+    // Nodal Cauchy Stress Tensor
+    file << "TENSORS NodalCauchyStress float\n";
+    for (int i = 0; i < extended_point_count; i++) {
+        file << nodal_cauchy_xx[i] << " " << nodal_cauchy_xy[i] << " " << 0.0 << "\n";
+        file << nodal_cauchy_xy[i] << " " << nodal_cauchy_yy[i] << " " << 0.0 << "\n";
+        file << 0.0 << " " << 0.0 << " " << 0.0 << "\n\n";
+    }
+
     file.close();
     std::cout << "Saved VTK file: " << filename.str() << std::endl;
+}
+
+
+
+// Function to save configuration with nodal stress and energy values to XYZ file for OVITO (2D version)
+// void ConfigurationSaver::saveConfigurationWithNeigborinformation(
+//     UserData* userData,
+//     int iteration, 
+//     double& total_energy,
+//     double& total_stress,bool reduction) {
+        
+//     // Perform null check
+//     if (!userData) {
+//         std::cerr << "Error: userData is null in saveConfigurationWithStressAndEnergy2D" << std::endl;
+//         return;
+//     }
+    
+//     // Extract needed values from userData with non-const references
+//     std::vector<Point2D>& points = userData->points;
+//     std::vector<ElementTriangle2D>& elements = userData->elements;
+//     //TriangularLatticeCalculator& calculator = userData->calculator;
+//     BaseLatticeCalculator& calculator = userData->calculator;
+//     std::function<double(double)>& energy_function = userData->energy_function;
+//     std::function<double(double)>& derivative_function = userData->derivative_function;
+//     double zero_energy = userData->zero_energy;
+//     double ideal_lattice_parameter = userData->ideal_lattice_parameter;
+//     const Eigen::Matrix2d& F_ext = userData->F_external;
+//     const std::vector<std::pair<int, int>>& interior_mapping = userData->interior_mapping;
+//     const std::vector<std::pair<int, int>>& full_mapping = userData->full_mapping;
+//     const std::vector<size_t>& active_elements = userData->active_elements;
+    
+//     // Transform nodal positions by inverse of F_ext to remove external load state
+//     Eigen::Matrix2d F_ext_inv = F_ext.inverse();
+//     for (auto& point : points) {
+//         Eigen::Vector2d pos(point.x, point.y);
+//         Eigen::Vector2d transformed_pos = F_ext_inv * pos;
+//         point.x = transformed_pos(0);
+//         point.y = transformed_pos(1);
+//     }
+    
+//     // For square lattice in 2D - match the normalization from minimize_energy_with_triangles
+//     //double normalisation = pow(ideal_lattice_parameter, 2.0); 
+//     double normalisation = calculator.getUnitCellArea();
+   
+    
+//     // Create directory if it doesn't exist
+//     std::filesystem::create_directory("Inverse_F");
+    
+    
+    
+//     int processed_elements = 0;
+//     double recalculated_total_energy = 0.0;
+//     double recalculated_total_stress = 0.0;
+    
+//     // Loop through active elements to accumulate stress and energy at nodes
+//     for (size_t elem_idx : active_elements) {
+//         if (elem_idx >= elements.size()) {
+//             std::cerr << "Warning: Element index " << elem_idx << " out of range." << std::endl;
+//             continue;
+//         }
+//     }
+// }
+
+
+
+void ConfigurationSaver::writeToVTK_DefectAnalysis(
+    const std::vector<Point2D>& points,
+    const std::vector<ElementTriangle2D>& elements,
+    const UserData* userData,
+    int iteration)
+{
+    // Create directory if it doesn't exist
+    std::filesystem::create_directory("vtk_defects");
+    
+    // Create filename with iteration number
+    std::stringstream filename;
+    filename << "vtk_defects/defects_" << std::setw(5) << std::setfill('0') << iteration << ".vtk";
+    
+    // Get original domain points count
+    int original_points_count = points.size();
+    
+    // Define a custom key for map to handle Eigen::Vector2d
+    struct PairKey {
+        int index;
+        double tx, ty; // Translation components
+        
+        PairKey(int idx, const Eigen::Vector2d& trans) : 
+            index(idx), tx(trans.x()), ty(trans.y()) {}
+            
+        bool operator<(const PairKey& other) const {
+            if (index != other.index) return index < other.index;
+            if (tx != other.tx) return tx < other.tx;
+            return ty < other.ty;
+        }
+    };
+    
+    // Build a map of unique points including periodically translated ones
+    std::map<PairKey, int> node_map;
+    int extended_point_count = 0;
+    
+    // First pass: identify all unique points (original + translated)
+    for (const auto& element : elements) {
+        if (!element.isInitialized()) continue;
+        
+        for (int i = 0; i < 3; i++) {
+            int node_idx = element.getNodeIndex(i);
+            Eigen::Vector2d translation = element.getTranslation(i);
+            PairKey node_key(node_idx, translation);
+            if (node_map.find(node_key) == node_map.end()) {
+                node_map[node_key] = extended_point_count++;
+            }
+        }
+    }
+    
+    std::cout << "Defect analysis - Original points: " << original_points_count 
+              << ", Extended points: " << extended_point_count << std::endl;
+    
+    // Prepare arrays for extended point coordinates
+    std::vector<Eigen::Vector2d> extended_points(extended_point_count);
+    
+    // Fill extended point coordinates
+    for (const auto& entry : node_map) {
+        int original_idx = entry.first.index;
+        Eigen::Vector2d translation(entry.first.tx, entry.first.ty);
+        int extended_idx = entry.second;
+        
+        // Apply translation to the original point
+        if (original_idx < original_points_count) {
+            // Apply external deformation to the translation vector
+            Eigen::Vector2d deformed_translation = userData->F_external * translation;
+            extended_points[extended_idx] = points[original_idx].coord + deformed_translation;
+        } else {
+            std::cerr << "Warning: Invalid point index " << original_idx << std::endl;
+            extended_points[extended_idx] = Eigen::Vector2d::Zero();
+        }
+    }    
+    
+    // Initialize nodal coordination number array
+    std::vector<int> node_count(extended_point_count, 0);
+
+    // Loop over active elements to count coordination numbers
+    for (size_t elem_idx : userData->active_elements) {
+        if (elem_idx >= elements.size()) continue;
+        
+        const auto& element = elements[elem_idx];
+        if (!element.isInitialized()) continue;
+        
+        // Count coordination for each node of this triangle
+        for (int i = 0; i < 3; i++) {
+            int original_idx = element.getNodeIndex(i);
+            Eigen::Vector2d translation = element.getTranslation(i);
+            PairKey node_key(original_idx, translation);
+            int extended_idx = node_map[node_key];
+            
+            node_count[extended_idx]++;
+        }
+    }
+    
+    // Fix valence for periodic copies - copy from original points
+    for (const auto& entry : node_map) {
+        int original_idx = entry.first.index;
+        Eigen::Vector2d translation(entry.first.tx, entry.first.ty);
+        int extended_idx = entry.second;
+        
+        // If this is a periodic copy (has non-zero translation)
+        if (translation.norm() > 1e-10) {
+            // Find the corresponding original point (same index, zero translation)
+            PairKey original_key(original_idx, Eigen::Vector2d::Zero());
+            auto it = node_map.find(original_key);
+            if (it != node_map.end()) {
+                int original_extended_idx = it->second;
+                // Copy the valence from the original to the periodic copy
+                node_count[extended_idx] = node_count[original_extended_idx];
+            }
+        }
+    }
+    
+    // Open file for writing
+    std::ofstream file(filename.str());
+    if (!file) {
+        std::cerr << "Error: Could not open file " << filename.str() << " for writing." << std::endl;
+        return;
+    }
+    
+    // Write VTK header
+    file << "# vtk DataFile Version 1.0\n";
+    file << "2D Defect Analysis - Coordination Numbers Only\n";
+    file << "ASCII\n\n";
+    file << "DATASET UNSTRUCTURED_GRID\n";
+    
+    // Write points (extended set)
+    file << "POINTS " << extended_point_count << " float\n";
+    for (const auto& point : extended_points) {
+        file << point.x() << " " << point.y() << " " << 0.0 << "\n";
+    }
+    
+    // Count valid elements
+    int valid_elements = 0;
+    for (size_t elem_idx : userData->active_elements) {
+        if (elem_idx < elements.size() && elements[elem_idx].isInitialized()) {
+            valid_elements++;
+        }
+    }
+    
+    // Write cells
+    file << "CELLS " << valid_elements << " " << (4 * valid_elements) << "\n";
+    for (size_t elem_idx : userData->active_elements) {
+        if (elem_idx >= elements.size() || !elements[elem_idx].isInitialized()) continue;
+        
+        const auto& element = elements[elem_idx];
+        file << "3";
+        
+        // Get the extended indices for each node of this element
+        for (int i = 0; i < 3; i++) {
+            int original_idx = element.getNodeIndex(i);
+            Eigen::Vector2d translation = element.getTranslation(i);
+            PairKey node_key(original_idx, translation);
+            int extended_idx = node_map[node_key];
+            
+            file << " " << extended_idx;
+        }
+        file << "\n";
+    }
+    
+    // Write cell types
+    file << "CELL_TYPES " << valid_elements << "\n";
+    for (int i = 0; i < valid_elements; i++) {
+        file << "5\n"; // Triangle type
+    }
+    
+    // --- Write Point Data (Per-Node Values) - ONLY NodeValence ---
+    file << "\nPOINT_DATA " << extended_point_count << "\n";
+    
+    // Number of Elements per Node (Valence/Coordination)
+    file << "SCALARS NodeValence float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int val : node_count) {
+        file << (val < 5 ? 6 : val) << "\n";  // Set < 5 to 6
+    }
+    file.close();
+    std::cout << "Saved defect analysis VTK file: " << filename.str() << std::endl;
+    
+    // Print statistics
+    std::map<int, int> valence_histogram;
+    for (int val : node_count) {
+        valence_histogram[val]++;
+    }
+    
+    std::cout << "Coordination number statistics:" << std::endl;
+    for (const auto& pair : valence_histogram) {
+        std::cout << "  Coord " << pair.first << ": " << pair.second << " nodes";
+        if (pair.first == 5 || pair.first == 7) {
+            std::cout << " ← Defect!";
+        }
+        std::cout << std::endl;
+    }
+}
+
+void ConfigurationSaver::logDislocationData(
+    double alpha,
+    int num_dislocations
+) {
+    static bool first_write = true;
+    std::ofstream file;
+    
+    // Open file in append mode (or create if first time)
+    if (first_write) {
+        file.open("dislocation_log.txt", std::ios::out);
+        if (!file.is_open()) {
+            std::cerr << "Error: Could not create dislocation_log.txt" << std::endl;
+            return;
+        }
+        // Write header
+        file << "# Alpha\tDislocations\n";
+        first_write = false;
+    } else {
+        file.open("dislocation_log.txt", std::ios::app);
+        if (!file.is_open()) {
+            std::cerr << "Error: Could not open dislocation_log.txt" << std::endl;
+            return;
+        }
+    }
+    
+    // Write data
+    file << std::fixed << std::setprecision(8);
+    file << alpha << "\t" << num_dislocations << "\n";
+    
+    file.close();
 }

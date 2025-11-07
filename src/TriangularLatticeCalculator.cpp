@@ -155,6 +155,20 @@ HessianComponents TriangularLatticeCalculator::calculate_hessian_components(cons
             hessian.c11_c12 += 0.5 * tempf2 * D / r - 0.5 * tempf * D / (r * r);
             hessian.c22_c12 += 0.5 * tempf2 * E / r - 0.5 * tempf * E / (r * r);
             hessian.c11_c22 += 0.25 * tempf2 * C_geom / r - 0.25 * tempf * C_geom / (r * r);
+
+
+			//using 2E + I= (C)
+			//since it already divided by r;normally there is r^2 and r^3 see notes
+            // hessian.c11_c11 += tempf2*A/r - tempf*A/(r*r);
+            // hessian.c22_c22 += tempf2*B/r - tempf*B/(r*r);
+            // hessian.c12_c12 += 4.0*(tempf2*C_geom/r - tempf*C_geom/(r*r));
+
+            // hessian.c11_c12 += 2.0*(tempf2*D/r - tempf*D/(r*r));
+            // hessian.c22_c12 += 2.0*(tempf2*E/r - tempf*E/(r*r));
+            // hessian.c11_c22 += tempf2*C_geom/r - tempf*C_geom/(r*r);
+
+
+
         }
     }
     

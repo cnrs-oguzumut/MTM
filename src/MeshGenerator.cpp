@@ -441,6 +441,319 @@ MeshGenerator::create_domain_maps(int original_domain_size, const DomainDimensio
     return {original_domain_map, translation_map};
 }
 
+
+// std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
+//     const std::vector<Point2D>& all_points,
+//     const std::vector<Triangle>& duplicated_triangles,
+//     const std::vector<int>& original_domain_map,
+//     int original_domain_size,
+//     double min_jacobian_threshold,
+//     double max_edge_length ) {  // Default to negative value to indicate no length filtering
+    
+//     // First, collect all triangles that meet our connection criteria
+//     std::vector<Triangle> connected_triangles;
+//     std::cout << "Original domain size: " << original_domain_size << std::endl;
+//     std::cout << "duplicated_triangles size: " << duplicated_triangles.size() << std::endl;
+
+//     connected_triangles.clear();
+    
+//     // Process triangles fully within the original domain
+//     for (const auto& tri : duplicated_triangles) {
+//         bool fully_inside = true;
+//         for (int node_idx = 0; node_idx < 3; node_idx++) {
+//             int vertex_value = tri.vertex_indices[node_idx];
+            
+//             if (vertex_value >= original_domain_size) {
+//                 fully_inside = false;
+//                 break;
+//             }
+//         }
+        
+//         if (fully_inside) {
+//             connected_triangles.push_back(tri);
+//         }
+//     }
+    
+//     std::cout << "Connected triangles before cross domain boundaries filtering: " 
+//               << connected_triangles.size() << std::endl;
+
+//     // Process triangles that cross domain boundaries
+//     for (const auto& tri : duplicated_triangles) {
+//         // Skip if already processed (fully inside)
+//         bool fully_inside = true;
+//         for (int node_idx = 0; node_idx < 3; node_idx++) {
+//             int vertex_value = tri.vertex_indices[node_idx];
+//             if (vertex_value >= original_domain_size) {
+//                 fully_inside = false;
+//                 break;
+//             }
+//         }
+        
+//         if (fully_inside) {
+//             continue;
+//         }
+        
+//         // Check if at least one node is in the main domain
+//         bool connected_to_main = false;
+//         for (int node_idx = 0; node_idx < 3; node_idx++) {
+//             int vertex_value = tri.vertex_indices[node_idx];
+//             if (vertex_value < original_domain_size) {
+//                 connected_to_main = true;
+//                 break;
+//             }
+//         }
+        
+//         if (connected_to_main) {
+//             connected_triangles.push_back(tri);
+//         }
+//     }
+    
+//     std::cout << "Connected triangles before uniqueness and quality filtering: " << connected_triangles.size() << std::endl;
+    
+//     // Now filter for uniqueness and quality
+//     std::vector<Triangle> selected_triangles;
+//     std::set<std::array<int, 3>> unique_node_combinations;
+//     int rejected_by_jacobian = 0;
+//     int rejected_by_edge_length = 0;  // Counter for edge length rejections
+    
+//     // Check if edge length filtering is enabled
+//     bool filter_by_edge_length = (max_edge_length > 0.0);
+//     if (filter_by_edge_length) {
+//         std::cout << "Edge length filtering enabled with max length: " << max_edge_length << std::endl;
+//     }
+    
+//     for (const auto& tri : connected_triangles) {
+
+
+
+//         // Create normalized representation for uniqueness checking
+//         std::array<int, 3> normalized_nodes;
+//         for (int j = 0; j < 3; j++) {
+//             normalized_nodes[j] = original_domain_map[tri.vertex_indices[j]];
+//         }
+//         // Sort to ensure consistent representation
+//         std::sort(normalized_nodes.begin(), normalized_nodes.end());
+        
+//         // Add only if this is a new combination
+//         if (unique_node_combinations.find(normalized_nodes) == unique_node_combinations.end()) {
+//             // Get vertices
+//             const Point2D& v0 = all_points[tri.vertex_indices[0]];
+//             const Point2D& v1 = all_points[tri.vertex_indices[1]];
+//             const Point2D& v2 = all_points[tri.vertex_indices[2]];
+            
+//             // Check edge lengths only if filtering is enabled
+//             if (filter_by_edge_length) {
+//                 double edge1 = (v1.coord - v0.coord).norm();
+//                 double edge2 = (v2.coord - v1.coord).norm();
+//                 double edge3 = (v0.coord - v2.coord).norm();
+                
+//                 // Check if any edge exceeds the maximum length
+//                 if ((edge1 > max_edge_length || edge2 > max_edge_length || edge3 > max_edge_length) ) {
+//                     rejected_by_edge_length++;
+//                     continue;
+//                 }
+//             }
+            
+//             // Calculate Jacobian for triangle
+//             Eigen::Vector2d e1 = Eigen::Vector2d(v1.coord.x() - v0.coord.x(), v1.coord.y() - v0.coord.y());
+//             Eigen::Vector2d e2 = Eigen::Vector2d(v2.coord.x() - v0.coord.x(), v2.coord.y() - v0.coord.y());
+            
+//             Eigen::Matrix2d jacobianMatrix;
+//             jacobianMatrix.col(0) = e1;
+//             jacobianMatrix.col(1) = e2;
+            
+//             double detJ = jacobianMatrix.determinant();
+            
+//             if (detJ > min_jacobian_threshold) {
+//                 // Add to selected list if the quality is good
+//                 unique_node_combinations.insert(normalized_nodes);
+//                 selected_triangles.push_back(tri);
+//             } else {
+//                 rejected_by_jacobian++;
+//             }
+//         }
+//     }
+    
+//     std::cout << "Triangles after uniqueness filtering: " << selected_triangles.size() << std::endl;
+//     std::cout << "Rejected triangles with small/negative Jacobians: " << rejected_by_jacobian << std::endl;
+    
+//     if (filter_by_edge_length) {
+//         std::cout << "Rejected triangles with edges exceeding max length: " << rejected_by_edge_length << std::endl;
+//     }
+    
+//     return selected_triangles;
+// }
+
+// std::vector<Triangle> MeshGenerator::select_unique_connected_triangles_newversion(
+//     const std::vector<Point2D>& all_points,
+//     const std::vector<Triangle>& duplicated_triangles,
+//     const std::vector<int>& original_domain_map,
+//     int original_domain_size,
+//     double min_jacobian_threshold,
+//     double max_edge_length ) {
+    
+//     // First, collect all triangles that meet our connection criteria
+//     std::vector<Triangle> connected_triangles;
+//     std::cout << "Original domain size: " << original_domain_size << std::endl;
+//     std::cout << "duplicated_triangles size: " << duplicated_triangles.size() << std::endl;
+
+//     connected_triangles.clear();
+    
+//     // Helper function to determine which copy domain a vertex belongs to
+//     auto get_copy_number = [&](int vertex_idx) -> int {
+//         return vertex_idx / original_domain_size;
+//     };
+    
+//     // Define allowed copy domains: 0=original, 1=right, 3=top, 5=top-right
+//     std::set<int> allowed_copies = {0, 1, 3, 5};
+    
+//     // Process triangles fully within the original domain
+//     for (const auto& tri : duplicated_triangles) {
+//         bool fully_inside = true;
+//         for (int node_idx = 0; node_idx < 3; node_idx++) {
+//             int vertex_value = tri.vertex_indices[node_idx];
+            
+//             if (vertex_value >= original_domain_size) {
+//                 fully_inside = false;
+//                 break;
+//             }
+//         }
+        
+//         if (fully_inside) {
+//             connected_triangles.push_back(tri);
+//         }
+//     }
+    
+//     std::cout << "Connected triangles before cross domain boundaries filtering: " 
+//               << connected_triangles.size() << std::endl;
+
+//     // Process triangles that cross domain boundaries
+//     int rejected_forbidden_copies = 0;
+//     int accepted_boundary = 0;
+//     int accepted_corner = 0;
+    
+//     for (const auto& tri : duplicated_triangles) {
+//         // Skip if already processed (fully inside)
+//         bool fully_inside = true;
+//         for (int node_idx = 0; node_idx < 3; node_idx++) {
+//             int vertex_value = tri.vertex_indices[node_idx];
+//             if (vertex_value >= original_domain_size) {
+//                 fully_inside = false;
+//                 break;
+//             }
+//         }
+        
+//         if (fully_inside) {
+//             continue;
+//         }
+        
+//         // Get copy numbers for all three vertices
+//         int copy0 = get_copy_number(tri.vertex_indices[0]);
+//         int copy1 = get_copy_number(tri.vertex_indices[1]);
+//         int copy2 = get_copy_number(tri.vertex_indices[2]);
+        
+//         std::set<int> vertex_copies = {copy0, copy1, copy2};
+        
+//         // Special case: Corner triangle with nodes from right(1), top(3), and top-right(5)
+//         bool is_corner_triangle = (vertex_copies == std::set<int>{1, 3, 5});
+        
+//         if (is_corner_triangle) {
+//             connected_triangles.push_back(tri);
+//             accepted_corner++;
+//             continue;
+//         }
+        
+//         // Regular case: at least one node in original, all nodes in allowed copies
+//         bool has_original = (copy0 == 0 || copy1 == 0 || copy2 == 0);
+//         bool all_in_allowed = (allowed_copies.count(copy0) && 
+//                                allowed_copies.count(copy1) && 
+//                                allowed_copies.count(copy2));
+        
+//         if (has_original && all_in_allowed) {
+//             connected_triangles.push_back(tri);
+//             accepted_boundary++;
+//         } else {
+//             rejected_forbidden_copies++;
+//         }
+//     }
+    
+//     std::cout << "Accepted boundary triangles: " << accepted_boundary << std::endl;
+//     std::cout << "Accepted corner triangle (1-3-5): " << accepted_corner << std::endl;
+//     std::cout << "Rejected triangles: " << rejected_forbidden_copies << std::endl;
+//     std::cout << "Connected triangles before uniqueness and quality filtering: " << connected_triangles.size() << std::endl;
+    
+//     // Now filter for uniqueness and quality
+//     std::vector<Triangle> selected_triangles;
+//     std::set<std::array<int, 3>> unique_node_combinations;
+//     int rejected_by_jacobian = 0;
+//     int rejected_by_edge_length = 0;
+    
+//     // Check if edge length filtering is enabled
+//     bool filter_by_edge_length = (max_edge_length > 0.0);
+//     if (filter_by_edge_length) {
+//         std::cout << "Edge length filtering enabled with max length: " << max_edge_length << std::endl;
+//     }
+    
+//     for (const auto& tri : connected_triangles) {
+//         // Create normalized representation for uniqueness checking
+//         std::array<int, 3> normalized_nodes;
+//         for (int j = 0; j < 3; j++) {
+//             normalized_nodes[j] = original_domain_map[tri.vertex_indices[j]];
+//         }
+//         // Sort to ensure consistent representation
+//         std::sort(normalized_nodes.begin(), normalized_nodes.end());
+        
+//         // Add only if this is a new combination
+//         if (unique_node_combinations.find(normalized_nodes) == unique_node_combinations.end()) {
+//             // Get vertices
+//             const Point2D& v0 = all_points[tri.vertex_indices[0]];
+//             const Point2D& v1 = all_points[tri.vertex_indices[1]];
+//             const Point2D& v2 = all_points[tri.vertex_indices[2]];
+            
+//             // Check edge lengths only if filtering is enabled
+//             if (filter_by_edge_length) {
+//                 double edge1 = (v1.coord - v0.coord).norm();
+//                 double edge2 = (v2.coord - v1.coord).norm();
+//                 double edge3 = (v0.coord - v2.coord).norm();
+                
+//                 // Check if any edge exceeds the maximum length
+//                 if ((edge1 > max_edge_length || edge2 > max_edge_length || edge3 > max_edge_length) ) {
+//                     rejected_by_edge_length++;
+//                     continue;
+//                 }
+//             }
+            
+//             // Calculate Jacobian for triangle
+//             Eigen::Vector2d e1 = Eigen::Vector2d(v1.coord.x() - v0.coord.x(), v1.coord.y() - v0.coord.y());
+//             Eigen::Vector2d e2 = Eigen::Vector2d(v2.coord.x() - v0.coord.x(), v2.coord.y() - v0.coord.y());
+            
+//             Eigen::Matrix2d jacobianMatrix;
+//             jacobianMatrix.col(0) = e1;
+//             jacobianMatrix.col(1) = e2;
+            
+//             double detJ = jacobianMatrix.determinant();
+            
+//             if (detJ > min_jacobian_threshold) {
+//                 // Add to selected list if the quality is good
+//                 unique_node_combinations.insert(normalized_nodes);
+//                 selected_triangles.push_back(tri);
+//             } else {
+//                 rejected_by_jacobian++;
+//             }
+//         }
+//     }
+    
+//     std::cout << "Triangles after uniqueness filtering: " << selected_triangles.size() << std::endl;
+//     std::cout << "Rejected triangles with small/negative Jacobians: " << rejected_by_jacobian << std::endl;
+    
+//     if (filter_by_edge_length) {
+//         std::cout << "Rejected triangles with edges exceeding max length: " << rejected_by_edge_length << std::endl;
+//     }
+    
+//     return selected_triangles;
+
+//}
+
 std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     const std::vector<Point2D>& all_points,
     const std::vector<Triangle>& duplicated_triangles,
@@ -509,9 +822,38 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     
     std::cout << "Connected triangles before uniqueness and quality filtering: " << connected_triangles.size() << std::endl;
     
-    // Now filter for uniqueness and quality
+    // Helper function to calculate domain priority (higher is better)
+    auto calculate_priority = [&](const Triangle& tri) -> int {
+        int copy0 = tri.vertex_indices[0] / original_domain_size;
+        int copy1 = tri.vertex_indices[1] / original_domain_size;
+        int copy2 = tri.vertex_indices[2] / original_domain_size;
+        
+        std::set<int> preferred_copies = {0, 1, 3, 5};
+        bool all_preferred = (preferred_copies.count(copy0) && 
+                             preferred_copies.count(copy1) && 
+                             preferred_copies.count(copy2));
+        bool has_original = (copy0 == 0 || copy1 == 0 || copy2 == 0);
+        
+        // Priority scheme:
+        // 3: All in domain 0 (fully inside original)
+        // 2: Has original vertex, all in preferred domains
+        // 1: All in preferred domains, no original vertex
+        // 0: Has vertices outside preferred domains
+        
+        if (copy0 == 0 && copy1 == 0 && copy2 == 0) {
+            return 3;  // Fully inside original
+        } else if (has_original && all_preferred) {
+            return 2;  // Boundary triangle in preferred domains
+        } else if (all_preferred) {
+            return 1;  // Corner triangle in preferred domains
+        } else {
+            return 0;  // Has vertices in non-preferred domains
+        }
+    };
+    
+    // Now filter for uniqueness and quality with domain prioritization
     std::vector<Triangle> selected_triangles;
-    std::set<std::array<int, 3>> unique_node_combinations;
+    std::map<std::array<int, 3>, std::pair<Triangle, int>> unique_triangles_with_priority;
     int rejected_by_jacobian = 0;
     int rejected_by_edge_length = 0;  // Counter for edge length rejections
     
@@ -522,9 +864,6 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     }
     
     for (const auto& tri : connected_triangles) {
-
-
-
         // Create normalized representation for uniqueness checking
         std::array<int, 3> normalized_nodes;
         for (int j = 0; j < 3; j++) {
@@ -533,44 +872,57 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
         // Sort to ensure consistent representation
         std::sort(normalized_nodes.begin(), normalized_nodes.end());
         
-        // Add only if this is a new combination
-        if (unique_node_combinations.find(normalized_nodes) == unique_node_combinations.end()) {
-            // Get vertices
-            const Point2D& v0 = all_points[tri.vertex_indices[0]];
-            const Point2D& v1 = all_points[tri.vertex_indices[1]];
-            const Point2D& v2 = all_points[tri.vertex_indices[2]];
+        // Get vertices
+        const Point2D& v0 = all_points[tri.vertex_indices[0]];
+        const Point2D& v1 = all_points[tri.vertex_indices[1]];
+        const Point2D& v2 = all_points[tri.vertex_indices[2]];
+        
+        // Check edge lengths only if filtering is enabled
+        if (filter_by_edge_length) {
+            double edge1 = (v1.coord - v0.coord).norm();
+            double edge2 = (v2.coord - v1.coord).norm();
+            double edge3 = (v0.coord - v2.coord).norm();
             
-            // Check edge lengths only if filtering is enabled
-            if (filter_by_edge_length) {
-                double edge1 = (v1.coord - v0.coord).norm();
-                double edge2 = (v2.coord - v1.coord).norm();
-                double edge3 = (v0.coord - v2.coord).norm();
-                
-                // Check if any edge exceeds the maximum length
-                if ((edge1 > max_edge_length || edge2 > max_edge_length || edge3 > max_edge_length) ) {
-                    rejected_by_edge_length++;
-                    continue;
-                }
-            }
-            
-            // Calculate Jacobian for triangle
-            Eigen::Vector2d e1 = Eigen::Vector2d(v1.coord.x() - v0.coord.x(), v1.coord.y() - v0.coord.y());
-            Eigen::Vector2d e2 = Eigen::Vector2d(v2.coord.x() - v0.coord.x(), v2.coord.y() - v0.coord.y());
-            
-            Eigen::Matrix2d jacobianMatrix;
-            jacobianMatrix.col(0) = e1;
-            jacobianMatrix.col(1) = e2;
-            
-            double detJ = jacobianMatrix.determinant();
-            
-            if (detJ > min_jacobian_threshold) {
-                // Add to selected list if the quality is good
-                unique_node_combinations.insert(normalized_nodes);
-                selected_triangles.push_back(tri);
-            } else {
-                rejected_by_jacobian++;
+            // Check if any edge exceeds the maximum length
+            if ((edge1 > max_edge_length || edge2 > max_edge_length || edge3 > max_edge_length) ) {
+                rejected_by_edge_length++;
+                continue;
             }
         }
+        
+        // Calculate Jacobian for triangle
+        Eigen::Vector2d e1 = Eigen::Vector2d(v1.coord.x() - v0.coord.x(), v1.coord.y() - v0.coord.y());
+        Eigen::Vector2d e2 = Eigen::Vector2d(v2.coord.x() - v0.coord.x(), v2.coord.y() - v0.coord.y());
+        
+        Eigen::Matrix2d jacobianMatrix;
+        jacobianMatrix.col(0) = e1;
+        jacobianMatrix.col(1) = e2;
+        
+        double detJ = jacobianMatrix.determinant();
+        
+        if (detJ > min_jacobian_threshold) {
+            // Calculate priority for this triangle
+            int priority = calculate_priority(tri);
+            
+            // Check if this combination exists
+            auto it = unique_triangles_with_priority.find(normalized_nodes);
+            if (it == unique_triangles_with_priority.end()) {
+                // New combination - add it using emplace
+                unique_triangles_with_priority.emplace(normalized_nodes, std::make_pair(tri, priority));
+            } else {
+                // Duplicate found - keep the one with higher priority
+                if (priority > it->second.second) {
+                    it->second = std::make_pair(tri, priority);
+                }
+            }
+        } else {
+            rejected_by_jacobian++;
+        }
+    }
+    
+    // Extract the selected triangles from the map
+    for (const auto& pair : unique_triangles_with_priority) {
+        selected_triangles.push_back(pair.second.first);
     }
     
     std::cout << "Triangles after uniqueness filtering: " << selected_triangles.size() << std::endl;
@@ -582,6 +934,7 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     
     return selected_triangles;
 }
+
 std::vector<ElementTriangle2D> MeshGenerator::createElementTri2D(
     const std::vector<Triangle>& unique_triangles,
     const std::vector<Point2D>& points,

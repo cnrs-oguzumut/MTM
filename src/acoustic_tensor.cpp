@@ -137,8 +137,6 @@ void AcousticTensor::computeJacobian(itensor::ITensor& dPhi) {
 void AcousticTensor::computeHessian(itensor::ITensor& ddPhi) {
     double div1 = 0.5;
     double div2 = 0.25;  // 0.5 * 0.5
-    // div1=1;
-    // div2=1;    
     
     
     for (int k = 1; k <= 2; k++) {
@@ -311,17 +309,47 @@ void AcousticTensor::printHessianComponents() {
     auto ddPhi = itensor::ITensor(k_, l_, w3_, w4_);
     ddPhi.fill(0.0);
     
-    // Compute the Hessian
+    // Compute the Hessian (in terms of C)
     computeHessian(ddPhi);
     
-    // Print components with the same factors as in your example
-    std::cout << "\n=== Hessian (ddPhi) Components ===" << std::endl;
-    std::cout << "ddPhi(1,1,1,1) = " << 4*ddPhi.elt(k_=1, l_=1, w3_=1, w4_=1) << std::endl;
-    std::cout << "ddPhi(2,2,2,2) = " << 4*ddPhi.elt(k_=2, l_=2, w3_=2, w4_=2) << std::endl;
-    std::cout << "ddPhi(1,2,1,2) = " << 4*ddPhi.elt(k_=1, l_=2, w3_=1, w4_=2) << std::endl;
-    std::cout << "ddPhi(1,1,2,2) = " << 4*ddPhi.elt(k_=1, l_=1, w3_=2, w4_=2) << std::endl;
-    std::cout << "ddPhi(1,1,1,2) = " << 4*ddPhi.elt(k_=1, l_=1, w3_=1, w4_=2) << std::endl;
-    std::cout << "ddPhi(2,2,1,2) = " << 4*ddPhi.elt(k_=2, l_=2, w3_=1, w4_=2) << std::endl;
+    std::cout << "\n=== Hessian Components (Engineering Strain) ===" << std::endl;
+    std::cout << "Transformation: C = 2E + I, with γ₁₂ = 2E₁₂ (engineering shear)" << std::endl;
+    std::cout << std::fixed << std::setprecision(6);
+    
+    // Diagonal-Diagonal blocks (normal strain components)
+    // ∂²φ/∂εᵢᵢ∂εⱼⱼ = 4 × ∂²φ/∂Cᵢᵢ∂Cⱼⱼ
+    std::cout << "\n--- Normal-Normal (∂²φ/∂εᵢᵢ∂εⱼⱼ) ---" << std::endl;
+    std::cout << "∂²φ/∂ε₁₁² = " << 4.0*ddPhi.elt(k_=1, l_=1, w3_=1, w4_=1) << std::endl;
+    std::cout << "∂²φ/∂ε₁₁∂ε₂₂ = " << 4.0*ddPhi.elt(k_=1, l_=1, w3_=2, w4_=2) << std::endl;
+    std::cout << "∂²φ/∂ε₂₂∂ε₁₁ = " << 4.0*ddPhi.elt(k_=2, l_=2, w3_=1, w4_=1) << std::endl;
+    std::cout << "∂²φ/∂ε₂₂² = " << 4.0*ddPhi.elt(k_=2, l_=2, w3_=2, w4_=2) << std::endl;
+    
+    // Diagonal-OffDiagonal blocks (normal-shear coupling)
+    // ∂²φ/∂εᵢᵢ∂γ₁₂ = 2 × ∂²φ/∂Cᵢᵢ∂C₁₂
+    std::cout << "\n--- Normal-Shear (∂²φ/∂εᵢᵢ∂γ₁₂) ---" << std::endl;
+    std::cout << "∂²φ/∂ε₁₁∂γ₁₂ = " << 2.0*ddPhi.elt(k_=1, l_=1, w3_=1, w4_=2) << std::endl;
+    std::cout << "∂²φ/∂ε₁₁∂γ₂₁ = " << 2.0*ddPhi.elt(k_=1, l_=1, w3_=2, w4_=1) << "  (should equal above)" << std::endl;
+    std::cout << "∂²φ/∂ε₂₂∂γ₁₂ = " << 2.0*ddPhi.elt(k_=2, l_=2, w3_=1, w4_=2) << std::endl;
+    std::cout << "∂²φ/∂ε₂₂∂γ₂₁ = " << 2.0*ddPhi.elt(k_=2, l_=2, w3_=2, w4_=1) << "  (should equal above)" << std::endl;
+    
+    // OffDiagonal-Diagonal blocks (shear-normal coupling, symmetric)
+    std::cout << "\n--- Shear-Normal (∂²φ/∂γ₁₂∂εⱼⱼ) ---" << std::endl;
+    std::cout << "∂²φ/∂γ₁₂∂ε₁₁ = " << 2.0*ddPhi.elt(k_=1, l_=2, w3_=1, w4_=1) << std::endl;
+    std::cout << "∂²φ/∂γ₁₂∂ε₂₂ = " << 2.0*ddPhi.elt(k_=1, l_=2, w3_=2, w4_=2) << std::endl;
+    std::cout << "∂²φ/∂γ₂₁∂ε₁₁ = " << 2.0*ddPhi.elt(k_=2, l_=1, w3_=1, w4_=1) << "  (should equal ∂²φ/∂γ₁₂∂ε₁₁)" << std::endl;
+    std::cout << "∂²φ/∂γ₂₁∂ε₂₂ = " << 2.0*ddPhi.elt(k_=2, l_=1, w3_=2, w4_=2) << "  (should equal ∂²φ/∂γ₁₂∂ε₂₂)" << std::endl;
+    
+    // OffDiagonal-OffDiagonal blocks (shear-shear)
+    // ∂²φ/∂γ₁₂² = 1 × ∂²φ/∂C₁₂² (engineering shear: γ₁₂ = C₁₂)
+    std::cout << "\n--- Shear-Shear (∂²φ/∂γ₁₂²) [Engineering Convention] ---" << std::endl;
+    std::cout << "∂²φ/∂γ₁₂² = " << 1.0*ddPhi.elt(k_=1, l_=2, w3_=1, w4_=2) << "  (Literature value)" << std::endl;
+    std::cout << "∂²φ/∂γ₁₂∂γ₂₁ = " << 1.0*ddPhi.elt(k_=1, l_=2, w3_=2, w4_=1) << std::endl;
+    std::cout << "∂²φ/∂γ₂₁∂γ₁₂ = " << 1.0*ddPhi.elt(k_=2, l_=1, w3_=1, w4_=2) << std::endl;
+    std::cout << "∂²φ/∂γ₂₁² = " << 1.0*ddPhi.elt(k_=2, l_=1, w3_=2, w4_=1) << "  (should equal ∂²φ/∂γ₁₂²)" << std::endl;
+    
+    std::cout << "\n--- Alternative: Tensor Shear Strain E₁₂ = γ₁₂/2 ---" << std::endl;
+    std::cout << "∂²φ/∂E₁₂² = " << 4.0*ddPhi.elt(k_=1, l_=2, w3_=1, w4_=2) << "  (Tensor strain, 4× larger)" << std::endl;
+    
     std::cout << "==================================\n" << std::endl;
 }
 // // Also add this simpler implementation for findMinDetAcousticTensor:

@@ -20,6 +20,9 @@ void LBFGSOptimizer::optimize(
     // Set up minimization parameters
     alglib::minlbfgsstate state;
     alglib::minlbfgsreport rep;
+    UserData* data = static_cast<UserData*>(userData);
+    data->optimizer_state = &state;
+
     
     // Create and configure optimizer
     alglib::minlbfgscreate(corrections_, x, state);
