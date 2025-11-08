@@ -1500,11 +1500,12 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         
         map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
         
-        std::vector<int> m3_after = analyzeElementReduction(elements, square_points, &userData);
-        int hasChanges = compareM3Activation(m3_before, m3_after);
-        if(hasChanges > 0) {
-            std::cout << "Changes in m3 detected! " << hasChanges << std::endl;
-        }
+        // std::vector<int> m3_after = analyzeElementReduction(elements, square_points, &userData);
+        int hasChanges ;//= compareM3Activation(m3_before, m3_after);
+        hasChanges=0;
+        // if(hasChanges > 0) {
+        //     std::cout << "Changes in m3 detected! " << hasChanges << std::endl;
+        // }
         
         // ==================== POST-OPTIMIZATION ENERGY ====================
         double post_energy = 0.0;
@@ -1575,7 +1576,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
                 full_mapping, active_elements, plasticity
             );
             
-            ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&postOptUserData, post_file_id, post_energy, post_stress, true);
+            // ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&postOptUserData, post_file_id, post_energy, post_stress, true);
             ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id, domain_dims, offsets, full_mapping);
             
             auto [num_dislocations_post, coordination_post] = DefectAnalysis::analyzeDefectsInReferenceConfig(
