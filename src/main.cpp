@@ -1373,7 +1373,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     // Define loading parameters
     double alpha_min = 0.14;
     double alpha_max = 1.0;
-    double step_size = 5e-4;
+    double step_size = 5e-5;
 
     // Calculate number of loading steps
     int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
@@ -1518,17 +1518,16 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         std::cout << "Energy change: " << (post_energy - pre_energy) << ", Stress change: " << (post_stress - pre_stress) << std::endl;
         
         // ==================== REMESHING (if needed) ====================
-        ChangeMeasures result = computeChangeMeasures(
-            x, original_x, lattice_constant, elements, &userData, square_points, true, &F_ext
-        );        
+        // ChangeMeasures result = computeChangeMeasures(
+        //     x, original_x, lattice_constant, elements, &userData, square_points, true, &F_ext
+        // );        
 
-        std::cout << "max_abs_change: " << result.max_abs_change << std::endl;
-        if (result.has_distorted_triangles) {
-            std::cout << "Distorted triangles detected!" << std::endl;
-        }
+        // std::cout << "max_abs_change: " << result.max_abs_change << std::endl;
+        // if (result.has_distorted_triangles) {
+        //     std::cout << "Distorted triangles detected!" << std::endl;
+        // }
         
-        bool shouldRemesh = userData.third_condition_flag;
-        shouldRemesh = true;  // Force remeshing
+        bool shouldRemesh = checkSquareDomainViolation(elements);
         
         if (shouldRemesh) {
             std::cout << "REMESHING STARTS" << std::endl;
@@ -1541,7 +1540,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
             std::vector<int> contact_atoms;
             std::vector<int> boundary_fixed_nodes;
-            int max_iterations = 100000;
+            int max_iterations = 1000000;
             
             auto [post_energy_re, stress_tensor_re, iterations] = perform_remeshing_loop_reduction(
                 x, &userData, contact_atoms, boundary_fixed_nodes,
