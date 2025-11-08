@@ -170,6 +170,7 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     }
     if (total_area > 0.0) {
         double avg_stress = recalculated_total_stress / total_area;
+        total_stress = avg_stress;
         //std::cout << "DEBUG: Average stress (total/area): " << avg_stress << std::endl;
     }
     

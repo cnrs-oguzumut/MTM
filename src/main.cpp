@@ -4227,7 +4227,8 @@ int main() {
         //example_1_shifting(0,20,20);
         //single_dislo_LJ();
 
-        example_1_conti_zanzotto(0,300,300);
+        
+        example_1_conti_zanzotto(0,200,200);
     //}
     //indentation();
   
