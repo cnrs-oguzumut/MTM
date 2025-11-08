@@ -634,7 +634,8 @@ void ConfigurationSaver::writeToVTK(
     const UserData* userData,
     int iteration, 
     bool reduction,
-    const std::vector<int>& coordination)  // NEW: Optional coordination vector
+    const std::vector<int>& coordination,// NEW: Optional coordination vector
+    double load_strength)  
 {
     // Create directory if it doesn't exist
     std::filesystem::create_directory("vtk_output");
@@ -858,6 +859,12 @@ void ConfigurationSaver::writeToVTK(
         file << "5\n"; // Triangle type
     }
     
+
+    // --- NEW: Write Field Data (Global parameters) ---
+    file << "\nFIELD FieldData 1\n";
+    file << "LoadParameter 1 1 float\n";
+    file << load_strength << "\n";  // REPLACE with your actual load parameter
+
     // --- Write Cell Data (Per-Element Values) ---
     file << "\nCELL_DATA " << valid_elements << "\n";
     

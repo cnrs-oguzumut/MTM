@@ -105,9 +105,10 @@ public:
         const std::vector<Point2D>& points,
         const std::vector<ElementTriangle2D>& elements,
         const UserData* userData,
-        int iteration,
+        const int iteration,
         bool reduction = false,
-        const std::vector<int>& coordination= std::vector<int>());
+        const std::vector<int>& coordination= std::vector<int>(),
+        double load_strength=0);
 
 
     static void writeToVTK_DefectAnalysis(
