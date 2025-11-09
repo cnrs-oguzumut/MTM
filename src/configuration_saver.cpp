@@ -647,7 +647,7 @@ void ConfigurationSaver::logEnergyAndStress_v2(
     
     if (first_call) {
         log_file.open("energy_stress_log.csv");
-        log_file << "Iteration,Alpha,PreEnergy,PreStress,PostEnergy,PostStress,EnergyChange,StressChange\n";
+        log_file << "Iteration,Alpha,PreEnergy,PreStress,PostEnergy,PostStress,EnergyChange,StressChange,shouldRemesh\n";
         first_call = false;
     }
     
@@ -655,6 +655,7 @@ void ConfigurationSaver::logEnergyAndStress_v2(
              << pre_energy << "," << pre_stress << "," 
              << post_energy << "," << post_stress << "," 
              << -(post_energy - pre_energy) << "," << -(post_stress*post_area - pre_stress*pre_area)
+             << "," << shouldRemesh
              << "\n";  // Added plasticity flag to CSV
     log_file.flush();
 }
