@@ -639,7 +639,8 @@ void ConfigurationSaver::logEnergyAndStress_v2(
     double post_energy, 
     double post_stress,
     double pre_area,
-    double post_area)  // Added plasticity flag parameter
+    double post_area,  
+    bool shouldRemesh)  // Added plasticity flag parameter
 {
     static bool first_call = true;
     static std::ofstream log_file;

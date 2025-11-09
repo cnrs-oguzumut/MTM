@@ -100,7 +100,8 @@ public:
     double post_energy, 
     double post_stress,
     double pre_area,
-    double post_area);  // Added plasticity flag parameter
+    double post_area
+    bool shouldRemesh);  // Added plasticity flag parameter
 
     /**
      * Write configuration data to VTK format for visualization

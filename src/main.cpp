@@ -1631,7 +1631,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         
         // ==================== LOG DATA ====================
         ConfigurationSaver::logEnergyAndStress_v2(
-            i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area, post_area)
+            i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area, post_area, shouldRemesh)
         ;
         
         post_energy_previous = post_energy;
@@ -4248,7 +4248,7 @@ int main() {
         //example_1_shifting(0,20,20);
         //single_dislo_LJ();
 
-        example_1_conti_zanzotto(0,100,100);
+        example_1_conti_zanzotto(0,300,300);
     //}
     //indentation();
   
