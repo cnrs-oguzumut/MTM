@@ -215,17 +215,21 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         value = 0;
         if(pair.second == -1) 
             value = -1; 
-        file << "A " << std::fixed << std::setprecision(8)
-             << point.coord.x() << " "
-             << point.coord.y() << " "
-             << 0.0 << " "                // z-coordinate is zero for 2D
-             << nodal_stress[i] << " "    // Stress value (4th column)
-             << nodal_energy[i] << " "    // Energy value (5th column)
-             << nodal_cauchy_xx[i] << " " // Cauchy xx component (6th column)
-             << nodal_cauchy_xy[i] << " " // Cauchy xy component (7th column)
-             << nodal_cauchy_yy[i] << " " // Cauchy yy component (8th column)
-             << value << std::endl;       // Boundary marker (9th column)
-    }    
+file << "A " << std::fixed << std::setprecision(16)
+     << point.coord.x() << " "
+     << point.coord.y() << " "
+     << 0.0 << " "                // z-coordinate is zero for 2D
+     << nodal_stress[i] << " "    // Stress value (4th column)
+     << nodal_energy[i] << " "    // Energy value (5th column)
+     << nodal_cauchy_xx[i] << " " // Cauchy xx component (6th column)
+     << nodal_cauchy_xy[i] << " " // Cauchy xy component (7th column)
+     << nodal_cauchy_yy[i] << " " // Cauchy yy component (8th column)
+     << value << " "              // Boundary marker (9th column)
+     << F_ext(0, 0) << " "        // F_ext_xx component (10th column)
+     << F_ext(0, 1) << " "        // F_ext_xy component (11th column)
+     << F_ext(1, 0) << " "        // F_ext_yx component (12th column)
+     << F_ext(1, 1) << std::endl; // F_ext_yy component (13th column)
+         }    
     file.close();
     
     // Find min and max values for reporting
@@ -626,6 +630,33 @@ void ConfigurationSaver::logEnergyAndStress(
     log_file.flush();
 }
 
+
+void ConfigurationSaver::logEnergyAndStress_v2(
+    int iteration, 
+    double alpha, 
+    double pre_energy, 
+    double pre_stress,
+    double post_energy, 
+    double post_stress,
+    double pre_area,
+    double post_area)  // Added plasticity flag parameter
+{
+    static bool first_call = true;
+    static std::ofstream log_file;
+    
+    if (first_call) {
+        log_file.open("energy_stress_log.csv");
+        log_file << "Iteration,Alpha,PreEnergy,PreStress,PostEnergy,PostStress,EnergyChange,StressChange\n";
+        first_call = false;
+    }
+    
+    log_file << iteration << "," << alpha << "," 
+             << pre_energy << "," << pre_stress << "," 
+             << post_energy << "," << post_stress << "," 
+             << -(post_energy - pre_energy) << "," << -(post_stress*post_area - pre_stress*pre_area)
+             << "\n";  // Added plasticity flag to CSV
+    log_file.flush();
+}
 
 
 // Start of the modified function body
@@ -1223,4 +1254,47 @@ void ConfigurationSaver::logDislocationData(
     file << alpha << "\t" << num_dislocations << "\n";
     
     file.close();
+}
+
+
+double ConfigurationSaver::calculateTotalArea2D(UserData* userData) {
+    // Perform null check
+    if (!userData) {
+        std::cerr << "Error: userData is null in calculateTotalArea2D" << std::endl;
+        return 0.0;
+    }
+    
+    // Extract needed values from userData
+    std::vector<Point2D>& points = userData->points;
+    std::vector<ElementTriangle2D>& elements = userData->elements;
+    const std::vector<size_t>& active_elements = userData->active_elements;
+    
+    // Calculate total area by summing current areas of all active elements
+    double total_area = 0.0;
+    for (size_t elem_idx : active_elements) {
+        if (elem_idx < elements.size()) {
+            total_area += elements[elem_idx].calculateCurrentArea(points);
+        }
+    }
+    
+    return total_area;
+}
+
+double ConfigurationSaver::calculateTotalReferenceArea2D(UserData* userData) {
+    if (!userData) {
+        std::cerr << "Error: userData is null in calculateTotalReferenceArea2D" << std::endl;
+        return 0.0;
+    }
+    
+    std::vector<ElementTriangle2D>& elements = userData->elements;
+    const std::vector<size_t>& active_elements = userData->active_elements;
+    
+    double total_area = 0.0;
+    for (size_t elem_idx : active_elements) {
+        if (elem_idx < elements.size()) {
+            total_area += elements[elem_idx].getReferenceArea();
+        }
+    }
+    
+    return total_area;
 }

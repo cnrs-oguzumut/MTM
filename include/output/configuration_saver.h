@@ -91,7 +91,17 @@ public:
         double post_energy, 
         double post_stress,
         int plasticity_flag);
-    
+
+    static void logEnergyAndStress_v2(
+    int iteration, 
+    double alpha, 
+    double pre_energy, 
+    double pre_stress,
+    double post_energy, 
+    double post_stress,
+    double pre_area,
+    double post_area);  // Added plasticity flag parameter
+
     /**
      * Write configuration data to VTK format for visualization
      * 
@@ -120,6 +130,24 @@ public:
     static void logDislocationData(
         double alpha,
         int num_dislocations);
+
+    /**
+     * Calculate total current area of all active elements
+     * 
+     * @param userData Pointer to user data containing lattice configuration
+     * @return Total current area (deformed configuration)
+     */
+    static double calculateTotalArea2D(UserData* userData);
+    
+    /**
+     * Calculate total reference area of all active elements
+     * 
+     * @param userData Pointer to user data containing lattice configuration
+     * @return Total reference area (undeformed configuration)
+     */
+    static double calculateTotalReferenceArea2D(UserData* userData);
+
+        
     
 private:
     /**

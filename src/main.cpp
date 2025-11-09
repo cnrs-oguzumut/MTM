@@ -1392,7 +1392,8 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     for (size_t i = 0; i < alpha_values.size(); i++) {
         double alpha = alpha_values[i];
         std::cout << "\n=== Processing alpha = " << alpha << " ===" << std::endl;
-        
+        double pre_area = 1.0;
+        double post_area = 1.0;
         // ==================== SETUP DEFORMATION ====================
         Eigen::Matrix2d F_ext;
         F_ext << 1.0, alpha,
@@ -1437,9 +1438,12 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         double pre_energy = 0.0;
         double pre_stress = 0.0;
         Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
+        
+        
         ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy, stress_tensor, true);
         pre_stress = stress_tensor(0,1);
-        
+        pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);  // Need & to get address  
+               
         std::cout << "Pre-optimization - Energy: " << pre_energy << ", Stress: " << pre_stress << std::endl;
 
         // Store original positions
@@ -1465,9 +1469,16 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
             full_mapping, active_elements, plasticity
         );
         
-        ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&preOptUserData, file_id, pre_energy, pre_stress, true);
-        ConfigurationSaver::saveTriangleData(&preOptUserData, file_id, domain_dims, offsets, full_mapping);
         
+        ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&preOptUserData, file_id, pre_energy, pre_stress, true);
+        pre_area = ConfigurationSaver::calculateTotalArea2D(&preOptUserData);  // Need & to get address  
+        
+        // ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy, stress_tensor, true);
+        // pre_stress = stress_tensor(0,1);
+
+        ConfigurationSaver::saveTriangleData(&preOptUserData, file_id, domain_dims, offsets, full_mapping);
+        std::cout << "Pre-optimization2 - Energy: " << pre_energy << ", Stress: " << pre_stress << std::endl;
+  
         auto [num_dislocations_pre, coordination_pre] = DefectAnalysis::analyzeDefectsInReferenceConfig(
             &preOptUserData, file_id, dndx, offsets, 
             original_domain_map, translation_map, domain_dims_point, 
@@ -1480,7 +1491,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         std::cout << "Saved PRE-optimization config " << file_id << " at load=" << saving_value << std::endl;
 
         // ==================== RUN OPTIMIZATION ====================
-        std::vector<int> m3_before = analyzeElementReduction(elements, square_points, &userData);
+        // std::vector<int> m3_before = analyzeElementReduction(elements, square_points, &userData);
         
         auto wall_start = std::chrono::high_resolution_clock::now();
         clock_t cpu_start = clock();
@@ -1513,6 +1524,8 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         stress_tensor.setZero();
         ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor, true);
         post_stress = stress_tensor(0,1);
+        post_area = ConfigurationSaver::calculateTotalArea2D(&userData);  // Need & to get address  
+
         
         std::cout << "Post-optimization - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
         std::cout << "Energy change: " << (post_energy - pre_energy) << ", Stress change: " << (post_stress - pre_stress) << std::endl;
@@ -1554,12 +1567,23 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
             post_energy = post_energy_re;
             post_stress = stress_tensor_re(0,1);
+
             std::cout << "Post-remeshing - Energy: " << post_energy << ", Stress: " << post_stress << std::endl;
         }   
+
         
         // ==================== CHECK FOR STRESS DROP ====================
         bool stress_drop_detected = (post_energy < post_energy_previous && i > 0);
         
+        UserData postOptUserData(
+            square_points, elements, calculator, potential_func, potential_func_der,
+            zero, optimal_lattice_parameter, F_ext, interior_mapping, 
+            full_mapping, active_elements, plasticity
+        );
+        post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);  // Need & to get address  
+
+
+
         if (stress_drop_detected) {
             std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
             std::cout << "Energy dropped from " << post_energy_previous << " to " << post_energy << std::endl;
@@ -1569,11 +1593,8 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
             file_counter++;
             int post_file_id = caller_id + file_counter;
             
-            UserData postOptUserData(
-                square_points, elements, calculator, potential_func, potential_func_der,
-                zero, optimal_lattice_parameter, F_ext, interior_mapping, 
-                full_mapping, active_elements, plasticity
-            );
+            
+
             
             // ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&postOptUserData, post_file_id, post_energy, post_stress, true);
             ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id, domain_dims, offsets, full_mapping);
@@ -1609,9 +1630,9 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         }
         
         // ==================== LOG DATA ====================
-        ConfigurationSaver::logEnergyAndStress(
-            i, alpha, pre_energy, pre_stress, post_energy, post_stress, hasChanges
-        );
+        ConfigurationSaver::logEnergyAndStress_v2(
+            i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area, post_area)
+        ;
         
         post_energy_previous = post_energy;
         
@@ -4227,8 +4248,7 @@ int main() {
         //example_1_shifting(0,20,20);
         //single_dislo_LJ();
 
-        
-        example_1_conti_zanzotto(0,200,200);
+        example_1_conti_zanzotto(0,100,100);
     //}
     //indentation();
   
