@@ -100,7 +100,7 @@ public:
     double post_energy, 
     double post_stress,
     double pre_area,
-    double post_area
+    double post_area,
     bool shouldRemesh);  // Added plasticity flag parameter
 
     /**
