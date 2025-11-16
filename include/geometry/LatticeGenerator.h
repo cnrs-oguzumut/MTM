@@ -25,6 +25,12 @@ public:
         static std::vector<Point2D> generate_2d_lattice_rotated(
         int nx, int ny, double lattice_constant, std::string lattice_type, double rotation_angle_degrees) ;
 
+
+        static std::pair<std::vector<Point2D>, Point2D>  generate_periodic_rotated_lattice_v2(
+            int m, int n, int kx, int ky,
+            double lattice_constant,  std::string lattice_type) ;
+
+
 };
 
 #endif // LATTICE_GENERATOR_H

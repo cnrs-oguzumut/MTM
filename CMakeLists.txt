@@ -97,6 +97,37 @@ else()
     message(STATUS "ITensor support manually disabled")
 endif()
 
+# Option to enable/disable Spectra support
+option(USE_SPECTRA "Enable Spectra eigenvalue solver support" ON)
+
+# Spectra detection (optional, header-only library)
+set(SPECTRA_FOUND FALSE)
+
+if(USE_SPECTRA)
+    # Set Spectra directory - adjust path as needed
+    set(SPECTRA_DIR "/Users/usalman/programming/FEM_2D/factorized/lattice_triangulation/spectra")
+    set(SPECTRA_INCLUDE_DIR "${SPECTRA_DIR}/include")
+    
+    # Check if Spectra directory exists
+    if(EXISTS "${SPECTRA_INCLUDE_DIR}" AND EXISTS "${SPECTRA_INCLUDE_DIR}/Spectra")
+        set(SPECTRA_FOUND TRUE)
+        message(STATUS "Found Spectra at: ${SPECTRA_INCLUDE_DIR}")
+    elseif(EXISTS "${SPECTRA_DIR}/include/Spectra")
+        set(SPECTRA_INCLUDE_DIR "${SPECTRA_DIR}/include")
+        set(SPECTRA_FOUND TRUE)
+        message(STATUS "Found Spectra at: ${SPECTRA_INCLUDE_DIR}")
+    elseif(EXISTS "${SPECTRA_DIR}/Spectra")
+        set(SPECTRA_INCLUDE_DIR "${SPECTRA_DIR}")
+        set(SPECTRA_FOUND TRUE)
+        message(STATUS "Found Spectra at: ${SPECTRA_INCLUDE_DIR}")
+    else()
+        message(WARNING "Spectra directory not found at ${SPECTRA_DIR}")
+        message(WARNING "Spectra support will be disabled")
+    endif()
+else()
+    message(STATUS "Spectra support manually disabled")
+endif()
+
 # Set ALGLIB directory
 set(ALGLIB_DIR "/Users/usalman/programming/alglib-cpp")
 include_directories(${ALGLIB_DIR})
@@ -137,6 +168,11 @@ if(ITENSOR_FOUND)
     list(APPEND INCLUDE_DIRS ${ITENSOR_INCLUDE_DIR})
 endif()
 
+# Add Spectra include directory if found
+if(SPECTRA_FOUND)
+    list(APPEND INCLUDE_DIRS ${SPECTRA_INCLUDE_DIR})
+endif()
+
 include_directories(${INCLUDE_DIRS})
 
 # Add OpenMP flags if available
@@ -164,6 +200,14 @@ else()
     message(STATUS "ITensor support DISABLED")
 endif()
 
+# Add Spectra preprocessor definition if found
+if(SPECTRA_FOUND)
+    target_compile_definitions(lattice_lib PRIVATE USE_SPECTRA=1)
+    message(STATUS "Spectra support ENABLED - USE_SPECTRA=1 defined")
+else()
+    message(STATUS "Spectra support DISABLED")
+endif()
+
 # Create main executable
 add_executable(lattice_triangulation "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -173,6 +217,11 @@ endif()
 # Add ITensor definition to main executable too
 if(ITENSOR_FOUND)
     target_compile_definitions(lattice_triangulation PRIVATE USE_ITENSOR=1)
+endif()
+
+# Add Spectra definition to main executable too
+if(SPECTRA_FOUND)
+    target_compile_definitions(lattice_triangulation PRIVATE USE_SPECTRA=1)
 endif()
 
 # Set up base libraries for linking
@@ -187,6 +236,8 @@ set(BASE_LIBRARIES
 if(ITENSOR_FOUND)
     list(APPEND BASE_LIBRARIES ${ITENSOR_LIBRARIES})
 endif()
+
+# Note: Spectra is header-only, so no libraries to link
 
 # Link libraries to main executable
 target_link_libraries(lattice_triangulation ${BASE_LIBRARIES})
@@ -204,6 +255,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
             target_compile_options(run_tests PRIVATE -O3 -march=native -flto -ffast-math)
         endif()
+        
+        # Add definitions to tests
+        if(ITENSOR_FOUND)
+            target_compile_definitions(run_tests PRIVATE USE_ITENSOR=1)
+        endif()
+        if(SPECTRA_FOUND)
+            target_compile_definitions(run_tests PRIVATE USE_SPECTRA=1)
+        endif()
+        
         target_link_libraries(run_tests
             lattice_lib
             ${ITENSOR_LIBRARIES}
@@ -223,3 +283,7 @@ message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERS
 message(STATUS "Release flags: ${CMAKE_CXX_FLAGS_RELEASE}")
 message(STATUS "ITensor directory: ${ITENSOR_DIR}")
 message(STATUS "ITensor library: ${ITENSOR_LIBRARY}")
+message(STATUS "Spectra directory: ${SPECTRA_DIR}")
+if(SPECTRA_FOUND)
+    message(STATUS "Spectra include: ${SPECTRA_INCLUDE_DIR}")
+endif()

@@ -86,8 +86,8 @@ Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::M
     
     // Apply symmetry factors
     // it brings us from DE/DX to J; we dont do it for Hessian
-    // phi(0, 1) *= 0.5;
-    // phi(1, 0) *= 0.5;
+    phi(0, 1) *= 0.5;
+    phi(1, 0) *= 0.5;
     
     return phi;
 }

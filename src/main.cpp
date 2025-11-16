@@ -40,6 +40,9 @@
 
 #include "../include/acoustic_tensor.h"
 
+#include "../include/FEMHessianAssembler.h"
+
+
 #include "../include/defects/DefectAnalysis.h"
 
 
@@ -1219,6 +1222,9 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     // Define DUMMY ATOMISTIC energy functions (currently using square potential)
     std::function<double(double)> potential_func = square_energy;
     std::function<double(double)> potential_func_der = square_energy_der;
+    std::function<double(double)> potential_func_sder = square_energy_der;
+
+
 
     // ==================== DETERMINE OPTIMAL LATTICE PARAMETER ====================
     std::cout << "STEP 1: Finding optimal lattice parameter..." << std::endl;
@@ -1240,6 +1246,20 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     std::vector<Point2D> square_points_ref = LatticeGenerator::generate_2d_lattice(
         nx, ny, lattice_constant, lattice_type);
 
+    
+    
+    // auto [square_points_ref, gap_offsets]  =LatticeGenerator::generate_periodic_rotated_lattice_v2(
+    // 1, 1, nx,ny,lattice_constant, lattice_type) ;
+
+    // auto [square_points, gap_offsets2]   =LatticeGenerator::generate_periodic_rotated_lattice_v2(
+    // 1, 1, nx,ny,lattice_constant, lattice_type) ;
+
+    // std::cout << "User-defined gap offset vector: (" 
+    //           << gap_offsets.coord.x() << ", " 
+    //           << gap_offsets.coord.y() << ")" << std::endl;
+
+    
+    
     int original_domain_size = square_points.size();
     std::cout << "Generated lattice with " << original_domain_size << " points" << std::endl;
 
@@ -1248,13 +1268,12 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
     // Set periodic boundary offsets based on lattice type
     const std::array<double, 2> offsets = (lattice_type == "square") ? 
-        std::array<double, 2>{lattice_constant, lattice_constant} :
+        std::array<double, 2>{sqrt(2)*lattice_constant/2., sqrt(2)*lattice_constant/2.} :
         std::array<double, 2>{lattice_constant / 2.0, (sqrt(3.0) / 2.0) * lattice_constant};
 
-    std::cout << "PBC offsets: [" << offsets[0] << ", " << offsets[1] << "]" << std::endl;
-    // const std::array<double, 2> offsets = {lattice_constant/2, sqrt(3.)/2*lattice_constant};
+    // const std::array<double, 2> offsets = {gap_offsets.coord.x(),gap_offsets.coord.y()};
+    // std::cout << "PBC offsets: [" << offsets[0] << ", " << offsets[1] << "]" << std::endl;
 
-    std::cout << "offsets: " << offsets[0] << " " << offsets[1] << std::endl;
     DomainDimensions domain_dims(domain_size.get_width(), domain_size.get_height());
     std::cout << "domain_size.get_width(): " << domain_size.get_width() << std::endl;
     std::cout << "domain_size.get_height(): " << domain_size.get_height() << std::endl;
@@ -1351,11 +1370,17 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
     std::cout << "Created " << elements.size() << " element triangles" << std::endl;
 
-    
+
+
     
     // Setup energy calculation
     Strain_Energy_LatticeCalculator calculator(1.0);
+ 
     
+
+
+
+
     Eigen::Matrix2d F_I = Eigen::Matrix2d::Identity();    
     //F_I *= symmetry_constantx; 
     Eigen::Matrix2d C_I = F_I.transpose() * F_I; // C = F^T * F
@@ -1373,7 +1398,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     // Define loading parameters
     double alpha_min = 0.14;
     double alpha_max = 1.0;
-    double step_size = 5e-5;
+    double step_size = 1e-5;
 
     // Calculate number of loading steps
     int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
@@ -1486,6 +1511,8 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         
         ConfigurationSaver::writeToVTK(preOptUserData.points, preOptUserData.elements, 
                                     &preOptUserData, file_id, true, coordination_pre, saving_value);
+
+                                    // exit(0);
         ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
         
         std::cout << "Saved PRE-optimization config " << file_id << " at load=" << saving_value << std::endl;
@@ -1553,7 +1580,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
             std::vector<int> contact_atoms;
             std::vector<int> boundary_fixed_nodes;
-            int max_iterations = 1000000;
+            int max_iterations = 1000;
             
             auto [post_energy_re, stress_tensor_re, iterations] = perform_remeshing_loop_reduction(
                 x, &userData, contact_atoms, boundary_fixed_nodes,
@@ -1573,7 +1600,9 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
         
         // ==================== CHECK FOR STRESS DROP ====================
-        bool stress_drop_detected = (post_energy < post_energy_previous && i > 0);
+        //bool stress_drop_detected = (post_energy < post_energy_previous && i > 0);
+
+        bool stress_drop_detected = (shouldRemesh && i > 0); 
         
         UserData postOptUserData(
             square_points, elements, calculator, potential_func, potential_func_der,
@@ -1637,6 +1666,71 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
         post_energy_previous = post_energy;
         
         std::cout << "Iteration " << i << " completed successfully" << std::endl;
+    
+        
+        // // 1. Create FEM Hessian assembler
+        // FEMHessianAssembler assembler;
+        
+        // // 2. Set energy parameters (REQUIRED before calling assembleGlobalStiffness)
+        // double normalisation = calculator.getUnitCellArea();
+        // assembler.setEnergyParameters(&calculator, potential_func_der, potential_func_sder, calculator.getUnitCellArea());
+
+        // Eigen::SparseMatrix<double> global_stiffness = assembler.assembleGlobalStiffness(
+        //     elements,
+        //     square_points,  // <- ADDED: Current node positions
+        //     2*n_free_nodes,
+        //     full_mapping
+        // );
+
+
+
+
+        // // Compute eigenvalues
+        // EigenResults results = assembler.computeSmallestEigenvaluesIterative_spectra(global_stiffness, 450, 0);
+
+        // // Sort eigenvalues
+        // std::vector<std::pair<double, int>> eigen_pairs;
+        // for (int i = 0; i < results.num_computed; i++) {
+        //     eigen_pairs.push_back({results.eigenvalues(i), i});
+        // }
+        // std::sort(eigen_pairs.begin(), eigen_pairs.end(), 
+        //     [](const auto& a, const auto& b) { return std::abs(a.first) < std::abs(b.first); });
+
+        // Eigen::VectorXd sorted_eigenvalues(results.num_computed);
+        // Eigen::MatrixXd sorted_eigenvectors(results.eigenvectors.rows(), results.num_computed);
+        // for (int i = 0; i < results.num_computed; i++) {
+        //     sorted_eigenvalues(i) = results.eigenvalues(eigen_pairs[i].second);
+        //     sorted_eigenvectors.col(i) = results.eigenvectors.col(eigen_pairs[i].second);
+        // }
+        // results.eigenvalues = sorted_eigenvalues;
+        // results.eigenvectors = sorted_eigenvectors;
+
+        // // Detect rigid body modes
+        // int num_rigid = assembler.detectRigidBodyModes(results);
+
+        // // ONE LINE TO DO EVERYTHING!
+        // assembler.exportCompleteEigenmodeAnalysis(
+        //     "analysis",              // Base filename
+        //     results,                 // Sorted eigenvalue results
+        //     square_points,          // Mesh points
+        //     full_mapping,            // DOF mapping
+        //     elements,               // Elements
+        //     num_rigid,              // Number of rigid body modes
+        //     0.5,                    // Participation threshold
+        //     0.1                     // VTK scale factor
+        // );
+
+        // // Check stability
+        // if (results.eigenvalues(num_rigid) < 0) {
+        //     std::cout << "\n*** SYSTEM IS UNSTABLE! ***" << std::endl;
+        // } else {
+        //     std::cout << "\nSystem is stable." << std::endl;
+        // }
+
+
+        // exit(0);
+    
+    
     }
 
 
@@ -4248,7 +4342,7 @@ int main() {
         //example_1_shifting(0,20,20);
         //single_dislo_LJ();
 
-        example_1_conti_zanzotto(0,300,300);
+        example_1_conti_zanzotto(0,100,100);
     //}
     //indentation();
   

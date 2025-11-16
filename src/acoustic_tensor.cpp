@@ -114,8 +114,8 @@ void AcousticTensor::computeJacobian(itensor::ITensor& dPhi) {
     // std::cout << "Computing Jacobian from calculated first derivative..." << std::endl;
   
         dPhi.set(k_=1, l_=1, dE_dC_(0,0));
-        dPhi.set(k_=1, l_=2, dE_dC_(0,1)/2.);
-        dPhi.set(k_=2, l_=1, dE_dC_(1,0)/2.);
+        dPhi.set(k_=1, l_=2, dE_dC_(0,1));
+        dPhi.set(k_=2, l_=1, dE_dC_(1,0));
         dPhi.set(k_=2, l_=2, dE_dC_(1,1));
 
 

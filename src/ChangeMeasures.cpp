@@ -43,7 +43,7 @@ bool checkSquareDomainViolation(const std::vector<ElementTriangle2D>& elements) 
         }
         
         // Normalize metric tensor components
-        double inv_sqrt_detC = 1.0;  // Set to 1.0/sqrt(detC) if normalization needed
+        double inv_sqrt_detC = 1.0/sqrt(detC);// if normalization needed
         double c11 = C(0, 0) * inv_sqrt_detC;
         double c22 = C(1, 1) * inv_sqrt_detC;
         double c12 = C(0, 1) * inv_sqrt_detC;
@@ -51,8 +51,9 @@ bool checkSquareDomainViolation(const std::vector<ElementTriangle2D>& elements) 
         double min_val = std::min(c11, c22);
         
         bool condition1 = (c12 > 0 && c12 < min_val);
-        bool condition2 = (c12 < 0 && 2 * std::abs(c12) < min_val);
+        //bool condition2 = (c12 < 0 && 2 * std::abs(c12) < min_val);
 
+        bool condition2 = (c12 < 0 &&  std::abs(c12) < min_val);
         
         // Violation if either condition is NOT satisfied
         bool violation_found = (!condition2 && !condition1 );
