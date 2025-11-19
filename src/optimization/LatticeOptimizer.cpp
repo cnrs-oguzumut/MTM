@@ -454,7 +454,7 @@ void minimize_energy_with_triangles(
             
             const Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
                 result.C_reduced, userData->derivative_function) / normalisation;
-            const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+            const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose()*element.getReferenceArea();
             
             element.assemble_forces(P, my_forces);
         }

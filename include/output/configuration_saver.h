@@ -13,9 +13,14 @@
 #include <sstream>
 #include <array>
 #include <Eigen/Dense>
+#include <functional>
+
 
 // Include the header that defines UserData
 #include "../include/optimization/LatticeOptimizer.h"
+
+
+
 
 // Forward declarations for types used in function signatures
 class DomainDimensions;
@@ -26,6 +31,14 @@ class DomainDimensions;
  */
 class ConfigurationSaver {
 public:
+    
+
+    struct IterationData {
+        int iteration;
+        std::vector<Eigen::Vector2d> positions;
+        Eigen::Matrix2d F_ext;
+    };
+
     /**
      * Calculate energy and stress from lattice configuration without saving to file
      * 
@@ -148,6 +161,25 @@ public:
      */
     static double calculateTotalReferenceArea2D(UserData* userData);
 
+    static std::vector<IterationData> readIterationRange(int start_iter, int end_iter);
+    static IterationData readIterationData(int iteration);
+
+
+    static void processIterationsInFolder(
+        const std::string& folder_path,
+        std::function<void(const IterationData&)> processFunction);
+
+
+    static void saveElements(const std::vector<ElementTriangle2D>& elements, 
+                  const std::vector<size_t>& active_elements,
+                  int iteration) ;
+
+
+    static  std::pair<std::vector<ElementTriangle2D>, std::vector<size_t>> 
+            loadElements(int iteration,
+             const Eigen::Matrix<double, 3, 2>& dndx,
+             const std::vector<std::pair<int, int>>& full_mapping,
+             const std::vector<Point2D>& reference_points);
         
     
 private:

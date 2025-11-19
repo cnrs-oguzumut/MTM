@@ -433,7 +433,7 @@ void ConfigurationSaver::saveTriangleData(
 
 
 
-    file << std::fixed << std::setprecision(16)
+    file << std::fixed << std::setprecision(17)
         << elem_idx << " "                                    // Element number
         << F(0,0)/detF << " "                                      // F11
         << F(0,1)/detF << " "                                      // F12
@@ -493,11 +493,15 @@ void ConfigurationSaver::saveTriangleData(
     
     // Write each point
     for (size_t i = 0; i < points.size(); ++i) {
-    points_file << std::fixed << std::setprecision(8)
+    points_file << std::fixed << std::setprecision(17)
                 << i << " "
                 << points[i].coord.x() << " "
                 << points[i].coord.y() << " "
-                << full_mapping[i].second // 1 = fixed, 0 = free
+                << full_mapping[i].second << " " // 1 = fixed, 0 = free
+                << F_ext(0,0) << " "                                  // F_ext(0,0)
+                << F_ext(0,1) << " "                                  // F_ext(0,1)
+                << F_ext(1,0) << " "                                  // F_ext(1,0)
+                << F_ext(1,1) << " "                                  // F_ext(1,1)
                 << std::endl;    }
     points_file.close();
     
@@ -1299,4 +1303,227 @@ double ConfigurationSaver::calculateTotalReferenceArea2D(UserData* userData) {
     }
     
     return total_area;
+}
+
+
+ConfigurationSaver::IterationData ConfigurationSaver::readIterationData(int iteration) {
+    IterationData data;
+    data.iteration = iteration;
+    
+    // Construct filename for points file
+    std::stringstream points_filename;
+    points_filename << "triangle_data/points_" << std::setw(5) << std::setfill('0') << 10000+iteration << ".dat";
+    
+    // Open points file
+    std::ifstream points_file(points_filename.str());
+    if (!points_file) {
+        std::cerr << "Error: Could not open file " << points_filename.str() << " for reading." << std::endl;
+        return data;
+    }
+    
+    points_file >> std::setprecision(16);  // Optional - but ensures max precision
+
+    std::string line;
+    
+    // Skip header lines (lines starting with #)
+    while (std::getline(points_file, line)) {
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        
+        // Parse data line
+        std::istringstream iss(line);
+        int point_index, fixed_flag;
+        double x, y;
+        double F00, F01, F10, F11;
+        
+        if (iss >> point_index >> x >> y >> fixed_flag >> F00 >> F01 >> F10 >> F11) {
+            // Store position
+            data.positions.push_back(Eigen::Vector2d(x, y));
+            
+            // Store F_ext (same for all points, but we'll take the last one)
+            data.F_ext << F00, F01,
+                          F10, F11;
+        }
+    }
+    
+    points_file.close();
+    
+    std::cout << "Read " << data.positions.size() << " points from iteration " << iteration << std::endl;
+    
+    return data;
+}
+
+// Helper function to read multiple iterations
+std::vector<ConfigurationSaver::IterationData> ConfigurationSaver::readIterationRange(int start_iter, int end_iter) {
+    std::vector<IterationData> all_data;  // Inside the function, you can still use just IterationData
+    
+    for (int iter = start_iter; iter <= end_iter; ++iter) {
+        all_data.push_back(readIterationData(iter));
+    }
+    
+    return all_data;
+}
+
+
+void ConfigurationSaver::processIterationsInFolder(
+    const std::string& folder_path,
+    std::function<void(const IterationData&)> processFunction) {
+    
+    // Check if directory exists
+    if (!std::filesystem::exists(folder_path)) {
+        std::cerr << "Error: Directory " << folder_path << " does not exist." << std::endl;
+        return;
+    }
+    
+    // Map to store iteration number -> iteration for sorting
+    std::map<int, int> iteration_list;
+    
+    // Scan directory to find all iterations
+    for (const auto& entry : std::filesystem::directory_iterator(folder_path)) {
+        if (entry.is_regular_file()) {
+            std::string filename = entry.path().filename().string();
+            
+            // Check if it's a points file (points_XXXXX.dat)
+            if (filename.find("points_") == 0 && filename.find(".dat") != std::string::npos) {
+                // Extract iteration number
+                std::string num_str = filename.substr(7, 5);
+                int file_num = std::stoi(num_str);
+                int iteration = file_num - 10000;
+                
+                iteration_list[iteration] = iteration;
+            }
+        }
+    }
+    
+    // Process each iteration one at a time
+    for (const auto& [iteration, _] : iteration_list) {
+        std::cout << "Processing iteration " << iteration << std::endl;
+        
+        // Read this iteration's data
+        IterationData data = readIterationData(iteration);
+        
+        // Process it with the provided function
+        processFunction(data);
+        
+        // data goes out of scope here and memory is freed
+    }
+    
+    std::cout << "Processed " << iteration_list.size() << " iterations total." << std::endl;
+}
+
+
+
+void ConfigurationSaver::saveElements(const std::vector<ElementTriangle2D>& elements, 
+                  const std::vector<size_t>& active_elements,
+                  int iteration) {
+    std::stringstream filename;
+    filename << "triangle_data/elements_" << std::setw(5) << std::setfill('0') 
+             << 10000 + iteration << ".dat";
+    
+    std::ofstream elem_file(filename.str());
+    if (!elem_file) {
+        std::cerr << "Error: Could not open " << filename.str() << std::endl;
+        return;
+    }
+    
+    // Write header
+    elem_file << "# Element data: elem_idx node0 node1 node2 trans0_x trans0_y trans1_x trans1_y trans2_x trans2_y ref_area\n";
+    elem_file << std::fixed << std::setprecision(16);
+    
+    // Save number of active elements
+    elem_file << "# Active elements: " << active_elements.size() << "\n";
+    
+    // Save only active elements
+    for (int idx : active_elements) {
+        const ElementTriangle2D& elem = elements[idx];
+        
+        // Node indices
+        elem_file << idx << " "
+                  << elem.getNodeIndex(0) << " "
+                  << elem.getNodeIndex(1) << " "
+                  << elem.getNodeIndex(2) << " ";
+        
+        // Translations
+        for (int i = 0; i < 3; i++) {
+            Eigen::Vector2d trans = elem.getTranslation(i);
+            elem_file << trans.x() << " " << trans.y() << " ";
+        }
+        
+        // Reference area
+        elem_file << elem.getReferenceArea() << "\n";
+    }
+    
+    elem_file.close();
+    std::cout << "Saved " << active_elements.size() << " elements to " << filename.str() << std::endl;
+}
+
+std::pair<std::vector<ElementTriangle2D>, std::vector<size_t>>  // Change int to size_t
+ConfigurationSaver::loadElements(int iteration, 
+             const Eigen::Matrix<double, 3, 2>& dndx,
+             const std::vector<std::pair<int, int>>& full_mapping,
+             const std::vector<Point2D>& reference_points) {
+    
+    std::stringstream filename;
+    filename << "triangle_data/elements_" << std::setw(5) << std::setfill('0') 
+             << 10000 + iteration << ".dat";
+    
+    std::ifstream elem_file(filename.str());
+    if (!elem_file) {
+        std::cerr << "Error: Could not open " << filename.str() << std::endl;
+        return {{}, {}};
+    }
+    
+    std::vector<ElementTriangle2D> elements;
+    std::vector<size_t> active_elements;  // Change to size_t
+    std::string line;
+    
+    int num_active = 0;
+    
+    // Read file
+    while (std::getline(elem_file, line)) {
+        if (line.empty() || line[0] == '#') {
+            if (line.find("Active elements:") != std::string::npos) {
+                std::istringstream iss(line);
+                std::string dummy1, dummy2;
+                iss >> dummy1 >> dummy1 >> dummy2 >> num_active;
+            }
+            continue;
+        }
+        
+        std::istringstream iss(line);
+        size_t elem_idx;  // Change to size_t
+        int n0, n1, n2;
+        double tx0, ty0, tx1, ty1, tx2, ty2, ref_area;
+        
+        if (iss >> elem_idx >> n0 >> n1 >> n2 
+                >> tx0 >> ty0 >> tx1 >> ty1 >> tx2 >> ty2 >> ref_area) {
+            
+            ElementTriangle2D elem;
+            
+            elem.setNodeIndex(0, n0);
+            elem.setNodeIndex(1, n1);
+            elem.setNodeIndex(2, n2);
+            
+            elem.setTranslation(0, Eigen::Vector2d(tx0, ty0));
+            elem.setTranslation(1, Eigen::Vector2d(tx1, ty1));
+            elem.setTranslation(2, Eigen::Vector2d(tx2, ty2));
+            
+            elem.set_shape_derivatives(dndx);
+            elem.set_dof_mapping(full_mapping);
+            elem.set_reference_mesh(reference_points);
+            elem.setReferenceArea(ref_area);
+            
+            while (elements.size() <= elem_idx) {
+                elements.push_back(ElementTriangle2D());
+            }
+            elements[elem_idx] = elem;
+            active_elements.push_back(elem_idx);
+        }
+    }
+    
+    elem_file.close();
+    std::cout << "Loaded " << active_elements.size() << " elements from " << filename.str() << std::endl;
+    
+    return {elements, active_elements};
 }

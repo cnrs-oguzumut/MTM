@@ -29,6 +29,18 @@ find_package(CGAL REQUIRED)
 find_package(Boost REQUIRED)
 find_package(OpenMP)
 
+# Find Apple Accelerate framework (macOS only)
+set(ACCELERATE_FOUND FALSE)
+if(APPLE)
+    find_library(ACCELERATE_LIBRARY Accelerate)
+    if(ACCELERATE_LIBRARY)
+        set(ACCELERATE_FOUND TRUE)
+        message(STATUS "Found Apple Accelerate framework: ${ACCELERATE_LIBRARY}")
+    else()
+        message(WARNING "Apple Accelerate framework not found")
+    endif()
+endif()
+
 # Option to enable/disable ITensor support
 option(USE_ITENSOR "Enable ITensor support" ON)
 
@@ -208,6 +220,14 @@ else()
     message(STATUS "Spectra support DISABLED")
 endif()
 
+# Add Accelerate preprocessor definition if found
+if(ACCELERATE_FOUND)
+    target_compile_definitions(lattice_lib PRIVATE USE_ACCELERATE=1)
+    message(STATUS "Apple Accelerate support ENABLED - USE_ACCELERATE=1 defined")
+else()
+    message(STATUS "Apple Accelerate support DISABLED")
+endif()
+
 # Create main executable
 add_executable(lattice_triangulation "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -224,6 +244,11 @@ if(SPECTRA_FOUND)
     target_compile_definitions(lattice_triangulation PRIVATE USE_SPECTRA=1)
 endif()
 
+# Add Accelerate definition to main executable too
+if(ACCELERATE_FOUND)
+    target_compile_definitions(lattice_triangulation PRIVATE USE_ACCELERATE=1)
+endif()
+
 # Set up base libraries for linking
 set(BASE_LIBRARIES
     lattice_lib
@@ -235,6 +260,11 @@ set(BASE_LIBRARIES
 # Add ITensor libraries if found
 if(ITENSOR_FOUND)
     list(APPEND BASE_LIBRARIES ${ITENSOR_LIBRARIES})
+endif()
+
+# Add Accelerate framework if found
+if(ACCELERATE_FOUND)
+    list(APPEND BASE_LIBRARIES ${ACCELERATE_LIBRARY})
 endif()
 
 # Note: Spectra is header-only, so no libraries to link
@@ -263,14 +293,28 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
         if(SPECTRA_FOUND)
             target_compile_definitions(run_tests PRIVATE USE_SPECTRA=1)
         endif()
+        if(ACCELERATE_FOUND)
+            target_compile_definitions(run_tests PRIVATE USE_ACCELERATE=1)
+        endif()
         
-        target_link_libraries(run_tests
+        # Set up test libraries
+        set(TEST_LIBRARIES
             lattice_lib
-            ${ITENSOR_LIBRARIES}
             ${CGAL_LIBRARIES}
             ${Boost_LIBRARIES}
             alglib
         )
+        
+        if(ITENSOR_FOUND)
+            list(APPEND TEST_LIBRARIES ${ITENSOR_LIBRARIES})
+        endif()
+        
+        if(ACCELERATE_FOUND)
+            list(APPEND TEST_LIBRARIES ${ACCELERATE_LIBRARY})
+        endif()
+        
+        target_link_libraries(run_tests ${TEST_LIBRARIES})
+        
         if(OpenMP_CXX_FOUND)
             target_link_libraries(run_tests OpenMP::OpenMP_CXX)
         endif()
@@ -281,6 +325,9 @@ endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "Release flags: ${CMAKE_CXX_FLAGS_RELEASE}")
+if(ACCELERATE_FOUND)
+    message(STATUS "Accelerate framework: ${ACCELERATE_LIBRARY}")
+endif()
 message(STATUS "ITensor directory: ${ITENSOR_DIR}")
 message(STATUS "ITensor library: ${ITENSOR_LIBRARY}")
 message(STATUS "Spectra directory: ${SPECTRA_DIR}")

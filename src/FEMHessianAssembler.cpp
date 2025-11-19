@@ -137,7 +137,8 @@ Eigen::SparseMatrix<double> FEMHessianAssembler::assembleGlobalStiffness(
         AcousticTensor acoustic_tensor(F, C, Z);
         
         // Get element area for integration weight
-        double area = element.getArea();
+        double area = element.getReferenceArea();
+        // std::cout<<"area: "<<area<<std::endl;
         
         // Compute element stiffness matrix
         // (computeEnergyDerivatives is called inside computeElementStiffness)
@@ -312,6 +313,9 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative(
 }
 
 
+#include <Spectra/SymEigsShiftSolver.h>
+#include <Spectra/MatOp/SparseSymShiftSolve.h>
+
 EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_spectra(
     const Eigen::SparseMatrix<double>& K_global,
     int N,
@@ -326,27 +330,41 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_spectra(
         return results;
     }
 
-    std::cout << "Computing " << N << " smallest eigenvalues using Spectra..." << std::endl;
+    std::cout << "Computing " << N << " smallest eigenvalues using Spectra with shift-invert..." << std::endl;
     std::cout << "Matrix size: " << n << " x " << n << std::endl;
+    
+    // Auto-select shift if not provided
+    if (shift == -1) {
+        // Estimate shift: use small negative value
+        shift = -0.01 * K_global.diagonal().cwiseAbs().maxCoeff();
+        std::cout << "Auto-selected shift: " << shift << std::endl;
+    } else {
+        std::cout << "Using shift: " << shift << std::endl;
+    }
 
     // Number of Lanczos vectors (ncv must be > N)
-    // Rule of thumb: ncv = 2*N to 3*N, but ncv < n
-    int ncv = std::max(2 * N + 1, 20);
-    ncv = std::min(ncv, n - 1);
+    int ncv = std::min(2 * N + 1, n - 1);
     
-    std::cout << "Spectra: N=" << N << ", ncv=" << ncv << std::endl;
+    std::cout << "Spectra: N=" << N << ", ncv=" << ncv << ", shift=" << shift << std::endl;
 
     try {
-        // Construct matrix operation object using the wrapper class
-        Spectra::SparseSymMatProd<double> op(K_global);
+        std::cout << "Performing sparse LU factorization of (K - σI)..." << std::endl;
         
-        // Construct symmetric eigen solver, requesting N smallest eigenvalues
-        Spectra::SymEigsSolver<Spectra::SparseSymMatProd<double>> eigs(op, N, ncv);
+        // Construct shift-invert matrix operation object
+        // This performs LU factorization of (K - shift*I)
+        Spectra::SparseSymShiftSolve<double> op(K_global);
+        
+        // Construct symmetric shift-invert eigen solver
+        Spectra::SymEigsShiftSolver<Spectra::SparseSymShiftSolve<double>> eigs(
+            op, N, ncv, shift);
+        
+        std::cout << "LU factorization complete. Computing eigenvalues..." << std::endl;
         
         // Initialize and compute
         eigs.init();
-        std::cout << "Spectra: Computing eigenvalues..." << std::endl;
-        int nconv = eigs.compute(Spectra::SortRule::SmallestAlge, 1000, 1e-10);
+        
+        // Use LargestMagn because shift-invert transforms smallest to largest
+        int nconv = eigs.compute(Spectra::SortRule::LargestMagn, 1000, 1e-10);
         
         std::cout << "Spectra: Converged " << nconv << " eigenvalues" << std::endl;
         
@@ -357,10 +375,30 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_spectra(
             return results;
         }
         
-        // Retrieve results (already sorted by Spectra)
+        // Retrieve results
+        // Eigenvalues are returned in order relative to the shift
         results.eigenvalues = eigs.eigenvalues();
         results.eigenvectors = eigs.eigenvectors();
         results.num_computed = nconv;
+        
+        // Sort eigenvalues in ascending order (they come sorted by distance from shift)
+        std::vector<std::pair<double, int>> sorted_indices;
+        for (int i = 0; i < nconv; i++) {
+            sorted_indices.push_back({results.eigenvalues(i), i});
+        }
+        std::sort(sorted_indices.begin(), sorted_indices.end());
+        
+        // Reorder eigenvalues and eigenvectors
+        Eigen::VectorXd sorted_eigenvalues(nconv);
+        Eigen::MatrixXd sorted_eigenvectors(n, nconv);
+        
+        for (int i = 0; i < nconv; i++) {
+            sorted_eigenvalues(i) = sorted_indices[i].first;
+            sorted_eigenvectors.col(i) = results.eigenvectors.col(sorted_indices[i].second);
+        }
+        
+        results.eigenvalues = sorted_eigenvalues;
+        results.eigenvectors = sorted_eigenvectors;
         
         // Print results
         std::cout << "Successfully computed " << results.num_computed << " eigenvalues." << std::endl;
@@ -373,7 +411,118 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_spectra(
         }
         
     } catch (const std::exception& e) {
-        std::cerr << "Exception in Spectra computation: " << e.what() << std::endl;
+        std::cerr << "Exception in Spectra shift-invert computation: " << e.what() << std::endl;
+    }
+
+    return results;
+}
+
+
+
+#include <Accelerate/Accelerate.h>
+
+EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
+    const Eigen::SparseMatrix<double>& K_global,
+    int N)
+{
+    EigenResults results;
+    int n = K_global.rows();
+
+    // Check if N is valid
+    if (N <= 0 || N > n) {
+        std::cerr << "Error: N must be between 1 and " << n << std::endl;
+        return results;
+    }
+
+    std::cout << "Computing " << N << " smallest eigenvalues using Apple Accelerate..." << std::endl;
+    std::cout << "Matrix size: " << n << " x " << n << std::endl;
+
+    try {
+        // Convert sparse to dense (column-major for LAPACK)
+        std::vector<double> K_dense(n * n, 0.0);
+        for (int k = 0; k < K_global.outerSize(); ++k) {
+            for (Eigen::SparseMatrix<double>::InnerIterator it(K_global, k); it; ++it) {
+                K_dense[it.col() * n + it.row()] = it.value();  // Column-major
+            }
+        }
+        
+        std::cout << "Converted to dense matrix" << std::endl;
+
+        // Prepare output arrays
+        std::vector<double> eigenvalues(n);
+        
+        // LAPACK parameters for dsyevd (divide-and-conquer, faster than dsyev)
+        char jobz = 'V';  // Compute eigenvalues and eigenvectors
+        char uplo = 'L';  // Lower triangle of matrix
+        __CLPK_integer n_lapack = n;
+        __CLPK_integer lda = n;
+        __CLPK_integer info = 0;
+        
+        // Query optimal workspace size
+        __CLPK_integer lwork = -1;
+        __CLPK_integer liwork = -1;
+        double work_query;
+        __CLPK_integer iwork_query;
+        
+        std::cout << "Querying optimal workspace..." << std::endl;
+        dsyevd_(&jobz, &uplo, &n_lapack, K_dense.data(), &lda, 
+                eigenvalues.data(), &work_query, &lwork, &iwork_query, &liwork, &info);
+        
+        if (info != 0) {
+            std::cerr << "Error in workspace query: info = " << info << std::endl;
+            return results;
+        }
+        
+        // Allocate optimal workspace
+        lwork = static_cast<__CLPK_integer>(work_query);
+        liwork = iwork_query;
+        std::vector<double> work(lwork);
+        std::vector<__CLPK_integer> iwork(liwork);
+        
+        std::cout << "Workspace allocated: lwork=" << lwork << ", liwork=" << liwork << std::endl;
+        std::cout << "Computing eigenvalues..." << std::endl;
+        
+        // Compute eigenvalues and eigenvectors
+        dsyevd_(&jobz, &uplo, &n_lapack, K_dense.data(), &lda, 
+                eigenvalues.data(), work.data(), &lwork, iwork.data(), &liwork, &info);
+        
+        if (info != 0) {
+            if (info < 0) {
+                std::cerr << "Error: Invalid argument at position " << -info << std::endl;
+            } else {
+                std::cerr << "Error: Algorithm failed to converge. info = " << info << std::endl;
+            }
+            return results;
+        }
+        
+        std::cout << "Successfully computed all eigenvalues" << std::endl;
+        
+        // Extract smallest N eigenvalues and eigenvectors
+        // Eigenvalues are already sorted in ascending order
+        results.eigenvalues.resize(N);
+        results.eigenvectors.resize(n, N);
+        
+        for (int i = 0; i < N; ++i) {
+            results.eigenvalues(i) = eigenvalues[i];
+            
+            // Copy eigenvector (stored column-major in K_dense)
+            for (int j = 0; j < n; ++j) {
+                results.eigenvectors(j, i) = K_dense[i * n + j];
+            }
+        }
+        
+        results.num_computed = N;
+        
+        // Print results
+        std::cout << "Successfully extracted " << N << " smallest eigenvalues." << std::endl;
+        std::cout << "Smallest eigenvalue: " << results.eigenvalues(0) << std::endl;
+        if (N > 1) {
+            std::cout << "Largest of extracted eigenvalues: " 
+                     << results.eigenvalues(N - 1) << std::endl;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in Accelerate computation: " << e.what() << std::endl;
     }
 
     return results;
@@ -550,8 +699,23 @@ void FEMHessianAssembler::exportEigenvectorsToVTK(
         return;
     }
     
+    // Create vtk_eigen directory
+    std::filesystem::path filepath(filename);
+    std::filesystem::path parent_dir = filepath.parent_path();
+    std::filesystem::path vtk_eigen_dir = parent_dir / "vtk_eigen";
+    
+    // Create directory if it doesn't exist
+    if (!std::filesystem::exists(vtk_eigen_dir)) {
+        std::filesystem::create_directories(vtk_eigen_dir);
+        std::cout << "Created directory: " << vtk_eigen_dir << std::endl;
+    }
+    
+    // Get base filename without directory
+    std::string base_filename = filepath.filename().string();
+    
     std::cout << "\n=== Exporting Eigenmodes to VTK ===" << std::endl;
-    std::cout << "Base filename: " << filename << std::endl;
+    std::cout << "Output directory: " << vtk_eigen_dir << std::endl;
+    std::cout << "Base filename: " << base_filename << std::endl;
     std::cout << "Scale factor: " << scale_factor << std::endl;
     std::cout << "Number of modes to export: " << mode_indices.size() << std::endl;
     
@@ -582,10 +746,11 @@ void FEMHessianAssembler::exportEigenvectorsToVTK(
             continue;
         }
         
-        // Create filename for this mode
+        // Create filename for this mode inside vtk_eigen directory
         std::stringstream ss;
-        ss << filename << "_mode_" << std::setfill('0') << std::setw(3) << mode_idx << ".vtk";
-        std::string mode_filename = ss.str();
+        ss << base_filename << "_mode_" << std::setfill('0') << std::setw(3) << mode_idx << ".vtk";
+        std::filesystem::path mode_filepath = vtk_eigen_dir / ss.str();
+        std::string mode_filename = mode_filepath.string();
         
         // Export this mode (automatically handles PBC filtering)
         exportSingleModeToVTK(
@@ -1034,8 +1199,8 @@ void FEMHessianAssembler::exportCompleteEigenmodeAnalysis(
         eigen_results,
         participation,
         num_rigid_body,
-        20,      // Number of bins
-        true    // Gaussian broadening (set to true for smoother curves)
+        30,      // Number of bins
+        false    // Gaussian broadening (set to true for smoother curves)
     );
     
     // Export VTK files for phonon modes
@@ -1129,8 +1294,8 @@ DOSResults FEMHessianAssembler::computeDensityOfStates(
     
     // Add small padding to range
     double range = dos_results.omega_max - dos_results.omega_min;
-    dos_results.omega_min -= 0.05 * range;
-    dos_results.omega_max += 0.05 * range;
+    // dos_results.omega_min -= 0.05 * range;
+    // dos_results.omega_max += 0.05 * range;
     
     dos_results.num_bins = num_bins;
     double bin_width = (dos_results.omega_max - dos_results.omega_min) / num_bins;
@@ -1180,7 +1345,32 @@ DOSResults FEMHessianAssembler::computeDensityOfStates(
     for (int i = 1; i < num_bins; i++) {
         dos_results.dos_cumulative[i] = dos_results.dos_cumulative[i-1] + dos_results.dos[i] * bin_width;
     }
-    
+
+    // Compute g(ω)/ω
+    dos_results.dos_over_omega.resize(num_bins);
+    for (int i = 0; i < num_bins; i++) {
+        double omega = dos_results.omega_bins[i];
+        
+        if (std::abs(omega) > 1e-8) {
+            dos_results.dos_over_omega[i] = dos_results.dos[i] / omega;
+        } else {
+            // Fit g(ω) = a*ω + b*ω² near zero
+            // Then g(ω)/ω = a + b*ω
+            if (i + 2 < num_bins) {
+                double w1 = dos_results.omega_bins[i+1];
+                double w2 = dos_results.omega_bins[i+2];
+                double g1 = dos_results.dos[i+1];
+                double g2 = dos_results.dos[i+2];
+                
+                // Linear fit: a ≈ g1/w1
+                double a = g1 / w1;
+                dos_results.dos_over_omega[i] = a;  // Limit as ω→0
+            } else {
+                dos_results.dos_over_omega[i] = 0.0;
+            }
+        }
+    }    
+
     return dos_results;
 }
 
@@ -1198,25 +1388,37 @@ void FEMHessianAssembler::exportDensityOfStates(
     file << "# Density of States: " << label << "\n";
     file << "# Number of bins: " << dos_results.num_bins << "\n";
     file << "# Frequency range: [" << dos_results.omega_min << ", " << dos_results.omega_max << "]\n";
-    file << "# Columns: Omega(ω), g(ω), Cumulative_DOS, log10 Omega(ω), log10 g(ω), log10 Cumulative_DOS\n";
+file << "# Columns: Omega(ω), g(ω), g(ω)/ω, Cumulative_DOS, log10 Omega(ω), log10 g(ω), log10 Cumulative_DOS, log10 g(ω)/ω \n";
     file << "#\n";
     file << std::setw(20) << "Omega"
          << std::setw(20) << "g(omega)"
+         << std::setw(20) << "g/omega"
          << std::setw(20) << "Cumulative"
-         << std::setw(20) << "log10 Omega"
-         << std::setw(20) << "log10 g(omega)"
-         << std::setw(20) << "log10 Cumulative"
-
+         << std::setw(20) << "log10_Omega"
+         << std::setw(20) << "log10_g(omega)"
+         << std::setw(20) << "log10_Cumulative"
+         << std::setw(20) << "log10_g/omega"
          << "\n";
     
     for (int i = 0; i < dos_results.num_bins; i++) {
-        file << std::setw(20) << std::scientific << std::setprecision(10) << dos_results.omega_bins[i]
-             << std::setw(20) << std::scientific << std::setprecision(10) << dos_results.dos[i]
-             << std::setw(20) << std::fixed << std::setprecision(10) << dos_results.dos_cumulative[i]
-             << std::setw(20) << std::fixed << std::setprecision(10) << std::log10(dos_results.omega_bins[i])
-             << std::setw(20) << std::fixed << std::setprecision(10) << std::log10(dos_results.dos[i])
-             << std::setw(20) << std::fixed << std::setprecision(10) << std::log10(dos_results.dos_cumulative[i])
-
+        double omega = dos_results.omega_bins[i];
+        double g = dos_results.dos[i];
+        double g_over_omega = dos_results.dos_over_omega[i];
+        double cumulative = dos_results.dos_cumulative[i];
+        
+        // Safe log10 (avoid log of zero or negative)
+        auto safe_log10 = [](double x) {
+            return (x > 1e-100) ? std::log10(x) : -100.0;
+        };
+        
+        file << std::setw(20) << std::scientific << std::setprecision(10) << omega
+             << std::setw(20) << std::scientific << std::setprecision(10) << g
+             << std::setw(20) << std::scientific << std::setprecision(10) << g_over_omega
+             << std::setw(20) << std::fixed << std::setprecision(10) << cumulative
+             << std::setw(20) << std::fixed << std::setprecision(10) << safe_log10(std::abs(omega))
+             << std::setw(20) << std::fixed << std::setprecision(10) << safe_log10(g)
+             << std::setw(20) << std::fixed << std::setprecision(10) << safe_log10(cumulative)
+             << std::setw(20) << std::fixed << std::setprecision(10) << safe_log10(g_over_omega)
              << "\n";
     }
     
@@ -1289,3 +1491,149 @@ void FEMHessianAssembler::exportAllDensityOfStates(
     
     std::cout << std::string(70, '=') << std::endl;
 }
+
+// Helper function for eigenvalue analysis - returns only min non-rigid eigenvalue
+double FEMHessianAssembler::computeMinNonRigidEigenvalue(
+    std::vector<ElementTriangle2D>& elements,
+    const std::vector<Point2D>& square_points,
+    int n_dofs,
+    const std::vector<std::pair<int, int>>& full_mapping,
+    Strain_Energy_LatticeCalculator* calculator,
+    std::function<double(double)> potential_func_der,
+    std::function<double(double)> potential_func_sder,
+    int num_eigenvalues,
+    double alpha,
+    const std::string& output_filename)
+{
+    // 1. Create FEM Hessian assembler
+    FEMHessianAssembler assembler;
+    
+    // 2. Set energy parameters
+    assembler.setEnergyParameters(calculator, potential_func_der, potential_func_sder, 
+                                  calculator->getUnitCellArea());
+
+    // 3. Assemble global stiffness matrix
+    Eigen::SparseMatrix<double> global_stiffness = assembler.assembleGlobalStiffness(
+        elements,
+        square_points,
+        n_dofs,
+        full_mapping
+    );
+
+    std::cout << std::scientific << std::setprecision(17);
+
+    // std::cout << "--- Sparse Matrix Output (Row, Col, Value) ---" << std::endl;
+
+    // // Iterate over the sparse matrix efficiently
+    // // outerSize() is usually the number of columns (for column-major matrices)
+    // for (int k = 0; k < global_stiffness.outerSize(); ++k) {
+    //     // InnerIterator iterates over non-zero entries of the k-th column
+    //     for (Eigen::SparseMatrix<double>::InnerIterator it(global_stiffness, k); it; ++it) {
+            
+    //         // it.row()   = row index
+    //         // it.col()   = column index
+    //         // it.value() = the value of the element
+    //         std::cout << it.row() << " " << it.col() << " " << it.value() << "\n";
+    //     }
+    // }
+    std::cout << "----------------------------------------------" << std::endl;
+
+    // 4. Compute eigenvalues
+    EigenResults results = assembler.computeSmallestEigenvaluesIterative_spectra(
+        global_stiffness, num_eigenvalues, 0);
+
+    // 5. Sort by ABSOLUTE VALUE to identify rigid body modes
+    std::vector<std::pair<double, int>> eigen_pairs;
+    for (int i = 0; i < results.num_computed; i++) {
+        eigen_pairs.push_back({results.eigenvalues(i), i});
+    }
+    std::sort(eigen_pairs.begin(), eigen_pairs.end(), 
+         [](const auto& a, const auto& b) { return std::abs(a.first) < std::abs(b.first); });
+
+    // 6. Build temporarily sorted arrays for rigid body mode detection
+    Eigen::VectorXd sorted_eigenvalues(results.num_computed);
+    Eigen::MatrixXd sorted_eigenvectors(results.eigenvectors.rows(), results.num_computed);
+    for (int i = 0; i < results.num_computed; i++) {
+        sorted_eigenvalues(i) = results.eigenvalues(eigen_pairs[i].second);
+        sorted_eigenvectors.col(i) = results.eigenvectors.col(eigen_pairs[i].second);
+    }
+    results.eigenvalues = sorted_eigenvalues;
+    results.eigenvectors = sorted_eigenvectors;
+
+    // 7. Detect rigid body modes
+    int num_rigid = assembler.detectRigidBodyModes(results);
+
+    // 8. Create NEW pairs for non-rigid modes and sort them
+    std::vector<std::pair<double, int>> non_rigid_pairs;
+    for (int i = num_rigid; i < results.num_computed; i++) {
+        non_rigid_pairs.push_back({results.eigenvalues(i), i});
+    }
+    
+    // Sort non-rigid modes from negative to positive
+    std::sort(non_rigid_pairs.begin(), non_rigid_pairs.end(), 
+        [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    // 9. Build FINAL sorted arrays
+    for (int i = 0; i < num_rigid; i++) {
+        sorted_eigenvalues(i) = results.eigenvalues(i);
+        sorted_eigenvectors.col(i) = results.eigenvectors.col(i);
+    }
+    
+    for (int i = 0; i < non_rigid_pairs.size(); i++) {
+        sorted_eigenvalues(num_rigid + i) = results.eigenvalues(non_rigid_pairs[i].second);
+        sorted_eigenvectors.col(num_rigid + i) = results.eigenvectors.col(non_rigid_pairs[i].second);
+    }
+
+    // 10. Extract minimum, second, and third non-rigid eigenvalues
+    double first_non_rigid_eigenvalue = (num_rigid < results.num_computed) ? 
+                                        sorted_eigenvalues(num_rigid) : 
+                                        std::numeric_limits<double>::quiet_NaN();
+    
+    double second_non_rigid_eigenvalue = (num_rigid + 1 < results.num_computed) ? 
+                                         sorted_eigenvalues(num_rigid + 1) : 
+                                         std::numeric_limits<double>::quiet_NaN();
+    
+    double third_non_rigid_eigenvalue = (num_rigid + 2 < results.num_computed) ? 
+                                        sorted_eigenvalues(num_rigid + 2) : 
+                                        std::numeric_limits<double>::quiet_NaN();
+    
+    std::cout << "Num rigid modes: " << num_rigid << std::endl;
+    std::cout << "  1st non-rigid eigenvalue: " << first_non_rigid_eigenvalue << std::endl;
+    std::cout << "  2nd non-rigid eigenvalue: " << second_non_rigid_eigenvalue << std::endl;
+    std::cout << "  3rd non-rigid eigenvalue: " << third_non_rigid_eigenvalue << std::endl;
+
+    // 11. Write to file
+    std::ofstream outfile;
+    
+    // Check if file exists to decide whether to write header
+    bool file_exists = std::ifstream(output_filename).good();
+    
+    outfile.open(output_filename, std::ios::app);  // Append mode
+    if (!outfile.is_open()) {
+        std::cerr << "Error: Could not open file " << output_filename << " for writing" << std::endl;
+        return first_non_rigid_eigenvalue;
+    }
+    
+    // Write header if new file
+    if (!file_exists) {
+        outfile << "# Alpha, Eigenvalue_1st, Eigenvalue_2nd, Eigenvalue_3rd, Num_Rigid_Modes\n";
+    }
+    
+    // Write data
+    outfile << std::scientific << std::setprecision(12);
+    outfile << alpha << " " 
+            << first_non_rigid_eigenvalue << " " 
+            << second_non_rigid_eigenvalue << " "
+            << third_non_rigid_eigenvalue << " "
+            << num_rigid << "\n";
+    outfile.close();
+    
+    std::cout << "Saved to " << output_filename << ": alpha=" << alpha 
+              << ", eig1=" << first_non_rigid_eigenvalue
+              << ", eig2=" << second_non_rigid_eigenvalue
+              << ", eig3=" << third_non_rigid_eigenvalue << std::endl;
+
+    return first_non_rigid_eigenvalue;
+}
+
+

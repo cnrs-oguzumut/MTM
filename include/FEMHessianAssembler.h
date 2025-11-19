@@ -40,9 +40,12 @@ struct DOSResults {
     std::vector<double> omega_bins;      // Frequency bins (center values)
     std::vector<double> dos;             // g(ω) - density of states
     std::vector<double> dos_cumulative;  // Cumulative DOS
+    std::vector<double> dos_over_omega;  // ADD THIS for g(ω)/ω
+
     int num_bins;                        // Number of bins
     double omega_min;                    // Minimum frequency
     double omega_max;                    // Maximum frequency
+    
     
     DOSResults() : num_bins(0), omega_min(0.0), omega_max(0.0) {}
 };
@@ -165,6 +168,11 @@ public:
         const Eigen::SparseMatrix<double>& K_global,
         int N,
         double shift = 1e-6);
+
+    EigenResults computeSmallestEigenvalues_Accelerate(
+    const Eigen::SparseMatrix<double>& K_global,
+    int N);
+
 
     /**
      * Export eigenvector modes to VTK for visualization in Paraview
@@ -388,6 +396,21 @@ public:
         int num_rigid_body,
         int num_bins = 50,
         bool use_gaussian_broadening = false);
+
+
+static double computeMinNonRigidEigenvalue(
+    std::vector<ElementTriangle2D>& elements,
+    const std::vector<Point2D>& square_points,
+    int n_dofs,
+    const std::vector<std::pair<int, int>>& full_mapping,
+    Strain_Energy_LatticeCalculator* calculator,
+    std::function<double(double)> potential_func_der,
+    std::function<double(double)> potential_func_sder,
+    int num_eigenvalues,
+    double alpha, 
+    const std::string& output_filename = "./eigenvalues_vs_alpha.dat");
 };
+
+
 
 #endif // FEM_HESSIAN_ASSEMBLY_H
