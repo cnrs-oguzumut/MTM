@@ -158,6 +158,8 @@ public:
      * Uses second derivatives if available, enhanced first derivatives, or fallback calculation.
      */
     void computeHessian(itensor::ITensor& ddPhi);
+    void computeHessian_notsymetrized(itensor::ITensor& ddPhi);
+
 
     /**
      * Main acoustic tensor analysis - equivalent to acoustic_tensor() function.

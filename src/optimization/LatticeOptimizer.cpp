@@ -560,7 +560,7 @@ void minimize_energy_with_triangles_noreduction(
             
             const Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
                 C, userData->derivative_function) / normalisation;
-            const Eigen::Matrix2d P = 2.0 * F  * dE_dC ;
+            const Eigen::Matrix2d P = 2.0 * F  * dE_dC*element.getReferenceArea() ;
             
             element.assemble_forces(P, my_forces);
         }

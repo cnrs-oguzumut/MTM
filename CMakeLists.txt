@@ -23,8 +23,48 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
 endif()
 
-# Find required packages
-find_package(Eigen3 REQUIRED)
+# Find Eigen3 with better compatibility
+find_package(Eigen3 3.3 QUIET NO_MODULE)
+
+if(Eigen3_FOUND)
+    # Modern Eigen3 - use imported target
+    if(TARGET Eigen3::Eigen)
+        get_target_property(EIGEN3_INCLUDE_DIR Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
+        message(STATUS "Found Eigen3 (modern): ${EIGEN3_INCLUDE_DIR}")
+    else()
+        message(STATUS "Found Eigen3: ${EIGEN3_INCLUDE_DIR}")
+    endif()
+else()
+    # Fallback: try manual detection
+    message(STATUS "Eigen3 not found via find_package, trying manual detection...")
+    
+    if(APPLE)
+        set(EIGEN_SEARCH_PATHS
+            "/opt/homebrew/include/eigen3"
+            "/usr/local/include/eigen3"
+        )
+    else()
+        set(EIGEN_SEARCH_PATHS
+            "/usr/include/eigen3"
+            "/usr/local/include/eigen3"
+        )
+    endif()
+    
+    foreach(SEARCH_PATH ${EIGEN_SEARCH_PATHS})
+        if(EXISTS "${SEARCH_PATH}/Eigen/Core")
+            set(EIGEN3_INCLUDE_DIR ${SEARCH_PATH})
+            set(Eigen3_FOUND TRUE)
+            message(STATUS "Found Eigen3 manually at: ${EIGEN3_INCLUDE_DIR}")
+            break()
+        endif()
+    endforeach()
+    
+    if(NOT Eigen3_FOUND)
+        message(FATAL_ERROR "Eigen3 not found! Install with: brew install eigen")
+    endif()
+endif()
+
+# Find other required packages
 find_package(CGAL REQUIRED)
 find_package(Boost REQUIRED)
 find_package(OpenMP)
@@ -39,6 +79,78 @@ if(APPLE)
     else()
         message(WARNING "Apple Accelerate framework not found")
     endif()
+endif()
+
+# Option to enable/disable Armadillo support
+option(USE_ARMADILLO "Enable Armadillo support" ON)
+
+# Armadillo detection (optional)
+set(ARMADILLO_FOUND FALSE)
+
+if(USE_ARMADILLO)
+    find_package(Armadillo QUIET)
+    
+    if(ARMADILLO_FOUND)
+        message(STATUS "Found Armadillo: ${ARMADILLO_VERSION_STRING}")
+        message(STATUS "Armadillo include dirs: ${ARMADILLO_INCLUDE_DIRS}")
+        message(STATUS "Armadillo libraries: ${ARMADILLO_LIBRARIES}")
+    else()
+        message(WARNING "Armadillo not found via find_package")
+        message(WARNING "Try: brew install armadillo")
+        message(WARNING "Armadillo support will be disabled")
+    endif()
+else()
+    message(STATUS "Armadillo support manually disabled")
+endif()
+
+# Option to enable/disable ARPACK support
+option(USE_ARPACK "Enable ARPACK eigenvalue solver support" ON)
+
+# ARPACK detection (optional)
+set(ARPACK_FOUND FALSE)
+set(ARPACK_LIBRARIES "")
+set(ARPACK_INCLUDE_DIRS "")
+
+if(USE_ARPACK)
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(ARPACK arpack)
+        if(ARPACK_FOUND)
+            message(STATUS "Found ARPACK via pkg-config")
+            message(STATUS "ARPACK include dirs: ${ARPACK_INCLUDE_DIRS}")
+            message(STATUS "ARPACK libraries: ${ARPACK_LIBRARIES}")
+        else()
+            # Try manual detection on macOS
+            if(APPLE)
+                find_library(ARPACK_LIB arpack PATHS /opt/homebrew/lib /usr/local/lib)
+                if(ARPACK_LIB)
+                    set(ARPACK_LIBRARIES ${ARPACK_LIB})
+                    set(ARPACK_FOUND TRUE)
+                    # Check for include directory
+                    if(EXISTS "/opt/homebrew/include/arpack")
+                        set(ARPACK_INCLUDE_DIRS "/opt/homebrew/include/arpack")
+                    elseif(EXISTS "/usr/local/include/arpack")
+                        set(ARPACK_INCLUDE_DIRS "/usr/local/include/arpack")
+                    endif()
+                    message(STATUS "Found ARPACK manually: ${ARPACK_LIBRARIES}")
+                    if(ARPACK_INCLUDE_DIRS)
+                        message(STATUS "ARPACK include dirs: ${ARPACK_INCLUDE_DIRS}")
+                    endif()
+                endif()
+            endif()
+            
+            if(NOT ARPACK_FOUND)
+                message(WARNING "ARPACK not found")
+                message(WARNING "Try: brew install arpack")
+                message(WARNING "ARPACK support will be disabled")
+            endif()
+        endif()
+    else()
+        message(WARNING "PkgConfig not found, cannot detect ARPACK")
+        message(WARNING "ARPACK support will be disabled")
+    endif()
+else()
+    message(STATUS "ARPACK support manually disabled")
 endif()
 
 # Option to enable/disable ITensor support
@@ -175,6 +287,16 @@ set(INCLUDE_DIRS
     ${Boost_INCLUDE_DIRS}
 )
 
+# Add Armadillo include directory if found
+if(ARMADILLO_FOUND)
+    list(APPEND INCLUDE_DIRS ${ARMADILLO_INCLUDE_DIRS})
+endif()
+
+# Add ARPACK include directory if found
+if(ARPACK_FOUND AND ARPACK_INCLUDE_DIRS)
+    list(APPEND INCLUDE_DIRS ${ARPACK_INCLUDE_DIRS})
+endif()
+
 # Add ITensor include directory if found
 if(ITENSOR_FOUND)
     list(APPEND INCLUDE_DIRS ${ITENSOR_INCLUDE_DIR})
@@ -199,9 +321,32 @@ file(GLOB_RECURSE LIB_SOURCES
 list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
 add_library(lattice_lib STATIC ${LIB_SOURCES})
 
+# Link Eigen to lattice_lib properly
+if(TARGET Eigen3::Eigen)
+    target_link_libraries(lattice_lib PUBLIC Eigen3::Eigen)
+else()
+    target_include_directories(lattice_lib PUBLIC ${EIGEN3_INCLUDE_DIR})
+endif()
+
 # Add compiler flags and definitions
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(lattice_lib PRIVATE -O3 -march=native -flto -ffast-math)
+endif()
+
+# Add Armadillo preprocessor definition if found
+if(ARMADILLO_FOUND)
+    target_compile_definitions(lattice_lib PRIVATE USE_ARMADILLO=1)
+    message(STATUS "Armadillo support ENABLED - USE_ARMADILLO=1 defined")
+else()
+    message(STATUS "Armadillo support DISABLED")
+endif()
+
+# Add ARPACK preprocessor definition if found
+if(ARPACK_FOUND)
+    target_compile_definitions(lattice_lib PRIVATE USE_ARPACK=1)
+    message(STATUS "ARPACK support ENABLED - USE_ARPACK=1 defined")
+else()
+    message(STATUS "ARPACK support DISABLED")
 endif()
 
 # Add ITensor preprocessor definition if found
@@ -230,8 +375,26 @@ endif()
 
 # Create main executable
 add_executable(lattice_triangulation "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
+
+# Link Eigen to main executable properly
+if(TARGET Eigen3::Eigen)
+    target_link_libraries(lattice_triangulation PUBLIC Eigen3::Eigen)
+else()
+    target_include_directories(lattice_triangulation PUBLIC ${EIGEN3_INCLUDE_DIR})
+endif()
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(lattice_triangulation PRIVATE -O3 -march=native -flto -ffast-math)
+endif()
+
+# Add Armadillo definition to main executable too
+if(ARMADILLO_FOUND)
+    target_compile_definitions(lattice_triangulation PRIVATE USE_ARMADILLO=1)
+endif()
+
+# Add ARPACK definition to main executable too
+if(ARPACK_FOUND)
+    target_compile_definitions(lattice_triangulation PRIVATE USE_ARPACK=1)
 endif()
 
 # Add ITensor definition to main executable too
@@ -256,6 +419,16 @@ set(BASE_LIBRARIES
     ${Boost_LIBRARIES}
     alglib
 )
+
+# Add Armadillo libraries if found
+if(ARMADILLO_FOUND)
+    list(APPEND BASE_LIBRARIES ${ARMADILLO_LIBRARIES})
+endif()
+
+# Add ARPACK libraries if found
+if(ARPACK_FOUND)
+    list(APPEND BASE_LIBRARIES ${ARPACK_LIBRARIES})
+endif()
 
 # Add ITensor libraries if found
 if(ITENSOR_FOUND)
@@ -282,11 +455,25 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     file(GLOB TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
     if(TEST_SOURCES)
         add_executable(run_tests ${TEST_SOURCES})
+        
+        # Link Eigen to tests properly
+        if(TARGET Eigen3::Eigen)
+            target_link_libraries(run_tests PUBLIC Eigen3::Eigen)
+        else()
+            target_include_directories(run_tests PUBLIC ${EIGEN3_INCLUDE_DIR})
+        endif()
+        
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
             target_compile_options(run_tests PRIVATE -O3 -march=native -flto -ffast-math)
         endif()
         
         # Add definitions to tests
+        if(ARMADILLO_FOUND)
+            target_compile_definitions(run_tests PRIVATE USE_ARMADILLO=1)
+        endif()
+        if(ARPACK_FOUND)
+            target_compile_definitions(run_tests PRIVATE USE_ARPACK=1)
+        endif()
         if(ITENSOR_FOUND)
             target_compile_definitions(run_tests PRIVATE USE_ITENSOR=1)
         endif()
@@ -304,6 +491,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
             ${Boost_LIBRARIES}
             alglib
         )
+        
+        if(ARMADILLO_FOUND)
+            list(APPEND TEST_LIBRARIES ${ARMADILLO_LIBRARIES})
+        endif()
+        
+        if(ARPACK_FOUND)
+            list(APPEND TEST_LIBRARIES ${ARPACK_LIBRARIES})
+        endif()
         
         if(ITENSOR_FOUND)
             list(APPEND TEST_LIBRARIES ${ITENSOR_LIBRARIES})
@@ -325,8 +520,15 @@ endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "Release flags: ${CMAKE_CXX_FLAGS_RELEASE}")
+message(STATUS "Eigen3 include dir: ${EIGEN3_INCLUDE_DIR}")
 if(ACCELERATE_FOUND)
     message(STATUS "Accelerate framework: ${ACCELERATE_LIBRARY}")
+endif()
+if(ARMADILLO_FOUND)
+    message(STATUS "Armadillo version: ${ARMADILLO_VERSION_STRING}")
+endif()
+if(ARPACK_FOUND)
+    message(STATUS "ARPACK libraries: ${ARPACK_LIBRARIES}")
 endif()
 message(STATUS "ITensor directory: ${ITENSOR_DIR}")
 message(STATUS "ITensor library: ${ITENSOR_LIBRARY}")

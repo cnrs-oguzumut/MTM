@@ -9,6 +9,7 @@
 #include "acoustic_tensor.h"
 #include "../include/mesh/ElementTriangle2D.h"
 #include "../include/lattice_energy/BaseLatticeCalculator.h"
+#include "../include/optimization/LatticeOptimizer.h"
 
 /**
  * Structure to hold eigenvalue analysis results
@@ -49,6 +50,8 @@ struct DOSResults {
     
     DOSResults() : num_bins(0), omega_min(0.0), omega_max(0.0) {}
 };
+
+
 
 class FEMHessianAssembler {
 private:
@@ -94,6 +97,34 @@ public:
         normalisation = norm;
     }
     
+
+
+    /**
+     * Get localized mode indices
+     */
+    std::vector<int> getLocalizedModes(
+        const EigenResults& eigen_results,
+        const std::vector<std::pair<int, int>>& dof_mapping,
+        int num_nodes,
+        int num_rigid,
+        double threshold = 0.3);
+    
+    double calculate_total_energy(
+        const alglib::real_1d_array &x,
+        UserData* userData);
+
+
+    void compute_energy_landscape(
+        const alglib::real_1d_array &x0,
+        const Eigen::VectorXd &eigenvector,
+        UserData* userData,
+        int mode_number,
+        double eigenvalue,
+        double alpha_max = 0.5,
+        int num_points = 100,
+        const std::string& output_folder = "energy_landscapes" );
+
+
     /**
      * Compute element stiffness matrix K^{ab}_{ij} = A_{iKjL} * (dN^a/dX_K) * (dN^b/dX_L)
      * 
@@ -122,6 +153,27 @@ public:
         int num_total_dofs,
         const std::vector<std::pair<int, int>>& dof_mapping);
     
+
+
+    Eigen::VectorXd computeElementResidual(const ElementTriangle2D &element,const std::vector<Point2D>& current_points);
+
+    Eigen::VectorXd assembleGlobalResidual(
+        std::vector<ElementTriangle2D> &elements,
+        const std::vector<Point2D> &current_points, 
+        int num_total_dofs,
+        const std::vector<std::pair<int, int>> &dof_mapping);
+
+    std::vector<Point2D> solveNewtonRaphson(
+        std::vector<ElementTriangle2D> &elements,
+        const std::vector<Point2D> &initial_points,
+        const std::vector<std::pair<int, int>> &dof_mapping,
+        int num_total_dofs,
+        double tolerance = 1e-6,
+        int max_iterations = 50,
+        bool verbose = true);
+
+
+
     /**
      * Compute N smallest eigenvalues and eigenvectors of the stiffness matrix
      * 
@@ -398,6 +450,22 @@ public:
         bool use_gaussian_broadening = false);
 
 
+    Eigen::VectorXd computeDiagonalPreconditioner(
+      std::vector<ElementTriangle2D> &elements,
+      const std::vector<Point2D> &points,
+      const std::vector<std::pair<int, int>> &dof_mapping,
+      int num_total_dofs);
+
+    alglib::real_1d_array eigenToAlglibArray(const Eigen::VectorXd& eigen_vec);
+
+    // Add to FEMHessianAssembler.h
+    Eigen::VectorXd assembleGlobalStiffnessDiagonal(
+        std::vector<ElementTriangle2D> &elements,
+        const std::vector<Point2D> &current_points,
+        int num_total_dofs,
+        const std::vector<std::pair<int, int>> &dof_mapping);
+
+
 static double computeMinNonRigidEigenvalue(
     std::vector<ElementTriangle2D>& elements,
     const std::vector<Point2D>& square_points,
@@ -409,8 +477,10 @@ static double computeMinNonRigidEigenvalue(
     int num_eigenvalues,
     double alpha, 
     const std::string& output_filename = "./eigenvalues_vs_alpha.dat");
-};
+    static EigenResults computeSmallestEigenvaluesIterative_armadillo(
+        const Eigen::SparseMatrix<double> &K_global, int N, double shift = -1);
 
+};
 
 
 #endif // FEM_HESSIAN_ASSEMBLY_H

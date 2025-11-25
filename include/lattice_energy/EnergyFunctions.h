@@ -194,9 +194,9 @@ double c2212  =
     return tensor;
     };
 }
-inline auto phi_func = create_phi_func(-0.25,2.);
-inline auto dphi_func = create_dphi_func(-0.25,2.);
-inline auto ddphi_func = create_d2phi_func(-0.25,22.);
+inline auto phi_func = create_phi_func(-0.25,5.);
+inline auto dphi_func = create_dphi_func(-0.25,5.);
+inline auto ddphi_func = create_d2phi_func(-0.25,5.);
 
 
 } // namespace energy_functions

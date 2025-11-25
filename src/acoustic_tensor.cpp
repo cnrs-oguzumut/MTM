@@ -169,6 +169,42 @@ void AcousticTensor::computeHessian(itensor::ITensor& ddPhi) {
 }
 
 
+void AcousticTensor::computeHessian_notsymetrized(itensor::ITensor& ddPhi) {
+    double div1 = 1.;
+    double div2 = 1.;  // 0.5 * 0.5
+    
+    
+    for (int k = 1; k <= 2; k++) {
+        for (int l = 1; l <= 2; l++) {
+            for (int w3 = 1; w3 <= 2; w3++) {
+                for (int w4 = 1; w4 <= 2; w4++) {
+                    double hess_val = dE2_dC2_.elt(k, l, w3, w4);
+                    
+                    // Determine division factor based on off-diagonal components
+                    double factor = 1.0;
+                    
+                    // Count how many indices are off-diagonal (i.e., k≠l or w3≠w4)
+                    bool kl_offdiag = (k != l);   // True if (k,l) = (1,2) or (2,1)
+                    bool w3w4_offdiag = (w3 != w4); // True if (w3,w4) = (1,2) or (2,1)
+                    
+                    if (kl_offdiag && w3w4_offdiag) {
+                        // Both are off-diagonal (c12.c12 type): use div2
+                        factor = div2;
+                    } else if (kl_offdiag || w3w4_offdiag) {
+                        // One is off-diagonal (mixed type): use div1
+                        factor = div1;
+                    }
+                    // else: both diagonal (c11.c11, c22.c22, c11.c22 type): factor = 1.0
+                    
+                    ddPhi.set(k_=k, l_=l, w3_=w3, w4_=w4, factor * hess_val);
+                }
+            }
+        }
+    }
+}
+
+
+
 // Rest of the implementation remains the same...
 // Replace the problematic analyzeAcousticTensor method in acoustic_tensor.cpp with this simpler version:
 
@@ -310,7 +346,7 @@ void AcousticTensor::printHessianComponents() {
     ddPhi.fill(0.0);
     
     // Compute the Hessian (in terms of C)
-    computeHessian(ddPhi);
+    computeHessian_notsymetrized(ddPhi);
     
     std::cout << "\n=== Hessian Components (Engineering Strain) ===" << std::endl;
     std::cout << "Transformation: C = 2E + I, with γ₁₂ = 2E₁₂ (engineering shear)" << std::endl;
