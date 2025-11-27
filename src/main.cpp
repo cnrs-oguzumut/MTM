@@ -41,6 +41,8 @@
 
 #include "../include/defects/DefectAnalysis.h"
 
+#include "../include/geometry/NeighborAnalyzer.h"
+
 /*
 void example_1_atomistic_square() {
     // Parameters for lattice
@@ -1118,11 +1120,52 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
                          ideal_lattice_parameter, F_ext, interior_mapping,
                          full_mapping, active_elements, plasticity);
 
+    
+    // SETUP: Configure the analyzer (just sets parameters)
+    NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
+    // NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::RADIUS);
+    // analyzer.setRadiusSearch(1.9* ideal_lattice_parameter);  // Juste assez pour NN, pas pour 2NN
+    analyzer.setKNearestSearch(4);  // Just stores k=6, doesn't need points yet
+    analyzer.setDebugMode(false);  // ← Active les prints
+
+    // USAGE: Give it points when you want to build the neighbor list
+    auto neighbors_before = analyzer.buildNeighbors(square_points);  // ← Points go here!
+    
+    std::vector<Point2D> points_before_copy = square_points;
+    
     std::cout << "optimization in  REMESHING loop" << std::endl;
     LBFGSOptimizer optimizer(12, 0, pow(10., -13.), 0, 0);
     if (optimize_interior)
       optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
+    
+    
+    
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+    auto neighbors_after = analyzer.buildNeighbors(square_points);   // ← AND HERE
+    // Compare the two neighbor lists
+    // auto change_info = NeighborAnalyzer::compareNeighbors(
+    //     neighbors_before, neighbors_after
+    // );
+
+auto change_info = NeighborAnalyzer::compareNeighborsWithTolerance(
+    points_before_copy,      // Points AVANT
+    square_points,           // Points APRÈS
+    neighbors_before,        // Voisins AVANT
+    neighbors_after,         // Voisins APRÈS
+    0.1                      // 10% de tolérance (optionnel, défaut = 0.1)
+);
+
+    if (change_info.has_changed) {
+        std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
+        std::cout << "  → Nodes affected: " << change_info.total_nodes_changed << std::endl;
+        std::cout << "  → Connections added: " << change_info.total_connections_added << std::endl;
+        std::cout << "  → Connections removed: " << change_info.total_connections_removed << std::endl;
+    } else {
+        std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
+    }    
+
+
+// NeighborAnalyzer::printNeighborChanges(change_info, 10);  // Show top 10 affected nodes
 
     // std::vector<int> m3_after_remeshed = analyzeElementReduction(elements,
     // square_points, userData);
@@ -1134,6 +1177,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
         elements, &newUserData, square_points, true, &F_ext
     );
     bool connectivity_changed = change_result.has_distorted_triangles;
+    connectivity_changed = change_info.has_changed;
     //bool connectivity_changed = checkSquareDomainViolation(elements);
 
     if (!connectivity_changed) {
@@ -1168,6 +1212,405 @@ void writeSizesToFile(int Nx, int Ny) {
     std::cerr << "Error: Unable to open sizes.dat for writing" << std::endl;
   }
 }
+
+
+void memory(int caller_id, int nx, int ny, int restart_iteration) {
+  // Restart simulation from a saved iteration
+  
+  if (nx <= 0 || ny <= 0) {
+    std::cerr << "Error: nx and ny must be positive integers." << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  
+  if (restart_iteration < 0) {
+    std::cerr << "Error: restart_iteration must be non-negative." << std::endl;
+    exit(EXIT_FAILURE);
+  }
+
+  std::cout << "\n" << std::string(60, '=') << std::endl;
+  std::cout << "RESTARTING SIMULATION FROM ITERATION " << restart_iteration << std::endl;
+  std::cout << std::string(60, '=') << std::endl;
+  
+  // ==================== SETUP REFERENCE GEOMETRY ====================
+  writeSizesToFile(nx, ny);
+  
+  std::string lattice_type = "square";
+  double h = 1.0;
+  
+  Eigen::Vector2d p1(0.0, 0.0);
+  Eigen::Vector2d p2(h, 0.0);
+  Eigen::Vector2d p3(0.0, h);
+  
+  Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+  
+  std::cout << "Reference element shape derivatives (dN/dx):" << std::endl;
+  std::cout << dndx << std::endl;
+  
+  // ==================== SETUP ENERGY POTENTIAL ====================
+  std::function<double(double)> potential_func = square_energy;
+  std::function<double(double)> potential_func_der = square_energy_der;
+  std::function<double(double)> potential_func_sder = square_energy_der;
+  
+  // ==================== LATTICE PARAMETERS ====================
+  double symmetry_constantx = (lattice_type == "triangular") ? pow(4.0 / 3.0, 1.0 / 4.0) : 1.0;
+  double optimal_lattice_parameter = symmetry_constantx * 1.0;
+  double lattice_constant = optimal_lattice_parameter;
+  
+  std::cout << "Optimal lattice parameter: " << lattice_constant << std::endl;
+  
+  // ==================== LOAD SAVED CONFIGURATION ====================
+  std::cout << "\nLoading configuration from iteration " << restart_iteration << "..." << std::endl;
+  
+  ConfigurationSaver::IterationData data = 
+      ConfigurationSaver::readIterationData(restart_iteration);
+  
+  // Convert loaded Eigen::Vector2d positions to Point2D objects
+  std::vector<Point2D> square_points;
+  square_points.reserve(data.positions.size());
+  for (const auto &pos : data.positions) {
+    square_points.emplace_back(pos.x(), pos.y());
+  }
+  
+  // Generate reference configuration for element setup
+  std::vector<Point2D> square_points_ref = 
+      LatticeGenerator::generate_2d_lattice(nx, ny, lattice_constant, lattice_type);
+  
+  // Extract loaded deformation gradient
+  Eigen::Matrix2d F_ext = data.F_ext;
+  double current_alpha = F_ext(0, 1);  // Current shear strain
+  
+  std::cout << "Loaded " << square_points.size() << " points" << std::endl;
+  std::cout << "F_ext matrix:\n" << F_ext << std::endl;
+  std::cout << "Current shear strain α = " << current_alpha << std::endl;
+  
+  // ==================== SETUP DOMAIN ====================
+  int original_domain_size = square_points.size();
+  DomainInfo domain_size = compute_domain_size(square_points_ref);
+  
+  const std::array<double, 2> offsets =
+      (lattice_type == "square")
+          ? std::array<double, 2>{lattice_constant, lattice_constant}
+          : std::array<double, 2>{lattice_constant / 2.0,
+                                  (sqrt(3.0) / 2.0) * lattice_constant};
+  
+  std::cout << "PBC offsets: [" << offsets[0] << ", " << offsets[1] << "]" << std::endl;
+  
+  DomainDimensions domain_dims(domain_size.get_width(), domain_size.get_height());
+  Point2D domain_dims_point(domain_dims.size_x, domain_dims.size_y);
+  
+  bool pbc = true;
+  
+  auto [original_domain_map, translation_map] =
+      MeshGenerator::create_domain_maps(original_domain_size, domain_dims, offsets);
+  
+  auto [interior_mapping, full_mapping] =
+      create_dof_mapping_original(square_points, 0.5 * lattice_constant, pbc);
+  
+  std::cout << "Interior nodes: " << interior_mapping.size() << std::endl;
+  std::cout << "Total nodes: " << full_mapping.size() << std::endl;
+  
+  // ==================== LOAD MESH ELEMENTS ====================
+  std::cout << "\nLoading mesh elements from iteration " << restart_iteration << "..." << std::endl;
+  
+  auto [elements, active_elements] = ConfigurationSaver::loadElements(
+      restart_iteration, dndx, full_mapping, square_points);
+
+  std::cout << "Loaded " << elements.size() << " elements, "
+            << active_elements.size() << " active" << std::endl;
+  
+      double element_area = elements[0].getReferenceArea();
+
+  // Update element properties with loaded configuration
+  for (auto &element : elements) {
+    element.set_reference_mesh(square_points_ref);
+    element.set_dof_mapping(full_mapping);
+    element.setExternalDeformation(F_ext);
+    element.calculate_deformation_gradient(square_points);
+    element_area = element.getReferenceArea();
+  }
+
+
+  
+      // element_area = element.getArea();
+      // ref_element_area = element.getReferenceArea();
+
+
+  // ==================== SETUP ENERGY CALCULATOR ====================
+  Strain_Energy_LatticeCalculator calculator(1.0);
+  Eigen::Matrix2d F_I = Eigen::Matrix2d::Identity();
+  Eigen::Matrix2d C_I = F_I.transpose() * F_I;
+  double zero = calculator.calculate_energy(C_I, potential_func, 0);
+  
+  std::cout << "Zero energy reference: " << zero << std::endl;
+  
+  // ==================== VERIFY LOADED STATE ====================
+  bool plasticity = false;
+  UserData checkUserData(square_points, elements, calculator, potential_func,
+                         potential_func_der, zero, optimal_lattice_parameter,
+                         F_ext, interior_mapping, full_mapping, active_elements,
+                         plasticity);
+  
+  double loaded_energy = 0.0;
+  Eigen::Matrix2d loaded_stress_tensor = Eigen::Matrix2d::Zero();
+  ConfigurationSaver::calculateEnergyAndStress(&checkUserData, loaded_energy,
+                                               loaded_stress_tensor, true);
+  
+  std::cout << "\nVerifying loaded state:" << std::endl;
+  std::cout << "  Energy: " << loaded_energy << std::endl;
+  std::cout << "  Shear stress σ_xy: " << loaded_stress_tensor(0, 1) << std::endl;
+  
+  // ==================== SETUP LOADING SCHEDULE FROM RESTART POINT ====================
+  double alpha_min = current_alpha;  // Start from next increment
+  double alpha_max = 0.5;
+  double step_size = 1e-7;
+  if(restart_iteration%2!=0)
+      alpha_min += step_size;
+  
+  int num_alpha_points = static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
+  std::cout << "\nResuming loading schedule:" << std::endl;
+  std::cout << "  From α = " << alpha_min << " to α = " << alpha_max << std::endl;
+  std::cout << "  Steps: " << num_alpha_points << " (step size: " << step_size << ")" << std::endl;
+  
+  // Generate loading sequence
+  std::vector<double> alpha_values;
+  alpha_values.reserve(num_alpha_points);
+  for (int i = 0; i < num_alpha_points; i++) {
+    alpha_values.push_back(alpha_min + i * step_size);
+  }
+  
+  // ==================== INITIALIZE FILE COUNTER ====================
+  static int file_counter = restart_iteration + 1;
+  static int previous_file_id = restart_iteration;
+  static double post_energy_previous = loaded_energy;
+  
+  std::cout << "Starting file counter at: " << file_counter << std::endl;
+  std::cout << std::string(60, '=') << "\n" << std::endl;
+  
+  // ==================== RESUME SIMULATION LOOP ====================
+  for (size_t i = 0; i < alpha_values.size(); i++) {
+    double alpha = alpha_values[i];
+    std::cout << "\n=== Processing α = " << alpha << " (restart step " << (restart_iteration + i + 1) << ") ===" << std::endl;
+    
+    double pre_area = 1.0;
+    double post_area = 1.0;
+    
+    // ==================== APPLY DEFORMATION INCREMENT ====================
+    Eigen::Matrix2d dF_ext;
+    if(restart_iteration%2==0 && i==0)
+        dF_ext << 1.0, 0, 0.0, 1.0;
+    if(restart_iteration%2!=0 && i==0)
+        dF_ext << 1.0, step_size, 0.0, 1.0;
+    else
+        dF_ext << 1.0, step_size, 0.0, 1.0;
+    
+    
+    F_ext << 1.0, alpha, 0.0, 1.0;
+    
+    // Apply incremental deformation
+    for (size_t j = 0; j < square_points.size(); j++) {
+      square_points[j].coord = dF_ext * square_points[j].coord;
+    }
+    
+    // ==================== CREATE USER DATA ====================
+    UserData userData(square_points, elements, calculator, potential_func,
+                      potential_func_der, zero, optimal_lattice_parameter,
+                      F_ext, interior_mapping, full_mapping, active_elements,
+                      plasticity);
+    
+    // ==================== PREPARE OPTIMIZATION ====================
+    alglib::real_1d_array x;
+    int n_vars = interior_mapping.size();
+    x.setlength(2 * n_vars);
+    map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
+    
+    // Calculate pre-optimization energy and stress
+    double pre_energy = 0.0;
+    double pre_stress = 0.0;
+    Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
+    
+    ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
+                                                 stress_tensor, true);
+    pre_stress = stress_tensor(0, 1);
+    pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
+    
+    std::cout << "Pre-optimization - Energy: " << pre_energy
+              << ", Stress: " << pre_stress << std::endl;
+    
+    // Store original positions
+    alglib::real_1d_array original_x;
+    original_x.setlength(x.length());
+    for (int j = 0; j < x.length(); j++) {
+      original_x[j] = x[j];
+    }
+    
+    // ==================== SAVE BEFORE OPTIMIZATION ====================
+    int file_id = caller_id + file_counter;
+    double saving_value = alpha;
+    
+    UserData preOptUserData(square_points, elements, calculator, potential_func,
+                            potential_func_der, zero, optimal_lattice_parameter,
+                            F_ext, interior_mapping, full_mapping,
+                            active_elements, plasticity);
+    
+    ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+        &preOptUserData, file_id, pre_energy, pre_stress, true);
+    pre_area = ConfigurationSaver::calculateTotalArea2D(&preOptUserData);
+    
+    ConfigurationSaver::saveTriangleData(&preOptUserData, file_id, domain_dims,
+                                         offsets, full_mapping);
+    ConfigurationSaver::saveElements(elements, active_elements, file_id);
+    
+    auto [num_dislocations_pre, coordination_pre] =
+        DefectAnalysis::analyzeDefectsInReferenceConfig(
+            &preOptUserData, file_id, dndx, offsets, original_domain_map,
+            translation_map, domain_dims_point, element_area, pbc, true);
+    
+    ConfigurationSaver::writeToVTK(
+        preOptUserData.points, preOptUserData.elements, &preOptUserData,
+        file_id, true, coordination_pre, saving_value);
+    
+    ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
+    
+    std::cout << "Saved PRE-optimization config " << file_id
+              << " at load=" << saving_value << std::endl;
+    
+    // ==================== RUN OPTIMIZATION ====================
+    auto wall_start = std::chrono::high_resolution_clock::now();
+    clock_t cpu_start = clock();
+    
+    userData.third_condition_flag = false;
+    LBFGSOptimizer optimizer(12, 0, pow(10., -13.), 0, 0);
+    optimizer.optimize(x, minimize_energy_with_triangles, &userData);
+    
+    auto wall_end = std::chrono::high_resolution_clock::now();
+    clock_t cpu_end = clock();
+    
+    double wall_time = std::chrono::duration<double>(wall_end - wall_start).count();
+    double cpu_time = (double)(cpu_end - cpu_start) / CLOCKS_PER_SEC;
+    std::cout << "Optimization wall-clock time: " << wall_time << " seconds\n";
+    std::cout << "Optimization CPU time: " << cpu_time << " seconds\n";
+    std::cout << "Optimization Ratio: " << cpu_time / wall_time << "\n";
+    
+    map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+    
+    // ==================== POST-OPTIMIZATION ENERGY ====================
+    double post_energy = 0.0;
+    double post_stress = 0.0;
+    stress_tensor.setZero();
+    ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy,
+                                                 stress_tensor, true);
+    post_stress = stress_tensor(0, 1);
+    post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
+    
+    std::cout << "Post-optimization - Energy: " << post_energy
+              << ", Stress: " << post_stress << std::endl;
+    std::cout << "Energy change: " << (post_energy - pre_energy)
+              << ", Stress change: " << (post_stress - pre_stress) << std::endl;
+    
+    // ==================== REMESHING (if needed) ====================
+    ChangeMeasures result = computeChangeMeasures(
+        x, original_x, lattice_constant, elements, &userData, square_points,
+        true, &F_ext);
+    bool shouldRemesh = result.has_distorted_triangles;
+    
+    if (shouldRemesh) {
+      std::cout << "REMESHING STARTS" << std::endl;
+      
+      std::vector<int> contact_atoms;
+      std::vector<int> boundary_fixed_nodes;
+      int max_iterations = 1000;
+      int hasChanges = 0;
+      
+      auto [post_energy_re, stress_tensor_re, iterations] =
+          perform_remeshing_loop_reduction(
+              x, &userData, contact_atoms, boundary_fixed_nodes, F_ext, dndx,
+              offsets, original_domain_map, translation_map, domain_dims_point,
+              hasChanges, max_iterations, element_area, pbc, true);
+      
+      for (auto &element : elements) {
+        element.set_dof_mapping(full_mapping);
+      }
+      
+      post_energy = post_energy_re;
+      post_stress = stress_tensor_re(0, 1);
+      
+      std::cout << "Post-remeshing - Energy: " << post_energy
+                << ", Stress: " << post_stress << std::endl;
+    }
+    
+    // ==================== CHECK FOR STRESS DROP ====================
+    bool stress_drop_detected = shouldRemesh;
+    
+    UserData postOptUserData(square_points, elements, calculator,
+                             potential_func, potential_func_der, zero,
+                             optimal_lattice_parameter, F_ext, interior_mapping,
+                             full_mapping, active_elements, plasticity);
+    post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
+    
+    if (stress_drop_detected || i >= 0) {
+      std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
+      std::cout << "Energy dropped from " << post_energy_previous << " to "
+                << post_energy << std::endl;
+      std::cout << "PRE-avalanche LOCKED as file " << file_id
+                << " at load=" << saving_value << std::endl;
+      
+      // Save POST-avalanche state
+      file_counter++;
+      int post_file_id = caller_id + file_counter;
+      
+      ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id,
+                                           domain_dims, offsets, full_mapping);
+      ConfigurationSaver::saveElements(elements, active_elements, post_file_id);
+      
+      auto [num_dislocations_post, coordination_post] =
+          DefectAnalysis::analyzeDefectsInReferenceConfig(
+              &postOptUserData, post_file_id, dndx, offsets,
+              original_domain_map, translation_map, domain_dims_point,
+              element_area, pbc, true);
+      
+      ConfigurationSaver::writeToVTK(
+          postOptUserData.points, postOptUserData.elements, &postOptUserData,
+          post_file_id, true, coordination_post, saving_value);
+      ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
+      
+      std::cout << "POST-avalanche saved as file " << post_file_id
+                << " at load=" << saving_value << std::endl;
+      
+      file_counter++;
+      previous_file_id = -1;
+      
+    } else {
+      // No stress drop - delete previous file if it exists
+      if (previous_file_id >= 0 || i >= 0) {
+        std::cout << "Deleting previous file " << previous_file_id
+                  << " (no avalanche)" << std::endl;
+        
+        std::stringstream vtk_file;
+        vtk_file << "vtk_output/configuration_" << std::setw(5)
+                 << std::setfill('0') << previous_file_id << ".vtk";
+        std::filesystem::remove(vtk_file.str());
+      }
+      
+      previous_file_id = file_id;
+    }
+    
+    // ==================== LOG DATA ====================
+    ConfigurationSaver::logEnergyAndStress_v2(
+        restart_iteration + i, alpha, pre_energy, pre_stress, post_energy, 
+        post_stress, pre_area, post_area, shouldRemesh);
+    
+    post_energy_previous = post_energy;
+    
+    std::cout << "Iteration " << (restart_iteration + i + 1) << " completed successfully" << std::endl;
+  }
+  
+  std::cout << "\n" << std::string(60, '=') << std::endl;
+  std::cout << "RESTART SIMULATION COMPLETED" << std::endl;
+  std::cout << std::string(60, '=') << std::endl;
+}
+
+
+
 void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
   //     auto compute_even_ny = [](int nx) {
@@ -1380,8 +1823,8 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
   // ==================== SETUP LOADING SCHEDULE ====================
   // Define loading parameters
   double alpha_min = 0.138;
-  double alpha_max = 1.;
-  double step_size = 1e-5;
+  double alpha_max = 0.2;
+  double step_size = 1e-4;
 
   // Calculate number of loading steps
   int num_alpha_points =
@@ -1505,9 +1948,23 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     std::cout << "Saved PRE-optimization config " << file_id
               << " at load=" << saving_value << std::endl;
 
+
+
+    std::cout << "================================\n" << std::endl;
     // ==================== RUN OPTIMIZATION ====================
     // std::vector<int> m3_before = analyzeElementReduction(elements,
     // square_points, &userData);
+
+    NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
+    std::vector<Point2D> points_before_copy = square_points;
+    analyzer.setKNearestSearch(4);  // Just stores k=6, doesn't need points yet
+    analyzer.setDebugMode(false);  // ← Active les prints
+
+
+    // USAGE: Give it points when you want to build the neighbor list
+    auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
+    
+
 
     auto wall_start = std::chrono::high_resolution_clock::now();
     clock_t cpu_start = clock();
@@ -1556,6 +2013,27 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
 
+    
+    auto neighbors_after = analyzer.buildNeighbors(square_points);   // ← AND HERE
+
+  auto change_info = NeighborAnalyzer::compareNeighborsWithTolerance(
+      points_before_copy,      // Points AVANT
+      square_points,           // Points APRÈS
+      neighbors_before,        // Voisins AVANT
+      neighbors_after,         // Voisins APRÈS
+      0.1                      // 10% de tolérance (optionnel, défaut = 0.1)
+  );
+
+    if (change_info.has_changed) {
+        std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
+        std::cout << "  → Nodes affected: " << change_info.total_nodes_changed << std::endl;
+        std::cout << "  → Connections added: " << change_info.total_connections_added << std::endl;
+        std::cout << "  → Connections removed: " << change_info.total_connections_removed << std::endl;
+    } else {
+        std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
+    }    
+
+
     // std::vector<int> m3_after = analyzeElementReduction(elements,
     // square_points, &userData);
     int hasChanges; //= compareM3Activation(m3_before, m3_after);
@@ -1592,7 +2070,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     // }
 
     //bool shouldRemesh = checkSquareDomainViolation(elements);
-    // shouldRemesh = false; //disable remeshing for continous Zanzotto test
+    shouldRemesh = change_info.has_changed; //disable remeshing for continous Zanzotto test
 
     if (shouldRemesh) {
       std::cout << "REMESHING STARTS" << std::endl;
@@ -1665,7 +2143,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
     post_area = ConfigurationSaver::calculateTotalArea2D(
         &postOptUserData); // Need & to get address
 
-    if (stress_drop_detected || i <= 0) {
+    if (stress_drop_detected || i >= 0) {
       std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
       std::cout << "Energy dropped from " << post_energy_previous << " to "
                 << post_energy << std::endl;
@@ -1701,7 +2179,7 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
 
     } else {
       // No stress drop - delete previous file if it exists
-      if (previous_file_id >= 0 || i <= 0) {
+      if (previous_file_id >= 0 || i >= 0) {
         std::cout << "Deleting previous file " << previous_file_id
                   << " (no avalanche)" << std::endl;
 
@@ -2167,7 +2645,7 @@ void analyze_data_from_folder(int caller_id, int nx, int ny,int iter_start,int i
   std::filesystem::create_directories(energy_dir);
 
 for (int i = 0; i < std::min(20, (int)localized_modes.size()); i++) {
-    int mode = localized_modes[i];
+    int mode = i+2;//localized_modes[i];
     
     // Convert Eigen to alglib
     // alglib::real_1d_array eigenvec;
@@ -2185,8 +2663,8 @@ for (int i = 0; i < std::min(20, (int)localized_modes.size()); i++) {
     &userData,
     mode,
     results.eigenvalues[mode],
-    2,
-    80,energy_dir);
+    1,
+    160,energy_dir);
 
 }
 
@@ -4753,9 +5231,9 @@ int main() {
 
 //parametricAcousticStudy();./
   //parametricAcousticStudy();
-
-  example_1_conti_zanzotto(0, 100,100);
-  //analyze_data_from_folder(0, 100,100,0,1,5000);
+  //memory(0,100,100,65);
+   example_1_conti_zanzotto(0,100,100);
+  //analyze_data_from_folder(0, 100,100,5213,5222,60);
   // }
   //  indentation();
 

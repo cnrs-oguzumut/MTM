@@ -127,17 +127,28 @@ void FEMHessianAssembler::compute_energy_landscape(
     std::cout << "Saved: " << full_filepath << std::endl;
 }
 
-void FEMHessianAssembler::extractAcousticTensor(
-    const itensor::ITensor &A_tensor, double A[2][2][2][2]) {
-  // Extract A_{iKjL} from ITensor with indices (r_, i_, s_, j_)
-  // where r_=K (material coord 1), s_=L (material coord 2)
+void FEMHessianAssembler::extractAcousticTensor(const itensor::ITensor& A_tensor, double A[2][2][2][2]) {
+  
+  // Get the ITensor indices to use for access
+  itensor::Index i_ = A_tensor.inds()[0]; // Assuming first index is i
+  itensor::Index K_ = A_tensor.inds()[1]; // Assuming second index is K
+  itensor::Index j_ = A_tensor.inds()[2]; // Assuming third index is j
+  itensor::Index L_ = A_tensor.inds()[3]; // Assuming fourth index is L
+
+  // Iterate over 1-based ITensor indices
   for (int i = 1; i <= 2; i++) {
     for (int K = 1; K <= 2; K++) {
       for (int j = 1; j <= 2; j++) {
         for (int L = 1; L <= 2; L++) {
-          // Access pattern: (r_=K, i_=i, s_=L, j_=j)
-          // ITensor uses 1-based indexing, array uses 0-based
-          A[i - 1][K - 1][j - 1][L - 1] = A_tensor.elt(K, i, L, j);
+          
+          // ⭐ CORRECTED ACCESS: Access the ITensor using its defined indices
+          // and store it into the 0-based C++ array
+          
+          A[i - 1][K - 1][j - 1][L - 1] = A_tensor.elt(i_=i, K_=K, j_=j, L_=L);
+          
+          // Print statement for verification:
+          // std::cout << "A[" << i-1 << "][" << K-1 << "][" << j-1 << "][" << L-1 << "] = " 
+          //           << A[i - 1][K - 1][j - 1][L - 1] << "\n";
         }
       }
     }
@@ -246,7 +257,7 @@ Eigen::SparseMatrix<double> FEMHessianAssembler::assembleGlobalStiffness(
     Eigen::Matrix2d Z = reduction_result.m_matrix;
 
     // Create acoustic tensor for this element
-    AcousticTensor acoustic_tensor(F, C, Z);
+    AcousticTensor acoustic_tensor(F, reduction_result.C_reduced, Z);
 
     // Get element area for integration weight
     double area = element.getReferenceArea();
@@ -2027,6 +2038,7 @@ double FEMHessianAssembler::computeMinNonRigidEigenvalue(
   //         "\n";
   //     }
   // }
+  // exit(0);
   std::cout << "----------------------------------------------" << std::endl;
 
   // 4. Compute eigenvalues

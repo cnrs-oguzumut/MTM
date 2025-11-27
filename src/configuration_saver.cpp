@@ -382,6 +382,9 @@ void ConfigurationSaver::saveTriangleData(
     file << "# Triangle data for iteration " << iteration << std::endl;
     file << "# element_number F11 F12 F21 F22 node1_idx node2_idx node3_idx" << std::endl;
     
+    // Set maximum precision
+    file << std::scientific << std::setprecision(std::numeric_limits<double>::max_digits10);
+    
     // Loop through all active elements
     for (size_t elem_idx : active_elements) {
         if (elem_idx >= elements.size()) {
@@ -423,60 +426,57 @@ void ConfigurationSaver::saveTriangleData(
             
         }
     
-    int i1 = element.getNodeIndex(0);
-    int i2 = element.getNodeIndex(1);
-    int i3 = element.getNodeIndex(2);
-    if(full_mapping[i1].second == -1 || full_mapping[i2].second == -1|| full_mapping[i3].second  == -1) {
-        // std::cerr << "Warning: boundary node index detected for element " << elem_idx << ", skipping." << std::endl;
-        continue;
-    }
-
-
-
-    file << std::fixed << std::setprecision(17)
-        << elem_idx << " "                                    // Element number
-        << F(0,0) << " "                                      // F11
-        << F(0,1) << " "                                      // F12
-        << F(1,0) << " "                                      // F21
-        << F(1,1) << " "                                      // F22
-        << element.getNodeIndex(0) << " "                     // Global index of node 1
-        << element.getNodeIndex(1) << " "                     // Global index of node 2
-        << element.getNodeIndex(2) << " "                     // Global index of node 3
-        << points[element.getNodeIndex(0)].coord.x() << " "   // x coordinate of node 1
-        << points[element.getNodeIndex(0)].coord.y() << " "   // y coordinate of node 1
-        << points[element.getNodeIndex(1)].coord.x() << " "   // x coordinate of node 2
-        << points[element.getNodeIndex(1)].coord.y() << " "   // y coordinate of node 2
-        << points[element.getNodeIndex(2)].coord.x() << " "   // x coordinate of node 3
-        << points[element.getNodeIndex(2)].coord.y() << " "   // y coordinate of node 3
-        << translation0.x() << " "                            // Effective translation x
-        << translation0.y() << " "
-        << translation1.x() << " "                            // Effective translation y
-        << translation1.y() << " "                            // Effective translation z
-        << translation2.x() << " "                            // Effective translation x
-        << translation2.y() << " "                            // Effective translation y
-        << domain_dims.size_x << " "                          // Domain size x
-        << domain_dims.size_y << " "                          // Domain size y
-        << offsets[0] << " "                                  // Offset x
-        << offsets[1] << " "                                  // Offset y
-        << F_ext(0,0) << " "                                  // F_ext(0,0)
-        << F_ext(0,1) << " "                                  // F_ext(0,1)
-        << F_ext(1,0) << " "                                  // F_ext(1,0)
-        << F_ext(1,1) << " "                                  // F_ext(1,1)
-        << dndx(0,0) << " "                                   // dN1/dx (shape function derivative)
-        << dndx(0,1) << " "                                   // dN1/dy
-        << dndx(1,0) << " "                                   // dN2/dx
-        << dndx(1,1) << " "                                   // dN2/dy
-        << dndx(2,0) << " "                                   // dN3/dx
-        << dndx(2,1)                                          // dN3/dy
-        << std::endl;                                         // End of line for this triangle
-
+        int i1 = element.getNodeIndex(0);
+        int i2 = element.getNodeIndex(1);
+        int i3 = element.getNodeIndex(2);
+        if(full_mapping[i1].second == -1 || full_mapping[i2].second == -1|| full_mapping[i3].second  == -1) {
+            // std::cerr << "Warning: boundary node index detected for element " << elem_idx << ", skipping." << std::endl;
+            continue;
         }
+
+        file << elem_idx << " "                                    // Element number
+             << F(0,0) << " "                                      // F11
+             << F(0,1) << " "                                      // F12
+             << F(1,0) << " "                                      // F21
+             << F(1,1) << " "                                      // F22
+             << element.getNodeIndex(0) << " "                     // Global index of node 1
+             << element.getNodeIndex(1) << " "                     // Global index of node 2
+             << element.getNodeIndex(2) << " "                     // Global index of node 3
+             << points[element.getNodeIndex(0)].coord.x() << " "   // x coordinate of node 1
+             << points[element.getNodeIndex(0)].coord.y() << " "   // y coordinate of node 1
+             << points[element.getNodeIndex(1)].coord.x() << " "   // x coordinate of node 2
+             << points[element.getNodeIndex(1)].coord.y() << " "   // y coordinate of node 2
+             << points[element.getNodeIndex(2)].coord.x() << " "   // x coordinate of node 3
+             << points[element.getNodeIndex(2)].coord.y() << " "   // y coordinate of node 3
+             << translation0.x() << " "                            // Effective translation x
+             << translation0.y() << " "
+             << translation1.x() << " "                            // Effective translation y
+             << translation1.y() << " "                            // Effective translation z
+             << translation2.x() << " "                            // Effective translation x
+             << translation2.y() << " "                            // Effective translation y
+             << domain_dims.size_x << " "                          // Domain size x
+             << domain_dims.size_y << " "                          // Domain size y
+             << offsets[0] << " "                                  // Offset x
+             << offsets[1] << " "                                  // Offset y
+             << F_ext(0,0) << " "                                  // F_ext(0,0)
+             << F_ext(0,1) << " "                                  // F_ext(0,1)
+             << F_ext(1,0) << " "                                  // F_ext(1,0)
+             << F_ext(1,1) << " "                                  // F_ext(1,1)
+             << dndx(0,0) << " "                                   // dN1/dx (shape function derivative)
+             << dndx(0,1) << " "                                   // dN1/dy
+             << dndx(1,0) << " "                                   // dN2/dx
+             << dndx(1,1) << " "                                   // dN2/dy
+             << dndx(2,0) << " "                                   // dN3/dx
+             << dndx(2,1)                                          // dN3/dy
+             << std::endl;                                         // End of line for this triangle
+    }
     
     file.close();
     
     std::cout << "Saved triangle data to " << filename.str() << std::endl;
     std::cout << "Processed " << active_elements.size() << " triangles" << std::endl;
-       // NOW SAVE POINT COORDINATES
+    
+    // NOW SAVE POINT COORDINATES
     std::stringstream points_filename;
     points_filename << "triangle_data/points_" << std::setw(5) << std::setfill('0') << 10000+iteration << ".dat";
     
@@ -491,23 +491,28 @@ void ConfigurationSaver::saveTriangleData(
     points_file << "# Number of points: " << points.size() << std::endl;
     points_file << "# Format: point_index x y" << std::endl;
     
+    // Set maximum precision for points file
+    points_file << std::scientific << std::setprecision(std::numeric_limits<double>::max_digits10);
+    
     // Write each point
     for (size_t i = 0; i < points.size(); ++i) {
-    points_file << std::fixed << std::setprecision(17)
-                << i << " "
-                << points[i].coord.x() << " "
-                << points[i].coord.y() << " "
-                << full_mapping[i].second << " " // 1 = fixed, 0 = free
-                << F_ext(0,0) << " "                                  // F_ext(0,0)
-                << F_ext(0,1) << " "                                  // F_ext(0,1)
-                << F_ext(1,0) << " "                                  // F_ext(1,0)
-                << F_ext(1,1) << " "                                  // F_ext(1,1)
-                << std::endl;    }
+        points_file << i << " "
+                    << points[i].coord.x() << " "
+                    << points[i].coord.y() << " "
+                    << full_mapping[i].second << " " // 1 = fixed, 0 = free
+                    << F_ext(0,0) << " "                                  // F_ext(0,0)
+                    << F_ext(0,1) << " "                                  // F_ext(0,1)
+                    << F_ext(1,0) << " "                                  // F_ext(1,0)
+                    << F_ext(1,1) << " "                                  // F_ext(1,1)
+                    << std::endl;
+    }
     points_file.close();
     
     std::cout << "Saved point coordinates to " << points_filename.str() << std::endl;
     std::cout << "Processed " << active_elements.size() << " triangles and " << points.size() << " points" << std::endl;
 }
+
+
 
 void ConfigurationSaver::calculateEnergyAndStress(UserData* userData, 
     double& total_energy, 
@@ -651,19 +656,34 @@ void ConfigurationSaver::logEnergyAndStress_v2(
     
     if (first_call) {
         log_file.open("energy_stress_log.csv");
-        log_file << "Iteration,Alpha,PreEnergy,PreStress,PostEnergy,PostStress,EnergyChange,StressChange,shouldRemesh\n";
+        
+        // Write header
+        log_file << "Iteration,Alpha,PreEnergy,PreStress,PostEnergy,PostStress,"
+                 << "EnergyChange,StressChange,PreArea,PostArea,shouldRemesh\n";
+        
+        // Set maximum precision for all subsequent writes
+        log_file << std::scientific 
+                 << std::setprecision(std::numeric_limits<double>::max_digits10);
+        
         first_call = false;
     }
     
-    log_file << iteration << "," << alpha << "," 
-             << pre_energy << "," << pre_stress << "," 
-             << post_energy << "," << post_stress << "," 
-             << -(post_energy - pre_energy) << "," << -(post_stress*post_area - pre_stress*pre_area)
-             << "," << shouldRemesh
-             << "\n";  // Added plasticity flag to CSV
+    // Write data (precision is already set)
+    log_file << iteration << "," 
+             << alpha << "," 
+             << pre_energy << "," 
+             << pre_stress << "," 
+             << post_energy << "," 
+             << post_stress << "," 
+             << -(post_energy - pre_energy) << "," 
+             << -(post_stress * post_area - pre_stress * pre_area) << ","
+             << pre_area << ","
+             << post_area << ","
+             << shouldRemesh
+             << "\n";
+    
     log_file.flush();
 }
-
 
 // Start of the modified function body
 void ConfigurationSaver::writeToVTK(
@@ -1312,17 +1332,23 @@ ConfigurationSaver::IterationData ConfigurationSaver::readIterationData(int iter
     
     // Construct filename for points file
     std::stringstream points_filename;
-    points_filename << "triangle_data/points_" << std::setw(5) << std::setfill('0') << 10000+iteration << ".dat";
+    points_filename << "triangle_data/points_" << std::setw(5) << std::setfill('0') 
+                    << 10000+iteration << ".dat";
     
     // Open points file
     std::ifstream points_file(points_filename.str());
     if (!points_file) {
-        std::cerr << "Error: Could not open file " << points_filename.str() << " for reading." << std::endl;
+        std::cerr << "Error: Could not open file " << points_filename.str() 
+                  << " for reading." << std::endl;
         return data;
     }
     
-    points_file >> std::setprecision(16);  // Optional - but ensures max precision
-
+    // ❌ REMOVE THIS - setprecision doesn't affect INPUT streams
+    // points_file >> std::setprecision(16);
+    
+    // ✅ OPTIONAL: Set stream to handle scientific notation explicitly
+    points_file >> std::scientific;
+    
     std::string line;
     
     // Skip header lines (lines starting with #)
@@ -1344,16 +1370,19 @@ ConfigurationSaver::IterationData ConfigurationSaver::readIterationData(int iter
             // Store F_ext (same for all points, but we'll take the last one)
             data.F_ext << F00, F01,
                           F10, F11;
+        } else {
+            std::cerr << "Warning: Failed to parse line: " << line << std::endl;
         }
     }
     
     points_file.close();
     
-    std::cout << "Read " << data.positions.size() << " points from iteration " << iteration << std::endl;
+    std::cout << "Read " << data.positions.size() << " points from iteration " 
+              << iteration << std::endl;
+    std::cout << "F_ext matrix:\n" << data.F_ext << std::endl;
     
     return data;
 }
-
 // Helper function to read multiple iterations
 std::vector<ConfigurationSaver::IterationData> ConfigurationSaver::readIterationRange(int start_iter, int end_iter) {
     std::vector<IterationData> all_data;  // Inside the function, you can still use just IterationData
@@ -1415,8 +1444,8 @@ void ConfigurationSaver::processIterationsInFolder(
 
 
 void ConfigurationSaver::saveElements(const std::vector<ElementTriangle2D>& elements, 
-                  const std::vector<size_t>& active_elements,
-                  int iteration) {
+                                      const std::vector<size_t>& active_elements,
+                                      int iteration) {
     std::stringstream filename;
     filename << "triangle_data/elements_" << std::setw(5) << std::setfill('0') 
              << 10000 + iteration << ".dat";
@@ -1429,7 +1458,9 @@ void ConfigurationSaver::saveElements(const std::vector<ElementTriangle2D>& elem
     
     // Write header
     elem_file << "# Element data: elem_idx node0 node1 node2 trans0_x trans0_y trans1_x trans1_y trans2_x trans2_y ref_area\n";
-    elem_file << std::fixed << std::setprecision(16);
+    
+    // Set maximum precision for double
+    elem_file << std::scientific << std::setprecision(std::numeric_limits<double>::max_digits10);
     
     // Save number of active elements
     elem_file << "# Active elements: " << active_elements.size() << "\n";
@@ -1438,7 +1469,7 @@ void ConfigurationSaver::saveElements(const std::vector<ElementTriangle2D>& elem
     for (int idx : active_elements) {
         const ElementTriangle2D& elem = elements[idx];
         
-        // Node indices
+        // Node indices (integers don't need precision)
         elem_file << idx << " "
                   << elem.getNodeIndex(0) << " "
                   << elem.getNodeIndex(1) << " "
@@ -1457,12 +1488,11 @@ void ConfigurationSaver::saveElements(const std::vector<ElementTriangle2D>& elem
     elem_file.close();
     std::cout << "Saved " << active_elements.size() << " elements to " << filename.str() << std::endl;
 }
-
-std::pair<std::vector<ElementTriangle2D>, std::vector<size_t>>  // Change int to size_t
+std::pair<std::vector<ElementTriangle2D>, std::vector<size_t>>
 ConfigurationSaver::loadElements(int iteration, 
-             const Eigen::Matrix<double, 3, 2>& dndx,
-             const std::vector<std::pair<int, int>>& full_mapping,
-             const std::vector<Point2D>& reference_points) {
+                                 const Eigen::Matrix<double, 3, 2>& dndx,
+                                 const std::vector<std::pair<int, int>>& full_mapping,
+                                 const std::vector<Point2D>& reference_points) {
     
     std::stringstream filename;
     filename << "triangle_data/elements_" << std::setw(5) << std::setfill('0') 
@@ -1474,33 +1504,48 @@ ConfigurationSaver::loadElements(int iteration,
         return {{}, {}};
     }
     
-    std::vector<ElementTriangle2D> elements;
-    std::vector<size_t> active_elements;  // Change to size_t
-    std::string line;
+    // ✅ ADD: Handle scientific notation explicitly
+    elem_file >> std::scientific;
     
+    std::vector<ElementTriangle2D> elements;
+    std::vector<size_t> active_elements;
+    
+    std::string line;
     int num_active = 0;
+    int line_number = 0;
     
     // Read file
     while (std::getline(elem_file, line)) {
+        line_number++;
+        
         if (line.empty() || line[0] == '#') {
             if (line.find("Active elements:") != std::string::npos) {
                 std::istringstream iss(line);
                 std::string dummy1, dummy2;
                 iss >> dummy1 >> dummy1 >> dummy2 >> num_active;
+                std::cout << "Expecting " << num_active << " active elements" << std::endl;
             }
             continue;
         }
         
         std::istringstream iss(line);
-        size_t elem_idx;  // Change to size_t
+        size_t elem_idx;
         int n0, n1, n2;
         double tx0, ty0, tx1, ty1, tx2, ty2, ref_area;
         
         if (iss >> elem_idx >> n0 >> n1 >> n2 
                 >> tx0 >> ty0 >> tx1 >> ty1 >> tx2 >> ty2 >> ref_area) {
             
-            ElementTriangle2D elem;
+            // ✅ ADD: Verify node indices are valid
+            if (n0 >= reference_points.size() || n1 >= reference_points.size() || 
+                n2 >= reference_points.size()) {
+                std::cerr << "Warning: Invalid node indices at line " << line_number 
+                          << " (n0=" << n0 << ", n1=" << n1 << ", n2=" << n2 
+                          << ", max=" << reference_points.size() << ")" << std::endl;
+                continue;
+            }
             
+            ElementTriangle2D elem;
             elem.setNodeIndex(0, n0);
             elem.setNodeIndex(1, n1);
             elem.setNodeIndex(2, n2);
@@ -1510,20 +1555,47 @@ ConfigurationSaver::loadElements(int iteration,
             elem.setTranslation(2, Eigen::Vector2d(tx2, ty2));
             
             elem.set_shape_derivatives(dndx);
-            elem.set_dof_mapping(full_mapping);
             elem.set_reference_mesh(reference_points);
             elem.setReferenceArea(ref_area);
             
+            // Ensure elements vector is large enough
             while (elements.size() <= elem_idx) {
                 elements.push_back(ElementTriangle2D());
             }
+            
             elements[elem_idx] = elem;
             active_elements.push_back(elem_idx);
+            
+        } else {
+            std::cerr << "Warning: Failed to parse line " << line_number 
+                      << ": " << line << std::endl;
         }
     }
     
+    // Set DOF mapping for all elements
+    for (auto &element : elements) {
+        element.set_dof_mapping(full_mapping);
+    }
+    
     elem_file.close();
-    std::cout << "Loaded " << active_elements.size() << " elements from " << filename.str() << std::endl;
+    
+    std::cout << "Loaded " << active_elements.size() << " elements from " 
+              << filename.str() << std::endl;
+    
+    // ✅ ADD: Verify we got expected number
+    if (num_active > 0 && active_elements.size() != static_cast<size_t>(num_active)) {
+        std::cerr << "Warning: Expected " << num_active << " elements but loaded " 
+                  << active_elements.size() << std::endl;
+    }
+    
+    // ✅ ADD: Print some statistics for verification
+    if (!active_elements.empty()) {
+        std::cout << "  First element index: " << active_elements[0] << std::endl;
+        std::cout << "  Last element index: " << active_elements.back() << std::endl;
+        std::cout << "  Reference area (first): " << std::scientific 
+                  << std::setprecision(std::numeric_limits<double>::max_digits10)
+                  << elements[active_elements[0]].getReferenceArea() << std::endl;
+    }
     
     return {elements, active_elements};
 }
