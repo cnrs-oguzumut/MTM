@@ -6,8 +6,6 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <cstring>  // for std::memset
-
 //Fixed boundary conditions on the bo
 std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>> 
 create_dof_mapping_original(
@@ -389,7 +387,105 @@ std::vector<size_t> initialize_active_elements(
     // Return a reference to the static vector
     return active_elements;
 }
+// Main optimization function
 
+
+
+// void minimize_energy_with_triangles(
+//     const alglib::real_1d_array &x, 
+//     double &func, 
+//     alglib::real_1d_array &grad, 
+//     void *ptr) 
+// {
+//     auto* userData = reinterpret_cast<UserData*>(ptr);
+//     std::vector<ElementTriangle2D>& elements = userData->elements;
+//     const auto& interior_mapping = userData->interior_mapping;
+//     const int n_vars = interior_mapping.size();
+//     const int n_points = userData->points.size();
+//     const double a = userData->ideal_lattice_parameter;
+//     const double normalisation = a * a;
+// 
+//     // Static storage: allocated once, reused across all optimizer iterations
+//     static std::vector<std::vector<Eigen::Vector2d>> all_forces;
+//     
+//     const int max_threads = omp_get_max_threads();
+//     
+//     // Resize only if dimensions changed (first call, or mesh/thread count changed)
+//     // NUMA-aware: each thread allocates its own buffer
+//     if (all_forces.size() != static_cast<size_t>(max_threads) || 
+//         (!all_forces.empty() && all_forces[0].size() != static_cast<size_t>(n_points))) {
+//         
+//         all_forces.resize(max_threads);
+//         
+//         #pragma omp parallel for schedule(static)
+//         for (int i = 0; i < max_threads; i++) {
+//             all_forces[i].assign(n_points, Eigen::Vector2d::Zero());
+//         }
+//     }
+// 
+//     double total_energy = 0.0;
+// 
+//     // Parallel element assembly
+//     #pragma omp parallel reduction(+:total_energy)
+//     {
+//         const int tid = omp_get_thread_num();
+//         auto& my_forces = all_forces[tid];
+//         
+//         // Clear this thread's force buffer (fast memset)
+//         std::memset(my_forces.data(), 0, my_forces.size() * sizeof(Eigen::Vector2d));
+//         
+//         #pragma omp for schedule(guided)
+//         for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
+//             ElementTriangle2D& element = elements[userData->active_elements[idx]];
+//             
+//             element.calculate_deformation_gradient(x);
+//             
+//             const Eigen::Matrix2d F = element.getDeformationGradient();
+//             const Eigen::Matrix2d C = F.transpose() * F;
+//             
+//             const auto result = lagrange::reduce(C);
+//             const double area = element.getReferenceArea();
+//             
+//             const double element_energy = userData->calculator.calculate_energy(
+//                 result.C_reduced, userData->energy_function, userData->zero_energy) / normalisation;
+//             
+//             total_energy += element_energy * area;
+//             
+//             const Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
+//                 result.C_reduced, userData->derivative_function) / normalisation;
+//             
+//             const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC 
+//                                     * result.m_matrix.transpose() * area;
+//             
+//             element.assemble_forces(P, my_forces);
+//         }
+//     }
+// 
+//     // Parallel reduction: each i maps to unique dof_idx, so no atomics needed
+//     #pragma omp parallel for schedule(static)
+//     for (int i = 0; i < n_vars; i++) {
+//         const auto& [point_idx, dof_idx] = interior_mapping[i];
+//         
+//         double fx = 0.0;
+//         double fy = 0.0;
+//         
+//         for (int t = 0; t < max_threads; t++) {
+//             fx += all_forces[t][point_idx].x();
+//             fy += all_forces[t][point_idx].y();
+//         }
+//         
+//         grad[dof_idx] = fx;
+//         grad[n_vars + dof_idx] = fy;
+//     }
+// 
+//     func = total_energy;
+// }
+
+
+#include <cstring> // Required for std::memset
+#include <vector>
+#include <omp.h>
+// Ensure your other headers (Eigen, ALGLIB, ElementTriangle2D, etc.) are included above
 
 void minimize_energy_with_triangles(
     const alglib::real_1d_array &x, 
@@ -405,23 +501,19 @@ void minimize_energy_with_triangles(
     const double a = userData->ideal_lattice_parameter;
     const double normalisation = a * a;
 
-    // Static storage: allocated once, reused across all optimizer iterations
-    static std::vector<std::vector<Eigen::Vector2d>> all_forces;
+    // FLAT storage: [thread0: point0,point1,...] [thread1: point0,point1,...] ...
+    static std::vector<Eigen::Vector2d> all_forces_flat;
     
     const int max_threads = omp_get_max_threads();
+    const size_t total_size = static_cast<size_t>(max_threads) * n_points;
     
-    // Resize only if dimensions changed (first call, or mesh/thread count changed)
-    // NUMA-aware: each thread allocates its own buffer
-    if (all_forces.size() != static_cast<size_t>(max_threads) || 
-        (!all_forces.empty() && all_forces[0].size() != static_cast<size_t>(n_points))) {
-        
-        all_forces.resize(max_threads);
-        
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < max_threads; i++) {
-            all_forces[i].assign(n_points, Eigen::Vector2d::Zero());
-        }
+    // Resize only if needed
+    if (all_forces_flat.size() != total_size) {
+        all_forces_flat.resize(total_size);
     }
+
+    // Clear entire buffer (single contiguous memset - very fast)
+    std::memset(all_forces_flat.data(), 0, total_size * sizeof(Eigen::Vector2d));
 
     double total_energy = 0.0;
 
@@ -429,10 +521,7 @@ void minimize_energy_with_triangles(
     #pragma omp parallel reduction(+:total_energy)
     {
         const int tid = omp_get_thread_num();
-        auto& my_forces = all_forces[tid];
-        
-        // Clear this thread's force buffer (fast memset)
-        std::memset(my_forces.data(), 0, my_forces.size() * sizeof(Eigen::Vector2d));
+        const size_t my_offset = tid * n_points;  // Start index for this thread
         
         #pragma omp for schedule(guided)
         for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
@@ -457,11 +546,12 @@ void minimize_energy_with_triangles(
             const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC 
                                     * result.m_matrix.transpose() * area;
             
-            element.assemble_forces(P, my_forces);
+            // Pass pointer to this thread's section of flat array
+            element.assemble_forces_flat(P, all_forces_flat.data() + my_offset);
         }
     }
 
-    // Parallel reduction: each i maps to unique dof_idx, so no atomics needed
+    // Parallel reduction
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < n_vars; i++) {
         const auto& [point_idx, dof_idx] = interior_mapping[i];
@@ -470,8 +560,9 @@ void minimize_energy_with_triangles(
         double fy = 0.0;
         
         for (int t = 0; t < max_threads; t++) {
-            fx += all_forces[t][point_idx].x();
-            fy += all_forces[t][point_idx].y();
+            const auto& f = all_forces_flat[t * n_points + point_idx];
+            fx += f.x();
+            fy += f.y();
         }
         
         grad[dof_idx] = fx;
@@ -481,107 +572,106 @@ void minimize_energy_with_triangles(
     func = total_energy;
 }
 
-// Main optimization function
 
-void minimize_energy_with_triangles_vold(
-    const alglib::real_1d_array &x, 
-    double &func, 
-    alglib::real_1d_array &grad, 
-    void *ptr) 
-{
-    static int iteration = 0;
-    static std::vector<std::vector<Eigen::Vector2d>> thread_local_forces;
-
-    // if (ptr == nullptr) {
-    //     std::cerr << "[ERROR] User data pointer is NULL!" << std::endl;
-    //     return;
-    // }
-    
-    auto* userData = reinterpret_cast<UserData*>(ptr);
-    std::vector<ElementTriangle2D>& elements = userData->elements;
-    const auto& interior_mapping = userData->interior_mapping;
-    const int n_vars = interior_mapping.size();
-    const int n_points = userData->points.size();
-    const double normalisation = pow(userData->ideal_lattice_parameter, 2.0);
-
-    // Initialize thread storage (forces for all points, including boundaries)
-    #pragma omp parallel
-    {
-        const int thread_id = omp_get_thread_num();
-        #pragma omp single
-        {
-            thread_local_forces.resize(omp_get_num_threads(), 
-                                     std::vector<Eigen::Vector2d>(n_points, Eigen::Vector2d::Zero()));
-        }
-        std::fill(thread_local_forces[thread_id].begin(), 
-                 thread_local_forces[thread_id].end(), 
-                 Eigen::Vector2d::Zero());
-    }
-
-    // Initialize gradient
-    for(int i = 0; i < grad.length(); i++) {
-        grad[i] = 0.0;
-    }
-
-    // Main computation
-    double total_energy = 0.0;
-    #pragma omp parallel reduction(+:total_energy)
-    {
-        const int thread_id = omp_get_thread_num();
-        auto& my_forces = thread_local_forces[thread_id];
-        
-        #pragma omp for schedule(guided)
-        for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
-            ElementTriangle2D& element = elements[userData->active_elements[idx]];
-            
-            //element.setExternalDeformation(userData->F_external);
-            element.calculate_deformation_gradient(x);
-            
-            const Eigen::Matrix2d F = element.getDeformationGradient();
-            Eigen::Matrix2d C = F.transpose() * F;
-            
-            const auto result = lagrange::reduce(C);
-            const double element_energy = userData->calculator.calculate_energy(
-                result.C_reduced, userData->energy_function, userData->zero_energy) / normalisation;
-            
-            total_energy += element_energy * element.getReferenceArea();
-            
-            const Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
-                result.C_reduced, userData->derivative_function) / normalisation;
-            const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose()*element.getReferenceArea();
-            
-            element.assemble_forces(P, my_forces);
-        }
-    }
-
-    // Directly accumulate forces into grad using mapping
-    #pragma omp parallel for
-    for (int i = 0; i < n_vars; i++) {
-        const auto& [point_idx, dof_idx] = interior_mapping[i];
-        
-        // Sum forces from all threads for this point
-        Eigen::Vector2d force_sum = Eigen::Vector2d::Zero();
-        for (const auto& forces : thread_local_forces) {
-            force_sum += forces[point_idx];
-        }
-        
-        grad[dof_idx] = force_sum.x();
-        grad[n_vars + dof_idx] = force_sum.y();
-    }
-
-    // Set energy result
-    func = total_energy;
-    bool shouldLeave=checkSquareDomainViolation(elements);
-    userData->third_condition_flag = false; 
-    // if(shouldLeave){
-    //     std::cout << "[INFO] Requesting termination at iteration " << iteration << std::endl;
-    //     userData->third_condition_flag = true; 
-    //     alglib::minlbfgsrequesttermination(*userData->optimizer_state);  // Add * here!
-    //     //return;  // Exit callback immediately
-    // }
-    
-    iteration++;
-}
+// void minimize_energy_with_triangles(
+//     const alglib::real_1d_array &x, 
+//     double &func, 
+//     alglib::real_1d_array &grad, 
+//     void *ptr) 
+// {
+//     static int iteration = 0;
+//     static std::vector<std::vector<Eigen::Vector2d>> thread_local_forces;
+// 
+//     // if (ptr == nullptr) {
+//     //     std::cerr << "[ERROR] User data pointer is NULL!" << std::endl;
+//     //     return;
+//     // }
+//     
+//     auto* userData = reinterpret_cast<UserData*>(ptr);
+//     std::vector<ElementTriangle2D>& elements = userData->elements;
+//     const auto& interior_mapping = userData->interior_mapping;
+//     const int n_vars = interior_mapping.size();
+//     const int n_points = userData->points.size();
+//     const double normalisation = pow(userData->ideal_lattice_parameter, 2.0);
+// 
+//     // Initialize thread storage (forces for all points, including boundaries)
+//     #pragma omp parallel
+//     {
+//         const int thread_id = omp_get_thread_num();
+//         #pragma omp single
+//         {
+//             thread_local_forces.resize(omp_get_num_threads(), 
+//                                      std::vector<Eigen::Vector2d>(n_points, Eigen::Vector2d::Zero()));
+//         }
+//         std::fill(thread_local_forces[thread_id].begin(), 
+//                  thread_local_forces[thread_id].end(), 
+//                  Eigen::Vector2d::Zero());
+//     }
+// 
+//     // Initialize gradient
+// //     for(int i = 0; i < grad.length(); i++) {
+// //         grad[i] = 0.0;
+// //     }
+// 
+//     // Main computation
+//     double total_energy = 0.0;
+//     #pragma omp parallel reduction(+:total_energy)
+//     {
+//         const int thread_id = omp_get_thread_num();
+//         auto& my_forces = thread_local_forces[thread_id];
+//         
+//         #pragma omp for schedule(guided)
+//         for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
+//             ElementTriangle2D& element = elements[userData->active_elements[idx]];
+//             
+//             //element.setExternalDeformation(userData->F_external);
+//             element.calculate_deformation_gradient(x);
+//             
+//             const Eigen::Matrix2d F = element.getDeformationGradient();
+//             Eigen::Matrix2d C = F.transpose() * F;
+//             
+//             const auto result = lagrange::reduce(C);
+//             const double element_energy = userData->calculator.calculate_energy(
+//                 result.C_reduced, userData->energy_function, userData->zero_energy) / normalisation;
+//             
+//             total_energy += element_energy * element.getReferenceArea();
+//             
+//             const Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
+//                 result.C_reduced, userData->derivative_function) / normalisation;
+//             const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose()*element.getReferenceArea();
+//             
+//             element.assemble_forces(P, my_forces);
+//         }
+//     }
+// 
+//     // Directly accumulate forces into grad using mapping
+//     #pragma omp parallel for
+//     for (int i = 0; i < n_vars; i++) {
+//         const auto& [point_idx, dof_idx] = interior_mapping[i];
+//         
+//         // Sum forces from all threads for this point
+//         Eigen::Vector2d force_sum = Eigen::Vector2d::Zero();
+//         for (const auto& forces : thread_local_forces) {
+//             force_sum += forces[point_idx];
+//         }
+//         
+//         grad[dof_idx] = force_sum.x();
+//         grad[n_vars + dof_idx] = force_sum.y();
+//     }
+// 
+//     // Set energy result
+//     func = total_energy;
+// //     bool shouldLeave=checkSquareDomainViolation(elements);
+// //     userData->third_condition_flag = false; 
+//     // if(shouldLeave){
+//     //     std::cout << "[INFO] Requesting termination at iteration " << iteration << std::endl;
+//     //     userData->third_condition_flag = true; 
+//     //     alglib::minlbfgsrequesttermination(*userData->optimizer_state);  // Add * here!
+//     //     //return;  // Exit callback immediately
+//     // }
+//     
+//     iteration++;
+// }
 
 void minimize_energy_with_triangles_noreduction(
     const alglib::real_1d_array &x, 

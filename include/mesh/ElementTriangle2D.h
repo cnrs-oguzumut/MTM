@@ -94,6 +94,10 @@ public:
     
     // Force assembly (standard vector version only)
     void assemble_forces(const Eigen::Matrix2d& P, std::vector<Eigen::Vector2d>& global_forces) const;
+
+	// Force assembly (flat array version - faster)
+	void assemble_forces_flat(const Eigen::Matrix2d& P, Eigen::Vector2d* forces) const;
+
 };
 
 #endif // ELEMENT_TRIANGLE_2D_H

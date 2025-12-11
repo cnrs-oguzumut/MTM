@@ -399,6 +399,17 @@ void ElementTriangle2D::assemble_forces(const Eigen::Matrix2d& P, std::vector<Ei
         global_forces[nn[i]] += element_forces[i];
     }
 }
+
+void ElementTriangle2D::assemble_forces_flat(
+    const Eigen::Matrix2d& P, 
+    Eigen::Vector2d* forces) const 
+{
+    auto element_forces = calculate_nodal_forces(P);
+    for (int i = 0; i < 3; i++) {
+        forces[nn[i]] += element_forces[i];
+    }
+}
+
 // Implementation of the new area calculation methods
 
 double ElementTriangle2D::calculateReferenceArea(const std::vector<Point2D>& reference_points) {
