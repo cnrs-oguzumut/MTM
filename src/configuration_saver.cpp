@@ -470,7 +470,7 @@ void ConfigurationSaver::saveTriangleData(
              << dndx(2,1)                                          // dN3/dy
              << std::endl;                                         // End of line for this triangle
     }
-    
+   
     file.close();
     
     std::cout << "Saved triangle data to " << filename.str() << std::endl;

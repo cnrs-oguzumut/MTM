@@ -6,6 +6,8 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <cstring>  // for std::memset
+
 //Fixed boundary conditions on the bo
 std::pair<std::vector<std::pair<int, int>>, std::vector<std::pair<int, int>>> 
 create_dof_mapping_original(
@@ -387,9 +389,101 @@ std::vector<size_t> initialize_active_elements(
     // Return a reference to the static vector
     return active_elements;
 }
-// Main optimization function
+
 
 void minimize_energy_with_triangles(
+    const alglib::real_1d_array &x, 
+    double &func, 
+    alglib::real_1d_array &grad, 
+    void *ptr) 
+{
+    auto* userData = reinterpret_cast<UserData*>(ptr);
+    std::vector<ElementTriangle2D>& elements = userData->elements;
+    const auto& interior_mapping = userData->interior_mapping;
+    const int n_vars = interior_mapping.size();
+    const int n_points = userData->points.size();
+    const double a = userData->ideal_lattice_parameter;
+    const double normalisation = a * a;
+
+    // Static storage: allocated once, reused across all optimizer iterations
+    static std::vector<std::vector<Eigen::Vector2d>> all_forces;
+    
+    const int max_threads = omp_get_max_threads();
+    
+    // Resize only if dimensions changed (first call, or mesh/thread count changed)
+    // NUMA-aware: each thread allocates its own buffer
+    if (all_forces.size() != static_cast<size_t>(max_threads) || 
+        (!all_forces.empty() && all_forces[0].size() != static_cast<size_t>(n_points))) {
+        
+        all_forces.resize(max_threads);
+        
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < max_threads; i++) {
+            all_forces[i].assign(n_points, Eigen::Vector2d::Zero());
+        }
+    }
+
+    double total_energy = 0.0;
+
+    // Parallel element assembly
+    #pragma omp parallel reduction(+:total_energy)
+    {
+        const int tid = omp_get_thread_num();
+        auto& my_forces = all_forces[tid];
+        
+        // Clear this thread's force buffer (fast memset)
+        std::memset(my_forces.data(), 0, my_forces.size() * sizeof(Eigen::Vector2d));
+        
+        #pragma omp for schedule(guided)
+        for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
+            ElementTriangle2D& element = elements[userData->active_elements[idx]];
+            
+            element.calculate_deformation_gradient(x);
+            
+            const Eigen::Matrix2d F = element.getDeformationGradient();
+            const Eigen::Matrix2d C = F.transpose() * F;
+            
+            const auto result = lagrange::reduce(C);
+            const double area = element.getReferenceArea();
+            
+            const double element_energy = userData->calculator.calculate_energy(
+                result.C_reduced, userData->energy_function, userData->zero_energy) / normalisation;
+            
+            total_energy += element_energy * area;
+            
+            const Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
+                result.C_reduced, userData->derivative_function) / normalisation;
+            
+            const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC 
+                                    * result.m_matrix.transpose() * area;
+            
+            element.assemble_forces(P, my_forces);
+        }
+    }
+
+    // Parallel reduction: each i maps to unique dof_idx, so no atomics needed
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < n_vars; i++) {
+        const auto& [point_idx, dof_idx] = interior_mapping[i];
+        
+        double fx = 0.0;
+        double fy = 0.0;
+        
+        for (int t = 0; t < max_threads; t++) {
+            fx += all_forces[t][point_idx].x();
+            fy += all_forces[t][point_idx].y();
+        }
+        
+        grad[dof_idx] = fx;
+        grad[n_vars + dof_idx] = fy;
+    }
+
+    func = total_energy;
+}
+
+// Main optimization function
+
+void minimize_energy_with_triangles_vold(
     const alglib::real_1d_array &x, 
     double &func, 
     alglib::real_1d_array &grad, 

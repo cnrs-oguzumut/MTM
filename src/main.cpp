@@ -39,7 +39,7 @@
 
 #include "../include/FEMHessianAssembler.h"
 
-#include "../include/defects/DefectAnalysis.h"
+#include "../include/defects/Defectanalysis.h"
 
 #include "../include/geometry/NeighborAnalyzer.h"
 
@@ -1039,6 +1039,8 @@ bool hasConnectivityChanged(const std::vector<ElementTriangle2D> &old_elements,
   return false;
 }
 
+
+
 std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     alglib::real_1d_array &x, const UserData *userData,
     const std::vector<int> &contact_atoms,
@@ -1046,18 +1048,16 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     const Eigen::Matrix<double, 3, 2> &dndx,
     const std::array<double, 2> &offsets,
     const std::vector<int> &original_domain_map,
-    const const std::vector<std::tuple<double, double>> &translation_map,
+    const std::vector<std::tuple<double, double>> &translation_map,
     const Point2D &domain_dims_point, int &has_changes,
     int max_iterations = 100, double reference_area = 0.5, bool pbc = false,
-    bool optimize_interior = true
-
-) {
+    bool optimize_interior = true) {
+    
   bool should_remesh = true;
   int mesh_iteration = 0;
   double final_energy = 0.0;
   double final_stress = 0.0;
   Eigen::Matrix2d stress_tensor;
-  // const int n_vars = x.length();
 
   std::vector<Point2D> &square_points = userData->points;
   std::vector<ElementTriangle2D> &elements = userData->elements;
@@ -1066,14 +1066,12 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
   const auto &full_mapping = userData->full_mapping;
   const int n_vars = interior_mapping.size();
   const int n_points = userData->points.size();
-  // const double normalisation = pow(userData->ideal_lattice_parameter, 2.0);
   std::function<double(double)> &potential_func = userData->energy_function;
   std::function<double(double)> &potential_func_der =
       userData->derivative_function;
   double zero = userData->zero_energy;
   double ideal_lattice_parameter = userData->ideal_lattice_parameter;
   double plasticity;
-  // TriangularLatticeCalculator calculator(ideal_lattice_parameter);
 
   std::cout << "REMESHING STARTED " << std::endl;
 
@@ -1083,123 +1081,140 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     // === SAVE OLD MESH STATE ===
     std::vector<ElementTriangle2D> old_elements = elements;
     std::vector<size_t> old_active_elements = active_elements;
+    std::vector<Point2D> old_points = square_points;
+    alglib::real_1d_array old_x;
+    old_x.setcontent(x.length(), x.getcontent());
 
-    // 2. Generate new mesh (using existing mesher)
-    // 1. Create the AdaptiveMesher instance
+    // ============================================
+    // ENERGY OF OLD STATE (before any remeshing)
+    // ============================================
+    UserData oldUserData(square_points, elements, userData->calculator,
+                         potential_func, potential_func_der, zero,
+                         ideal_lattice_parameter, F_ext, interior_mapping,
+                         full_mapping, active_elements, plasticity);
+
+    double energy_old = 0.0;
+    Eigen::Matrix2d stress_old;
+    ConfigurationSaver::calculateEnergyAndStress(&oldUserData, energy_old,
+                                                 stress_old, true);
+    
+    std::cout << "Energy of OLD state: " << std::scientific 
+              << std::setprecision(8) << energy_old << std::endl;
+
+    // === PERFORM REMESHING ===
     AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
                           translation_map, full_mapping,
                           1e-6, // Tolerance
                           pbc   // Use periodic copies
     );
-    mesher.setUsePeriodicCopies(pbc); // Switch to using original domain only
+    mesher.setUsePeriodicCopies(pbc);
 
-    // 1. Save original state
+    // Save original positions before remeshing
     alglib::real_1d_array original_x_remesh = mesher.saveOriginalPositions(x);
+    
     std::tie(elements, active_elements) =
         mesher.createMesh(square_points, x, F_ext, &dndx);
+    
     for (auto &element : elements) {
-      element.setReferenceArea(
-          reference_area); // or interior_mapping depending on needs
+      element.setReferenceArea(reference_area);
+      element.set_dof_mapping(full_mapping);
     }
-
-    // bool connectivity_changed = hasConnectivityChanged(
-    //     old_elements, elements, old_active_elements, active_elements
-    // );
-
-    // It is called to find the number of nodes inside elements that touch the
-    // boundary This is requited in mesh filtering auto [interior_mapping_dummy,
-    // full_mapping_dummy] = create_dof_mapping_with_boundaries(
-    //     square_points, elements,contact_atoms,boundary_fixed_nodes);
-
-    // // 3. Re-optimize with new mesh
-    // std::vector<int> m3_before_remeshed = analyzeElementReduction(elements,
-    // square_points, userData);
 
     UserData newUserData(square_points, elements, userData->calculator,
                          potential_func, potential_func_der, zero,
                          ideal_lattice_parameter, F_ext, interior_mapping,
                          full_mapping, active_elements, plasticity);
 
-    
-    // SETUP: Configure the analyzer (just sets parameters)
-    NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
-    // NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::RADIUS);
-    // analyzer.setRadiusSearch(1.9* ideal_lattice_parameter);  // Juste assez pour NN, pas pour 2NN
-    analyzer.setKNearestSearch(4);  // Just stores k=6, doesn't need points yet
-    analyzer.setDebugMode(false);  // ← Active les prints
-
-    // USAGE: Give it points when you want to build the neighbor list
-    auto neighbors_before = analyzer.buildNeighbors(square_points);  // ← Points go here!
-    
-    std::vector<Point2D> points_before_copy = square_points;
-    
-    std::cout << "optimization in  REMESHING loop" << std::endl;
-    LBFGSOptimizer optimizer(12, 0, pow(10., -13.), 0, 0);
+    // === OPTIMIZE ON NEW MESH ===
+    std::cout << "Optimization in REMESHING loop" << std::endl;
+    LBFGSOptimizer optimizer(13, 0, 0, 0, 0);
     if (optimize_interior)
       optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
     
-    
-    
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-    auto neighbors_after = analyzer.buildNeighbors(square_points);   // ← AND HERE
-    // Compare the two neighbor lists
-    // auto change_info = NeighborAnalyzer::compareNeighbors(
-    //     neighbors_before, neighbors_after
-    // );
 
-auto change_info = NeighborAnalyzer::compareNeighborsWithTolerance(
-    points_before_copy,      // Points AVANT
-    square_points,           // Points APRÈS
-    neighbors_before,        // Voisins AVANT
-    neighbors_after,         // Voisins APRÈS
-    0.1                      // 10% de tolérance (optionnel, défaut = 0.1)
-);
+    // ============================================
+    // ENERGY OF NEW STATE (after remeshing + optimization)
+    // ============================================
+    UserData newUserData_after(square_points, elements, userData->calculator,
+                               potential_func, potential_func_der, zero,
+                               ideal_lattice_parameter, F_ext, interior_mapping,
+                               full_mapping, active_elements, plasticity);
 
-    if (change_info.has_changed) {
-        std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
-        std::cout << "  → Nodes affected: " << change_info.total_nodes_changed << std::endl;
-        std::cout << "  → Connections added: " << change_info.total_connections_added << std::endl;
-        std::cout << "  → Connections removed: " << change_info.total_connections_removed << std::endl;
+    double energy_new = 0.0;
+    Eigen::Matrix2d stress_new;
+    ConfigurationSaver::calculateEnergyAndStress(&newUserData_after, energy_new,
+                                                 stress_new, true);
+    
+    // ============================================
+    // COMPARE OLD vs NEW
+    // ============================================
+    double energy_change = energy_new - energy_old;
+    double energy_change_percent = (energy_old != 0.0) ? 
+                                   (energy_change / std::abs(energy_old)) * 100.0 : 0.0;
+    
+    std::cout << "\n┌─────────────────────────────────────────────────────┐" << std::endl;
+    std::cout << "│  REMESH ENERGY COMPARISON (Iteration " << std::setw(3) << mesh_iteration << ")       │" << std::endl;
+    std::cout << "├─────────────────────────────────────────────────────┤" << std::endl;
+    std::cout << "│  Energy OLD:     " << std::setw(24) << std::scientific 
+              << std::setprecision(8) << energy_old << "  │" << std::endl;
+    std::cout << "│  Energy NEW:     " << std::setw(24) << std::scientific 
+              << std::setprecision(8) << energy_new << "  │" << std::endl;
+    std::cout << "│  Change (ΔE):    " << std::setw(24) << std::scientific 
+              << std::setprecision(8) << energy_change << "  │" << std::endl;
+    std::cout << "│  Change (%):     " << std::setw(23) << std::fixed 
+              << std::setprecision(6) << energy_change_percent << "%  │" << std::endl;
+    std::cout << "└─────────────────────────────────────────────────────┘\n" << std::endl;
+
+    if (energy_change >= 0) {
+      std::cout << "⚠️  REJECTING remesh - energy increased!" << std::endl;
+      std::cout << "    Restoring previous state..." << std::endl;
+      
+      // RESTORE OLD STATE
+      x = old_x;
+      square_points = old_points;
+      elements = old_elements;
+      active_elements = old_active_elements;
+      
+      // Final values from restored state
+      final_energy = energy_old;
+      stress_tensor = stress_old;
+      
+      // Stop remeshing - we couldn't improve
+      should_remesh = false;
+      has_changes = 0;
+      
     } else {
-        std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
-    }    
-
-
-// NeighborAnalyzer::printNeighborChanges(change_info, 10);  // Show top 10 affected nodes
-
-    // std::vector<int> m3_after_remeshed = analyzeElementReduction(elements,
-    // square_points, userData);
-
-    // has_changes+= compareM3Activation(m3_before_remeshed, m3_after_remeshed);
-    // // // 4. Check convergence
-    auto change_result = computeChangeMeasures(
-        x, original_x_remesh, userData->ideal_lattice_parameter,
-        elements, &newUserData, square_points, true, &F_ext
-    );
-    bool connectivity_changed = change_result.has_distorted_triangles;
-    connectivity_changed = change_info.has_changed;
-    //bool connectivity_changed = checkSquareDomainViolation(elements);
-
-    if (!connectivity_changed) {
-
-      ConfigurationSaver::calculateEnergyAndStress(&newUserData, final_energy,
-                                                   stress_tensor, true);
-      final_stress = stress_tensor(0, 1);
-      break;
+      std::cout << "✓ ACCEPTING remesh - energy decreased" << std::endl;
+      
+      // Keep new state (already in place)
+      final_energy = energy_new;
+      stress_tensor = stress_new;
+      has_changes = 1;
+      
+      // Continue to see if we can improve further
+      // (or set should_remesh = false if you only want one successful remesh)
     }
-
-    // if (!should_remesh) {
-
-    //     ConfigurationSaver::calculateEnergyAndStress(&newUserData,
-    //     final_energy, stress_tensor,true); final_stress = stress_tensor(0,
-    //     1); break;
-    // }
-
+    
     mesh_iteration++;
   }
-
+  
   return {final_energy, stress_tensor, mesh_iteration};
 }
+
+
+
+  // Final calculation if loop completes without breaking
+  // if (mesh_iteration >= max_iterations) {
+  //   UserData finalUserData(square_points, elements, userData->calculator,
+  //                        potential_func, potential_func_der, zero,
+  //                        ideal_lattice_parameter, F_ext, interior_mapping,
+  //                        full_mapping, active_elements, plasticity);
+  //   ConfigurationSaver::calculateEnergyAndStress(&finalUserData, final_energy,
+  //                                                 stress_tensor, true);
+  //   final_stress = stress_tensor(0, 1);
+  // }
+
 void writeSizesToFile(int Nx, int Ny) {
   std::ofstream file("sizes.dat");
 
@@ -1361,8 +1376,8 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
   
   // ==================== SETUP LOADING SCHEDULE FROM RESTART POINT ====================
   double alpha_min = current_alpha;  // Start from next increment
-  double alpha_max = 0.5;
-  double step_size = 1e-7;
+  double alpha_max = 0.145051;
+  double step_size = 8e-7;
   if(restart_iteration%2!=0)
       alpha_min += step_size;
   
@@ -1474,6 +1489,20 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
     std::cout << "Saved PRE-optimization config " << file_id
               << " at load=" << saving_value << std::endl;
     
+
+    NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
+    std::vector<Point2D> points_before_copy = square_points;
+    analyzer.setKNearestSearch(4);  // Just stores k=6, doesn't need points yet
+    analyzer.setDebugMode(false);  // ← Active les prints
+
+
+    // USAGE: Give it points when you want to build the neighbor list
+    auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
+
+
+
+
+
     // ==================== RUN OPTIMIZATION ====================
     auto wall_start = std::chrono::high_resolution_clock::now();
     clock_t cpu_start = clock();
@@ -1493,6 +1522,32 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
     
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
     
+
+
+
+  auto neighbors_after = analyzer.buildNeighbors(square_points);   // ← AND HERE
+
+  auto change_info = NeighborAnalyzer::compareNeighborsWithTolerance(
+      points_before_copy,      // Points AVANT
+      square_points,           // Points APRÈS
+      neighbors_before,        // Voisins AVANT
+      neighbors_after,         // Voisins APRÈS
+      0.1                      // 10% de tolérance (optionnel, défaut = 0.1)
+  );
+
+    if (change_info.has_changed) {
+        std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
+        std::cout << "  → Nodes affected: " << change_info.total_nodes_changed << std::endl;
+        std::cout << "  → Connections added: " << change_info.total_connections_added << std::endl;
+        std::cout << "  → Connections removed: " << change_info.total_connections_removed << std::endl;
+    } else {
+        std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
+    }    
+
+
+
+
+
     // ==================== POST-OPTIMIZATION ENERGY ====================
     double post_energy = 0.0;
     double post_stress = 0.0;
@@ -1508,10 +1563,13 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
               << ", Stress change: " << (post_stress - pre_stress) << std::endl;
     
     // ==================== REMESHING (if needed) ====================
-    ChangeMeasures result = computeChangeMeasures(
-        x, original_x, lattice_constant, elements, &userData, square_points,
-        true, &F_ext);
-    bool shouldRemesh = result.has_distorted_triangles;
+    // ChangeMeasures result = computeChangeMeasures(
+    //     x, original_x, lattice_constant, elements, &userData, square_points,
+    //     true, &F_ext);
+    // bool shouldRemesh = result.has_distorted_triangles;
+
+    bool shouldRemesh = change_info.has_changed; //disable remeshing for continous Zanzotto test
+
     
     if (shouldRemesh) {
       std::cout << "REMESHING STARTS" << std::endl;
@@ -1608,6 +1666,9 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
   std::cout << "RESTART SIMULATION COMPLETED" << std::endl;
   std::cout << std::string(60, '=') << std::endl;
 }
+
+
+
 
 
 
@@ -1823,8 +1884,8 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
   // ==================== SETUP LOADING SCHEDULE ====================
   // Define loading parameters
   double alpha_min = 0.138;
-  double alpha_max = 0.2;
-  double step_size = 1e-4;
+  double alpha_max = .85;
+  double step_size = 2e-5;
 
   // Calculate number of loading steps
   int num_alpha_points =
@@ -1841,403 +1902,304 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
   }
 
   // Process each alpha value
-  for (size_t i = 0; i < alpha_values.size(); i++) {
-    double alpha = alpha_values[i];
-    std::cout << "\n=== Processing alpha = " << alpha << " ===" << std::endl;
-    double pre_area = 1.0;
-    double post_area = 1.0;
-    // ==================== SETUP DEFORMATION ====================
-    Eigen::Matrix2d F_ext;
-    F_ext << 1.0, alpha, 0.0, 1.0;
+for (size_t i = 0; i < alpha_values.size(); i++) {
+  double alpha = alpha_values[i];
+  std::cout << "\n=== Processing alpha = " << alpha << " ===" << std::endl;
+  double pre_area = 1.0;
+  double post_area = 1.0;
+  
+  // ==================== SETUP DEFORMATION ====================
+  Eigen::Matrix2d F_ext;
+  F_ext << 1.0, alpha, 0.0, 1.0;
 
-    Eigen::Matrix2d dF_ext;
-    dF_ext << 1.0, step_size, 0.0, 1.0;
+  Eigen::Matrix2d dF_ext;
+  dF_ext << 1.0, step_size, 0.0, 1.0;
 
-    // Apply initial noise (only for first iteration)
-    if (i == 0) {
-      std::random_device rd;
-      std::mt19937 gen(rd());
-      double noise_level = 0.04;
-      std::normal_distribution<double> noise_dist(0.0, noise_level);
+  // Apply initial noise (only for first iteration)
+  if (i == 0) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    double noise_level = 0.04;
+    std::normal_distribution<double> noise_dist(0.0, noise_level);
 
-      for (size_t j = 0; j < square_points.size(); j++) {
-        Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
-        square_points[j].coord = F_ext * square_points[j].coord +  noise;
-      }
-    } else {
-      for (size_t j = 0; j < square_points.size(); j++) {
-        square_points[j].coord = dF_ext * square_points[j].coord;
-      }
+    for (size_t j = 0; j < square_points.size(); j++) {
+      Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
+      square_points[j].coord = F_ext * square_points[j].coord + noise;
     }
-
-    // ==================== CREATE USER DATA ====================
-    bool plasticity = false;
-    UserData userData(square_points, elements, calculator, potential_func,
-                      potential_func_der, zero, optimal_lattice_parameter,
-                      F_ext, interior_mapping, full_mapping, active_elements,
-                      plasticity);
-
-    // ==================== PREPARE OPTIMIZATION ====================
-    alglib::real_1d_array x;
-    int n_vars = interior_mapping.size();
-    x.setlength(2 * n_vars);
-    map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
-
-    // Calculate pre-optimization energy and stress
-    double pre_energy = 0.0;
-    double pre_stress = 0.0;
-    Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
-
-    ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
-                                                 stress_tensor, true);
-    pre_stress = stress_tensor(0, 1);
-    pre_area = ConfigurationSaver::calculateTotalArea2D(
-        &userData); // Need & to get address
-
-    std::cout << "Pre-optimization - Energy: " << pre_energy
-              << ", Stress: " << pre_stress << std::endl;
-
-    // Store original positions
-    alglib::real_1d_array original_x;
-    original_x.setlength(x.length());
-    for (int j = 0; j < x.length(); j++) {
-      original_x[j] = x[j];
+  } else {
+    for (size_t j = 0; j < square_points.size(); j++) {
+      square_points[j].coord = dF_ext * square_points[j].coord;
     }
+  }
 
-    // ==================== SAVE BEFORE OPTIMIZATION ====================
-    static int file_counter = 0;
-    static int previous_file_id = -1;
-    static double post_energy_previous = 0.0;
+  // ==================== CREATE USER DATA ====================
+  bool plasticity = false;
+  UserData userData(square_points, elements, calculator, potential_func,
+                    potential_func_der, zero, optimal_lattice_parameter,
+                    F_ext, interior_mapping, full_mapping, active_elements,
+                    plasticity);
 
-    int file_id = caller_id + file_counter;
+  // ==================== PREPARE OPTIMIZATION ====================
+  alglib::real_1d_array x;
+  int n_vars = interior_mapping.size();
+  x.setlength(2 * n_vars);
+  map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
 
-    double saving_value = alpha_values[i];
+  // Calculate pre-optimization energy and stress
+  double pre_energy = 0.0;
+  double pre_stress = 0.0;
+  Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
 
-    // Save pre-optimization state (potential pre-avalanche)
-    UserData preOptUserData(square_points, elements, calculator, potential_func,
-                            potential_func_der, zero, optimal_lattice_parameter,
-                            F_ext, interior_mapping, full_mapping,
-                            active_elements, plasticity);
+  ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
+                                               stress_tensor, true);
+  pre_stress = stress_tensor(0, 1);
+  pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
-    ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
-        &preOptUserData, file_id, pre_energy, pre_stress, true);
-    pre_area = ConfigurationSaver::calculateTotalArea2D(
-        &preOptUserData); // Need & to get address
+  std::cout << "Pre-optimization - Energy: " << pre_energy
+            << ", Stress: " << pre_stress << std::endl;
 
-    // ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
-    // stress_tensor, true); pre_stress = stress_tensor(0,1);
+  // Store original positions
+  alglib::real_1d_array original_x;
+  original_x.setlength(x.length());
+  for (int j = 0; j < x.length(); j++) {
+    original_x[j] = x[j];
+  }
 
-    ConfigurationSaver::saveTriangleData(&preOptUserData, file_id, domain_dims,
-                                         offsets, full_mapping);
-    ConfigurationSaver::saveElements(elements, active_elements, file_id);
-    std::cout << "Pre-optimization2 - Energy: " << pre_energy
-              << ", Stress: " << pre_stress << std::endl;
+  // ==================== SAVE BEFORE OPTIMIZATION ====================
+  static int file_counter = 0;
+  static int previous_file_id = -1;
+  static double post_energy_previous = 0.0;
 
-    auto [num_dislocations_pre, coordination_pre] =
-        DefectAnalysis::analyzeDefectsInReferenceConfig(
-            &preOptUserData, file_id, dndx, offsets, original_domain_map,
-            translation_map, domain_dims_point, element_area, pbc, true);
+  int file_id = caller_id + file_counter;
+  double saving_value = alpha_values[i];
 
-    ConfigurationSaver::writeToVTK(
-        preOptUserData.points, preOptUserData.elements, &preOptUserData,
-        file_id, true, coordination_pre, saving_value);
+  // Save pre-optimization state (potential pre-avalanche)
+  UserData preOptUserData(square_points, elements, calculator, potential_func,
+                          potential_func_der, zero, optimal_lattice_parameter,
+                          F_ext, interior_mapping, full_mapping,
+                          active_elements, plasticity);
 
-    // exit(0);
-    ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
+  ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+      &preOptUserData, file_id, pre_energy, pre_stress, true);
+  pre_area = ConfigurationSaver::calculateTotalArea2D(&preOptUserData);
 
-    std::cout << "Saved PRE-optimization config " << file_id
-              << " at load=" << saving_value << std::endl;
+  ConfigurationSaver::saveTriangleData(&preOptUserData, file_id, domain_dims,
+                                       offsets, full_mapping);
+  ConfigurationSaver::saveElements(elements, active_elements, file_id);
+  
+  std::cout << "Pre-optimization2 - Energy: " << pre_energy
+            << ", Stress: " << pre_stress << std::endl;
 
+  auto [num_dislocations_pre, coordination_pre] =
+      DefectAnalysis::analyzeDefectsInReferenceConfig(
+          &preOptUserData, file_id, dndx, offsets, original_domain_map,
+          translation_map, domain_dims_point, element_area, pbc, true);
 
+  ConfigurationSaver::writeToVTK(
+      preOptUserData.points, preOptUserData.elements, &preOptUserData,
+      file_id, true, coordination_pre, saving_value);
 
-    std::cout << "================================\n" << std::endl;
-    // ==================== RUN OPTIMIZATION ====================
-    // std::vector<int> m3_before = analyzeElementReduction(elements,
-    // square_points, &userData);
+  ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
 
-    NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
-    std::vector<Point2D> points_before_copy = square_points;
-    analyzer.setKNearestSearch(4);  // Just stores k=6, doesn't need points yet
-    analyzer.setDebugMode(false);  // ← Active les prints
+  std::cout << "Saved PRE-optimization config " << file_id
+            << " at load=" << saving_value << std::endl;
 
+  std::cout << "================================\n" << std::endl;
+  
+  // ==================== RUN OPTIMIZATION ====================
+  NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
+  std::vector<Point2D> points_before_copy = square_points;
+  analyzer.setKNearestSearch(4);
+  analyzer.setDebugMode(false);
 
-    // USAGE: Give it points when you want to build the neighbor list
-    auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
-    
+  auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
 
+  auto wall_start = std::chrono::high_resolution_clock::now();
+  clock_t cpu_start = clock();
 
-    auto wall_start = std::chrono::high_resolution_clock::now();
-    clock_t cpu_start = clock();
+  userData.third_condition_flag = false;
+  LBFGSOptimizer optimizer(13, 0, 0, 0, 0);
+  optimizer.optimize(x, minimize_energy_with_triangles, &userData);
 
-    userData.third_condition_flag = false;
-    LBFGSOptimizer optimizer(12, 0, pow(10., -13.), 0, 0);
-    optimizer.optimize(x, minimize_energy_with_triangles, &userData);
+  auto wall_end = std::chrono::high_resolution_clock::now();
+  clock_t cpu_end = clock();
 
+  double wall_time =
+      std::chrono::duration<double>(wall_end - wall_start).count();
+  double cpu_time = (double)(cpu_end - cpu_start) / CLOCKS_PER_SEC;
+  std::cout << "Optimization wall-clock time: " << wall_time << " seconds\n";
+  std::cout << "Optimization CPU time: " << cpu_time << " seconds\n";
+  std::cout << "Optimization Ratio: " << cpu_time / wall_time << "\n";
 
-    // Create FEM assembler for preconditioner computation
-    // FEMHessianAssembler assembler;
-    // assembler.setEnergyParameters(
-    //     &calculator,              
-    //     potential_func_der,       
-    //     potential_func_sder,      
-    //     calculator.getUnitCellArea()
-    // );
+  map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
 
-    // // Compute diagonal preconditioner from Hessian at initial configuration
-    // Eigen::VectorXd precond = assembler.computeDiagonalPreconditioner(
-    //     elements,       
-    //     square_points,  
-    //     full_mapping,   
-    //     x.length()          // ✅ Use n_dofs, NOT x.length()
-    // );
-
-    // // Convert to ALGLIB format
-    // alglib::real_1d_array alglib_precond = assembler.eigenToAlglibArray(precond);
-
-
-
-    // // Create optimizer and run with preconditioner
-    // LBFGSOptimizer optimizer(12, 0, pow(10., -13.), 0, 0);
-    // optimizer.optimizeWithPreconditioner(x, alglib_precond, minimize_energy_with_triangles, &userData);
-
-
-    auto wall_end = std::chrono::high_resolution_clock::now();
-    clock_t cpu_end = clock();
-
-    double wall_time =
-        std::chrono::duration<double>(wall_end - wall_start).count();
-    double cpu_time = (double)(cpu_end - cpu_start) / CLOCKS_PER_SEC;
-    std::cout << "Optimization wall-clock time: " << wall_time << " seconds\n";
-    std::cout << "Optimization CPU time: " << cpu_time << " seconds\n";
-    std::cout << "Optimization Ratio: " << cpu_time / wall_time << "\n";
-
-    map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-
-    
-    auto neighbors_after = analyzer.buildNeighbors(square_points);   // ← AND HERE
+  auto neighbors_after = analyzer.buildNeighbors(square_points);
 
   auto change_info = NeighborAnalyzer::compareNeighborsWithTolerance(
-      points_before_copy,      // Points AVANT
-      square_points,           // Points APRÈS
-      neighbors_before,        // Voisins AVANT
-      neighbors_after,         // Voisins APRÈS
-      0.1                      // 10% de tolérance (optionnel, défaut = 0.1)
+      points_before_copy,
+      square_points,
+      neighbors_before,
+      neighbors_after,
+      0.135
   );
 
-    if (change_info.has_changed) {
-        std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
-        std::cout << "  → Nodes affected: " << change_info.total_nodes_changed << std::endl;
-        std::cout << "  → Connections added: " << change_info.total_connections_added << std::endl;
-        std::cout << "  → Connections removed: " << change_info.total_connections_removed << std::endl;
-    } else {
-        std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
-    }    
-
-
-    // std::vector<int> m3_after = analyzeElementReduction(elements,
-    // square_points, &userData);
-    int hasChanges; //= compareM3Activation(m3_before, m3_after);
-    hasChanges = 0;
-    // if(hasChanges > 0) {
-    //     std::cout << "Changes in m3 detected! " << hasChanges << std::endl;
-    // }
-
-    // ==================== POST-OPTIMIZATION ENERGY ====================
-    double post_energy = 0.0;
-    double post_stress = 0.0;
-    stress_tensor.setZero();
-    ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy,
-                                                 stress_tensor, true);
-    post_stress = stress_tensor(0, 1);
-    post_area = ConfigurationSaver::calculateTotalArea2D(
-        &userData); // Need & to get address
-
-    std::cout << "Post-optimization - Energy: " << post_energy
-              << ", Stress: " << post_stress << std::endl;
-    std::cout << "Energy change: " << (post_energy - pre_energy)
-              << ", Stress change: " << (post_stress - pre_stress) << std::endl;
-
-    // ==================== REMESHING (if needed) ====================
-    ChangeMeasures result = computeChangeMeasures(
-        x, original_x, lattice_constant, elements, &userData, square_points,
-        true, &F_ext
-    );
-    bool shouldRemesh = result.has_distorted_triangles;
-
-    // std::cout << "max_abs_change: " << result.max_abs_change << std::endl;
-    // if (result.has_distorted_triangles) {
-    //     std::cout << "Distorted triangles detected!" << std::endl;
-    // }
-
-    //bool shouldRemesh = checkSquareDomainViolation(elements);
-    shouldRemesh = change_info.has_changed; //disable remeshing for continous Zanzotto test
-
-    if (shouldRemesh) {
-      std::cout << "REMESHING STARTS" << std::endl;
-
-      alglib::real_1d_array original_x_remesh;
-      original_x_remesh.setlength(x.length());
-      for (int j = 0; j < x.length(); j++) {
-        original_x_remesh[j] = x[j];
-      }
-
-      std::vector<int> contact_atoms;
-      std::vector<int> boundary_fixed_nodes;
-      int max_iterations = 1000;
-
-      auto [post_energy_re, stress_tensor_re, iterations] =
-          perform_remeshing_loop_reduction(
-              x, &userData, contact_atoms, boundary_fixed_nodes, F_ext, dndx,
-              offsets, original_domain_map, translation_map, domain_dims_point,
-              hasChanges, max_iterations, element_area, pbc, true);
-
-      for (auto &element : elements) {
-        element.set_dof_mapping(full_mapping);
-      }
-
-      post_energy = post_energy_re;
-      post_stress = stress_tensor_re(0, 1);
-
-      std::cout << "Post-remeshing - Energy: " << post_energy
-                << ", Stress: " << post_stress << std::endl;
-    }
-
-   
-   
-    // // 4. Create assembler and set energy parameters
-    // if(i%100==0){
-    //     std::cout << "Creating FEMHessianAssembler at iteration " << i <<
-    //     std::endl;
-    
-    
-    //   FEMHessianAssembler assembler;
-    //   assembler.setEnergyParameters(&calculator, potential_func_der,
-    //                                 potential_func_sder,
-    //                                 calculator.getUnitCellArea());
-
-    //   // 5. Solve with Newton-Raphson
-    //   std::vector<Point2D> equilibrium_positions = assembler.solveNewtonRaphson(
-    //       elements,           // Your elements
-    //       square_points,             // Initial positions
-    //       full_mapping,        // DOF mapping (free vs fixed)
-    //       x.length(),     // Total free DOFs
-    //       1e-,              // Tolerance (optional, default 1e-6)
-    //       10,               // Max iterations (optional, default 50)
-    //       true               // Verbose output (optional, default true)
-    //   );
-
-    //   map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-
-    // }
-   
-   
-    // ==================== CHECK FOR STRESS DROP ====================
-    // bool stress_drop_detected = (post_energy < post_energy_previous);
-
-    bool stress_drop_detected = (shouldRemesh);
-
-    UserData postOptUserData(square_points, elements, calculator,
-                             potential_func, potential_func_der, zero,
-                             optimal_lattice_parameter, F_ext, interior_mapping,
-                             full_mapping, active_elements, plasticity);
-    post_area = ConfigurationSaver::calculateTotalArea2D(
-        &postOptUserData); // Need & to get address
-
-    if (stress_drop_detected || i >= 0) {
-      std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
-      std::cout << "Energy dropped from " << post_energy_previous << " to "
-                << post_energy << std::endl;
-      std::cout << "PRE-avalanche LOCKED as file " << file_id
-                << " at load=" << saving_value << std::endl;
-
-      // Save POST-avalanche state
-      file_counter++;
-      int post_file_id = caller_id + file_counter;
-
-      // ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&postOptUserData,
-      // post_file_id, post_energy, post_stress, true);
-      ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id,
-                                           domain_dims, offsets, full_mapping);
-      ConfigurationSaver::saveElements(elements, active_elements, post_file_id);
-
-      auto [num_dislocations_post, coordination_post] =
-          DefectAnalysis::analyzeDefectsInReferenceConfig(
-              &postOptUserData, post_file_id, dndx, offsets,
-              original_domain_map, translation_map, domain_dims_point,
-              element_area, pbc, true);
-
-      ConfigurationSaver::writeToVTK(
-          postOptUserData.points, postOptUserData.elements, &postOptUserData,
-          post_file_id, true, coordination_post, saving_value);
-      ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
-
-      std::cout << "POST-avalanche saved as file " << post_file_id
-                << " at load=" << saving_value << std::endl;
-
-      file_counter++;        // Increment for next sequence
-      previous_file_id = -1; // Don't delete avalanche files
-
-    } else {
-      // No stress drop - delete previous file if it exists
-      if (previous_file_id >= 0 || i >= 0) {
-        std::cout << "Deleting previous file " << previous_file_id
-                  << " (no avalanche)" << std::endl;
-
-        std::stringstream vtk_file;
-        vtk_file << "vtk_output/configuration_" << std::setw(5)
-                 << std::setfill('0') << previous_file_id << ".vtk";
-        std::filesystem::remove(vtk_file.str());
-
-        // Delete other associated files (adjust as needed)
-        // ConfigurationSaver might have saved other files - delete those too
-      }
-
-      previous_file_id = file_id; // This file might get deleted next iteration
-    }
-
-    // ==================== LOG DATA ====================
-    ConfigurationSaver::logEnergyAndStress_v2(
-        i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area,
-        post_area, shouldRemesh);
-
-    post_energy_previous = post_energy;
-
-    // // 4. Create assembler and set energy parameters
-    // FEMHessianAssembler assembler;
-    // assembler.setEnergyParameters(&calculator, potential_func_der,
-    //                               potential_func_sder,
-    //                               calculator.getUnitCellArea());
-
-    // // 5. Solve with Newton-Raphson
-    // std::vector<Point2D> equilibrium_positions = assembler.solveNewtonRaphson(
-    //     elements,           // Your elements
-    //     square_points,             // Initial positions
-    //     full_mapping,        // DOF mapping (free vs fixed)
-    //     x.length(),     // Total free DOFs
-    //     1e-8,              // Tolerance (optional, default 1e-6)
-    //     100,               // Max iterations (optional, default 50)
-    //     true               // Verbose output (optional, default true)
-    // );
-
-
-
-    //map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-
-
-    // //break;
-    // double min_non_rigid_eigenvalue =
-    //     FEMHessianAssembler::computeMinNonRigidEigenvalue(
-    //         elements, square_points, 2 * n_free_nodes, full_mapping,
-    //         &calculator,
-    //         potential_func_der,  // std::function<double(double)>
-    //         potential_func_sder, // std::function<double(double)>
-    //         100, alpha);
-
-    // std::cout << "Iteration " << i << " completed successfully" << std::endl;
-    // std::cout << "Minimum non-rigid eigenvalue: " << min_non_rigid_eigenvalue
-    //           << std::endl;
+  if (change_info.has_changed) {
+    std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
+    std::cout << "  → Nodes affected: " << change_info.total_nodes_changed << std::endl;
+    std::cout << "  → Connections added: " << change_info.total_connections_added << std::endl;
+    std::cout << "  → Connections removed: " << change_info.total_connections_removed << std::endl;
+  } else {
+    std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
   }
+
+  int hasChanges = 0;
+
+
+  // ==================== POST-OPTIMIZATION ENERGY ====================
+  double post_energy = 0.0;
+  double post_stress = 0.0;
+  stress_tensor.setZero();
+  ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy,
+                                               stress_tensor, true);
+  post_stress = stress_tensor(0, 1);
+  post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
+
+  std::cout << "Post-optimization - Energy: " << post_energy
+            << ", Stress: " << post_stress << std::endl;
+  std::cout << "Energy change: " << (post_energy - pre_energy)
+            << ", Stress change: " << (post_stress - pre_stress) << std::endl;
+
+  // ==================== REMESHING DECISION ====================
+  bool shouldRemesh2 = change_info.has_changed && post_energy < post_energy_previous;
+  bool shouldRemesh = post_energy < post_energy_previous || i == 0;
+
+  // Debug output
+  std::cout << "=== REMESH DECISION ===" << std::endl;
+  std::cout << "  i = " << i << std::endl;
+  std::cout << "  pre_energy = " << std::scientific << pre_energy << std::endl;
+
+  std::cout << "  post_energy = " << std::scientific << post_energy << std::endl;
+  std::cout << "  post_energy_previous = " << std::scientific << post_energy_previous << std::endl;
+  std::cout << "  difference = " << (post_energy - post_energy_previous) << std::endl;
+  std::cout << "  post_energy < post_energy_previous? " << (post_energy < post_energy_previous) << std::endl;
+  std::cout << "  shouldRemesh = " << shouldRemesh << std::endl;
+
+  if (shouldRemesh) {
+    std::cout << "REMESHING STARTS" << std::endl;
+
+    std::vector<int> contact_atoms;
+    std::vector<int> boundary_fixed_nodes;
+    int max_iterations = 1000;
+
+    auto [post_energy_re, stress_tensor_re, iterations] =
+        perform_remeshing_loop_reduction(
+            x, &userData, contact_atoms, boundary_fixed_nodes, F_ext, dndx,
+            offsets, original_domain_map, translation_map, domain_dims_point,
+            hasChanges, max_iterations, element_area, pbc, true);
+
+    post_energy = post_energy_re;
+    post_stress = stress_tensor_re(0, 1);
+
+    // ============================================
+    // SYNC LOCAL VARIABLES WITH USERDATA
+    // (Not strictly necessary since UserData uses references,
+    //  but explicit for clarity)
+    // ============================================
+    square_points = userData.points;
+    elements = userData.elements;
+    active_elements = userData.active_elements;
+
+    // Update element_area after remeshing
+    if (!elements.empty()) {
+      element_area = elements[0].getReferenceArea();
+    }
+
+    if (hasChanges) {
+      std::cout << "✓ Remeshing accepted - energy decreased" << std::endl;
+    } else {
+      std::cout << "⚠️ Remeshing rejected - original mesh kept" << std::endl;
+    }
+
+    std::cout << "Final energy: " << post_energy
+              << ", stress: " << post_stress << std::endl;
+
+    // Update DOF mapping
+    for (auto &element : elements) {
+      element.set_dof_mapping(full_mapping);
+    }
+  }
+
+  // ==================== CHECK FOR STRESS DROP ====================
+  bool stress_drop_detected = shouldRemesh2;
+
+  UserData postOptUserData(square_points, elements, calculator,
+                           potential_func, potential_func_der, zero,
+                           optimal_lattice_parameter, F_ext, interior_mapping,
+                           full_mapping, active_elements, plasticity);
+  post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
+
+  std::cout << "Energy dropped from " << post_energy_previous << " to "
+            << post_energy << std::endl;
+
+  if (stress_drop_detected || i == 0) {
+    std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
+    std::cout << "Energy dropped from " << post_energy_previous << " to "
+              << post_energy << std::endl;
+    std::cout << "PRE-avalanche LOCKED as file " << file_id
+              << " at load=" << saving_value << std::endl;
+
+    // Save POST-avalanche state
+    file_counter++;
+    int post_file_id = caller_id + file_counter;
+
+    ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id,
+                                         domain_dims, offsets, full_mapping);
+    ConfigurationSaver::saveElements(elements, active_elements, post_file_id);
+
+    auto [num_dislocations_post, coordination_post] =
+        DefectAnalysis::analyzeDefectsInReferenceConfig(
+            &postOptUserData, post_file_id, dndx, offsets,
+            original_domain_map, translation_map, domain_dims_point,
+            element_area, pbc, true);
+
+    ConfigurationSaver::writeToVTK(
+        postOptUserData.points, postOptUserData.elements, &postOptUserData,
+        post_file_id, true, coordination_post, saving_value);
+    ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
+
+    std::cout << "POST-avalanche saved as file " << post_file_id
+              << " at load=" << saving_value << std::endl;
+
+    file_counter++;
+    previous_file_id = -1;
+
+  } else {
+    // No stress drop - delete previous file if it exists
+    if (previous_file_id >= 0 || i == 0) {
+      std::cout << "Deleting previous file " << previous_file_id
+                << " (no avalanche)" << std::endl;
+
+      std::stringstream vtk_file;
+      vtk_file << "vtk_output/configuration_" << std::setw(5)
+               << std::setfill('0') << previous_file_id << ".vtk";
+      std::filesystem::remove(vtk_file.str());
+    }
+
+    previous_file_id = file_id;
+  }
+
+  // ==================== LOG DATA ====================
+  ConfigurationSaver::logEnergyAndStress_v2(
+      i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area,
+      post_area, shouldRemesh);
+
+  post_energy_previous = post_energy;
+  
+  std::cout << "Iteration " << i << " ended: setting post_energy_previous = "
+            << post_energy << std::endl;
 }
+}
+
 
 void analyze_data_from_folder(int caller_id, int nx, int ny,int iter_start,int iter_end,int n_eig) {
 
@@ -2338,8 +2300,7 @@ void analyze_data_from_folder(int caller_id, int nx, int ny,int iter_start,int i
   // ==================== SPECIFY ITERATION RANGE ====================
   int iteration_start = iter_start;
   int iteration_end = iter_end; // Change these values as needed
-  int iteration_step =
-      1; // Step size (e.g., 1 for every iteration, 2 for every other)
+  int iteration_step = 2; // Step size (e.g., 1 for every iteration, 2 for every other)
 
   std::cout << "Processing iterations from " << iteration_start << " to "
             << iteration_end << " (step: " << iteration_step << ")"
@@ -2611,6 +2572,7 @@ void analyze_data_from_folder(int caller_id, int nx, int ny,int iter_start,int i
               << ", min_eig=" << min_eigenvalue
               << ", first_non_rigid=" << first_non_rigid_eigenvalue
               << std::endl;
+    continue;
 
     // ONE LINE TO DO EVERYTHING!
     assembler.exportCompleteEigenmodeAnalysis(
@@ -3688,7 +3650,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
     const Eigen::Matrix<double, 3, 2> &dndx,
     const std::array<double, 2> &offsets,
     const std::vector<int> &original_domain_map,
-    const const std::vector<std::tuple<double, double>> &translation_map,
+    const std::vector<std::tuple<double, double>> &translation_map,
     const Point2D &domain_dims_point, int max_iterations = 100,
     double reference_area = 0.5) {
   bool should_remesh = true;
@@ -5231,9 +5193,10 @@ int main() {
 
 //parametricAcousticStudy();./
   //parametricAcousticStudy();
-  //memory(0,100,100,65);
-   example_1_conti_zanzotto(0,100,100);
-  //analyze_data_from_folder(0, 100,100,5213,5222,60);
+  //memory(0,100,100,3);
+  
+   example_1_conti_zanzotto(0,500,500);
+  //analyze_data_from_folder(0, 100,100,3301,3651,100);
   // }
   //  indentation();
 
