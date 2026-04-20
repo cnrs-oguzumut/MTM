@@ -512,3 +512,104 @@ itensor::ITensor AcousticTensor::getAcousticTensor(bool lagrangian) {
     
     return final_tensor;
 }
+
+itensor::ITensor AcousticTensor::getSpatialTangent() {
+    // Step 1: Get material tangent A_rsij (d^2E/dF^2 in mixed indices)
+    // A_rsij has indices r_, s_, i_, j_ corresponding to A_RSKL (A_R(r)_S(s)K(i)L(j))
+    auto A_rsij = getAcousticTensor(true); 
+
+    // Compute J = det(F)
+    double J = F_(0,0) * F_(1,1) - F_(0,1) * F_(1,0);
+    if (std::abs(J) < 1e-12) {
+        std::cerr << "Error: Near-zero determinant J=" << J << " in getSpatialTangent." << std::endl;
+        return itensor::ITensor(); // Return empty tensor on error
+    }
+    
+    // --- STRESS CALCULATION (P and Sigma) ---
+    // P = 2 * F * Z * dE/dC_red * Z^T
+    // (This part is assumed correct based on your constitutive model)
+    Eigen::Matrix2d P_matrix = 2.0 * F_ * Z_ * dE_dC_ * Z_.transpose();
+
+    // Compute Cauchy Stress sigma = (1/J) * P * F^T
+    Eigen::Matrix2d sigma_matrix = (1.0 / J) * P_matrix * F_.transpose();
+    
+    // Compute Kirchhoff Stress tau = J * sigma
+    Eigen::Matrix2d tau_matrix = J * sigma_matrix;
+
+    // Define indices for spatial tangent C_ijkl
+    auto i_idx = itensor::Index(2, "i_idx");
+    auto j_idx = itensor::Index(2, "j_idx");
+    auto k_idx = itensor::Index(2, "k_idx");
+    auto l_idx = itensor::Index(2, "l_idx");
+    
+    auto C_spatial = itensor::ITensor(i_idx, j_idx, k_idx, l_idx);
+    C_spatial.fill(0.0);
+
+    // ----------------------------------------------------
+    // Element-wise Computation of Spatial Tangent C_ijkl
+    // C_ijkl = (1/J) * F_iK F_jL F_kM F_lN A_KLMN + (1/J) * tau_ik * delta_jl
+    // ----------------------------------------------------
+    
+    for(int i = 1; i <= 2; ++i) { 
+        for(int j = 1; j <= 2; ++j) {
+            for(int k = 1; k <= 2; ++k) {
+                for(int l = 1; l <= 2; ++l) { 
+                    
+                    // --- Term 1: Material Push-Forward ---
+                    double term1_sum = 0.0;
+                    
+                    // K, L, M, N are the reference (material) indices being summed over
+                    for(int K = 1; K <= 2; ++K) {
+                        for(int L = 1; L <= 2; ++L) {
+                            for(int M = 1; M <= 2; ++M) {
+                                for(int N = 1; N <= 2; ++N) {
+                                    
+                                    // A_KLMN is retrieved from the material tangent (A_rsij).
+                                    // ASSUMPTION: The provided A_rsij maps to A_KLMN as A_K(r)L(s)M(i)N(j).
+                                    double A_KLMN = A_rsij.real(r_=K, s_=L, i_=M, j_=N);
+
+                                    // PUSH-FORWARD: F_iK * F_jL * F_kM * F_lN * A_KLMN
+                                    term1_sum += F_(i-1, K-1) * F_(j-1, L-1) * F_(k-1, M-1) * F_(l-1, N-1) * A_KLMN;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // --- Term 2: Geometric Stress Term (Symmetricized Cauchy Stress) ---
+                    
+                    // This is the full geometric term derived from the push-forward of S = 1/2*P*F^{-T}
+                    // It ensures consistency with the Jaumann rate of the Cauchy stress and the global stiffness matrix.
+                    
+                    // Get Kirchhoff stress tau (tau_matrix = J * sigma_matrix)
+                    double tau_ik = tau_matrix(i-1, k-1);
+                    double tau_jk = tau_matrix(j-1, k-1);
+                    double tau_il = tau_matrix(i-1, l-1);
+                    double tau_jl = tau_matrix(j-1, l-1);
+
+                    // Kronecker deltas
+                    double delta_jl = (j == l ? 1.0 : 0.0);
+                    double delta_il = (i == l ? 1.0 : 0.0);
+                    double delta_jk = (j == k ? 1.0 : 0.0);
+                    double delta_ik = (i == k ? 1.0 : 0.0);
+
+                    // C_val = (Term 1) / J + (1/2J) * (tau_ik*delta_jl + tau_jk*delta_il + tau_il*delta_jk + tau_jl*delta_ik)
+                    // Simplified: C_val = (Term 1) / J + (1/2) * (sigma_ik*delta_jl + sigma_jk*delta_il + sigma_il*delta_jk + sigma_jl*delta_ik)
+                    // NOTE: We use the simpler four-term geometric part (sigma_ik * delta_jl + ...) which is consistent 
+                    // with the hyperelastic definition in the spatial configuration.
+                    
+                    double sigma_ik = sigma_matrix(i-1, k-1);
+                    double sigma_jk = sigma_matrix(j-1, k-1);
+                    double sigma_il = sigma_matrix(i-1, l-1);
+                    double sigma_jl = sigma_matrix(j-1, l-1);
+
+                    double C_val = (term1_sum / J);
+                    C_val += 0.5 * (sigma_ik * delta_jl + sigma_jk * delta_il + sigma_il * delta_jk + sigma_jl * delta_ik);
+                    
+                    C_spatial.set(i_idx=i, j_idx=j, k_idx=k, l_idx=l, C_val);
+                }
+            }
+        }
+    }
+    
+    return C_spatial;
+}

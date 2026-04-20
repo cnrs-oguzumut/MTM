@@ -243,6 +243,7 @@ public:
     void printHessianComponents();
 
     itensor::ITensor getAcousticTensor(bool lagrangian = true);
+    itensor::ITensor getSpatialTangent();
 
 private:
     /**
