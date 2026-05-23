@@ -2,6 +2,17 @@
 
 #include "../include/experiments/shift_vertical_horizontal.h"
 #include "../include/experiments/dislocation_indentation.h"
+// To run Zanzotto examples, add:
+// #include "../include/experiments/zanzotto_examples.h"
+// Then replace run_final_shift_tests(...) below with one of:
+// example_1_conti_zanzotto(0, nx, ny);
+// example_2_conti_zanzotto_triangular();
+// memory(0, nx, ny, restart_iteration);
+//
+// To run the stress-controlled loading example, add:
+// #include "../include/experiments/stress_controlled_examples.h"
+// Then replace run_final_shift_tests(...) below with:
+// example_3_stress_controlled_final_clean(0, nx, ny);
 
 int main(int argc, char **argv) {
   // TensorExample exple;
