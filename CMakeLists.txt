@@ -319,7 +319,11 @@ file(GLOB_RECURSE LIB_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
-add_library(lattice_lib STATIC ${LIB_SOURCES})
+list(FILTER LIB_SOURCES EXCLUDE REGEX ".*shift_vertical_horizontal\\.cpp$")
+add_library(lattice_lib STATIC
+    ${LIB_SOURCES}
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shift_vertical_horizontal.cpp"
+)
 
 # Link Eigen to lattice_lib properly
 if(TARGET Eigen3::Eigen)

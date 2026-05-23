@@ -22,7 +22,8 @@ AdaptiveMesher::AdaptiveMesher(
     translation_map(translation_mapping),
     full_mapping(dof_mapping),
     unique_triangle_tolerance(tolerance),
-    use_periodic(use_periodic_copies) // Initialize the new member
+    use_periodic(use_periodic_copies), // Initialize the new member
+    triangulation_perturbation_amplitude(0.0)
 {
 }
 
@@ -55,6 +56,15 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
         // Use original domain without periodic copies
         points_for_triangulation = square_points;
     }
+
+    if (triangulation_perturbation_amplitude != 0.0) {
+        std::cout << "Applying triangulation-only shear perturbation: "
+                  << triangulation_perturbation_amplitude << std::endl;
+        for (auto& point : points_for_triangulation) {
+            point.coord.y() +=
+                triangulation_perturbation_amplitude * point.coord.x();
+        }
+    }
     
     // Create new triangulation
     triangulation = MeshGenerator::createTrianglesFromPoints(points_for_triangulation);
@@ -68,10 +78,10 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
             square_points.size(), unique_triangle_tolerance
         );
     } else {
-        // Use all triangles if not using periodic copies
+        // Reject triangles with overly long diagonals/edges in non-periodic remeshing.
         unique_triangles = MeshGenerator::select_unique_connected_triangles(
             points_used, triangulation, original_domain_map,
-            square_points.size(), unique_triangle_tolerance, sqrt(2)+0.001);
+            square_points.size(), unique_triangle_tolerance, sqrt(2)+0.1);
 
     }
     
@@ -157,4 +167,12 @@ void AdaptiveMesher::setUsePeriodicCopies(bool use_periodic_copies) {
  */
 bool AdaptiveMesher::getUsePeriodicCopies() const {
     return use_periodic;
+}
+
+void AdaptiveMesher::setTriangulationPerturbation(double perturbation_amplitude) {
+    triangulation_perturbation_amplitude = perturbation_amplitude;
+}
+
+double AdaptiveMesher::getTriangulationPerturbation() const {
+    return triangulation_perturbation_amplitude;
 }

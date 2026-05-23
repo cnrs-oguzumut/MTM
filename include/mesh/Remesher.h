@@ -101,6 +101,17 @@ public:
     bool getUsePeriodicCopies() const;
 
     /**
+     * Set a tiny shear perturbation used only for CGAL triangulation input.
+     * The physical point positions used by finite elements are unchanged.
+     */
+    void setTriangulationPerturbation(double perturbation_amplitude);
+
+    /**
+     * Get the current triangulation-only perturbation amplitude.
+     */
+    double getTriangulationPerturbation() const;
+
+    /**
      * Get the current domain dimensions
      * @return Domain dimensions
      */
@@ -180,6 +191,7 @@ private:
     std::vector<std::pair<int, int>> full_mapping;
     double unique_triangle_tolerance;
     bool use_periodic;  // Flag to determine whether to use periodic copies
+    double triangulation_perturbation_amplitude;
 };
 
 // Declaration for the initialize_active_elements function (defined elsewhere)

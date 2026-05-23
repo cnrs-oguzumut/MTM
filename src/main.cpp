@@ -1,7 +1,12 @@
 #include <Eigen/Dense>
+#include <algorithm>
+#include <cstdlib>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
+#include <limits>
 #include <random>
+#include <set>
 #include <tuple>
 #include <vector>
 
@@ -42,6 +47,7 @@
 #include "../include/defects/Defectanalysis.h"
 
 #include "../include/geometry/NeighborAnalyzer.h"
+#include "../include/experiments/shift_vertical_horizontal.h"
 
 /*
 void example_1_atomistic_square() {
@@ -6212,7 +6218,7 @@ void example_3_stress_controlled_final_clean(int caller_id, int nx, int ny) {
 
   std::cout << "\n=== STRESS-CONTROLLED SIMULATION COMPLETE ===" << std::endl;
 }
-int main() {
+int main(int argc, char **argv) {
   // TensorExample exple;
   // example.run();
   // exit(0);
@@ -6227,7 +6233,20 @@ int main() {
   // analyze_data_from_folder(0, 100,100,3301,3651,100);
   //  }
   //   indentation();
-  example_1_conti_zanzotto(0, 60, 60);
+  int nx = 20;
+  int ny = 20;
+  int horizontal_steps = 100;
+  int vertical_steps = 100;
+  if (argc >= 3) {
+    nx = std::atoi(argv[1]);
+    ny = std::atoi(argv[2]);
+  }
+  if (argc >= 5) {
+    horizontal_steps = std::atoi(argv[3]);
+    vertical_steps = std::atoi(argv[4]);
+  }
+
+  run_final_shift_tests(nx, ny, horizontal_steps, vertical_steps);
   // parametricAcousticStudy();
   //  parametricAcousticStudy_v2();
 
