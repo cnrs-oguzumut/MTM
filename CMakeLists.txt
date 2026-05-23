@@ -315,14 +315,27 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 # Create a library from source files (excluding main.cpp)
+set(EXPERIMENT_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/acoustic_studies.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/common_simulation_helpers.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/data_analysis.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/deformation_examples.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/dislocation_indentation.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/shifting_examples.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/stress_controlled_examples.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/zanzotto_examples.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shift_vertical_horizontal.cpp"
+)
+
 file(GLOB_RECURSE LIB_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
-list(FILTER LIB_SOURCES EXCLUDE REGEX ".*shift_vertical_horizontal\\.cpp$")
+list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main_splines\\.cpp$")
+list(REMOVE_ITEM LIB_SOURCES ${EXPERIMENT_SOURCES})
 add_library(lattice_lib STATIC
     ${LIB_SOURCES}
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/shift_vertical_horizontal.cpp"
+    ${EXPERIMENT_SOURCES}
 )
 
 # Link Eigen to lattice_lib properly

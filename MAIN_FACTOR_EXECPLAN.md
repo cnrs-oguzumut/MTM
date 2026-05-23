@@ -16,12 +16,12 @@ After this refactor, a user should still be able to build and run the executable
 - [x] (2026-05-23T10:23Z) Read `PLANS.md` and confirmed the required ExecPlan sections and formatting rules.
 - [x] (2026-05-23T10:23Z) Mapped the current `src/main.cpp` top-level functions and build layout.
 - [x] (2026-05-23T10:23Z) Authored this initial self-contained execution plan.
-- [ ] Reconfigure and build the current branch before refactoring to establish a baseline.
-- [ ] Create shared headers for functions that are currently cross-called inside `src/main.cpp`.
-- [ ] Move utility and remeshing helper functions out of `src/main.cpp` without changing their bodies.
-- [ ] Move each experiment family into focused source files, validating after each move.
-- [ ] Reduce `src/main.cpp` to command-line parsing and dispatch.
-- [ ] Run final validation and record the observed outputs in this plan.
+- [x] (2026-05-23T10:48Z) Reconfigured and built the current branch before refactoring to establish a baseline.
+- [x] (2026-05-23T10:48Z) Created shared experiment headers under `include/experiments/`.
+- [x] (2026-05-23T10:48Z) Moved utility and remeshing helper functions into `src/experiments/common_simulation_helpers.cpp`.
+- [x] (2026-05-23T10:48Z) Moved experiment families into focused source files under `src/experiments/`.
+- [x] (2026-05-23T10:48Z) Reduced `src/main.cpp` to command-line parsing and dispatch.
+- [x] (2026-05-23T10:53Z) Ran final build validation and a small smoke test; stopped the long remesh smoke after observing both final test folders and remeshing startup.
 
 ## Surprises & Discoveries
 
@@ -36,6 +36,15 @@ After this refactor, a user should still be able to build and run the executable
 
 - Observation: The working tree contains many untracked result folders and scripts. They are not part of this refactor and must not be deleted, reformatted, or committed unless the user explicitly asks.
   Evidence: `git status --short` lists untracked `.cache/`, `deneme*/`, `plots/`, `spectra/`, scripts, and `src/main_splines.cpp`.
+
+- Observation: The untracked file `src/main_splines.cpp` contains its own `main` symbol and can be pulled into the build by the recursive CMake source glob.
+  Evidence: after reconfiguring with the extracted modules, linking failed with `duplicate symbol '_main'` from `src/main.cpp.o` and `liblattice_lib.a[22](main_splines.cpp.o)`. The CMake source list now explicitly excludes `main_splines.cpp`.
+
+- Observation: Some helper functions were used before their definitions only because all code lived in one translation unit. After extraction, declarations were needed for `findMiddleAtom(...)`, `scaleLattice(...)`, and `scaleLatticeAroundPoint(...)`.
+  Evidence: the first split build failed in `src/experiments/dislocation_indentation.cpp` with undeclared identifiers for `findMiddleAtom` and `scaleLatticeAroundPoint`; adding declarations to `include/experiments/common_simulation_helpers.h` resolved the error.
+
+- Observation: Default arguments cannot be repeated in a header declaration and in an included function definition in the same translation unit.
+  Evidence: the first split build failed in `src/experiments/common_simulation_helpers.cpp` with `redefinition of default argument`; removing the defaults from the shared header while keeping them on the existing definitions fixed the compile error.
 
 ## Decision Log
 
@@ -55,9 +64,17 @@ After this refactor, a user should still be able to build and run the executable
   Rationale: The repository already has domain headers under `include/geometry`, `include/mesh`, `include/output`, and one new experiment header at `include/experiments/shift_vertical_horizontal.h`. Following that pattern makes the organization discoverable.
   Date/Author: 2026-05-23 / Codex
 
+- Decision: Use one broad include header, `include/experiments/experiment_includes.h`, for the first extraction pass.
+  Rationale: This is not the final ideal include style, but it preserves behavior while moving large function bodies out of `main.cpp`. Once the split is stable, includes can be narrowed in a separate cleanup without mixing that work into the calculation-preserving refactor.
+  Date/Author: 2026-05-23 / Codex
+
+- Decision: Keep `findMiddleAtom(...)` in `src/experiments/deformation_examples.cpp` but declare it in `common_simulation_helpers.h`.
+  Rationale: The function was already shared implicitly in the old single-file layout and is used by dislocation/indentation workflows. Moving its body would be a larger rearrangement; declaring it preserves behavior with minimal body movement.
+  Date/Author: 2026-05-23 / Codex
+
 ## Outcomes & Retrospective
 
-No implementation milestone has been completed yet. The current outcome is this plan on branch `feature/main_factor`, ready for stepwise execution. This section must be updated after each major extraction and again after final validation.
+The implementation split `src/main.cpp` into focused experiment modules and reduced `src/main.cpp` to a small dispatcher. The project builds after a clean CMake configure. A small smoke run with `4 4 1 1` entered both perturbed final-test folders and started the remeshing path; the run was stopped after this evidence because the remesh smoke continued longer than necessary. The remaining operational behavior is unchanged by design: the active executable still dispatches `run_final_shift_tests(...)`.
 
 ## Context and Orientation
 
@@ -146,6 +163,10 @@ Expected successful ending:
 
     [100%] Built target lattice_triangulation
 
+Observed during implementation:
+
+    [100%] Built target lattice_triangulation
+
 Before each extraction, inspect the function and its local dependencies. For example:
 
     rg -n "void memory|void example_1_conti_zanzotto|void example_2_conti_zanzotto_triangular" src/main.cpp
@@ -213,6 +234,8 @@ The smoke test should create:
 
 If the smoke test takes too long in the remeshing case, stop it with `pkill -x lattice_triangulation` only after confirming that startup and the first case dispatch are correct. Record that interruption in `Outcomes & Retrospective`.
 
+Observed during implementation: the smoke test printed both `=== Running final test: left_bottom_perturbed_no_remesh_amp2 ===` and `=== Running final test: left_bottom_perturbed_remesh_amp2 ===`, printed `Applying triangulation-only shear perturbation: -1e-07`, entered `REMESHING STARTED`, and created both expected directories under `/private/tmp/main_factor_smoke/final_tests/`. The process was then stopped with `pkill -x lattice_triangulation`.
+
 Third, compare the active-case source behavior before and after the refactor when possible. A practical method is to save the stdout of a tiny no-remesh run before moving code and compare it after the move. Because this repository currently runs case 5 and 6 together, the implementer may temporarily set the final test list to only the no-remesh perturbed case for comparison, but must revert that temporary edit before committing. If any comparison uses a temporary edit, record it in this plan.
 
 Acceptance criteria:
@@ -251,6 +274,19 @@ Initial research transcript:
         5432 src/main_splines.cpp
          542 CMakeLists.txt
        12767 total
+
+Post-refactor line-count evidence:
+
+    $ wc -l src/main.cpp src/experiments/*.cpp
+          42 src/main.cpp
+         924 src/experiments/acoustic_studies.cpp
+         375 src/experiments/common_simulation_helpers.cpp
+         436 src/experiments/data_analysis.cpp
+         968 src/experiments/deformation_examples.cpp
+        1494 src/experiments/dislocation_indentation.cpp
+         426 src/experiments/shifting_examples.cpp
+         574 src/experiments/stress_controlled_examples.cpp
+         976 src/experiments/zanzotto_examples.cpp
 
 Top-level function search in `src/main.cpp`:
 
@@ -356,4 +392,5 @@ Keep dependencies local to each `.cpp` file. For example, if only acoustic studi
 ## Change Log
 
 - 2026-05-23 / Codex: Created the initial ExecPlan on branch `feature/main_factor` after reading `PLANS.md`, inspecting `src/main.cpp`, and recording the intended incremental refactor strategy. The reason for this change is to give a future implementer a safe, self-contained path for splitting `main.cpp` without changing calculations.
-
+- 2026-05-23 / Codex: Updated progress, discoveries, decisions, and retrospective after the first implementation pass moved `main.cpp` bodies into `src/experiments/` modules. The reason for this change is to keep the ExecPlan accurate as a living document while implementation proceeds.
+- 2026-05-23 / Codex: Updated validation evidence after the clean build and smoke run. The reason for this change is to record what proved the refactor still builds and dispatches the active final-test workflow.
