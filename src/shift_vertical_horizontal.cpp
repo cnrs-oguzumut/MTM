@@ -350,6 +350,71 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
 
   int file_counter = 0;
   double post_energy_previous = 0.0;
+  bool plasticity = false;
+
+  {
+    UserData unloadedUserData(square_points, elements, calculator,
+                              potential_func, potential_func_der, zero,
+                              optimal_lattice_parameter, F_ext,
+                              interior_mapping, full_mapping, active_elements,
+                              plasticity);
+
+    double unloaded_energy = 0.0;
+    double unloaded_area = 1.0;
+    Eigen::Matrix2d unloaded_stress_tensor = Eigen::Matrix2d::Zero();
+    ConfigurationSaver::calculateEnergyAndStress(
+        &unloadedUserData, unloaded_energy, unloaded_stress_tensor, true);
+    double unloaded_stress = unloaded_stress_tensor(0, 1);
+    unloaded_area = ConfigurationSaver::calculateTotalArea2D(&unloadedUserData);
+
+    int file_id = caller_id + file_counter;
+    double saving_value = 0.0;
+
+    runInSubdirectory("pre_relaxation", [&]() {
+      ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+          &unloadedUserData, file_id, unloaded_energy, unloaded_stress, true);
+      ConfigurationSaver::saveTriangleData(&unloadedUserData, file_id,
+                                           domain_dims, offsets, full_mapping);
+      ConfigurationSaver::saveElements(elements, active_elements, file_id);
+
+      auto [num_dislocations_unloaded_pre, coordination_unloaded_pre] =
+          DefectAnalysis::analyzeDefectsInReferenceConfig(
+              &unloadedUserData, file_id, dndx, offsets, original_domain_map,
+              translation_map, domain_dims_point, element_area, pbc, true);
+      ConfigurationSaver::writeToVTK(
+          unloadedUserData.points, unloadedUserData.elements,
+          &unloadedUserData, file_id, true, coordination_unloaded_pre,
+          saving_value);
+      ConfigurationSaver::logDislocationData(saving_value,
+                                             num_dislocations_unloaded_pre);
+    });
+
+    ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+        &unloadedUserData, file_id, unloaded_energy, unloaded_stress, true);
+    ConfigurationSaver::saveTriangleData(&unloadedUserData, file_id,
+                                         domain_dims, offsets, full_mapping);
+    ConfigurationSaver::saveElements(elements, active_elements, file_id);
+
+    auto [num_dislocations_unloaded_post, coordination_unloaded_post] =
+        DefectAnalysis::analyzeDefectsInReferenceConfig(
+            &unloadedUserData, file_id, dndx, offsets, original_domain_map,
+            translation_map, domain_dims_point, element_area, pbc, true);
+    ConfigurationSaver::writeToVTK(
+        unloadedUserData.points, unloadedUserData.elements, &unloadedUserData,
+        file_id, true, coordination_unloaded_post, saving_value);
+    ConfigurationSaver::logDislocationData(saving_value,
+                                           num_dislocations_unloaded_post);
+
+    ConfigurationSaver::logEnergyAndStress_v2(
+        file_id, saving_value, unloaded_energy, unloaded_stress,
+        unloaded_energy, unloaded_stress, unloaded_area, unloaded_area, false);
+
+    std::cout << "Saved unloaded configuration as file id " << file_id
+              << std::endl;
+
+    file_counter++;
+    post_energy_previous = unloaded_energy;
+  }
 
   for (int step = 0; step < total_steps; ++step) {
     double horizontal_displacement = load_path[step].first;
@@ -370,7 +435,6 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
           reference_points[node_idx].coord + prescribed_displacements[node_idx];
     }
 
-    bool plasticity = false;
     UserData userData(square_points, elements, calculator, potential_func,
                       potential_func_der, zero, optimal_lattice_parameter,
                       F_ext, interior_mapping, full_mapping, active_elements,
@@ -486,7 +550,7 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
     ConfigurationSaver::logDislocationData(saving_value, num_dislocations_post);
 
     ConfigurationSaver::logEnergyAndStress_v2(
-        step, saving_value, pre_energy, pre_stress, post_energy, post_stress,
+        file_id, saving_value, pre_energy, pre_stress, post_energy, post_stress,
         pre_area, post_area, shouldRemesh);
 
     std::cout << "Step " << step << "/" << (total_steps - 1)
@@ -505,6 +569,7 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
 void run_final_shift_tests(int nx, int ny, int horizontal_steps,
                            int vertical_steps) {
   struct FinalShiftTest {
+    int simulation_id;
     const char *folder_name;
     ShiftBoundaryTest boundary_test;
     bool remeshing_enabled;
@@ -513,15 +578,20 @@ void run_final_shift_tests(int nx, int ny, int horizontal_steps,
 
   const double amplitude_lattice_spacings = 2.0;
   const FinalShiftTest tests[] = {
-      {"left_bottom_perturbed_no_remesh_amp2",
+      {1, "simulation_01_left_bottom_no_remesh_amp2",
+       ShiftBoundaryTest::LeftBottomPositive, false, false},
+      {2, "simulation_02_left_bottom_remesh_amp2",
+       ShiftBoundaryTest::LeftBottomPositive, true, false},
+      {5, "simulation_05_left_bottom_perturbed_no_remesh_amp2",
        ShiftBoundaryTest::LeftBottomPositive, false, true},
-      {"left_bottom_perturbed_remesh_amp2",
+      {6, "simulation_06_left_bottom_perturbed_remesh_amp2",
        ShiftBoundaryTest::LeftBottomPositive, true, true},
   };
 
   runInSubdirectory("final_tests", [&]() {
     for (const auto &test : tests) {
-      std::cout << "\n=== Running final test: " << test.folder_name
+      std::cout << "\n=== Running simulation " << test.simulation_id << ": "
+                << test.folder_name
                 << " ===" << std::endl;
       runInSubdirectory(test.folder_name, [&]() {
         shift_vertical_horizontal(0, nx, ny, horizontal_steps, vertical_steps,
@@ -533,4 +603,3 @@ void run_final_shift_tests(int nx, int ny, int horizontal_steps,
     }
   });
 }
-

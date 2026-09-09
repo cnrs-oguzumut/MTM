@@ -651,10 +651,14 @@ void ConfigurationSaver::logEnergyAndStress_v2(
     double post_area,  
     bool shouldRemesh)  // Added plasticity flag parameter
 {
-    static bool first_call = true;
     static std::ofstream log_file;
+    static std::filesystem::path log_directory;
+    const std::filesystem::path current_directory = std::filesystem::current_path();
     
-    if (first_call) {
+    if (!log_file.is_open() || log_directory != current_directory) {
+        if (log_file.is_open()) {
+            log_file.close();
+        }
         log_file.open("energy_stress_log.csv");
         
         // Write header
@@ -665,7 +669,7 @@ void ConfigurationSaver::logEnergyAndStress_v2(
         log_file << std::scientific 
                  << std::setprecision(std::numeric_limits<double>::max_digits10);
         
-        first_call = false;
+        log_directory = current_directory;
     }
     
     // Write data (precision is already set)
@@ -1254,25 +1258,17 @@ void ConfigurationSaver::logDislocationData(
     double alpha,
     int num_dislocations
 ) {
-    static bool first_write = true;
     std::ofstream file;
+    const bool write_header = !std::filesystem::exists("dislocation_log.txt");
     
-    // Open file in append mode (or create if first time)
-    if (first_write) {
-        file.open("dislocation_log.txt", std::ios::out);
-        if (!file.is_open()) {
-            std::cerr << "Error: Could not create dislocation_log.txt" << std::endl;
-            return;
-        }
-        // Write header
+    file.open("dislocation_log.txt", std::ios::app);
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open dislocation_log.txt" << std::endl;
+        return;
+    }
+
+    if (write_header) {
         file << "# Alpha\tDislocations\n";
-        first_write = false;
-    } else {
-        file.open("dislocation_log.txt", std::ios::app);
-        if (!file.is_open()) {
-            std::cerr << "Error: Could not open dislocation_log.txt" << std::endl;
-            return;
-        }
     }
     
     // Write data
