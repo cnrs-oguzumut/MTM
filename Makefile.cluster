@@ -15,8 +15,12 @@ CXXFLAGS := -O3 -std=c++17 -march=native -fopenmp \
             -fno-math-errno -ffinite-math-only -funroll-loops \
             -DNDEBUG -w
 
-# --- 2. SYSTEM PATHS (/softs) ---
-SOFT_ROOT := /softs
+# --- 2. SYSTEM PATHS (/softs/bookworm or /softs) ---
+ifneq ($(wildcard /softs/bookworm/*),)
+    SOFT_ROOT := /softs/bookworm
+else
+    SOFT_ROOT := /softs
+endif
 
 BOOST_ROOT     := $(SOFT_ROOT)/boost_1_85_0
 CGAL_ROOT      := $(SOFT_ROOT)/cgal-6.0.1
