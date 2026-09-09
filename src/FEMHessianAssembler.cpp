@@ -10,125 +10,124 @@
 #include <Spectra/MatOp/SparseSymMatProd.h>
 #include <Spectra/SymEigsSolver.h>
 
+double
+FEMHessianAssembler::calculate_total_energy(const alglib::real_1d_array &x,
+                                            UserData *userData) {
+  std::vector<ElementTriangle2D> &elements = userData->elements;
+  const double normalisation = pow(userData->ideal_lattice_parameter, 2.0);
 
+  double total_energy = 0.0;
 
+#pragma omp parallel reduction(+ : total_energy)
+  {
+#pragma omp for schedule(guided)
+    for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
+      ElementTriangle2D &element = elements[userData->active_elements[idx]];
 
+      element.calculate_deformation_gradient(x);
+      const Eigen::Matrix2d F = element.getDeformationGradient();
+      Eigen::Matrix2d C = F.transpose() * F;
 
-double FEMHessianAssembler::calculate_total_energy(
-    const alglib::real_1d_array &x,
-    UserData* userData)
-{
-    std::vector<ElementTriangle2D>& elements = userData->elements;
-    const double normalisation = pow(userData->ideal_lattice_parameter, 2.0);
+      const auto result = lagrange::reduce(C);
 
-    double total_energy = 0.0;
-    
-    #pragma omp parallel reduction(+:total_energy)
-    {
-        #pragma omp for schedule(guided)
-        for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
-            ElementTriangle2D& element = elements[userData->active_elements[idx]];
-            
-            element.calculate_deformation_gradient(x);
-            const Eigen::Matrix2d F = element.getDeformationGradient();
-            Eigen::Matrix2d C = F.transpose() * F;
-            
-            const auto result = lagrange::reduce(C);
-            
-            // ✅ CORRECT: Use energy_function (V(r)), not derivative_function (V'(r))
-            const double element_energy = userData->calculator.calculate_energy(
-                result.C_reduced, 
-                userData->energy_function,    // ← CORRECT!
-                userData->zero_energy
-            ) / normalisation;
-            
-            total_energy += element_energy * element.getReferenceArea();
-        }
+      // ✅ CORRECT: Use energy_function (V(r)), not derivative_function (V'(r))
+      const double element_energy = userData->calculator.calculate_energy(
+                                        result.C_reduced,
+                                        userData->energy_function, // ← CORRECT!
+                                        userData->zero_energy) /
+                                    normalisation;
+
+      total_energy += element_energy * element.getReferenceArea();
     }
-    
-    return total_energy;
+  }
+
+  return total_energy;
 }
 void FEMHessianAssembler::compute_energy_landscape(
-    const alglib::real_1d_array &x0,
-    const Eigen::VectorXd &eigenvector,
-    UserData* userData,
-    int mode_number,
-    double eigenvalue,
-    double alpha_max ,
-    int num_points ,
-    const std::string& output_folder) // Changed from int itereration
+    const alglib::real_1d_array &x0, const Eigen::VectorXd &eigenvector,
+    UserData *userData, int mode_number, double eigenvalue, double alpha_max,
+    int num_points,
+    const std::string &output_folder) // Changed from int itereration
 {
-    const int n_vars = x0.length();
-    
-    // Verify size
-    if (eigenvector.size() != n_vars) {
-        std::cerr << "ERROR: Size mismatch!" << std::endl;
-        return;
+  const int n_vars = x0.length();
+
+  // Verify size
+  if (eigenvector.size() != n_vars) {
+    std::cerr << "ERROR: Size mismatch!" << std::endl;
+    return;
+  }
+
+  // Reference energy at α=0
+  double E0 = calculate_total_energy(x0, userData);
+
+  // ---------------------------------------------------------
+  // Construct the Full Filename
+  // Use the passed output_folder directly.
+  // ---------------------------------------------------------
+  std::stringstream filename_ss;
+  // Assumes output_folder does not have a trailing slash (based on your
+  // snippet)
+  filename_ss << output_folder << "/energy_mode_" << std::setfill('0')
+              << std::setw(4) << mode_number << ".dat";
+  std::string full_filepath = filename_ss.str();
+
+  std::ofstream file(full_filepath);
+
+  if (!file.is_open()) {
+    std::cerr << "ERROR: Could not open file for writing: " << full_filepath
+              << std::endl;
+    // This might happen if the directory wasn't created externally before
+    // calling this
+    return;
+  }
+
+  // ---------------------------------------------------------
+  // Write Data
+  // ---------------------------------------------------------
+  file << "# Mode " << mode_number << ", eigenvalue = " << eigenvalue
+       << std::endl;
+  file << "# alpha  E(alpha)  deltaE(alpha)" << std::endl;
+  file << std::setprecision(12) << std::scientific;
+
+  std::cout << "\nMode " << mode_number << " (λ = " << eigenvalue << ")"
+            << std::endl;
+  std::cout << "E₀ = " << E0 << std::endl;
+
+  // Perturbed configuration array
+  alglib::real_1d_array x_perturbed;
+  x_perturbed.setlength(n_vars);
+
+  // Loop over α
+  for (int i = 0; i < num_points; i++) {
+    double alpha = -alpha_max + (2.0 * alpha_max) * i / (num_points - 1);
+
+    // Perturb: x = x₀ + α·u
+    for (int j = 0; j < n_vars; j++) {
+      x_perturbed[j] = x0[j] + alpha * eigenvector(j);
     }
 
-    // Reference energy at α=0
-    double E0 = calculate_total_energy(x0, userData);
+    // Calculate energy
+    double E_alpha = calculate_total_energy(x_perturbed, userData);
+    double deltaE = E_alpha - E0;
 
-    // ---------------------------------------------------------
-    // Construct the Full Filename
-    // Use the passed output_folder directly.
-    // ---------------------------------------------------------
-    std::stringstream filename_ss;
-    // Assumes output_folder does not have a trailing slash (based on your snippet)
-    filename_ss << output_folder << "/energy_mode_" << std::setfill('0') << std::setw(4) << mode_number << ".dat";
-    std::string full_filepath = filename_ss.str();
+    // Write to file
+    file << alpha << "  " << E_alpha << "  " << deltaE << std::endl;
 
-    std::ofstream file(full_filepath);
-    
-    if (!file.is_open()) {
-        std::cerr << "ERROR: Could not open file for writing: " << full_filepath << std::endl;
-        // This might happen if the directory wasn't created externally before calling this
-        return;
+    // Progress
+    if (i % 10 == 0) {
+      std::cout << "  α = " << std::setw(7) << std::fixed
+                << std::setprecision(3) << alpha
+                << ",  ΔE = " << std::scientific << deltaE << std::endl;
     }
-    
-    // ---------------------------------------------------------
-    // Write Data
-    // ---------------------------------------------------------
-    file << "# Mode " << mode_number << ", eigenvalue = " << eigenvalue << std::endl;
-    file << "# alpha  E(alpha)  deltaE(alpha)" << std::endl;
-    file << std::setprecision(12) << std::scientific;
+  }
 
-    std::cout << "\nMode " << mode_number << " (λ = " << eigenvalue << ")" << std::endl;
-    std::cout << "E₀ = " << E0 << std::endl;
-
-    // Perturbed configuration array
-    alglib::real_1d_array x_perturbed;
-    x_perturbed.setlength(n_vars);
-
-    // Loop over α
-    for (int i = 0; i < num_points; i++) {
-        double alpha = -alpha_max + (2.0 * alpha_max) * i / (num_points - 1);
-
-        // Perturb: x = x₀ + α·u
-        for (int j = 0; j < n_vars; j++) {
-            x_perturbed[j] = x0[j] + alpha * eigenvector(j);
-        }
-
-        // Calculate energy
-        double E_alpha = calculate_total_energy(x_perturbed, userData);
-        double deltaE = E_alpha - E0;
-
-        // Write to file
-        file << alpha << "  " << E_alpha << "  " << deltaE << std::endl;
-
-        // Progress
-        if (i % 10 == 0) {
-            std::cout << "  α = " << std::setw(7) << std::fixed << std::setprecision(3) 
-                      << alpha << ",  ΔE = " << std::scientific << deltaE << std::endl;
-        }
-    }
-
-    file.close();
-    std::cout << "Saved: " << full_filepath << std::endl;
+  file.close();
+  std::cout << "Saved: " << full_filepath << std::endl;
 }
 
-void FEMHessianAssembler::extractAcousticTensor(const itensor::ITensor& A_tensor, double A[2][2][2][2]) {
-  
+void FEMHessianAssembler::extractAcousticTensor(
+    const itensor::ITensor &A_tensor, double A[2][2][2][2]) {
+
   // Get the ITensor indices to use for access
   itensor::Index i_ = A_tensor.inds()[0]; // Assuming first index is i
   itensor::Index K_ = A_tensor.inds()[1]; // Assuming second index is K
@@ -140,14 +139,16 @@ void FEMHessianAssembler::extractAcousticTensor(const itensor::ITensor& A_tensor
     for (int K = 1; K <= 2; K++) {
       for (int j = 1; j <= 2; j++) {
         for (int L = 1; L <= 2; L++) {
-          
+
           // ⭐ CORRECTED ACCESS: Access the ITensor using its defined indices
           // and store it into the 0-based C++ array
-          
-          A[i - 1][K - 1][j - 1][L - 1] = A_tensor.elt(i_=i, K_=K, j_=j, L_=L);
-          
+
+          A[i - 1][K - 1][j - 1][L - 1] =
+              A_tensor.elt(i_ = i, K_ = K, j_ = j, L_ = L);
+
           // Print statement for verification:
-          // std::cout << "A[" << i-1 << "][" << K-1 << "][" << j-1 << "][" << L-1 << "] = " 
+          // std::cout << "A[" << i-1 << "][" << K-1 << "][" << j-1 << "][" <<
+          // L-1 << "] = "
           //           << A[i - 1][K - 1][j - 1][L - 1] << "\n";
         }
       }
@@ -327,11 +328,9 @@ Eigen::SparseMatrix<double> FEMHessianAssembler::assembleGlobalStiffness(
   return K_global;
 }
 
-
 Eigen::VectorXd FEMHessianAssembler::assembleGlobalResidual(
     std::vector<ElementTriangle2D> &elements,
-    const std::vector<Point2D> &current_points, 
-    int num_total_dofs,
+    const std::vector<Point2D> &current_points, int num_total_dofs,
     const std::vector<std::pair<int, int>> &dof_mapping) {
   // Safety check: ensure energy parameters were set
   if (strain_calculator == nullptr) {
@@ -388,9 +387,9 @@ Eigen::VectorXd FEMHessianAssembler::assembleGlobalResidual(
   return R_global;
 }
 
-Eigen::VectorXd
-FEMHessianAssembler::computeElementResidual(const ElementTriangle2D &element,
-                                            const std::vector<Point2D>& current_points) {
+Eigen::VectorXd FEMHessianAssembler::computeElementResidual(
+    const ElementTriangle2D &element,
+    const std::vector<Point2D> &current_points) {
   // Safety check: ensure energy parameters were set
   if (strain_calculator == nullptr) {
     std::cerr
@@ -407,32 +406,35 @@ FEMHessianAssembler::computeElementResidual(const ElementTriangle2D &element,
   Eigen::VectorXd f_elem = Eigen::VectorXd::Zero(total_dofs);
 
   // Calculate deformation gradient from current positions
-  const_cast<ElementTriangle2D&>(element).calculate_deformation_gradient(current_points);
-  
+  const_cast<ElementTriangle2D &>(element).calculate_deformation_gradient(
+      current_points);
+
   // Get deformation gradient
   const Eigen::Matrix2d F = element.getDeformationGradient();
-  
+
   // Compute right Cauchy-Green tensor
   Eigen::Matrix2d C = F.transpose() * F;
-  
+
   // Reduce to fundamental domain
   const auto result = lagrange::reduce(C);
-  
+
   // Calculate energy derivative using member variables
   const Eigen::Matrix2d dE_dC = strain_calculator->calculate_derivative(
-      result.C_reduced, potential_func_der) / normalisation;
-  
+                                    result.C_reduced, potential_func_der) /
+                                normalisation;
+
   // Compute first Piola-Kirchhoff stress tensor
   // (includes reference area)
-  const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC * 
-                           result.m_matrix.transpose() * element.getReferenceArea();
+  const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC *
+                            result.m_matrix.transpose() *
+                            element.getReferenceArea();
 
   // Get shape function derivatives: dN^a/dX_K (3 nodes × 2 coords)
   const Eigen::Matrix<double, 3, 2> &dN_dX = element.getDNdX();
 
   // Assemble element residual: r^a_i = P_{iK} * dN^a_K
-  for (int a = 0; a < num_nodes; a++) {         // Node a
-    for (int i = 0; i < spatial_dim; i++) {     // DOF direction i
+  for (int a = 0; a < num_nodes; a++) {     // Node a
+    for (int i = 0; i < spatial_dim; i++) { // DOF direction i
 
       double r_a_i = 0.0;
 
@@ -450,25 +452,24 @@ FEMHessianAssembler::computeElementResidual(const ElementTriangle2D &element,
   return f_elem;
 }
 
-
 std::vector<Point2D> FEMHessianAssembler::solveNewtonRaphson(
     std::vector<ElementTriangle2D> &elements,
     const std::vector<Point2D> &initial_points,
-    const std::vector<std::pair<int, int>> &dof_mapping,
-    int num_total_dofs,
-    double tolerance,
-    int max_iterations,
-    bool verbose) {
-  
+    const std::vector<std::pair<int, int>> &dof_mapping, int num_total_dofs,
+    double tolerance, int max_iterations, bool verbose) {
+
   // Safety check
   if (strain_calculator == nullptr) {
-    std::cerr << "Error: Energy parameters not set! Call setEnergyParameters() first." << std::endl;
-    throw std::runtime_error("FEMHessianAssembler: energy parameters not initialized");
+    std::cerr
+        << "Error: Energy parameters not set! Call setEnergyParameters() first."
+        << std::endl;
+    throw std::runtime_error(
+        "FEMHessianAssembler: energy parameters not initialized");
   }
 
   // Initialize current positions
   std::vector<Point2D> current_points = initial_points;
-  
+
   // Number of free DOFs per direction
   int num_free_nodes = num_total_dofs / 2;
 
@@ -481,135 +482,124 @@ std::vector<Point2D> FEMHessianAssembler::solveNewtonRaphson(
 
   // Newton-Raphson iteration
   for (int iter = 0; iter < max_iterations; iter++) {
-    
+
     // 1. Assemble global residual vector R
-    Eigen::VectorXd R = assembleGlobalResidual(elements, current_points, 
+    Eigen::VectorXd R = assembleGlobalResidual(elements, current_points,
                                                num_total_dofs, dof_mapping);
-    
+
     // 2. Check convergence
     double residual_norm = R.norm();
-    
+
     if (verbose) {
-      std::cout << "Iteration " << iter << ": ||R|| = " << residual_norm << std::endl;
+      std::cout << "Iteration " << iter << ": ||R|| = " << residual_norm
+                << std::endl;
     }
-    
+
     if (residual_norm < tolerance) {
       if (verbose) {
         std::cout << "Converged in " << iter << " iterations!" << std::endl;
       }
       return current_points;
     }
-    
+
     // 3. Assemble global stiffness matrix K (Jacobian)
-    Eigen::SparseMatrix<double> K = assembleGlobalStiffness(elements, current_points,
-                                                            num_total_dofs, dof_mapping);
-    
+    Eigen::SparseMatrix<double> K = assembleGlobalStiffness(
+        elements, current_points, num_total_dofs, dof_mapping);
+
     // 4. Solve linear system: K * delta_u = -R
     Eigen::VectorXd delta_u;
-    
+
     // ============================================================
     // CHOOSE YOUR SOLVER (uncomment one)
     // ============================================================
-    
+
     // OPTION 1: SparseLU (general purpose, slower)
     // {
     //   Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
     //   solver.analyzePattern(K);
     //   solver.factorize(K);
     //   if (solver.info() != Eigen::Success) {
-    //     std::cerr << "Error: SparseLU factorization failed at iteration " << iter << std::endl;
-    //     return current_points;
+    //     std::cerr << "Error: SparseLU factorization failed at iteration " <<
+    //     iter << std::endl; return current_points;
     //   }
     //   delta_u = solver.solve(-R);
     //   if (solver.info() != Eigen::Success) {
-    //     std::cerr << "Error: SparseLU solve failed at iteration " << iter << std::endl;
-    //     return current_points;
+    //     std::cerr << "Error: SparseLU solve failed at iteration " << iter <<
+    //     std::endl; return current_points;
     //   }
     // }
-    
+
     // OPTION 2: SimplicialLDLT (fast for symmetric matrices) - RECOMMENDED
     {
       Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver;
       solver.analyzePattern(K);
       solver.factorize(K);
       if (solver.info() != Eigen::Success) {
-        std::cerr << "Error: SimplicialLDLT factorization failed at iteration " << iter << std::endl;
+        std::cerr << "Error: SimplicialLDLT factorization failed at iteration "
+                  << iter << std::endl;
         return current_points;
       }
       delta_u = solver.solve(-R);
       if (solver.info() != Eigen::Success) {
-        std::cerr << "Error: SimplicialLDLT solve failed at iteration " << iter << std::endl;
+        std::cerr << "Error: SimplicialLDLT solve failed at iteration " << iter
+                  << std::endl;
         return current_points;
       }
     }
-    
+
     // OPTION 3: ConjugateGradient (iterative, good for large systems)
     // {
-    //   Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> solver;
-    //   solver.setMaxIterations(3000);
+    //   Eigen::ConjugateGradient<Eigen::SparseMatrix<double>,
+    //   Eigen::Lower|Eigen::Upper> solver; solver.setMaxIterations(3000);
     //   solver.setTolerance(1e-6);
     //   solver.compute(K);
     //   if (solver.info() != Eigen::Success) {
-    //     std::cerr << "Error: CG initialization failed at iteration " << iter << std::endl;
-    //     return current_points;
+    //     std::cerr << "Error: CG initialization failed at iteration " << iter
+    //     << std::endl; return current_points;
     //   }
     //   delta_u = solver.solve(-R);
     //   if (solver.info() != Eigen::Success) {
-    //     std::cerr << "Error: CG solve failed at iteration " << iter << std::endl;
-    //     return current_points;
+    //     std::cerr << "Error: CG solve failed at iteration " << iter <<
+    //     std::endl; return current_points;
     //   }
     //   if (verbose) {
-    //     std::cout << "  CG iterations: " << solver.iterations() 
+    //     std::cout << "  CG iterations: " << solver.iterations()
     //               << ", error: " << solver.error() << std::endl;
     //   }
     // }
-    
+
     // ============================================================
-    
+
     // 5. Update positions: u_new = u_old + delta_u
     for (size_t node_idx = 0; node_idx < current_points.size(); node_idx++) {
       auto [orig_idx, solver_idx] = dof_mapping[node_idx];
-      
+
       if (solver_idx != -1) { // Free DOF
         // Extract displacement from solution vector
         double delta_x = delta_u(solver_idx);
         double delta_y = delta_u(solver_idx + num_free_nodes);
-        
+
         // Update position using Eigen::Vector2d interface
-        current_points[node_idx].coord.x() += 0.01*delta_x;
-        current_points[node_idx].coord.y() += 0.01*delta_y;
+        current_points[node_idx].coord.x() += 0.01 * delta_x;
+        current_points[node_idx].coord.y() += 0.01 * delta_y;
       }
       // Fixed DOFs: do nothing
     }
-    
+
     if (verbose && iter % 1 == 0) {
       std::cout << "  |delta_u| = " << delta_u.norm() << std::endl;
     }
   }
-  
+
   // Did not converge
-  std::cerr << "Warning: Newton-Raphson did not converge in " << max_iterations << " iterations" << std::endl;
+  std::cerr << "Warning: Newton-Raphson did not converge in " << max_iterations
+            << " iterations" << std::endl;
   Eigen::VectorXd R_final = assembleGlobalResidual(elements, current_points,
                                                    num_total_dofs, dof_mapping);
   std::cerr << "Final residual norm: " << R_final.norm() << std::endl;
-  
+
   return current_points;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /// @brief ////////////////////////////////////////////////////////
 
@@ -761,7 +751,7 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_spectra(
   }
 
   // Number of Lanczos vectors (ncv must be > N)
-  //int ncv = std::min(2 * N + 1, n - 1);
+  // int ncv = std::min(2 * N + 1, n - 1);
   // int ncv = std::min(4 * N, n - 1);  // Give it plenty of room
   int ncv = std::min(std::max(2 * N + 1, 20), n - 1);
 
@@ -959,8 +949,6 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
   return results;
 }
 
-
-
 #include <armadillo>
 
 EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_armadillo(
@@ -974,8 +962,7 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_armadillo(
     return results;
   }
 
-  std::cout << "Computing " << N
-            << " smallest eigenvalues using Armadillo..."
+  std::cout << "Computing " << N << " smallest eigenvalues using Armadillo..."
             << std::endl;
   std::cout << "Matrix size: " << n << " x " << n << std::endl;
 
@@ -990,37 +977,39 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_armadillo(
   try {
     // Convert Eigen sparse matrix to Armadillo sparse matrix
     std::cout << "Converting Eigen sparse matrix to Armadillo..." << std::endl;
-    
+
     // Create vectors for Armadillo batch constructor
     arma::umat locations(2, K_global.nonZeros());
     arma::vec values(K_global.nonZeros());
-    
+
     int idx = 0;
     for (int k = 0; k < K_global.outerSize(); ++k) {
-      for (Eigen::SparseMatrix<double>::InnerIterator it(K_global, k); it; ++it) {
+      for (Eigen::SparseMatrix<double>::InnerIterator it(K_global, k); it;
+           ++it) {
         locations(0, idx) = it.row();
         locations(1, idx) = it.col();
         values(idx) = it.value();
         idx++;
       }
     }
-    
+
     arma::sp_mat K_arma(locations, values, n, n);
-    
-    std::cout << "Conversion complete. Non-zeros: " << K_arma.n_nonzero 
+
+    std::cout << "Conversion complete. Non-zeros: " << K_arma.n_nonzero
               << std::endl;
 
     // Prepare for eigenvalue computation
     arma::vec eigval;
     arma::mat eigvec;
-    
-    std::cout << "Computing eigenvalues with Armadillo eigs_sym..." << std::endl;
-    
+
+    std::cout << "Computing eigenvalues with Armadillo eigs_sym..."
+              << std::endl;
+
     // Set up eigs_opts for tolerance and max iterations
     arma::eigs_opts opts;
     opts.tol = 1e-10;
     opts.maxiter = 10000;
-    
+
     // Compute smallest eigenvalues
     bool success;
     if (shift == 0.0) {
@@ -1038,7 +1027,7 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_armadillo(
       return results;
     }
 
-    std::cout << "Armadillo: Successfully computed " << eigval.n_elem 
+    std::cout << "Armadillo: Successfully computed " << eigval.n_elem
               << " eigenvalues" << std::endl;
 
     // Convert results back to Eigen format
@@ -1066,7 +1055,8 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_armadillo(
 
     for (int i = 0; i < results.num_computed; i++) {
       sorted_eigenvalues(i) = sorted_indices[i].first;
-      sorted_eigenvectors.col(i) = results.eigenvectors.col(sorted_indices[i].second);
+      sorted_eigenvectors.col(i) =
+          results.eigenvectors.col(sorted_indices[i].second);
     }
 
     results.eigenvalues = sorted_eigenvalues;
@@ -1076,7 +1066,8 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_armadillo(
     std::cout << "Successfully computed " << results.num_computed
               << " eigenvalues." << std::endl;
     if (results.num_computed > 0) {
-      std::cout << "Smallest eigenvalue: " << results.eigenvalues(0) << std::endl;
+      std::cout << "Smallest eigenvalue: " << results.eigenvalues(0)
+                << std::endl;
       if (results.num_computed > 1) {
         std::cout << "Largest of computed eigenvalues: "
                   << results.eigenvalues(results.num_computed - 1) << std::endl;
@@ -1084,12 +1075,12 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_armadillo(
     }
 
   } catch (const std::exception &e) {
-    std::cerr << "Exception in Armadillo computation: " << e.what() << std::endl;
+    std::cerr << "Exception in Armadillo computation: " << e.what()
+              << std::endl;
   }
 
   return results;
 }
-
 
 #include <fstream>
 #include <iomanip>
@@ -2151,48 +2142,43 @@ double FEMHessianAssembler::computeMinNonRigidEigenvalue(
   return first_non_rigid_eigenvalue;
 }
 
-
-
 std::vector<int> FEMHessianAssembler::getLocalizedModes(
-    const EigenResults& eigen_results,
-    const std::vector<std::pair<int, int>>& dof_mapping,
-    int num_nodes,
-    int num_rigid,
-    double threshold)
-{
-    // Compute participation ratios
-    ParticipationAnalysis participation = analyzeParticipationRatios(
-        eigen_results, dof_mapping, num_nodes, threshold);
-    
-    // Extract localized mode indices
-    std::vector<int> localized_indices;
-    for (int i = num_rigid; i < eigen_results.num_computed; i++) {
-        if (!participation.is_extended[i]) {
-            localized_indices.push_back(i);
-        }
+    const EigenResults &eigen_results,
+    const std::vector<std::pair<int, int>> &dof_mapping, int num_nodes,
+    int num_rigid, double threshold) {
+  // Compute participation ratios
+  ParticipationAnalysis participation = analyzeParticipationRatios(
+      eigen_results, dof_mapping, num_nodes, threshold);
+
+  // Extract localized mode indices
+  std::vector<int> localized_indices;
+  for (int i = num_rigid; i < eigen_results.num_computed; i++) {
+    if (!participation.is_extended[i]) {
+      localized_indices.push_back(i);
     }
-    
-    return localized_indices;
+  }
+
+  return localized_indices;
 }
 
 Eigen::VectorXd FEMHessianAssembler::computeDiagonalPreconditioner(
     std::vector<ElementTriangle2D> &elements,
     const std::vector<Point2D> &points,
-    const std::vector<std::pair<int, int>> &dof_mapping,
-    int num_total_dofs) {
-  
-  std::cout << "Computing diagonal preconditioner (fast version)..." << std::endl;
-  
+    const std::vector<std::pair<int, int>> &dof_mapping, int num_total_dofs) {
+
+  std::cout << "Computing diagonal preconditioner (fast version)..."
+            << std::endl;
+
   // Assemble ONLY diagonal of Hessian - much faster!
   Eigen::VectorXd H_diag = assembleGlobalStiffnessDiagonal(
       elements, points, num_total_dofs, dof_mapping);
-  
+
   // Compute preconditioner from diagonal
   Eigen::VectorXd diag_precond(num_total_dofs);
-  
+
   for (int i = 0; i < num_total_dofs; i++) {
     double diag_val = H_diag(i);
-    
+
     // Prevent division by zero and ensure positive
     if (std::abs(diag_val) < 1e-12) {
       diag_precond(i) = 1.0;
@@ -2201,46 +2187,45 @@ Eigen::VectorXd FEMHessianAssembler::computeDiagonalPreconditioner(
       diag_precond(i) = 1.0 / std::sqrt(std::abs(diag_val));
     }
   }
-  
-  std::cout << "Preconditioner computed. Min: " << diag_precond.minCoeff() 
+
+  std::cout << "Preconditioner computed. Min: " << diag_precond.minCoeff()
             << ", Max: " << diag_precond.maxCoeff() << std::endl;
-  
+
   return diag_precond;
 }
 
-alglib::real_1d_array FEMHessianAssembler::eigenToAlglibArray(
-    const Eigen::VectorXd& eigen_vec) {
-  
+alglib::real_1d_array
+FEMHessianAssembler::eigenToAlglibArray(const Eigen::VectorXd &eigen_vec) {
+
   alglib::real_1d_array alglib_array;
   alglib_array.setlength(eigen_vec.size());
-  
+
   for (int i = 0; i < eigen_vec.size(); i++) {
     alglib_array[i] = eigen_vec(i);
   }
-  
+
   return alglib_array;
 }
-
-
 
 // Add to FEMHessianAssembler.cpp
 
 Eigen::VectorXd FEMHessianAssembler::assembleGlobalStiffnessDiagonal(
     std::vector<ElementTriangle2D> &elements,
-    const std::vector<Point2D> &current_points,
-    int num_total_dofs,
+    const std::vector<Point2D> &current_points, int num_total_dofs,
     const std::vector<std::pair<int, int>> &dof_mapping) {
-  
+
   // Safety check: ensure energy parameters were set
   if (strain_calculator == nullptr) {
-    std::cerr << "Error: Energy parameters not set! Call setEnergyParameters() first." 
-              << std::endl;
-    throw std::runtime_error("FEMHessianAssembler: energy parameters not initialized");
+    std::cerr
+        << "Error: Energy parameters not set! Call setEnergyParameters() first."
+        << std::endl;
+    throw std::runtime_error(
+        "FEMHessianAssembler: energy parameters not initialized");
   }
 
   // Initialize diagonal vector
   Eigen::VectorXd diagonal = Eigen::VectorXd::Zero(num_total_dofs);
-  
+
   int num_free_nodes = num_total_dofs / 2;
 
   // Loop over all elements
@@ -2265,7 +2250,8 @@ Eigen::VectorXd FEMHessianAssembler::assembleGlobalStiffnessDiagonal(
     double area = element.getReferenceArea();
 
     // Compute FULL element stiffness matrix (still need it for diagonal)
-    Eigen::MatrixXd K_elem = computeElementStiffness(acoustic_tensor, element, area);
+    Eigen::MatrixXd K_elem =
+        computeElementStiffness(acoustic_tensor, element, area);
 
     // Get global DOF indices for this element
     std::vector<int> global_dof_indices;
@@ -2277,7 +2263,7 @@ Eigen::VectorXd FEMHessianAssembler::assembleGlobalStiffnessDiagonal(
       // Get DOF mapping for this node
       auto [orig_idx, solver_idx] = dof_mapping[global_node];
 
-      if (solver_idx != -1) { // Free DOF
+      if (solver_idx != -1) {                                      // Free DOF
         global_dof_indices.push_back(solver_idx);                  // x DOF
         global_dof_indices.push_back(solver_idx + num_free_nodes); // y DOF
       } else {
@@ -2289,7 +2275,8 @@ Eigen::VectorXd FEMHessianAssembler::assembleGlobalStiffnessDiagonal(
     // Accumulate ONLY diagonal entries
     for (int i = 0; i < 6; i++) {
       int global_i = global_dof_indices[i];
-      if (global_i < 0) continue; // Skip fixed DOFs
+      if (global_i < 0)
+        continue; // Skip fixed DOFs
 
       // Add diagonal contribution
       diagonal(global_i) += K_elem(i, i);
