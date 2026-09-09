@@ -942,13 +942,12 @@ void example_1_conti_zanzotto_loading(
 
     // Avalanche acceptance conditions:
     // 1) Remeshing accepted topological changes (hasChanges > 0)
-    // 2) At least 5 remesh iterations executed
-    // 3) Both energy and stress decreased
+    // 2) Energy decreased (post_energy < post_energy_previous)
+    // 3) Stress magnitude dropped by at least 10% (fractional_stress_drop >= 0.10)
     bool remesh_accepted = (hasChanges > 0);
-    bool min_iterations_met = (remesh_iterations >= 5);
+    bool stress_drop_10pct = (fractional_stress_drop >= 0.10);
     bool stress_drop_detected =
-        (i > 0) && remesh_accepted && min_iterations_met && energy_dropped &&
-        stress_dropped;
+        (i > 0) && remesh_accepted && energy_dropped && stress_drop_10pct;
 
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
