@@ -1,4 +1,4 @@
-#include "../include/defects/DefectAnalysis.h"
+#include "../include/defects/Defectanalysis.h"
 
 #include <iostream>
 #include <map>

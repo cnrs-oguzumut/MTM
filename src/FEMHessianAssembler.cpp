@@ -835,7 +835,15 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_spectra(
   return results;
 }
 
+#if defined(__APPLE__)
 #include <Accelerate/Accelerate.h>
+#else
+typedef int __CLPK_integer;
+extern "C" {
+void dsyevd_(char *jobz, char *uplo, int *n, double *a, int *lda, double *w,
+             double *work, int *lwork, int *iwork, int *liwork, int *info);
+}
+#endif
 
 EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
     const Eigen::SparseMatrix<double> &K_global, int N) {
