@@ -39,6 +39,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
 
   bool should_remesh = true;
   int mesh_iteration = 0;
+  int accepted_remesh_count = 0;
   double final_energy = 0.0;
   double final_stress = 0.0;
   Eigen::Matrix2d stress_tensor;
@@ -170,9 +171,14 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       final_energy = energy_old;
       stress_tensor = stress_old;
 
-      // Stop remeshing - we couldn't improve
+      // Stop remeshing - we couldn't improve further
       should_remesh = false;
-      has_changes = 0;
+      has_changes = (accepted_remesh_count > 0) ? 1 : 0;
+
+      if (accepted_remesh_count > 0) {
+        std::cout << "✓ Kept previous accepted state (" << accepted_remesh_count
+                  << " remesh iterations succeeded)" << std::endl;
+      }
 
     } else {
       std::cout << "✓ ACCEPTING remesh - energy decreased" << std::endl;
@@ -181,6 +187,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       final_energy = energy_new;
       stress_tensor = stress_new;
       has_changes = 1;
+      accepted_remesh_count++;
 
       // Continue to see if we can improve further
       // (or set should_remesh = false if you only want one successful remesh)

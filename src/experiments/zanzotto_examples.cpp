@@ -858,6 +858,7 @@ void example_1_conti_zanzotto_loading(
     //     change_info.has_changed && post_energy < post_energy_previous;
 
     bool shouldRemesh = post_energy < post_energy_previous || i == 0;
+    int remesh_iterations = 0;
 
     // Debug output
     std::cout << "=== REMESH DECISION ===" << std::endl;
@@ -888,6 +889,7 @@ void example_1_conti_zanzotto_loading(
               offsets, original_domain_map, translation_map, domain_dims_point,
               hasChanges, max_iterations, element_area, pbc, true);
 
+      remesh_iterations = iterations;
       post_energy = post_energy_re;
       post_stress = stress_tensor_re(0, 1);
 
@@ -924,7 +926,29 @@ void example_1_conti_zanzotto_loading(
     bool energy_dropped = (post_energy < post_energy_previous);
     bool stress_dropped =
         (std::abs(post_stress) < std::abs(post_stress_previous));
-    bool stress_drop_detected = (i > 0) && energy_dropped && stress_dropped;
+
+    // Option 2: Fractional drops (for output / investigation)
+    double fractional_energy_drop = 0.0;
+    double fractional_stress_drop = 0.0;
+    if (std::abs(post_energy_previous) > 1e-12) {
+      fractional_energy_drop =
+          (post_energy_previous - post_energy) / std::abs(post_energy_previous);
+    }
+    if (std::abs(post_stress_previous) > 1e-12) {
+      fractional_stress_drop =
+          (std::abs(post_stress_previous) - std::abs(post_stress)) /
+          std::abs(post_stress_previous);
+    }
+
+    // Avalanche acceptance conditions:
+    // 1) Remeshing accepted topological changes (hasChanges > 0)
+    // 2) At least 5 remesh iterations executed
+    // 3) Both energy and stress decreased
+    bool remesh_accepted = (hasChanges > 0);
+    bool min_iterations_met = (remesh_iterations >= 5);
+    bool stress_drop_detected =
+        (i > 0) && remesh_accepted && min_iterations_met && energy_dropped &&
+        stress_dropped;
 
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
@@ -935,11 +959,38 @@ void example_1_conti_zanzotto_loading(
     std::cout << "=== DROP EVALUATION (i = " << i << ") ===" << std::endl;
     std::cout << "  post_energy: " << post_energy
               << " vs prev: " << post_energy_previous
-              << " -> energy_dropped: " << energy_dropped << std::endl;
+              << " -> energy_dropped: " << energy_dropped
+              << " (fractional drop: " << (fractional_energy_drop * 100.0) << "%)" << std::endl;
     std::cout << "  |post_stress|: " << std::abs(post_stress)
               << " vs prev: " << std::abs(post_stress_previous)
-              << " -> stress_dropped: " << stress_dropped << std::endl;
+              << " -> stress_dropped: " << stress_dropped
+              << " (fractional drop: " << (fractional_stress_drop * 100.0) << "%)" << std::endl;
+    std::cout << "  remesh_iterations: " << remesh_iterations
+              << " (hasChanges: " << hasChanges << ")" << std::endl;
     std::cout << "  stress_drop_detected: " << stress_drop_detected << std::endl;
+
+    // Log fractional drops to separate CSV for investigation
+    static std::ofstream frac_file;
+    static std::filesystem::path frac_dir;
+    if (!frac_file.is_open() || frac_dir != std::filesystem::current_path()) {
+      if (frac_file.is_open()) {
+        frac_file.close();
+      }
+      frac_file.open("fractional_drops.csv");
+      frac_file << "Iteration,Alpha,PostEnergy,EnergyDrop,FractionalEnergyDrop,"
+                << "PostStress,StressMagnitudeDrop,FractionalStressDrop,"
+                << "RemeshIterations,hasChanges,StressDropDetected\n";
+      frac_file << std::scientific
+                << std::setprecision(std::numeric_limits<double>::max_digits10);
+      frac_dir = std::filesystem::current_path();
+    }
+    frac_file << i << "," << alpha << "," << post_energy << ","
+              << (post_energy_previous - post_energy) << ","
+              << fractional_energy_drop << "," << post_stress << ","
+              << (std::abs(post_stress_previous) - std::abs(post_stress)) << ","
+              << fractional_stress_drop << "," << remesh_iterations << ","
+              << hasChanges << "," << stress_drop_detected << "\n";
+    frac_file.flush();
 
     if (stress_drop_detected || i == 0) {
       std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
