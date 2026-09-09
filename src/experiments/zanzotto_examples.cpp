@@ -283,7 +283,7 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
     clock_t cpu_start = clock();
 
     userData.third_condition_flag = false;
-    LBFGSOptimizer optimizer(12, 0, pow(10., -13.), 0, 0);
+    LBFGSOptimizer optimizer(12, 0.0, 0.0, 0.0, 0);
     optimizer.optimize(x, minimize_energy_with_triangles, &userData);
 
     auto wall_end = std::chrono::high_resolution_clock::now();
@@ -778,7 +778,7 @@ void example_1_conti_zanzotto_loading(
     clock_t cpu_start = clock();
 
     userData.third_condition_flag = false;
-    LBFGSOptimizer optimizer(13, 0.00001, 0, 0, 0);
+    LBFGSOptimizer optimizer(13, 0.0, 0.0, 0.0, 0);
     optimizer.optimize(x, minimize_energy_with_triangles, &userData);
 
     auto wall_end = std::chrono::high_resolution_clock::now();
