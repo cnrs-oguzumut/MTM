@@ -12,8 +12,8 @@
 
 int main(int argc, char **argv) {
   // Default system size and parameters
-  int nx = 200;
-  int ny = 200;
+  int nx = 150;
+  int ny = 150;
   std::string mode = "negative"; // "positive" or "negative"
   unsigned int seed = 42;
 
