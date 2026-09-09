@@ -19,7 +19,7 @@ public:
     LBFGSOptimizer(
         int corrections = 12,
         double epsg = 0.0,
-        double epsf = 1e-13,
+        double epsf = 0.0,
         double epsx = 0.0,
         alglib::ae_int_t maxits = 0
     );
