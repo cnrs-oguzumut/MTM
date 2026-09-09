@@ -39,6 +39,9 @@ INCLUDES := -I./include \
             -I$(ITENSOR_DIR)/itensor \
             -I$(SPECTRA_DIR)/include \
             -I$(EIGEN_ROOT)/include/eigen3 \
+            -I$(EIGEN_ROOT)/include \
+            -I$(EIGEN_ROOT) \
+            -I/usr/include/eigen3 \
             -I$(CGAL_ROOT)/include \
             -I$(BOOST_ROOT)/include \
             -I$(ARMADILLO_ROOT)/include \
