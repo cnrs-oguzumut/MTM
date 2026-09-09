@@ -1042,16 +1042,20 @@ void example_1_conti_zanzotto_loading(
   }
 }
 
-void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny, unsigned int seed) {
+void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
+                                               double alpha_min,
+                                               double alpha_max,
+                                               double step_size,
+                                               unsigned int seed) {
   // Negative continuous shear loading:
-  // - Starts at load alpha = -0.14 and increments negatively with step_size = -6e-5 down to -1.0
+  // - Starts at load alpha_min and increments with step_size down to alpha_max
   // - Flips initial mesh orientation by applying a -1e-7 shear perturbation to the Delaunay mesher,
   //   matching the orientation change technique established in the shifting experiments.
   // - Uses deterministic seed for identical initial noise generation.
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
-                                   /*alpha_min=*/-0.14,
-                                   /*alpha_max=*/-1.0,
-                                   /*step_size=*/-6e-5,
+                                   /*alpha_min=*/alpha_min,
+                                   /*alpha_max=*/alpha_max,
+                                   /*step_size=*/step_size,
                                    /*triangulation_perturbation=*/-1e-7,
                                    /*seed=*/seed);
 }
