@@ -685,6 +685,10 @@ void example_1_conti_zanzotto_loading(
     alpha_values.push_back(alpha_min + i * step_size);
   }
 
+  int file_counter = 0;
+  double post_energy_previous = 0.0;
+  double post_stress_previous = 0.0;
+
   // Process each alpha value
   for (size_t i = 0; i < alpha_values.size(); i++) {
     double alpha = alpha_values[i];
@@ -750,47 +754,17 @@ void example_1_conti_zanzotto_loading(
       original_x[j] = x[j];
     }
 
-    // ==================== SAVE BEFORE OPTIMIZATION ====================
-    static int file_counter = 0;
-    static int previous_file_id = -1;
-    static double post_energy_previous = 0.0;
-    static double post_stress_previous = 0.0;
-
-    int file_id = caller_id + file_counter;
-    double saving_value = alpha_values[i];
-
-    // Save pre-optimization state (potential pre-avalanche)
-    UserData preOptUserData(square_points, elements, calculator, potential_func,
-                            potential_func_der, zero, optimal_lattice_parameter,
-                            F_ext, interior_mapping, full_mapping,
-                            active_elements, plasticity);
-
-    ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
-        &preOptUserData, file_id, pre_energy, pre_stress, true);
-    pre_area = ConfigurationSaver::calculateTotalArea2D(&preOptUserData);
-
-    ConfigurationSaver::saveTriangleData(&preOptUserData, file_id, domain_dims,
-                                         offsets, full_mapping);
-    ConfigurationSaver::saveElements(elements, active_elements, file_id);
-
-    std::cout << "Pre-optimization2 - Energy: " << pre_energy
-              << ", Stress: " << pre_stress << std::endl;
-
-    auto [num_dislocations_pre, coordination_pre] =
-        DefectAnalysis::analyzeDefectsInReferenceConfig(
-            &preOptUserData, file_id, dndx, offsets, original_domain_map,
-            translation_map, domain_dims_point, element_area, pbc, true);
-
-    ConfigurationSaver::writeToVTK(
-        preOptUserData.points, preOptUserData.elements, &preOptUserData,
-        file_id, true, coordination_pre, saving_value);
-
-    ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
-
-    std::cout << "Saved PRE-optimization config " << file_id
-              << " at load=" << saving_value << std::endl;
-
-    std::cout << "================================\n" << std::endl;
+    // ==================== CACHE PRE-OPTIMIZATION STATE IN RAM ====================
+    // Cache the pre-avalanche state in memory (~2MB) instead of writing to disk.
+    // Files are written to disk ONLY when an avalanche (or i == 0) is confirmed,
+    // avoiding disk churn and subsequent file deletions during elastic steps.
+    std::vector<Point2D> pre_points = square_points;
+    std::vector<ElementTriangle2D> pre_elements = elements;
+    std::vector<size_t> pre_active_elements = active_elements;
+    Eigen::Matrix2d pre_F_ext = F_ext;
+    double pre_saving_value = alpha_values[i];
+    double pre_energy_val = pre_energy;
+    double pre_stress_val = pre_stress;
 
     // ==================== RUN OPTIMIZATION ====================
     // NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
@@ -995,13 +969,43 @@ void example_1_conti_zanzotto_loading(
       std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
       std::cout << "Energy dropped from " << post_energy_previous << " to "
                 << post_energy << std::endl;
-      std::cout << "PRE-avalanche LOCKED as file " << file_id
-                << " at load=" << saving_value << std::endl;
 
-      // Save POST-avalanche state
+      // 1) Write PRE-avalanche state from cached RAM copy
+      int pre_file_id = caller_id + file_counter;
       file_counter++;
-      int post_file_id = caller_id + file_counter;
 
+      UserData preOptUserData(pre_points, pre_elements, calculator,
+                              potential_func, potential_func_der, zero,
+                              optimal_lattice_parameter, pre_F_ext,
+                              interior_mapping, full_mapping,
+                              pre_active_elements, plasticity);
+
+      ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+          &preOptUserData, pre_file_id, pre_energy_val, pre_stress_val, true);
+      ConfigurationSaver::saveTriangleData(&preOptUserData, pre_file_id,
+                                           domain_dims, offsets, full_mapping);
+      ConfigurationSaver::saveElements(pre_elements, pre_active_elements,
+                                       pre_file_id);
+
+      auto [num_dislocations_pre, coordination_pre] =
+          DefectAnalysis::analyzeDefectsInReferenceConfig(
+              &preOptUserData, pre_file_id, dndx, offsets, original_domain_map,
+              translation_map, domain_dims_point, element_area, pbc, true);
+
+      ConfigurationSaver::writeToVTK(
+          preOptUserData.points, preOptUserData.elements, &preOptUserData,
+          pre_file_id, true, coordination_pre, pre_saving_value);
+      ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
+
+      std::cout << "PRE-avalanche saved as file " << pre_file_id
+                << " at load=" << pre_saving_value << std::endl;
+
+      // 2) Write POST-avalanche state
+      int post_file_id = caller_id + file_counter;
+      file_counter++;
+
+      ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+          &postOptUserData, post_file_id, post_energy, post_stress, true);
       ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id,
                                            domain_dims, offsets, full_mapping);
       ConfigurationSaver::saveElements(elements, active_elements, post_file_id);
@@ -1014,28 +1018,14 @@ void example_1_conti_zanzotto_loading(
 
       ConfigurationSaver::writeToVTK(
           postOptUserData.points, postOptUserData.elements, &postOptUserData,
-          post_file_id, true, coordination_post, saving_value);
+          post_file_id, true, coordination_post, pre_saving_value);
       ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
 
       std::cout << "POST-avalanche saved as file " << post_file_id
-                << " at load=" << saving_value << std::endl;
-
-      file_counter++;
-      previous_file_id = -1;
+                << " at load=" << pre_saving_value << std::endl;
 
     } else {
-      // No stress drop - delete previous file if it exists
-      if (previous_file_id >= 0) {
-        std::cout << "Deleting previous file " << previous_file_id
-                  << " (no avalanche)" << std::endl;
-
-        std::stringstream vtk_file;
-        vtk_file << "vtk_output/configuration_" << std::setw(5)
-                 << std::setfill('0') << previous_file_id << ".vtk";
-        std::filesystem::remove(vtk_file.str());
-      }
-
-      previous_file_id = file_id;
+      // Elastic step: no files written to disk, zero disk churn, nothing to delete!
     }
 
     // ==================== LOG DATA ====================
@@ -1054,14 +1044,14 @@ void example_1_conti_zanzotto_loading(
 
 void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny, unsigned int seed) {
   // Negative continuous shear loading:
-  // - Starts at load alpha = -0.14 and increments negatively with step_size = -3e-5 down to -0.85
+  // - Starts at load alpha = -0.14 and increments negatively with step_size = -6e-5 down to -1.0
   // - Flips initial mesh orientation by applying a -1e-7 shear perturbation to the Delaunay mesher,
   //   matching the orientation change technique established in the shifting experiments.
   // - Uses deterministic seed for identical initial noise generation.
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/-0.14,
-                                   /*alpha_max=*/-0.85,
-                                   /*step_size=*/-3e-5,
+                                   /*alpha_max=*/-1.0,
+                                   /*step_size=*/-6e-5,
                                    /*triangulation_perturbation=*/-1e-7,
                                    /*seed=*/seed);
 }

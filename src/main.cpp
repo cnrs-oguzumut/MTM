@@ -62,11 +62,11 @@ int main(int argc, char **argv) {
   // example_3_stress_controlled_final_clean(0, nx, ny);
 
   // 7. Zanzotto Continuous Shear Loading:
-  //    Runs either positive loading (alpha: +0.14 -> +0.85, default orientation)
-  //    or negative loading (alpha: -0.14 -> -0.85, -1e-7 orientation perturbation)
+  //    Runs either positive loading (alpha: +0.14 -> +1.0, default orientation)
+  //    or negative loading (alpha: -0.14 -> -1.0, -1e-7 orientation perturbation)
   //    using the exact same deterministic random seed for initial noise.
   if (mode == "positive") {
-    example_1_conti_zanzotto_loading(0, nx, ny, 0.14, 0.85, 3e-5, 0.0, seed);
+    example_1_conti_zanzotto_loading(0, nx, ny, 0.14, 1.0, 6e-5, 0.0, seed);
   } else {
     example_1_conti_zanzotto_negative_loading(0, nx, ny, seed);
   }
