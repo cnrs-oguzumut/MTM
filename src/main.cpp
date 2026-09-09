@@ -14,19 +14,22 @@ int main(int argc, char **argv) {
   // Default system size and parameters
   int nx = 200;
   int ny = 200;
-  int horizontal_steps = 100;
-  int vertical_steps = 100;
+  std::string mode = "negative"; // "positive" or "negative"
+  unsigned int seed = 42;
 
   if (argc >= 3) {
     nx = std::atoi(argv[1]);
     ny = std::atoi(argv[2]);
   }
+  if (argc >= 4) {
+    mode = argv[3];
+  }
   if (argc >= 5) {
-    horizontal_steps = std::atoi(argv[3]);
-    vertical_steps = std::atoi(argv[4]);
+    seed = static_cast<unsigned int>(std::atoi(argv[4]));
   }
 
-  std::cout << "System size: nx=" << nx << ", ny=" << ny << std::endl;
+  std::cout << "System size: nx=" << nx << ", ny=" << ny
+            << " | mode=" << mode << " | seed=" << seed << std::endl;
 
   // =========================================================================
   // LIST OF EXPERIMENT EXAMPLES
@@ -35,7 +38,7 @@ int main(int argc, char **argv) {
 
   // 1. Shifting Examples:
   //    Simulates vertical and horizontal shifts of crystal blocks with relaxation.
-  // run_final_shift_tests(nx, ny, horizontal_steps, vertical_steps);
+  // run_final_shift_tests(nx, ny, 100, 100);
 
   // 2. Dislocation Studies:
   //    Simulates single dislocation nucleation and relaxation on square lattice.
@@ -58,16 +61,15 @@ int main(int argc, char **argv) {
   //    Applies stress-controlled shear/axial loading with adaptive remeshing.
   // example_3_stress_controlled_final_clean(0, nx, ny);
 
-  // 7. Zanzotto Continuous Shear Loading (Square Lattice - Positive Direction):
-  //    Applies continuous shear strain from +0.14 to +0.85 with +3e-5 step size,
-  //    default initial mesh orientation, adaptive remeshing, and defect analysis.
-  // example_1_conti_zanzotto_loading(0, nx, ny);
-
-  // 8. Zanzotto Continuous Shear Loading (Square Lattice - Negative Direction & Flipped Initial Mesh Orientation):
-  //    Starts at load alpha = -0.14, applies negative increments (step_size = -3e-5) down to -0.85,
-  //    and perturbs initial Delaunay triangulation by -1e-7 to flip initial mesh orientation
-  //    (as done in shifting example).
-  example_1_conti_zanzotto_negative_loading(0, nx, ny);
+  // 7. Zanzotto Continuous Shear Loading:
+  //    Runs either positive loading (alpha: +0.14 -> +0.85, default orientation)
+  //    or negative loading (alpha: -0.14 -> -0.85, -1e-7 orientation perturbation)
+  //    using the exact same deterministic random seed for initial noise.
+  if (mode == "positive") {
+    example_1_conti_zanzotto_loading(0, nx, ny, 0.14, 0.85, 3e-5, 0.0, seed);
+  } else {
+    example_1_conti_zanzotto_negative_loading(0, nx, ny, seed);
+  }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):
   //    Shear loading on a triangular lattice with adaptive remeshing.

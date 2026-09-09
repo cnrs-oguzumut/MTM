@@ -449,7 +449,8 @@ void example_1_conti_zanzotto_loading(
     double alpha_min,
     double alpha_max,
     double step_size,
-    double triangulation_perturbation) {
+    double triangulation_perturbation,
+    unsigned int seed) {
 
   //     auto compute_even_ny = [](int nx) {
   //     int ny = std::round(2.0 * nx / std::sqrt(3));
@@ -700,10 +701,11 @@ void example_1_conti_zanzotto_loading(
 
     // Apply initial noise (only for first iteration)
     if (i == 0) {
-      std::random_device rd;
-      std::mt19937 gen(rd());
+      // Use deterministic seed so both positive and negative runs share the exact same initial noise
+      std::mt19937 gen(seed);
       double noise_level = 0.04;
       std::normal_distribution<double> noise_dist(0.0, noise_level);
+      std::cout << "Seeded initial noise generator with seed: " << seed << std::endl;
 
       for (size_t j = 0; j < square_points.size(); j++) {
         Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
@@ -989,14 +991,16 @@ void example_1_conti_zanzotto_loading(
   }
 }
 
-void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny) {
+void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny, unsigned int seed) {
   // Negative continuous shear loading:
   // - Starts at load alpha = -0.14 and increments negatively with step_size = -3e-5 down to -0.85
   // - Flips initial mesh orientation by applying a -1e-7 shear perturbation to the Delaunay mesher,
   //   matching the orientation change technique established in the shifting experiments.
+  // - Uses deterministic seed for identical initial noise generation.
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/-0.14,
                                    /*alpha_max=*/-0.85,
                                    /*step_size=*/-3e-5,
-                                   /*triangulation_perturbation=*/-1e-7);
+                                   /*triangulation_perturbation=*/-1e-7,
+                                   /*seed=*/seed);
 }

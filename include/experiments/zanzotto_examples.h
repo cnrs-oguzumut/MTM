@@ -7,7 +7,10 @@ void example_1_conti_zanzotto_loading(
     double alpha_min = 0.14,
     double alpha_max = 0.85,
     double step_size = 3e-5,
-    double triangulation_perturbation = 0.0);
-void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny);
+    double triangulation_perturbation = 0.0,
+    unsigned int seed = 42);
+void example_1_conti_zanzotto_negative_loading(
+    int caller_id, int nx, int ny,
+    unsigned int seed = 42);
 void example_2_conti_zanzotto_triangular();
 
