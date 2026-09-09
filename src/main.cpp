@@ -1,38 +1,22 @@
 #include <cstdlib>
+#include <iostream>
 
-#include "../include/experiments/shift_vertical_horizontal.h"
 #include "../include/experiments/dislocation_indentation.h"
-// To run Zanzotto examples, add:
-// #include "../include/experiments/zanzotto_examples.h"
-// Then replace run_final_shift_tests(...) below with one of:
-// example_1_conti_zanzotto(0, nx, ny);
-// example_2_conti_zanzotto_triangular();
-// memory(0, nx, ny, restart_iteration);
-//
-// To run the stress-controlled loading example, add:
-// #include "../include/experiments/stress_controlled_examples.h"
-// Then replace run_final_shift_tests(...) below with:
-// example_3_stress_controlled_final_clean(0, nx, ny);
+#include "../include/experiments/dislocation_study.h"
+#include "../include/experiments/shift_vertical_horizontal.h"
+#include "../include/experiments/shifted_crystal_study.h"
+#include "../include/experiments/zanzotto_examples.h"
+#include "../include/experiments/stress_controlled_examples.h"
+#include "../include/experiments/acoustic_studies.h"
+#include "../include/experiments/data_analysis.h"
 
 int main(int argc, char **argv) {
-  // TensorExample exple;
-  // example.run();
-  // exit(0);
-  // for (int caller_id = 0; caller_id <= 0; ++caller_id) {
-  // example_1_shifting(0,20,20);
-  // single_dislo_LJ();
-
-  // parametricAcousticStudy();./
-  // parametricAcousticStudy();
-  // memory(0,100,100,3);
-  // example_3_stress_controlled_final_clean(0,100,100);
-  // analyze_data_from_folder(0, 100,100,3301,3651,100);
-  //  }
-  //   indentation();
-  int nx = 20;
-  int ny = 20;
+  // Default system size and parameters
+  int nx = 200;
+  int ny = 200;
   int horizontal_steps = 100;
   int vertical_steps = 100;
+
   if (argc >= 3) {
     nx = std::atoi(argv[1]);
     ny = std::atoi(argv[2]);
@@ -42,12 +26,60 @@ int main(int argc, char **argv) {
     vertical_steps = std::atoi(argv[4]);
   }
 
-  run_final_shift_tests(nx, ny, horizontal_steps, vertical_steps);
+  std::cout << "System size: nx=" << nx << ", ny=" << ny << std::endl;
+
+  // =========================================================================
+  // LIST OF EXPERIMENT EXAMPLES
+  // Uncomment the desired example to run:
+  // =========================================================================
+
+  // 1. Shifting Examples:
+  //    Simulates vertical and horizontal shifts of crystal blocks with relaxation.
+  // run_final_shift_tests(nx, ny, horizontal_steps, vertical_steps);
+
+  // 2. Dislocation Studies:
+  //    Simulates single dislocation nucleation and relaxation on square lattice.
+  // single_dislocation_study(0, nx, ny);
+
+  // 3. Shifted Upper Crystal Study:
+  //    Studies relaxation under shifted upper crystal boundary conditions.
+  // shifted_upper_crystal_study(0, nx, ny);
+
+  // 4. Acoustic Studies:
+  //    Calculates and logs acoustic tensor properties / stability across states.
   // parametricAcousticStudy();
-  //  parametricAcousticStudy_v2();
+  // parametricAcousticStudy_v2();
 
-  exit(0);
+  // 5. Nano-Indentation:
+  //    Simulates circular nano-indenter pushing into crystal lattice.
+  // indentation();
 
-  indentation();
+  // 6. Stress-Controlled Loading:
+  //    Applies stress-controlled shear/axial loading with adaptive remeshing.
+  // example_3_stress_controlled_final_clean(0, nx, ny);
+
+  // 7. Zanzotto Continuous Shear Loading (Square Lattice - Positive Direction):
+  //    Applies continuous shear strain from +0.14 to +0.85 with +3e-5 step size,
+  //    default initial mesh orientation, adaptive remeshing, and defect analysis.
+  // example_1_conti_zanzotto_loading(0, nx, ny);
+
+  // 8. Zanzotto Continuous Shear Loading (Square Lattice - Negative Direction & Flipped Initial Mesh Orientation):
+  //    Starts at load alpha = -0.14, applies negative increments (step_size = -3e-5) down to -0.85,
+  //    and perturbs initial Delaunay triangulation by -1e-7 to flip initial mesh orientation
+  //    (as done in shifting example).
+  example_1_conti_zanzotto_negative_loading(0, nx, ny);
+
+  // 9. Zanzotto Continuous Loading (Triangular Lattice):
+  //    Shear loading on a triangular lattice with adaptive remeshing.
+  // example_2_conti_zanzotto_triangular();
+
+  // 10. Restart / Memory Loading:
+  //    Restarts a continuous loading simulation from a previous saved configuration.
+  // memory(0, nx, ny, /*restart_iteration=*/3);
+
+  // 11. Data Post-Processing / Analysis:
+  //     Analyzes configurations and dislocation data from saved folder.
+  // analyze_data_from_folder(0, nx, ny, 3301, 3651, 100);
+
   return 0;
 }

@@ -441,7 +441,15 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
   std::cout << std::string(60, '=') << std::endl;
 }
 
-void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
+// NOTE: example_1_conti_zanzotto now lives in
+// src/experiments/dislocation_study.cpp (stripped, dislocation-only variant).
+// This original loading-driven version is renamed to avoid a duplicate symbol.
+void example_1_conti_zanzotto_loading(
+    int caller_id, int nx, int ny,
+    double alpha_min,
+    double alpha_max,
+    double step_size,
+    double triangulation_perturbation) {
 
   //     auto compute_even_ny = [](int nx) {
   //     int ny = std::round(2.0 * nx / std::sqrt(3));
@@ -606,6 +614,17 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
   );
   mesher.setUsePeriodicCopies(
       pbc); // Switch to using original domain only not necessary
+
+  // Apply initial mesh orientation perturbation if specified.
+  // For a square lattice, Delaunay triangulation has degenerate 4-node circumcircles,
+  // making the diagonal selection ambiguous. A slight shear perturbation (e.g. -1e-7),
+  // as done in the shifting study (shift_vertical_horizontal), breaks the tie to
+  // select the opposite diagonal orientation across the initial mesh.
+  if (triangulation_perturbation != 0.0) {
+    mesher.setTriangulationPerturbation(triangulation_perturbation);
+    std::cout << "Applied initial mesh orientation perturbation: "
+              << triangulation_perturbation << std::endl;
+  }
   alglib::real_1d_array free_dofs;
   int n_free_nodes = interior_mapping.size();
   free_dofs.setlength(2 *
@@ -651,14 +670,9 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
   // debug_deformation_tests();
 
   // ==================== SETUP LOADING SCHEDULE ====================
-  // Define loading parameters
-  double alpha_min = 0.14;
-  double alpha_max = .85;
-  double step_size = 3e-5;
-
-  // Calculate number of loading steps
+  // Calculate number of loading steps supporting both positive and negative loading paths
   int num_alpha_points =
-      static_cast<int>((alpha_max - alpha_min) / step_size) + 1;
+      static_cast<int>(std::abs(alpha_max - alpha_min) / std::abs(step_size)) + 1;
   std::cout << "Loading schedule: " << num_alpha_points << " steps from "
             << alpha_min << " to " << alpha_max << " (step size: " << step_size
             << ")" << std::endl;
@@ -973,4 +987,16 @@ void example_1_conti_zanzotto(int caller_id, int nx, int ny) {
               << " ended: setting post_energy_previous = " << post_energy
               << std::endl;
   }
+}
+
+void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny) {
+  // Negative continuous shear loading:
+  // - Starts at load alpha = -0.14 and increments negatively with step_size = -3e-5 down to -0.85
+  // - Flips initial mesh orientation by applying a -1e-7 shear perturbation to the Delaunay mesher,
+  //   matching the orientation change technique established in the shifting experiments.
+  example_1_conti_zanzotto_loading(caller_id, nx, ny,
+                                   /*alpha_min=*/-0.14,
+                                   /*alpha_max=*/-0.85,
+                                   /*step_size=*/-3e-5,
+                                   /*triangulation_perturbation=*/-1e-7);
 }

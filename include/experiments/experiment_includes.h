@@ -52,6 +52,8 @@
 #include "data_analysis.h"
 #include "deformation_examples.h"
 #include "dislocation_indentation.h"
+#include "dislocation_study.h"
+#include "shifted_crystal_study.h"
 #include "stress_controlled_examples.h"
 #include "zanzotto_examples.h"
 
