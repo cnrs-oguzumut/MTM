@@ -754,6 +754,7 @@ void example_1_conti_zanzotto_loading(
     static int file_counter = 0;
     static int previous_file_id = -1;
     static double post_energy_previous = 0.0;
+    static double post_stress_previous = 0.0;
 
     int file_id = caller_id + file_counter;
     double saving_value = alpha_values[i];
@@ -792,12 +793,12 @@ void example_1_conti_zanzotto_loading(
     std::cout << "================================\n" << std::endl;
 
     // ==================== RUN OPTIMIZATION ====================
-    NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
-    std::vector<Point2D> points_before_copy = square_points;
-    analyzer.setKNearestSearch(4);
-    analyzer.setDebugMode(false);
+    // NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
+    // std::vector<Point2D> points_before_copy = square_points;
+    // analyzer.setKNearestSearch(4);
+    // analyzer.setDebugMode(false);
 
-    auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
+    // auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
 
     auto wall_start = std::chrono::high_resolution_clock::now();
     clock_t cpu_start = clock();
@@ -818,23 +819,23 @@ void example_1_conti_zanzotto_loading(
 
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
 
-    auto neighbors_after = analyzer.buildNeighbors(square_points);
+    // auto neighbors_after = analyzer.buildNeighbors(square_points);
 
-    auto change_info = NeighborAnalyzer::compareNeighborsWithTolerance(
-        points_before_copy, square_points, neighbors_before, neighbors_after,
-        0.135);
+    // auto change_info = NeighborAnalyzer::compareNeighborsWithTolerance(
+    //     points_before_copy, square_points, neighbors_before, neighbors_after,
+    //     0.135);
 
-    if (change_info.has_changed) {
-      std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
-      std::cout << "  → Nodes affected: " << change_info.total_nodes_changed
-                << std::endl;
-      std::cout << "  → Connections added: "
-                << change_info.total_connections_added << std::endl;
-      std::cout << "  → Connections removed: "
-                << change_info.total_connections_removed << std::endl;
-    } else {
-      std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
-    }
+    // if (change_info.has_changed) {
+    //   std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
+    //   std::cout << "  → Nodes affected: " << change_info.total_nodes_changed
+    //             << std::endl;
+    //   std::cout << "  → Connections added: "
+    //             << change_info.total_connections_added << std::endl;
+    //   std::cout << "  → Connections removed: "
+    //             << change_info.total_connections_removed << std::endl;
+    // } else {
+    //   std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
+    // }
 
     int hasChanges = 0;
 
@@ -853,8 +854,8 @@ void example_1_conti_zanzotto_loading(
               << ", Stress change: " << (post_stress - pre_stress) << std::endl;
 
     // ==================== REMESHING DECISION ====================
-    bool shouldRemesh2 =
-        change_info.has_changed && post_energy < post_energy_previous;
+    // bool shouldRemesh2 =
+    //     change_info.has_changed && post_energy < post_energy_previous;
 
     bool shouldRemesh = post_energy < post_energy_previous || i == 0;
 
@@ -920,7 +921,10 @@ void example_1_conti_zanzotto_loading(
     }
 
     // ==================== CHECK FOR STRESS DROP ====================
-    bool stress_drop_detected = shouldRemesh2;
+    bool energy_dropped = (post_energy < post_energy_previous);
+    bool stress_dropped =
+        (std::abs(post_stress) < std::abs(post_stress_previous));
+    bool stress_drop_detected = (i > 0) && energy_dropped && stress_dropped;
 
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
@@ -928,8 +932,14 @@ void example_1_conti_zanzotto_loading(
                              full_mapping, active_elements, plasticity);
     post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
 
-    std::cout << "Energy dropped from " << post_energy_previous << " to "
-              << post_energy << std::endl;
+    std::cout << "=== DROP EVALUATION (i = " << i << ") ===" << std::endl;
+    std::cout << "  post_energy: " << post_energy
+              << " vs prev: " << post_energy_previous
+              << " -> energy_dropped: " << energy_dropped << std::endl;
+    std::cout << "  |post_stress|: " << std::abs(post_stress)
+              << " vs prev: " << std::abs(post_stress_previous)
+              << " -> stress_dropped: " << stress_dropped << std::endl;
+    std::cout << "  stress_drop_detected: " << stress_drop_detected << std::endl;
 
     if (stress_drop_detected || i == 0) {
       std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
@@ -965,7 +975,7 @@ void example_1_conti_zanzotto_loading(
 
     } else {
       // No stress drop - delete previous file if it exists
-      if (previous_file_id >= 0 || i == 0) {
+      if (previous_file_id >= 0) {
         std::cout << "Deleting previous file " << previous_file_id
                   << " (no avalanche)" << std::endl;
 
@@ -984,10 +994,11 @@ void example_1_conti_zanzotto_loading(
         post_area, shouldRemesh);
 
     post_energy_previous = post_energy;
+    post_stress_previous = post_stress;
 
     std::cout << "Iteration " << i
               << " ended: setting post_energy_previous = " << post_energy
-              << std::endl;
+              << ", post_stress_previous = " << post_stress << std::endl;
   }
 }
 
