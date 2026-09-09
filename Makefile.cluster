@@ -43,9 +43,12 @@ INCLUDES := -I./include \
             -I$(EIGEN_ROOT) \
             -I/usr/include/eigen3 \
             -I$(CGAL_ROOT)/include \
+            -I$(CGAL_ROOT) \
             -I$(BOOST_ROOT)/include \
+            -I$(BOOST_ROOT) \
             -I$(ARMADILLO_ROOT)/include \
-            -I$(GMP_ROOT)/include
+            -I$(GMP_ROOT)/include \
+            -I/usr/include
 
 # --- 5. LINKER FLAGS (-L) ---
 LDFLAGS  := -fopenmp \

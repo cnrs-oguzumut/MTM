@@ -1,4 +1,4 @@
-#include "../include/mesh/ReMesher.h"
+#include "../include/mesh/Remesher.h"
 #include "../include/geometry/DomainDimensions.h"
 #include "../include/geometry/LatticeGenerator.h"
 #include "../include/mesh/ElementTriangle2D.h"
