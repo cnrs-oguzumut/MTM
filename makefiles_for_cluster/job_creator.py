@@ -49,6 +49,12 @@ def main():
         mode_choice = "both"
 
     start_seed = int(get_input("Starting random seed", "42"))
+    seed_strategy = "unique"
+    if mode_choice == "both":
+        seed_strategy = get_input(
+            "Seed strategy for 'both' mode: 'unique' (44, 45, 46, 47) or 'paired' (44, 44, 45, 45)",
+            "unique"
+        ).lower()
     print()
 
     # 3. Paths and Directories
@@ -71,7 +77,10 @@ def main():
     for i in range(n_jobs):
         job_id = i + 1
         if mode_choice == "both":
-            seed = start_seed + (i // 2)
+            if seed_strategy.startswith("p"):
+                seed = start_seed + (i // 2)
+            else:
+                seed = start_seed + i
             mode = "positive" if (i % 2 == 0) else "negative"
         elif mode_choice == "positive":
             seed = start_seed + i
