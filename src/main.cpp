@@ -16,6 +16,17 @@ int main(int argc, char **argv) {
   int ny = 150;
   std::string mode = "negative"; // "positive" or "negative"
   unsigned int seed = 42;
+  bool enable_remeshing = true;
+
+  // Scan all arguments for flags
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--no-remesh" || arg == "--noremesh" || arg == "--without-remesh" || arg == "-nr") {
+      enable_remeshing = false;
+    } else if (arg == "--remesh" || arg == "-r") {
+      enable_remeshing = true;
+    }
+  }
 
   if (argc >= 3) {
     nx = std::atoi(argv[1]);
@@ -27,9 +38,23 @@ int main(int argc, char **argv) {
   if (argc >= 5) {
     seed = static_cast<unsigned int>(std::atoi(argv[4]));
   }
+  if (argc >= 6) {
+    std::string remesh_arg = argv[5];
+    if (remesh_arg == "0" || remesh_arg == "false" || remesh_arg == "False" ||
+        remesh_arg == "no" || remesh_arg == "no-remesh" || remesh_arg == "noremesh" ||
+        remesh_arg == "without-remesh" || remesh_arg == "without-remeshing" ||
+        remesh_arg == "off") {
+      enable_remeshing = false;
+    } else if (remesh_arg == "1" || remesh_arg == "true" || remesh_arg == "True" ||
+               remesh_arg == "yes" || remesh_arg == "remesh" || remesh_arg == "on") {
+      enable_remeshing = true;
+    }
+  }
 
   std::cout << "System size: nx=" << nx << ", ny=" << ny
-            << " | mode=" << mode << " | seed=" << seed << std::endl;
+            << " | mode=" << mode << " | seed=" << seed
+            << " | remeshing=" << (enable_remeshing ? "enabled" : "disabled")
+            << std::endl;
 
   // =========================================================================
   // LIST OF EXPERIMENT EXAMPLES
@@ -68,9 +93,9 @@ int main(int argc, char **argv) {
   double step_size = 6e-5;
 
   if (mode == "positive") {
-    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed);
+    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing);
   } else {
-    example_1_conti_zanzotto_negative_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, seed);
+    example_1_conti_zanzotto_negative_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, seed, enable_remeshing);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

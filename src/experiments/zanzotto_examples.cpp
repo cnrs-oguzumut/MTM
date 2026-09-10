@@ -450,7 +450,8 @@ void example_1_conti_zanzotto_loading(
     double alpha_max,
     double step_size,
     double triangulation_perturbation,
-    unsigned int seed) {
+    unsigned int seed,
+    bool enable_remeshing) {
 
   //     auto compute_even_ny = [](int nx) {
   //     int ny = std::round(2.0 * nx / std::sqrt(3));
@@ -468,6 +469,10 @@ void example_1_conti_zanzotto_loading(
   // ==================== SETUP REFERENCE GEOMETRY ====================
   // Save domain dimensions
   writeSizesToFile(nx, ny);
+
+  std::cout << "Remeshing mode: "
+            << (enable_remeshing ? "ENABLED (adaptive remeshing)" : "DISABLED (fixed mesh, no remeshing)")
+            << std::endl;
 
   // Define lattice type and reference element
   std::string lattice_type = "square"; // Options: "square" or "triangular"
@@ -831,11 +836,12 @@ void example_1_conti_zanzotto_loading(
     // bool shouldRemesh2 =
     //     change_info.has_changed && post_energy < post_energy_previous;
 
-    bool shouldRemesh = post_energy < post_energy_previous || i == 0;
+    bool shouldRemesh = enable_remeshing && (post_energy < post_energy_previous || i == 0);
     int remesh_iterations = 0;
 
     // Debug output
     std::cout << "=== REMESH DECISION ===" << std::endl;
+    std::cout << "  enable_remeshing = " << enable_remeshing << std::endl;
     std::cout << "  i = " << i << std::endl;
     std::cout << "  pre_energy = " << std::scientific << pre_energy
               << std::endl;
@@ -915,13 +921,14 @@ void example_1_conti_zanzotto_loading(
     }
 
     // Avalanche acceptance conditions:
-    // 1) Remeshing accepted topological changes (hasChanges > 0)
+    // 1) Remeshing accepted topological changes (hasChanges > 0) [if remeshing enabled]
     // 2) Energy decreased (post_energy < post_energy_previous)
     // 3) Stress magnitude dropped by at least 10% (fractional_stress_drop >= 0.10)
     bool remesh_accepted = (hasChanges > 0);
     bool stress_drop_10pct = (fractional_stress_drop >= 0.10);
-    bool stress_drop_detected =
-        (i > 0) && remesh_accepted && energy_dropped && stress_drop_10pct;
+    bool stress_drop_detected = enable_remeshing
+        ? ((i > 0) && remesh_accepted && energy_dropped && stress_drop_10pct)
+        : ((i > 0) && energy_dropped && stress_drop_10pct);
 
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
@@ -1046,7 +1053,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                double alpha_min,
                                                double alpha_max,
                                                double step_size,
-                                               unsigned int seed) {
+                                               unsigned int seed,
+                                               bool enable_remeshing) {
   // Negative continuous shear loading:
   // - Starts at load alpha_min and increments with step_size down to alpha_max
   // - Flips initial mesh orientation by applying a -1e-7 shear perturbation to the Delaunay mesher,
@@ -1057,5 +1065,6 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    /*alpha_max=*/alpha_max,
                                    /*step_size=*/step_size,
                                    /*triangulation_perturbation=*/-1e-7,
-                                   /*seed=*/seed);
+                                   /*seed=*/seed,
+                                   /*enable_remeshing=*/enable_remeshing);
 }
