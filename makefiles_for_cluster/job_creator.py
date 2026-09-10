@@ -3,7 +3,7 @@
 Automatic Job Setup Generator for Parallel Crystal Plasticity Simulations
 Creates SLURM script, parallel launcher, and individual run scripts
 adapted for the new lattice_triangulation interface:
-    lattice_triangulation <nx> <ny> <mode> <seed>
+    lattice_triangulation <nx> <ny> <mode> <seed> [remesh]
 """
 
 import os
@@ -55,6 +55,14 @@ def main():
             "Seed strategy for 'both' mode: 'unique' (44, 45, 46, 47) or 'paired' (44, 44, 45, 45)",
             "unique"
         ).lower()
+
+    # Remeshing configuration
+    remesh_choice = get_input("Enable adaptive remeshing? ('yes' / 'no')", "yes").lower()
+    enable_remeshing = remesh_choice in ("y", "yes", "true", "1", "remesh")
+    remesh_arg = "1" if enable_remeshing else "0"
+    remesh_status = "enabled" if enable_remeshing else "disabled"
+    suffix = "" if enable_remeshing else "_noremesh"
+    print(f"  -> Remeshing: {remesh_status.upper()}")
     print()
 
     # 3. Paths and Directories
@@ -64,17 +72,18 @@ def main():
     base_dir = get_input("Base directory for MTM", default_base)
     exe_path = get_input("Executable path", f"{base_dir}/lattice_triangulation")
     
-    default_runs_dir = f"{base_dir}/runs_{nx}x{ny}"
+    default_runs_dir = f"{base_dir}/runs_{nx}x{ny}{suffix}"
     runs_dir = get_input("Runs output directory", default_runs_dir)
 
     # 4. SLURM Options
     print()
     print("--- 4. SLURM Cluster Options ---")
-    job_name = get_input("SLURM job name", f"shear_{nx}x{ny}")
+    default_job_name = f"shear_{nx}x{ny}" if enable_remeshing else f"shear_{nx}x{ny}_noremesh"
+    job_name = get_input("SLURM job name", default_job_name)
     partition = get_input("SLURM partition", "COMPUTE2")
     email = get_input("Email for notifications", "umut.salman@lspm.cnrs.fr")
 
-    # Build per-job specifications: [(job_id, nx, ny, mode, seed, run_folder)]
+    # Build per-job specifications: [(job_id, nx, ny, mode, seed, remesh_arg, run_folder)]
     job_specs = []
     for i in range(n_jobs):
         job_id = i + 1
@@ -91,17 +100,18 @@ def main():
             seed = start_seed + i
             mode = "negative"
         
-        folder_name = f"run_{job_id:02d}_{mode}_seed{seed}"
-        job_specs.append((job_id, nx, ny, mode, seed, folder_name))
+        folder_name = f"run_{job_id:02d}_{mode}_seed{seed}{suffix}"
+        job_specs.append((job_id, nx, ny, mode, seed, remesh_arg, folder_name))
 
     print()
     print("=" * 70)
     print("Planned Job Configurations:")
     print("=" * 70)
-    for j_id, j_nx, j_ny, j_mode, j_seed, j_dir in job_specs:
+    for j_id, j_nx, j_ny, j_mode, j_seed, j_remesh, j_dir in job_specs:
         start_cpu = (j_id - 1) * threads_per_job
         end_cpu = start_cpu + threads_per_job - 1
-        print(f"  Job {j_id:2d}: CPUs {start_cpu:3d}-{end_cpu:3d} | {j_nx}x{j_ny} | mode={j_mode:8s} | seed={j_seed:<4d} | dir={j_dir}")
+        remesh_desc = "remesh" if j_remesh == "1" else "no-remesh"
+        print(f"  Job {j_id:2d}: CPUs {start_cpu:3d}-{end_cpu:3d} | {j_nx}x{j_ny} | mode={j_mode:8s} | seed={j_seed:<4d} | {remesh_desc:9s} | dir={j_dir}")
     print("=" * 70)
     print()
 
@@ -118,14 +128,15 @@ def main():
     # ==============================================================
     run_one_script = f"""#!/bin/bash
 # Worker script for individual simulation run
-# Usage: ./run_one.sh <RUN_ID> <NX> <NY> <MODE> <SEED> <RUN_DIR>
+# Usage: ./run_one.sh <RUN_ID> <NX> <NY> <MODE> <SEED> <REMESH> <RUN_DIR>
 
 RUN_ID=$1
 NX=$2
 NY=$3
 MODE=$4
 SEED=$5
-RUN_DIR=$6
+REMESH=$6
+RUN_DIR=$7
 EXE="{exe_path}"
 
 # Create run directory and enter it
@@ -142,14 +153,14 @@ export VECLIB_MAXIMUM_THREADS=1
 echo "=========================================================="
 echo "Run $RUN_ID starting at $(date)"
 echo "  Working directory: $RUN_DIR"
-echo "  Parameters:        size=${{NX}}x${{NY}}, mode=${{MODE}}, seed=${{SEED}}"
+echo "  Parameters:        size=${{NX}}x${{NY}}, mode=${{MODE}}, seed=${{SEED}}, remesh=${{REMESH}}"
 echo "  CPU affinity:      $(taskset -cp $$ 2>/dev/null || echo 'N/A')"
 echo "  OpenMP threads:    $OMP_NUM_THREADS"
 echo "  Executable:        $EXE"
 echo "=========================================================="
 
 # Execute simulation
-"$EXE" "$NX" "$NY" "$MODE" "$SEED" > simulation.log 2>&1
+"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" > simulation.log 2>&1
 EXIT_CODE=$?
 
 echo ""
@@ -228,19 +239,20 @@ else:
 " 2>/dev/null))
 
 """
-    for j_id, j_nx, j_ny, j_mode, j_seed, j_dir in job_specs:
+    for j_id, j_nx, j_ny, j_mode, j_seed, j_remesh, j_dir in job_specs:
         idx = j_id - 1
+        remesh_desc = "remesh" if j_remesh == "1" else "no-remesh"
         parallel_script += f"""
 CPU_SPEC="${{CPU_ASSIGNMENTS[{idx}]}}"
 if [ -n "$CPU_SPEC" ] && [ "$CPU_SPEC" != "auto" ]; then
     TASKSET_CMD="taskset -c $CPU_SPEC"
-    echo "Launching Job {j_id}: mode={j_mode}, seed={j_seed} pinned to CPUs $CPU_SPEC..."
+    echo "Launching Job {j_id}: mode={j_mode}, seed={j_seed}, remesh={remesh_desc} pinned to CPUs $CPU_SPEC..."
 else
     TASKSET_CMD=""
-    echo "Launching Job {j_id}: mode={j_mode}, seed={j_seed} (automatic affinity)..."
+    echo "Launching Job {j_id}: mode={j_mode}, seed={j_seed}, remesh={remesh_desc} (automatic affinity)..."
 fi
 
-$TASKSET_CMD "${{SCRIPT_DIR}}/run_{job_name}_one.sh" {j_id} {j_nx} {j_ny} {j_mode} {j_seed} "${{RUNS_BASE}}/{j_dir}" &
+$TASKSET_CMD "${{SCRIPT_DIR}}/run_{job_name}_one.sh" {j_id} {j_nx} {j_ny} {j_mode} {j_seed} {j_remesh} "${{RUNS_BASE}}/{j_dir}" &
 """
 
     parallel_script += """
@@ -293,6 +305,7 @@ echo "  Total cores:     {total_cores}"
 echo "  System size:     {nx}x{ny}"
 echo "  Mode setting:    {mode_choice}"
 echo "  Start seed:      {start_seed}"
+echo "  Remeshing:       {remesh_status}"
 echo "=========================================="
 echo ""
 
