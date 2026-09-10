@@ -19,14 +19,20 @@ CXXFLAGS := -O3 -std=c++17 -qopenmp \
             -fp-model fast \
             -DNDEBUG -w
 
-# --- 2. SYSTEM PATHS (/softs/bookworm or /softs) ---
+# --- 2. SYSTEM PATHS (/softs/bookworm, /softs/trixie, or /softs) ---
 ifneq ($(wildcard /softs/bookworm/*),)
     SOFT_ROOT := /softs/bookworm
 else
     SOFT_ROOT := /softs
 endif
 
-BOOST_ROOT     := $(SOFT_ROOT)/boost_1_85_0
+# Boost: prefer Trixie 1.91.0 if installed, else fallback to 1.85.0
+ifneq ($(wildcard /softs/trixie/x86-64/boost_1_91_0/*),)
+    BOOST_ROOT := /softs/trixie/x86-64/boost_1_91_0
+else
+    BOOST_ROOT := $(SOFT_ROOT)/boost_1_85_0
+endif
+
 CGAL_ROOT      := $(SOFT_ROOT)/cgal-6.0.1
 EIGEN_ROOT     := $(SOFT_ROOT)/eigen-3.4.0
 ARMADILLO_ROOT := $(SOFT_ROOT)/armadillo-12.8.2
