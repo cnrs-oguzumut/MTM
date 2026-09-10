@@ -59,7 +59,9 @@ def main():
 
     # 3. Paths and Directories
     print("--- 3. Cluster Paths ---")
-    base_dir = get_input("Base directory for MTM", "/home/dist/umut.salman/new/MTM")
+    current_cwd = os.getcwd()
+    default_base = current_cwd if "MTM" in current_cwd else "/home/dist/umut.salman/latest_MTM"
+    base_dir = get_input("Base directory for MTM", default_base)
     exe_path = get_input("Executable path", f"{base_dir}/lattice_triangulation")
     
     default_runs_dir = f"{base_dir}/runs_{nx}x{ny}"
@@ -167,30 +169,83 @@ exit $EXIT_CODE
     # 2. Generate parallel launcher script
     # ==============================================================
     parallel_script = f"""#!/bin/bash
-# Parallel launcher script: pins each job to dedicated CPU cores
+# Parallel launcher script: dynamically pins each job to dedicated CPU cores
 SCRIPT_DIR="{base_dir}"
 RUNS_BASE="{runs_dir}"
+N_JOBS={n_jobs}
+THREADS_PER_JOB={threads_per_job}
 
 mkdir -p "$RUNS_BASE"
 
 echo "=========================================================="
-echo "Starting {n_jobs} parallel jobs with CPU pinning..."
+echo "Starting {n_jobs} parallel jobs with dynamic CPU pinning..."
 echo "Runs directory: $RUNS_BASE"
 echo "=========================================================="
 echo ""
 
+# Dynamically determine the exact CPUs assigned to this SLURM job/process
+CPU_ASSIGNMENTS=($(python3 -c "
+import os
+
+cpus = []
+if hasattr(os, 'sched_getaffinity'):
+    try:
+        cpus = sorted(list(os.sched_getaffinity(0)))
+    except Exception:
+        pass
+
+if not cpus:
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('Cpus_allowed_list:'):
+                    for part in line.split(':')[1].strip().split(','):
+                        if '-' in part:
+                            s, e = map(int, part.split('-'))
+                            cpus.extend(range(s, e + 1))
+                        elif part:
+                            cpus.append(int(part))
+                    cpus = sorted(cpus)
+                    break
+    except Exception:
+        pass
+
+cpus = sorted(list(dict.fromkeys(cpus)))
+n_jobs = $N_JOBS
+threads = $THREADS_PER_JOB
+
+if len(cpus) >= n_jobs * threads:
+    for i in range(n_jobs):
+        job_cpus = cpus[i*threads : (i+1)*threads]
+        min_c, max_c = min(job_cpus), max(job_cpus)
+        if job_cpus == list(range(min_c, max_c + 1)):
+            print(f'{{min_c}}-{{max_c}}')
+        else:
+            print(','.join(map(str, job_cpus)))
+else:
+    for i in range(n_jobs):
+        print('auto')
+" 2>/dev/null))
+
 """
     for j_id, j_nx, j_ny, j_mode, j_seed, j_dir in job_specs:
-        start_cpu = (j_id - 1) * threads_per_job
-        end_cpu = start_cpu + threads_per_job - 1
-        parallel_script += (
-            f"echo \"Launching Job {j_id}: mode={j_mode}, seed={j_seed} on CPUs {start_cpu}-{end_cpu}...\"\n"
-            f"taskset -c {start_cpu}-{end_cpu} \"${{SCRIPT_DIR}}/run_{job_name}_one.sh\" "
-            f"{j_id} {j_nx} {j_ny} {j_mode} {j_seed} \"${{RUNS_BASE}}/{j_dir}\" &\n\n"
-        )
+        idx = j_id - 1
+        parallel_script += f"""
+CPU_SPEC="${{CPU_ASSIGNMENTS[{idx}]}}"
+if [ -n "$CPU_SPEC" ] && [ "$CPU_SPEC" != "auto" ]; then
+    TASKSET_CMD="taskset -c $CPU_SPEC"
+    echo "Launching Job {j_id}: mode={j_mode}, seed={j_seed} pinned to CPUs $CPU_SPEC..."
+else
+    TASKSET_CMD=""
+    echo "Launching Job {j_id}: mode={j_mode}, seed={j_seed} (automatic affinity)..."
+fi
+
+$TASKSET_CMD "${{SCRIPT_DIR}}/run_{job_name}_one.sh" {j_id} {j_nx} {j_ny} {j_mode} {j_seed} "${{RUNS_BASE}}/{j_dir}" &
+"""
 
     parallel_script += """
 # Wait for all parallel background jobs to finish
+echo ""
 echo "All jobs launched in background. Waiting for completion..."
 wait
 
