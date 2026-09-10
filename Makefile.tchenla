@@ -69,25 +69,26 @@ EIGEN_ROOT     := $(firstword $(EIGEN_DIR) \
 # Override via environment or command-line: make -f Makefile.tchenla ALGLIB_DIR=/path ...
 MY_LIB_ROOT ?= $(HOME)/libs
 
-ALGLIB_DIR  ?= $(firstword $(wildcard $(HOME)/alglib-cpp) \
+ALGLIB_DIR  ?= $(firstword $(wildcard ./alglib-cpp) \
+                           $(wildcard $(HOME)/alglib-cpp) \
                            $(wildcard $(MY_LIB_ROOT)/alglib-cpp) \
                            $(wildcard $(HOME)/programming/alglib-cpp) \
                            $(wildcard $(HOME)/new/alglib-cpp) \
-                           $(wildcard ../alglib-cpp) \
-                           $(wildcard ./alglib-cpp))
+                           $(wildcard ../alglib-cpp))
 
-ITENSOR_DIR ?= $(firstword $(wildcard $(HOME)/itensor) \
+ITENSOR_DIR ?= $(firstword $(wildcard ./itensor) \
+                           $(wildcard ./ITensor) \
+                           $(wildcard $(HOME)/itensor) \
                            $(wildcard $(HOME)/ITensor) \
                            $(wildcard $(MY_LIB_ROOT)/itensor) \
                            $(wildcard $(MY_LIB_ROOT)/ITensor) \
                            $(wildcard $(HOME)/programming/itensor) \
                            $(wildcard $(HOME)/new/ITensor) \
-                           $(wildcard ../itensor) \
-                           $(wildcard ./itensor))
+                           $(wildcard ../itensor))
 
 SPECTRA_DIR ?= $(firstword $(wildcard ./spectra) \
-                           $(wildcard $(MY_LIB_ROOT)/spectra) \
-                           $(wildcard $(HOME)/spectra))
+                           $(wildcard $(HOME)/spectra) \
+                           $(wildcard $(MY_LIB_ROOT)/spectra))
 
 # --- 4. Include Paths (-I) ---
 INCLUDES := -I./include \
