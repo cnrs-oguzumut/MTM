@@ -1,4 +1,6 @@
-# .bashrc
+# Fix locale warnings from SSH
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
 
 # Source global definitions
 if [ -f /etc/bashrc ]; then
@@ -8,16 +10,23 @@ fi
 if [ -f /etc/profile.d/modules.sh ]; then
     export MODULES_AUTO_HANDLING=1
     source /etc/profile.d/modules.sh
-    # Load SLURM (new Magi environment Debian Trixie / fallback to legacy)
-    if [ -d /softs/trixie/modules/x86-64/slurm ] || [ -f /softs/trixie/modules/x86-64/slurm/default ]; then
-        module load /softs/trixie/modules/x86-64/slurm/default
-    else
-        module load /softs/modules/slurm/default 2>/dev/null || module load slurm 2>/dev/null
+
+    # New Debian Trixie modules (oneAPI 2025.3.1.11 & SLURM)
+    if [ -d /softs/trixie/modules/x86-64 ]; then
+        module use /softs/trixie/modules/x86-64
+        module use /softs/trixie/modules/x86-64/oneapi/2025.3.1.11
+        module load slurm/default
+        module load compiler/latest
+        module load mkl/latest
+        module load mpi/latest
+    # Legacy fallback
+    elif [ -d /softs/modules ]; then
+        module load /softs/modules/slurm/default 2>/dev/null
+        module use /softs/modules/oneapi/2024.1.0.596 2>/dev/null
+        module load compiler/2024.1.0 2>/dev/null
+        module load mkl/2024.1 2>/dev/null
+        module load mpi/2021.12 2>/dev/null
     fi
-    module use /softs/modules/oneapi/2024.1.0.596
-    module load compiler/2024.1.0
-    module load mkl/2024.1
-    module load mpi/2021.12
 fi
 
 # --- Library paths (append, don't overwrite!) ---
