@@ -1,0 +1,256 @@
+# ==================================================================
+#  Makefile.tchenla - Optimized for Tchenla Cluster (OpenHPC / Rocky 9)
+#  Paris 13 University (Université Sorbonne Paris Nord)
+# ==================================================================
+#
+# Recommended module loading on Tchenla:
+#   module purge
+#   module load gnu14/14.2.0
+#   module load openmpi5/5.0.7
+#   module load openblas/0.3.29
+#   module load boost/1.88.0
+#   module load cgal/5.6.2
+#   module load armadillo/14.4.0
+#   module load eigen/3.4.0
+#
+# Usage:
+#   make -f Makefile.tchenla -j 8
+#   make -f Makefile.tchenla info
+#   make -f Makefile.tchenla clean
+# ==================================================================
+
+# --- 1. Compiler Configuration ---
+CXX      ?= g++
+CC       ?= gcc
+
+CXXFLAGS := -O3 -std=c++17 -march=native -fopenmp \
+            -fno-math-errno -ffinite-math-only -funroll-loops \
+            -DNDEBUG -w
+
+# Preprocessor definitions required by simulation code
+DEFINES  := -DUSE_ARMADILLO=1 -DUSE_SPECTRA=1 -DUSE_ITENSOR=1
+
+# --- 2. OpenHPC Cluster Modules Auto-Detection ---
+# On Tchenla (OpenHPC with Lmod), loading modules exports environment
+# variables such as *_DIR, *_INC, and *_LIB.
+OHPC_ROOT := /opt/ohpc/pub
+
+# Boost (module: boost/1.88.0 under gnu14-openmpi5)
+BOOST_ROOT := $(firstword $(BOOST_DIR) \
+                          $(wildcard $(OHPC_ROOT)/moduledeps/gnu14-openmpi5/boost/1.88.0) \
+                          $(wildcard $(OHPC_ROOT)/libs/gnu14/openmpi5/boost/1.88.0) \
+                          /usr)
+
+# CGAL (module: cgal/5.6.2 under gnu14)
+CGAL_ROOT  := $(firstword $(CGAL_DIR) \
+                          $(wildcard $(OHPC_ROOT)/moduledeps/gnu14/cgal/5.6.2) \
+                          $(wildcard $(OHPC_ROOT)/libs/gnu14/cgal/5.6.2) \
+                          /usr)
+
+# Armadillo (module: armadillo/14.4.0 under gnu14)
+ARMADILLO_ROOT := $(firstword $(ARMADILLO_DIR) \
+                              $(wildcard $(OHPC_ROOT)/moduledeps/gnu14/armadillo/14.4.0) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/armadillo/14.4.0) \
+                              /usr)
+
+# OpenBLAS (module: openblas/0.3.29 under gnu14)
+OPENBLAS_ROOT  := $(firstword $(OPENBLAS_DIR) \
+                              $(wildcard $(OHPC_ROOT)/moduledeps/gnu14/openblas/0.3.29) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/openblas/0.3.29) \
+                              /usr)
+
+# Eigen3 (module: eigen/3.4.0 under modulefiles)
+EIGEN_ROOT     := $(firstword $(EIGEN_DIR) \
+                              $(wildcard $(OHPC_ROOT)/apps/eigen/3.4.0) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/eigen/3.4.0) \
+                              /usr)
+
+# --- 3. User Libraries (ALGLIB, ITensor, Spectra) ---
+# Override via environment or command-line: make -f Makefile.tchenla ALGLIB_DIR=/path ...
+MY_LIB_ROOT ?= $(HOME)/libs
+
+ALGLIB_DIR  ?= $(firstword $(wildcard $(HOME)/alglib-cpp) \
+                           $(wildcard $(MY_LIB_ROOT)/alglib-cpp) \
+                           $(wildcard $(HOME)/programming/alglib-cpp) \
+                           $(wildcard $(HOME)/new/alglib-cpp) \
+                           $(wildcard ../alglib-cpp) \
+                           $(wildcard ./alglib-cpp))
+
+ITENSOR_DIR ?= $(firstword $(wildcard $(HOME)/itensor) \
+                           $(wildcard $(HOME)/ITensor) \
+                           $(wildcard $(MY_LIB_ROOT)/itensor) \
+                           $(wildcard $(MY_LIB_ROOT)/ITensor) \
+                           $(wildcard $(HOME)/programming/itensor) \
+                           $(wildcard $(HOME)/new/ITensor) \
+                           $(wildcard ../itensor) \
+                           $(wildcard ./itensor))
+
+SPECTRA_DIR ?= $(firstword $(wildcard ./spectra) \
+                           $(wildcard $(MY_LIB_ROOT)/spectra) \
+                           $(wildcard $(HOME)/spectra))
+
+# --- 4. Include Paths (-I) ---
+INCLUDES := -I./include \
+            -I$(SPECTRA_DIR)/include \
+            -I$(SPECTRA_DIR)
+
+ifneq ($(ALGLIB_DIR),)
+    INCLUDES += -I$(ALGLIB_DIR)/src -I$(ALGLIB_DIR)
+endif
+
+ifneq ($(ITENSOR_DIR),)
+    INCLUDES += -I$(ITENSOR_DIR) -I$(ITENSOR_DIR)/itensor
+endif
+
+# Eigen include (handles both /include and /include/eigen3)
+ifneq ($(EIGEN_INC),)
+    INCLUDES += -I$(EIGEN_INC)
+else ifneq ($(EIGEN_ROOT),)
+    INCLUDES += -I$(EIGEN_ROOT)/include/eigen3 -I$(EIGEN_ROOT)/include
+endif
+INCLUDES += -I/usr/include/eigen3
+
+# CGAL include
+ifneq ($(CGAL_INC),)
+    INCLUDES += -I$(CGAL_INC)
+else ifneq ($(CGAL_ROOT),)
+    INCLUDES += -I$(CGAL_ROOT)/include
+endif
+
+# Boost include
+ifneq ($(BOOST_INC),)
+    INCLUDES += -I$(BOOST_INC)
+else ifneq ($(BOOST_ROOT),)
+    INCLUDES += -I$(BOOST_ROOT)/include
+endif
+
+# Armadillo include
+ifneq ($(ARMADILLO_INC),)
+    INCLUDES += -I$(ARMADILLO_INC)
+else ifneq ($(ARMADILLO_ROOT),)
+    INCLUDES += -I$(ARMADILLO_ROOT)/include
+endif
+
+# OpenBLAS include
+ifneq ($(OPENBLAS_INC),)
+    INCLUDES += -I$(OPENBLAS_INC)
+else ifneq ($(OPENBLAS_ROOT),)
+    INCLUDES += -I$(OPENBLAS_ROOT)/include
+endif
+
+INCLUDES += -I/usr/include
+
+# --- 5. Linker Paths (-L) and RPATH ---
+LDFLAGS := -fopenmp
+
+# Armadillo lib
+ifneq ($(ARMADILLO_LIB),)
+    LDFLAGS += -L$(ARMADILLO_LIB) -Wl,-rpath,$(ARMADILLO_LIB)
+else ifneq ($(ARMADILLO_ROOT),)
+    LDFLAGS += -L$(ARMADILLO_ROOT)/lib64 -L$(ARMADILLO_ROOT)/lib \
+               -Wl,-rpath,$(ARMADILLO_ROOT)/lib64 -Wl,-rpath,$(ARMADILLO_ROOT)/lib
+endif
+
+# Boost lib
+ifneq ($(BOOST_LIB),)
+    LDFLAGS += -L$(BOOST_LIB) -Wl,-rpath,$(BOOST_LIB)
+else ifneq ($(BOOST_ROOT),)
+    LDFLAGS += -L$(BOOST_ROOT)/lib64 -L$(BOOST_ROOT)/lib \
+               -Wl,-rpath,$(BOOST_ROOT)/lib64 -Wl,-rpath,$(BOOST_ROOT)/lib
+endif
+
+# OpenBLAS lib
+ifneq ($(OPENBLAS_LIB),)
+    LDFLAGS += -L$(OPENBLAS_LIB) -Wl,-rpath,$(OPENBLAS_LIB)
+else ifneq ($(OPENBLAS_ROOT),)
+    LDFLAGS += -L$(OPENBLAS_ROOT)/lib64 -L$(OPENBLAS_ROOT)/lib \
+               -Wl,-rpath,$(OPENBLAS_ROOT)/lib64 -Wl,-rpath,$(OPENBLAS_ROOT)/lib
+endif
+
+# CGAL lib (if non-header-only)
+ifneq ($(CGAL_LIB),)
+    LDFLAGS += -L$(CGAL_LIB) -Wl,-rpath,$(CGAL_LIB)
+else ifneq ($(CGAL_ROOT),)
+    LDFLAGS += -L$(CGAL_ROOT)/lib64 -L$(CGAL_ROOT)/lib \
+               -Wl,-rpath,$(CGAL_ROOT)/lib64 -Wl,-rpath,$(CGAL_ROOT)/lib
+endif
+
+# ITensor lib
+ifneq ($(ITENSOR_DIR),)
+    LDFLAGS += -L$(ITENSOR_DIR)/lib -L$(ITENSOR_DIR)/build \
+               -Wl,-rpath,$(ITENSOR_DIR)/lib -Wl,-rpath,$(ITENSOR_DIR)/build
+endif
+
+LDFLAGS += -L/usr/lib64 -L/usr/lib
+
+# --- 6. Libraries to Link (-l) ---
+LIBS := -litensor -larmadillo -lopenblas -llapack -lblas -lgmp -lmpfr -lboost_system -lboost_thread -ldl -lm
+
+# --- 7. Sources and Objects ---
+OBJ_DIR     := obj_tchenla
+SRC_DIR     := src
+
+# Find all source files, excluding main_splines.cpp
+ALL_SRCS    := $(shell find $(SRC_DIR) -name "*.cpp")
+SRCS        := $(filter-out $(SRC_DIR)/main_splines.cpp, $(ALL_SRCS))
+OBJS        := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/src/%.o,$(SRCS))
+
+# ALGLIB sources and objects
+ifneq ($(ALGLIB_DIR),)
+    ALGLIB_SRCS := $(wildcard $(ALGLIB_DIR)/src/*.cpp)
+    ALGLIB_OBJS := $(patsubst $(ALGLIB_DIR)/src/%.cpp,$(OBJ_DIR)/alglib/%.o,$(ALGLIB_SRCS))
+else
+    ALGLIB_SRCS :=
+    ALGLIB_OBJS :=
+endif
+
+TARGET := lattice_triangulation
+
+# --- 8. Build Rules ---
+.PHONY: all clean info check-dirs
+
+all: info check-dirs $(TARGET)
+
+check-dirs:
+	@mkdir -p $(OBJ_DIR)/src $(OBJ_DIR)/src/mesh $(OBJ_DIR)/src/optimization $(OBJ_DIR)/src/experiments $(OBJ_DIR)/alglib
+
+# Link executable
+$(TARGET): $(OBJS) $(ALGLIB_OBJS)
+	@echo "Linking $(TARGET)..."
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LIBS)
+	@echo "=================================================="
+	@echo "  Build SUCCESS: $(TARGET) is ready!"
+	@echo "=================================================="
+
+# Compile project C++ sources
+$(OBJ_DIR)/src/%.o: $(SRC_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	@echo "Compiling $<"
+	$(CXX) $(CXXFLAGS) $(DEFINES) $(INCLUDES) -c $< -o $@
+
+# Compile ALGLIB C++ sources
+$(OBJ_DIR)/alglib/%.o: $(ALGLIB_DIR)/src/%.cpp
+	@mkdir -p $(dir $@)
+	@echo "Compiling ALGLIB $<"
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+clean:
+	@echo "Cleaning objects and $(TARGET)..."
+	rm -rf $(OBJ_DIR) $(TARGET)
+	@echo "Clean completed."
+
+info:
+	@echo "=================================================="
+	@echo "  Tchenla Cluster Build Configuration"
+	@echo "=================================================="
+	@echo "  CXX:            $(CXX)"
+	@echo "  CXXFLAGS:       $(CXXFLAGS)"
+	@echo "  OpenBLAS:       $(OPENBLAS_ROOT) (INC: $(OPENBLAS_INC), LIB: $(OPENBLAS_LIB))"
+	@echo "  Boost:          $(BOOST_ROOT) (INC: $(BOOST_INC), LIB: $(BOOST_LIB))"
+	@echo "  Armadillo:      $(ARMADILLO_ROOT)"
+	@echo "  CGAL:           $(CGAL_ROOT)"
+	@echo "  Eigen3:         $(EIGEN_ROOT)"
+	@echo "  ALGLIB:         $(ALGLIB_DIR)"
+	@echo "  ITensor:        $(ITENSOR_DIR)"
+	@echo "  Spectra:        $(SPECTRA_DIR)"
+	@echo "=================================================="
