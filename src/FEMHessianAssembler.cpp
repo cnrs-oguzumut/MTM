@@ -2,6 +2,7 @@
 #include "../include/reductions/LagrangeReduction.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 // SPECTRA INCLUDES
 #include <Spectra/GenEigsSolver.h>
