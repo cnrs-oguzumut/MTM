@@ -1,0 +1,131 @@
+# ==================================================================
+#  Intel oneAPI (icpx/icx) Makefile for Cluster
+# ==================================================================
+
+# --- 1. Compiler Configuration ---
+CXX      := icpx
+CC       := icx
+
+# Flags:
+# -O3 -std=c++17    : Optimization and standard
+# -qopenmp          : Intel OpenMP runtime
+# -mavx2 -mfma      : Target modern x86 hardware (AVX2 + FMA)
+# -funroll-loops    : Loop unrolling
+# -fp-model fast    : Fast floating point model
+# -DNDEBUG -w       : Suppress warnings and disable debug assertions
+CXXFLAGS := -O3 -std=c++17 -qopenmp \
+            -mavx2 -mfma \
+            -funroll-loops \
+            -fp-model fast \
+            -DNDEBUG -w
+
+# --- 2. SYSTEM PATHS (/softs/bookworm or /softs) ---
+ifneq ($(wildcard /softs/bookworm/*),)
+    SOFT_ROOT := /softs/bookworm
+else
+    SOFT_ROOT := /softs
+endif
+
+BOOST_ROOT     := $(SOFT_ROOT)/boost_1_85_0
+CGAL_ROOT      := $(SOFT_ROOT)/cgal-6.0.1
+EIGEN_ROOT     := $(SOFT_ROOT)/eigen-3.4.0
+ARMADILLO_ROOT := $(SOFT_ROOT)/armadillo-12.8.2
+GMP_ROOT       := $(SOFT_ROOT)/gmp-6.3.0-haswell
+
+# --- 3. LOCAL PATHS (Your Home Directory) ---
+MY_LIB_ROOT := /home/dist/umut.salman/new
+
+ITENSOR_DIR := $(MY_LIB_ROOT)/ITensor
+ALGLIB_DIR  := $(MY_LIB_ROOT)/alglib-cpp
+SPECTRA_DIR := $(MY_LIB_ROOT)/spectra
+
+# --- 4. INCLUDE DIRECTORIES (-I) ---
+INCLUDES := -I./include \
+            -I$(ALGLIB_DIR)/src \
+            -I$(ALGLIB_DIR) \
+            -I$(ITENSOR_DIR) \
+            -I$(ITENSOR_DIR)/itensor \
+            -I$(SPECTRA_DIR)/include \
+            -I$(EIGEN_ROOT)/include/eigen3 \
+            -I$(EIGEN_ROOT)/include \
+            -I$(EIGEN_ROOT) \
+            -I/usr/include/eigen3 \
+            -I$(CGAL_ROOT)/include \
+            -I$(CGAL_ROOT) \
+            -I$(BOOST_ROOT)/include \
+            -I$(BOOST_ROOT) \
+            -I$(ARMADILLO_ROOT)/include \
+            -I$(GMP_ROOT)/include \
+            -I/usr/include
+
+# --- 5. LINKER FLAGS (-L) ---
+LDFLAGS  := -qopenmp \
+            -L$(ARMADILLO_ROOT)/lib \
+            -L$(CGAL_ROOT)/lib64 \
+            -L$(BOOST_ROOT)/lib \
+            -L$(GMP_ROOT)/lib \
+            -L$(ITENSOR_DIR)/lib \
+            -L$(MY_LIB_ROOT)/local/lib64 \
+            -L$(MY_LIB_ROOT)/local/lib \
+            -Wl,-rpath,$(ARMADILLO_ROOT)/lib \
+            -Wl,-rpath,$(CGAL_ROOT)/lib64 \
+            -Wl,-rpath,$(BOOST_ROOT)/lib \
+            -Wl,-rpath,$(GMP_ROOT)/lib \
+            -Wl,-rpath,$(MY_LIB_ROOT)/local/lib64 \
+            -Wl,-rpath,$(MY_LIB_ROOT)/local/lib
+
+# --- 6. LIBRARIES TO LINK (-l) ---
+LIBS     := -litensor -larmadillo -lgmp -lmpfr -lboost_system -lboost_thread -qmkl -ldl -lm
+
+# --- 7. SOURCES AND OBJECTS ---
+SRC_DIR     := src
+# Exclude main_splines.cpp to avoid duplicate main() definition
+ALL_SRCS    := $(shell find $(SRC_DIR) -name "*.cpp")
+SRCS        := $(filter-out $(SRC_DIR)/main_splines.cpp, $(ALL_SRCS))
+OBJS        := $(SRCS:.cpp=.o)
+
+ALGLIB_SRCS := $(wildcard $(ALGLIB_DIR)/src/*.cpp)
+ALGLIB_OBJS := $(ALGLIB_SRCS:.cpp=.o)
+
+TARGET      := lattice_triangulation
+
+# ==================================================================
+#  Build Rules
+# ==================================================================
+
+.PHONY: all clean info alglib
+
+all: info $(TARGET)
+
+alglib: $(ALGLIB_OBJS)
+	@echo "ALGLIB compiled."
+
+# Link Step
+$(TARGET): $(OBJS) $(ALGLIB_OBJS)
+	@echo "Linking executable $(TARGET)..."
+	$(CXX) $(CXXFLAGS) $(OBJS) $(ALGLIB_OBJS) -o $@ $(LDFLAGS) $(LIBS)
+	@echo "Build success: $(TARGET) created!"
+
+# Compile Project Code (handles subdirectories)
+%.o: %.cpp
+	@echo "Compiling $<"
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -DUSE_ITENSOR=1 -DUSE_SPECTRA=1 -DUSE_ARMADILLO=1 -c $< -o $@
+
+# Compile ALGLIB
+$(ALGLIB_DIR)/src/%.o: $(ALGLIB_DIR)/src/%.cpp
+	@echo "Compiling ALGLIB $<"
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+clean:
+	@echo "Cleaning objects and binary..."
+	find $(SRC_DIR) -name "*.o" -delete
+	rm -f $(TARGET) $(ALGLIB_OBJS)
+	@echo "Clean completed."
+
+info:
+	@echo "------------------------------------------------"
+	@echo "Building with Intel oneAPI (icpx)"
+	@echo "  Using Soft Root:        $(SOFT_ROOT)"
+	@echo "  Using System Armadillo: $(ARMADILLO_ROOT)"
+	@echo "  Target Executable:      $(TARGET)"
+	@echo "------------------------------------------------"
