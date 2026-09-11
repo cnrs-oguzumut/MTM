@@ -1,7 +1,61 @@
 #include "../../include/experiments/experiment_includes.h"
+#include "../../include/optimization/StiffnessSpectrum.h"
+
+StiffnessEigenSolver parse_stiffness_eigen_solver(const std::string &name) {
+  if (name == "fast" || name == "cholesky") return StiffnessEigenSolver::Fast;
+  if (name == "legacy" || name == "old" || name == "itensor")
+    return StiffnessEigenSolver::Legacy;
+  throw std::invalid_argument("Unknown eigen solver: " + name + " (fast | legacy)");
+}
+
+std::string to_string(StiffnessEigenSolver solver) {
+  return solver == StiffnessEigenSolver::Fast ? "fast" : "legacy";
+}
+
+namespace {
+
+// n_eig lowest eigenpairs of the stiffness at x with lowest_stiffness_modes, returned in
+// the layout of the legacy path: the two uniform translations, which the fast solver
+// projects out, are added back explicitly (eigenvalue = Rayleigh quotient, ~1e-15), so
+// the rigid-mode detection and the output columns below stay the same.
+EigenResults fast_lowest_eigenpairs(const alglib::real_1d_array &x, UserData *userData,
+                                    int n_eig) {
+  FastStiffnessAssembler fast_assembler;
+  const Eigen::SparseMatrix<double> &K =
+      fast_assembler.assembleStiffness(x, userData, /*project_psd=*/false);
+  const int n = static_cast<int>(K.rows());
+  const int n_translations = stiffness_has_translation_modes(K) ? 2 : 0;
+
+  StiffnessSpectrumOptions opt;
+  opt.n_modes = n_eig - n_translations;
+  opt.deflate_translations = n_translations ? 1 : 0;
+  opt.verbose = true;
+  const StiffnessSpectrum spectrum = lowest_stiffness_modes(K, opt);
+
+  EigenResults results;
+  results.num_computed = n_translations + spectrum.num_computed;
+  results.eigenvalues.resize(results.num_computed);
+  results.eigenvectors.resize(n, results.num_computed);
+  const int m = n / 2;
+  for (int block = 0; block < n_translations; block++) {
+    Eigen::VectorXd t = Eigen::VectorXd::Zero(n);
+    t.segment(block * m, m).setConstant(1.0 / std::sqrt(static_cast<double>(m)));
+    results.eigenvalues(block) = t.dot(K * t);
+    results.eigenvectors.col(block) = t;
+  }
+  for (int k = 0; k < spectrum.num_computed; k++) {
+    results.eigenvalues(n_translations + k) = spectrum.eigenvalues(k);
+    results.eigenvectors.col(n_translations + k) = spectrum.eigenvectors.col(k);
+  }
+  return results;
+}
+
+} // namespace
 
 void analyze_data_from_folder(int caller_id, int nx, int ny, int iter_start,
-                              int iter_end, int n_eig) {
+                              int iter_end, int n_eig,
+                              StiffnessEigenSolver eig_solver) {
+  std::cout << "Stiffness eigen solver: " << to_string(eig_solver) << std::endl;
 
   // Parameters for lattice
   if (nx <= 0 || ny <= 0) {
@@ -247,38 +301,48 @@ void analyze_data_from_folder(int caller_id, int nx, int ny, int iter_start,
                                   potential_func_sder,
                                   calculator.getUnitCellArea());
 
-    Eigen::SparseMatrix<double> global_stiffness =
-        assembler.assembleGlobalStiffness(
-            elements,
-            square_points, // <- ADDED: Current node positions
-            2 * n_free_nodes, full_mapping);
-    std::cout << "--- Sparse Matrix Output (Row, Col, Value) ---" << std::endl;
+    // Compute eigenvalues (both paths return the translations among the n_eig values)
+    const auto eig_start = std::chrono::high_resolution_clock::now();
+    EigenResults results;
+    if (eig_solver == StiffnessEigenSolver::Fast) {
+      results = fast_lowest_eigenpairs(x, &userData, n_eig);
+    } else {
+      Eigen::SparseMatrix<double> global_stiffness =
+          assembler.assembleGlobalStiffness(
+              elements,
+              square_points, // <- ADDED: Current node positions
+              2 * n_free_nodes, full_mapping);
+      std::cout << "--- Sparse Matrix Output (Row, Col, Value) ---" << std::endl;
 
-    // Iterate over the sparse matrix efficiently
-    // outerSize() is usually the number of columns (for column-major matrices)
-    // for (int k = 0; k < global_stiffness.outerSize(); ++k) {
-    //     // InnerIterator iterates over non-zero entries of the k-th column
-    //     for (Eigen::SparseMatrix<double>::InnerIterator it(global_stiffness,
-    //     k); it; ++it) {
+      // Iterate over the sparse matrix efficiently
+      // outerSize() is usually the number of columns (for column-major matrices)
+      // for (int k = 0; k < global_stiffness.outerSize(); ++k) {
+      //     // InnerIterator iterates over non-zero entries of the k-th column
+      //     for (Eigen::SparseMatrix<double>::InnerIterator it(global_stiffness,
+      //     k); it; ++it) {
 
-    //         // it.row()   = row index
-    //         // it.col()   = column index
-    //         // it.value() = the value of the element
-    //         std::cout << it.row() << " " << it.col() << " " << it.value() <<
-    //         "\n";
-    //     }
-    // }
-    std::cout << "----------------------------------------------" << std::endl;
-    // Compute eigenvalues
-    double shift = -0.01 * global_stiffness.diagonal().cwiseAbs().maxCoeff();
+      //         // it.row()   = row index
+      //         // it.col()   = column index
+      //         // it.value() = the value of the element
+      //         std::cout << it.row() << " " << it.col() << " " << it.value() <<
+      //         "\n";
+      //     }
+      // }
+      std::cout << "----------------------------------------------" << std::endl;
 
-    // EigenResults results =
-    //     assembler.computeSmallestEigenvaluesIterative_armadillo(global_stiffness,
-    //                                                           100,0.0);
+      // EigenResults results =
+      //     assembler.computeSmallestEigenvaluesIterative_armadillo(global_stiffness,
+      //                                                           100,0.0);
 
-    EigenResults results =
-        assembler.computeSmallestEigenvaluesIterative_spectra(global_stiffness,
-                                                              n_eig, -1);
+      results =
+          assembler.computeSmallestEigenvaluesIterative_spectra(global_stiffness,
+                                                                n_eig, -1);
+    }
+    std::cout << "Eigenvalues (" << to_string(eig_solver) << "): "
+              << std::chrono::duration<double>(
+                     std::chrono::high_resolution_clock::now() - eig_start)
+                     .count()
+              << " s" << std::endl;
 
     // STEP 1: Sort by ABSOLUTE VALUE to identify rigid body modes
     std::vector<std::pair<double, int>> eigen_pairs;

@@ -57,6 +57,27 @@ state than plain L-BFGS, so compare statistics, not individual avalanches.
 `build/benchmark_preconditioner` compares the solvers from identical start states
 (`--validate` also checks the analytic stiffness against the ITensor assembler).
 
+### Stability monitor (lowest eigenvalues of the stiffness)
+
+The lowest eigenvalues of the Hessian K at the relaxed states can be computed during the
+loading (`src/optimization/StiffnessSpectrum.cpp`: analytic K, Cholesky shift-invert
+Lanczos, rigid translations projected out; ~0.15 s per state at 150x150):
+
+```bash
+./lattice_triangulation 150 150 positive 42 1 --precond=stiffness --precond-from-step=1 \
+    --eig-every=5 --eig-at-avalanche=1
+```
+
+- `--eig-every=N` every N-th relaxed state (default 0 = off)
+- `--eig-at-avalanche=1` also the last stable state before and the state after each avalanche
+- `--eig-modes=5` eigenvalues per computation, `--eig-vectors=2` soft modes per avalanche
+- `--eig-refine=0.2` every step while lambda_min < 0.2 x its value after the last avalanche
+
+Output: `eigen_log.csv` and `eigen_modes/soft_modes_XXXXX.vtk` (XXXXX = id of the
+PRE-avalanche configuration; translations are never written). Post-processing of saved
+configurations (`analyze_data_from_folder`) uses the same solver, or the old ITensor path
+with `--eig-solver=legacy`.
+
 ## Running Tests
 
 ```bash

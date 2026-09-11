@@ -88,6 +88,20 @@ def main():
     precond_tag = "" if precond == "stiffness" else ("_plainlbfgs" if precond == "none" else f"_{precond}")
     suffix += precond_tag
     print(f"  -> Preconditioner: {precond_status}")
+
+    # Stability monitor: lowest stiffness eigenvalues during the run (eigen_log.csv,
+    # eigen_modes/); about +7% run time with N = 5
+    eig_every = int(get_input(
+        "Stability monitor: eigenvalues every N load steps (0 = off)", "5"))
+    eig_flags = ""
+    eig_status = "off"
+    if eig_every > 0:
+        eig_aval = get_input(
+            "  Also before/after each avalanche, with soft modes? ('yes' / 'no')", "yes").lower()
+        eig_at_avalanche = 1 if eig_aval in ("y", "yes", "true", "1") else 0
+        eig_flags = f"--eig-every={eig_every} --eig-at-avalanche={eig_at_avalanche}"
+        eig_status = f"every {eig_every} steps" + (", before/after avalanches" if eig_at_avalanche else "")
+    print(f"  -> Stability monitor: {eig_status}")
     print()
 
     # 3. Paths and Directories
@@ -132,6 +146,7 @@ def main():
     print("=" * 70)
     print("Planned Job Configurations:")
     print(f"  Preconditioner: {precond_status}")
+    print(f"  Stability monitor: {eig_status}")
     print("=" * 70)
     for j_id, j_nx, j_ny, j_mode, j_seed, j_remesh, j_dir in job_specs:
         start_cpu = (j_id - 1) * threads_per_job
@@ -165,6 +180,7 @@ REMESH=$6
 RUN_DIR=$7
 EXE="{exe_path}"
 PRECOND_FLAGS="{precond_flags}"
+EIG_FLAGS="{eig_flags}"
 
 # Create run directory and enter it
 mkdir -p "$RUN_DIR"
@@ -185,10 +201,11 @@ echo "  CPU affinity:      $(taskset -cp $$ 2>/dev/null || echo 'N/A')"
 echo "  OpenMP threads:    $OMP_NUM_THREADS"
 echo "  Executable:        $EXE"
 echo "  Preconditioner:    ${{PRECOND_FLAGS:-none (plain L-BFGS)}}"
+echo "  Stability monitor: ${{EIG_FLAGS:-off}}"
 echo "=========================================================="
 
 # Execute simulation
-"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" $PRECOND_FLAGS > simulation.log 2>&1
+"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" $PRECOND_FLAGS $EIG_FLAGS > simulation.log 2>&1
 EXIT_CODE=$?
 
 echo ""
@@ -335,6 +352,7 @@ echo "  Mode setting:    {mode_choice}"
 echo "  Start seed:      {start_seed}"
 echo "  Remeshing:       {remesh_status}"
 echo "  Preconditioner:  {precond_status}"
+echo "  Stability mon.:  {eig_status}"
 echo "=========================================="
 echo ""
 
