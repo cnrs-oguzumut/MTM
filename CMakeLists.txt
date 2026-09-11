@@ -390,6 +390,19 @@ else()
     message(STATUS "Apple Accelerate support DISABLED")
 endif()
 
+# CHOLMOD (SuiteSparse) supernodal Cholesky for the L-BFGS stiffness preconditioner;
+# without it PreconditionedLBFGS falls back to Eigen's SimplicialLLT.
+find_path(CHOLMOD_INCLUDE_DIR cholmod.h PATH_SUFFIXES suitesparse)
+find_library(CHOLMOD_LIBRARY cholmod)
+if(CHOLMOD_INCLUDE_DIR AND CHOLMOD_LIBRARY)
+    target_include_directories(lattice_lib PRIVATE ${CHOLMOD_INCLUDE_DIR})
+    target_compile_definitions(lattice_lib PRIVATE USE_CHOLMOD=1)
+    target_link_libraries(lattice_lib PUBLIC ${CHOLMOD_LIBRARY})
+    message(STATUS "CHOLMOD support ENABLED - USE_CHOLMOD=1 defined (${CHOLMOD_LIBRARY})")
+else()
+    message(STATUS "CHOLMOD support DISABLED (Eigen SimplicialLLT preconditioner)")
+endif()
+
 # Create main executable
 add_executable(lattice_triangulation "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 
@@ -465,6 +478,26 @@ target_link_libraries(lattice_triangulation ${BASE_LIBRARIES})
 # Add OpenMP if available
 if(OpenMP_CXX_FOUND)
     target_link_libraries(lattice_triangulation OpenMP::OpenMP_CXX)
+endif()
+
+# L-BFGS preconditioner benchmark (benchmarks/ is outside the src/ glob)
+add_executable(benchmark_preconditioner
+    "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/benchmark_preconditioner.cpp")
+if(TARGET Eigen3::Eigen)
+    target_link_libraries(benchmark_preconditioner PUBLIC Eigen3::Eigen)
+else()
+    target_include_directories(benchmark_preconditioner PUBLIC ${EIGEN3_INCLUDE_DIR})
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(benchmark_preconditioner PRIVATE -O3 -march=native -flto -ffast-math)
+endif()
+get_target_property(MAIN_EXE_DEFINITIONS lattice_triangulation COMPILE_DEFINITIONS)
+if(MAIN_EXE_DEFINITIONS)
+    target_compile_definitions(benchmark_preconditioner PRIVATE ${MAIN_EXE_DEFINITIONS})
+endif()
+target_link_libraries(benchmark_preconditioner ${BASE_LIBRARIES})
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(benchmark_preconditioner OpenMP::OpenMP_CXX)
 endif()
 
 # Add test executable if tests directory exists

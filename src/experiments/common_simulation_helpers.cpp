@@ -112,9 +112,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
 
     // === OPTIMIZE ON NEW MESH ===
     std::cout << "Optimization in REMESHING loop" << std::endl;
-    LBFGSOptimizer optimizer(13, 0, 0, 0, 0);
     if (optimize_interior)
-      optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
+      relax_configuration(x, &newUserData, 13);
 
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
 
@@ -209,6 +208,33 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
 //                                                 stress_tensor, true);
 //   final_stress = stress_tensor(0, 1);
 // }
+
+namespace {
+std::unique_ptr<PreconditionedLBFGS> g_relaxation_solver;
+int g_relaxation_first_step = 0;
+int g_relaxation_step = 0;
+}
+
+void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
+                                 int first_step) {
+  g_relaxation_first_step = first_step;
+  if (options.type == LBFGSPreconditioner::None) {
+    g_relaxation_solver.reset();
+    return;
+  }
+  g_relaxation_solver = std::make_unique<PreconditionedLBFGS>(options);
+}
+
+void relaxation_begin_step(int step) { g_relaxation_step = step; }
+
+void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corrections) {
+  if (g_relaxation_solver && g_relaxation_step >= g_relaxation_first_step) {
+    g_relaxation_solver->optimize(x, userData);
+    return;
+  }
+  LBFGSOptimizer optimizer(corrections, 0.0, 0.0, 0.0, 0);
+  optimizer.optimize(x, minimize_energy_with_triangles, userData);
+}
 
 void writeSizesToFile(int Nx, int Ny) {
   std::ofstream file("sizes.dat");
@@ -357,8 +383,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
                          F_ext, interior_mapping, full_mapping, active_elements,
                          plasticity);
 
-    LBFGSOptimizer optimizer(13, 0, 0, 0, 0);
-    optimizer.optimize(x, minimize_energy_with_triangles, &newUserData);
+    relax_configuration(x, &newUserData, 13);
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
 
     // // 4. Check convergence

@@ -103,6 +103,13 @@ itensor::ITensor TriangularLatticeCalculator::calculate_dseconderivative(const E
     return hessianComponentsToITensor(hess);
 }
 
+HessianComponents TriangularLatticeCalculator::calculate_dseconderivative_components(const Eigen::Matrix2d& C,
+                                                              const std::function<double(double)>& dpot,
+                                                              const std::function<double(double)>& d2pot) {
+    auto dummy_pot = [](double r) { return 0.0; };
+    return calculate_hessian_components(C, dummy_pot, dpot, d2pot);
+}
+
 // Private helper method: Calculate second derivatives (Hessian) of energy w.r.t. metric tensor components
 HessianComponents TriangularLatticeCalculator::calculate_hessian_components(const Eigen::Matrix2d& C,
                                                                            const std::function<double(double)>& pot,

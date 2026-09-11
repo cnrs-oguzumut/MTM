@@ -39,6 +39,10 @@ public:
     itensor::ITensor calculate_dseconderivative(const Eigen::Matrix2d& C,
                                               const std::function<double(double)>& dpot,
                                               const std::function<double(double)>& d2pot) override;
+
+    HessianComponents calculate_dseconderivative_components(const Eigen::Matrix2d& C,
+                                                            const std::function<double(double)>& dpot,
+                                                            const std::function<double(double)>& d2pot) override;
     
     // Additional analytical methods (for direct use when you don't need polymorphism)
     double calculate_energy_analytical(const Eigen::Matrix2d& C,

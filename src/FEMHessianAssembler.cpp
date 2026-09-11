@@ -2205,19 +2205,13 @@ Eigen::VectorXd FEMHessianAssembler::computeDiagonalPreconditioner(
   Eigen::VectorXd H_diag = assembleGlobalStiffnessDiagonal(
       elements, points, num_total_dofs, dof_mapping);
 
-  // Compute preconditioner from diagonal
+  // ALGLIB's minlbfgssetprecdiag expects the diagonal of the approximate Hessian
+  // itself (NOT its inverse) and requires every entry to be strictly positive.
   Eigen::VectorXd diag_precond(num_total_dofs);
 
+  const double floor_val = std::max(1e-6 * H_diag.cwiseAbs().mean(), 1e-12);
   for (int i = 0; i < num_total_dofs; i++) {
-    double diag_val = H_diag(i);
-
-    // Prevent division by zero and ensure positive
-    if (std::abs(diag_val) < 1e-12) {
-      diag_precond(i) = 1.0;
-    } else {
-      // Use inverse of square root of diagonal for preconditioning
-      diag_precond(i) = 1.0 / std::sqrt(std::abs(diag_val));
-    }
+    diag_precond(i) = std::max(H_diag(i), floor_val);
   }
 
   std::cout << "Preconditioner computed. Min: " << diag_precond.minCoeff()
