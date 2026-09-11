@@ -487,6 +487,9 @@ std::vector<size_t> initialize_active_elements(
 #include <omp.h>
 // Ensure your other headers (Eigen, ALGLIB, ElementTriangle2D, etc.) are included above
 
+// WARNING: minimize_energy_with_triangles has been optimized for performance
+// (parallel thread-local zeroing, cached metric tensor C = F^T F, static OpenMP schedule, vectorized accumulation).
+// If any numerical mistake or discrepancy is noticed, revert to the previous version in git history.
 void minimize_energy_with_triangles(
     const alglib::real_1d_array &x, 
     double &func, 
@@ -512,25 +515,26 @@ void minimize_energy_with_triangles(
         all_forces_flat.resize(total_size);
     }
 
-    // Clear entire buffer (single contiguous memset - very fast)
-    std::memset(all_forces_flat.data(), 0, total_size * sizeof(Eigen::Vector2d));
-
     double total_energy = 0.0;
 
-    // Parallel element assembly
+    // Parallel element assembly with thread-local parallel zeroing
     #pragma omp parallel reduction(+:total_energy)
     {
         const int tid = omp_get_thread_num();
-        const size_t my_offset = tid * n_points;  // Start index for this thread
-        
-        #pragma omp for schedule(guided)
+        const size_t my_offset = tid * n_points;
+
+        // 1. Each thread clears its own slice in parallel (NUMA and cache friendly)
+        std::memset(all_forces_flat.data() + my_offset, 0, n_points * sizeof(Eigen::Vector2d));
+
+        // 2. Element assembly with static schedule (zero dynamic scheduling lock contention)
+        #pragma omp for schedule(static)
         for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
             ElementTriangle2D& element = elements[userData->active_elements[idx]];
             
             element.calculate_deformation_gradient(x);
             
-            const Eigen::Matrix2d F = element.getDeformationGradient();
-            const Eigen::Matrix2d C = F.transpose() * F;
+            const Eigen::Matrix2d& F = element.getDeformationGradient();
+            const Eigen::Matrix2d& C = element.getMetricTensor(); // Use cached C = F^T * F
             
             const auto result = lagrange::reduce(C);
             const double area = element.getReferenceArea();
@@ -551,22 +555,18 @@ void minimize_energy_with_triangles(
         }
     }
 
-    // Parallel reduction
+    // 3. Parallel reduction with vectorized accumulation
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < n_vars; i++) {
         const auto& [point_idx, dof_idx] = interior_mapping[i];
         
-        double fx = 0.0;
-        double fy = 0.0;
-        
+        Eigen::Vector2d f_sum = Eigen::Vector2d::Zero();
         for (int t = 0; t < max_threads; t++) {
-            const auto& f = all_forces_flat[t * n_points + point_idx];
-            fx += f.x();
-            fy += f.y();
+            f_sum += all_forces_flat[t * n_points + point_idx];
         }
         
-        grad[dof_idx] = fx;
-        grad[n_vars + dof_idx] = fy;
+        grad[dof_idx] = f_sum.x();
+        grad[n_vars + dof_idx] = f_sum.y();
     }
 
     func = total_energy;
