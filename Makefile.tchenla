@@ -53,6 +53,8 @@ BOOST_ROOT := $(firstword $(BOOST_DIR) \
 AUTO_CGAL := $(shell find $(SOFT_ROOT)/libs $(OHPC_ROOT)/libs -name "basic.h" -path "*/CGAL/basic.h" ! -path "*spack*" ! -path "*cgal-4*" 2>/dev/null | head -n 1)
 CGAL_AUTO_INC := $(if $(AUTO_CGAL),$(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(AUTO_CGAL))))))
 CGAL_ROOT  := $(firstword $(CGAL_DIR) \
+                          $(wildcard $(SOFT_ROOT)/libs/cgal/gnu14/5.6.2) \
+                          $(wildcard $(SOFT_ROOT)/libs/cgal/*/5.6.2) \
                           $(wildcard $(SOFT_ROOT)/libs/cgal/5.6.2) \
                           $(wildcard $(SOFT_ROOT)/libs/*/cgal/5.6.2) \
                           $(wildcard $(OHPC_ROOT)/libs/gnu14/cgal/5.6.2) \

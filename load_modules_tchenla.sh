@@ -16,7 +16,9 @@ module load openmpi5/5.0.7
 # 2. Linear Algebra & Math stack
 module load openblas/0.3.29
 module load boost/1.88.0
-module load cgal/5.6.2
+# CGAL 5.6.2 is header-only; bypass broken modulefile dependency on non-existent boost/1.81.0
+export CGAL_DIR=/opt/software/libs/cgal/gnu14/5.6.2
+export CPATH=$CGAL_DIR/include:${CPATH}
 module load armadillo/14.4.0
 module load eigen/3.4.0
 
