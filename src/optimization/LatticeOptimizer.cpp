@@ -547,9 +547,10 @@ void minimize_energy_with_triangles(
             const Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
                 result.C_reduced, userData->derivative_function) / normalisation;
             
-            const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC 
-                                    * result.m_matrix.transpose() * area;
-            
+            // First Piola-Kirchhoff stress; calculate_nodal_forces applies the element area.
+            const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC
+                                    * result.m_matrix.transpose();
+
             // Pass pointer to this thread's section of flat array
             element.assemble_forces_flat(P, all_forces_flat.data() + my_offset);
         }
