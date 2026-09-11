@@ -37,6 +37,10 @@ add_lib = $(foreach d,$(1),$(if $(wildcard $(d)),-L$(d) -Wl,-rpath,$(d)))
 # --- 2. OpenHPC Cluster Modules Auto-Detection ---
 OHPC_ROOT := /opt/ohpc/pub
 
+# Parse standard Lmod environment paths if set
+CPATH_DIRS   := $(subst :, ,$(CPATH))
+LIBPATH_DIRS := $(subst :, ,$(LIBRARY_PATH)) $(subst :, ,$(LD_LIBRARY_PATH))
+
 # Boost (module: boost/1.88.0)
 BOOST_ROOT := $(firstword $(BOOST_DIR) \
                           $(wildcard $(OHPC_ROOT)/libs/gnu14/openmpi5/boost/*) \
@@ -44,13 +48,22 @@ BOOST_ROOT := $(firstword $(BOOST_DIR) \
                           /usr)
 
 # CGAL (module: cgal/5.6.2)
+AUTO_CGAL := $(shell find $(OHPC_ROOT) -name "basic.h" -path "*/CGAL/basic.h" 2>/dev/null | head -n 1)
+CGAL_AUTO_INC := $(if $(AUTO_CGAL),$(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(AUTO_CGAL))))))
 CGAL_ROOT  := $(firstword $(CGAL_DIR) \
+                          $(CGAL_AUTO_INC) \
                           $(wildcard $(OHPC_ROOT)/libs/gnu14/cgal/*) \
+                          $(wildcard $(OHPC_ROOT)/libs/*/cgal/*) \
                           /usr)
 
 # Armadillo (module: armadillo/14.4.0)
+AUTO_ARMA := $(shell find $(OHPC_ROOT) -name "armadillo" -type f -path "*/include/armadillo" 2>/dev/null | head -n 1)
+ARMA_AUTO_INC := $(if $(AUTO_ARMA),$(patsubst %/,%,$(dir $(AUTO_ARMA))))
 ARMADILLO_ROOT := $(firstword $(ARMADILLO_DIR) \
+                              $(ARMA_AUTO_INC) \
                               $(wildcard $(OHPC_ROOT)/libs/gnu14/armadillo/*) \
+                              $(wildcard $(OHPC_ROOT)/libs/*/armadillo/*) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/openblas/armadillo/*) \
                               /usr)
 
 # OpenBLAS (module: openblas/0.3.29)
@@ -59,10 +72,14 @@ OPENBLAS_ROOT  := $(firstword $(OPENBLAS_DIR) \
                               /usr)
 
 # Eigen3 (module: eigen/3.4.0)
+AUTO_EIGEN := $(shell find $(OHPC_ROOT) -name "Dense" -path "*/Eigen/Dense" 2>/dev/null | head -n 1)
+EIGEN_AUTO_INC := $(if $(AUTO_EIGEN),$(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(AUTO_EIGEN))))))
 EIGEN_ROOT     := $(firstword $(EIGEN_DIR) \
+                              $(EBROOTEIGEN) \
+                              $(EIGEN_AUTO_INC) \
                               $(wildcard $(OHPC_ROOT)/apps/eigen/*) \
                               $(wildcard $(OHPC_ROOT)/libs/gnu14/eigen/*) \
-                              $(wildcard $(OHPC_ROOT)/libs/gnu14/eigen3/*) \
+                              $(wildcard $(OHPC_ROOT)/libs/eigen/*) \
                               /usr)
 
 # --- 3. User Libraries (ALGLIB, ITensor, Spectra) ---
@@ -94,22 +111,29 @@ SPECTRA_DIR ?= $(firstword $(wildcard $(HOME)/required_libraries/spectra) \
 # --- 4. Include Paths (-I) ---
 INCLUDES := -I./include
 
+# Include paths exported by Lmod in CPATH:
+INCLUDES += $(call add_inc, $(CPATH_DIRS))
+
 # Only include directories that actually exist on disk:
 INCLUDES += $(call add_inc, $(SPECTRA_DIR)/include $(SPECTRA_DIR))
 INCLUDES += $(call add_inc, $(ALGLIB_DIR)/src $(ALGLIB_DIR))
 INCLUDES += $(call add_inc, $(ITENSOR_DIR) $(ITENSOR_DIR)/itensor)
 
-# Eigen
-INCLUDES += $(call add_inc, $(EIGEN_INC) $(EIGEN_ROOT)/include/eigen3 $(EIGEN_ROOT)/include /usr/include/eigen3)
+# Eigen (all possible header roots)
+INCLUDES += $(call add_inc, $(EIGEN_INC) $(EIGEN_AUTO_INC) \
+                            $(EIGEN_ROOT)/include/eigen3 $(EIGEN_ROOT)/include $(EIGEN_ROOT) \
+                            $(HOME)/required_libraries/eigen/include/eigen3 \
+                            $(HOME)/required_libraries/eigen3/include/eigen3 \
+                            /usr/include/eigen3)
 
 # CGAL
-INCLUDES += $(call add_inc, $(CGAL_INC) $(CGAL_ROOT)/include)
+INCLUDES += $(call add_inc, $(CGAL_INC) $(CGAL_AUTO_INC) $(CGAL_ROOT)/include $(CGAL_ROOT))
 
 # Boost
 INCLUDES += $(call add_inc, $(BOOST_INC) $(BOOST_ROOT)/include)
 
 # Armadillo
-INCLUDES += $(call add_inc, $(ARMADILLO_INC) $(ARMADILLO_ROOT)/include)
+INCLUDES += $(call add_inc, $(ARMADILLO_INC) $(ARMA_AUTO_INC) $(ARMADILLO_ROOT)/include $(ARMADILLO_ROOT))
 
 # OpenBLAS
 INCLUDES += $(call add_inc, $(OPENBLAS_INC) $(OPENBLAS_ROOT)/include)
@@ -119,6 +143,7 @@ INCLUDES += $(call add_inc, /usr/include)
 # --- 5. Linker Paths (-L) and RPATH ---
 LDFLAGS := -fopenmp
 
+LDFLAGS += $(call add_lib, $(LIBPATH_DIRS))
 LDFLAGS += $(call add_lib, $(ARMADILLO_LIB) $(ARMADILLO_ROOT)/lib64 $(ARMADILLO_ROOT)/lib)
 LDFLAGS += $(call add_lib, $(BOOST_LIB) $(BOOST_ROOT)/lib64 $(BOOST_ROOT)/lib)
 LDFLAGS += $(call add_lib, $(OPENBLAS_LIB) $(OPENBLAS_ROOT)/lib64 $(OPENBLAS_ROOT)/lib)
