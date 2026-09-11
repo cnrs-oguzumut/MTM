@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <iostream>
 
+#include "../include/experiments/common_simulation_helpers.h"
 #include "../include/experiments/dislocation_indentation.h"
 #include "../include/experiments/dislocation_study.h"
 #include "../include/experiments/shift_vertical_horizontal.h"
@@ -18,6 +19,17 @@ int main(int argc, char **argv) {
   unsigned int seed = 42;
   bool enable_remeshing = true;
 
+  // Energy relaxation solver (default: plain L-BFGS, unchanged behaviour).
+  //   --precond=stiffness|laplacian|diag|none   L-BFGS preconditioner
+  //   --precond-tol=1e-6                        stop when max|dE/dx| < tol
+  //   --precond-refresh=N                       reuse the stiffness factorization N steps
+  //   --precond-from-step=N                     plain L-BFGS for load steps < N
+  //                                             (1 keeps the plain initial relaxation)
+  PreconditionedLBFGSOptions relax_options;
+  int precond_from_step = 0;
+  relax_options.type = LBFGSPreconditioner::None;
+  relax_options.grad_tol = 1e-6;
+
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -25,8 +37,17 @@ int main(int argc, char **argv) {
       enable_remeshing = false;
     } else if (arg == "--remesh" || arg == "-r") {
       enable_remeshing = true;
+    } else if (arg.rfind("--precond=", 0) == 0) {
+      relax_options.type = parse_lbfgs_preconditioner(arg.substr(10));
+    } else if (arg.rfind("--precond-tol=", 0) == 0) {
+      relax_options.grad_tol = std::stod(arg.substr(14));
+    } else if (arg.rfind("--precond-refresh=", 0) == 0) {
+      relax_options.refresh_every = std::stoi(arg.substr(18));
+    } else if (arg.rfind("--precond-from-step=", 0) == 0) {
+      precond_from_step = std::stoi(arg.substr(20));
     }
   }
+  configure_relaxation_solver(relax_options, precond_from_step);
 
   if (argc >= 3) {
     nx = std::atoi(argv[1]);
@@ -54,7 +75,12 @@ int main(int argc, char **argv) {
   std::cout << "System size: nx=" << nx << ", ny=" << ny
             << " | mode=" << mode << " | seed=" << seed
             << " | remeshing=" << (enable_remeshing ? "enabled" : "disabled")
-            << std::endl;
+            << " | precond=" << to_string(relax_options.type);
+  if (relax_options.type != LBFGSPreconditioner::None)
+    std::cout << " (grad_tol=" << relax_options.grad_tol
+              << ", refresh=" << relax_options.refresh_every
+              << ", from step " << precond_from_step << ")";
+  std::cout << std::endl;
 
   // =========================================================================
   // LIST OF EXPERIMENT EXAMPLES

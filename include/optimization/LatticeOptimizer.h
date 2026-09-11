@@ -37,6 +37,9 @@ struct UserData {
     std::vector<size_t>& active_elements;
     bool third_condition_flag;  // Flag for third condition in Lagrange reduction
     alglib::minlbfgsstate* optimizer_state;  // Pointer to ALGLIB state
+    // Second derivative of the pair potential, needed only by the stiffness
+    // preconditioner for lattice-sum calculators (Strain_Energy ignores it).
+    const std::function<double(double)>* second_derivative_function = nullptr;
 
     
     UserData(std::vector<Point2D>& pts,

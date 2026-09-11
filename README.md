@@ -19,6 +19,7 @@ This project offers comprehensive tools for 2D lattice generation and manipulati
 - CGAL
 - Boost
 - ITensor (for tensor computations in acoustic analysis)
+- SuiteSparse/CHOLMOD (optional; faster sparse Cholesky for `--precond=stiffness`)
 
 ## Building
 
@@ -34,6 +35,27 @@ make
 ```bash
 ./lattice_triangulation
 ```
+
+### Preconditioned L-BFGS
+
+The energy relaxation can use the analytic FEM stiffness as an L-BFGS preconditioner
+(sparse Cholesky + change of variables, `src/optimization/PreconditionedLBFGS.cpp`):
+
+```bash
+./lattice_triangulation 150 150 positive 42 --precond=stiffness --precond-from-step=1
+```
+
+- `--precond=stiffness|laplacian|diag|none` (default `none`: the original plain L-BFGS)
+- `--precond-tol=1e-6` stop when max|dE/dx| < tol
+- `--precond-refresh=N` reuse the stiffness factorization for N load steps (default 1)
+- `--precond-from-step=N` keep the plain solver for load steps < N; `1` keeps the initial
+  relaxation of the noisy lattice identical to plain-solver runs
+
+After an instability the preconditioned solver can settle in a different metastable
+state than plain L-BFGS, so compare statistics, not individual avalanches.
+
+`build/benchmark_preconditioner` compares the solvers from identical start states
+(`--validate` also checks the analytic stiffness against the ITensor assembler).
 
 ## Running Tests
 

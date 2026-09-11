@@ -185,6 +185,7 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
   // ==================== RESUME SIMULATION LOOP ====================
   for (size_t i = 0; i < alpha_values.size(); i++) {
     double alpha = alpha_values[i];
+    relaxation_begin_step(restart_iteration + 1 + static_cast<int>(i));
     std::cout << "\n=== Processing α = " << alpha << " (restart step "
               << (restart_iteration + i + 1) << ") ===" << std::endl;
 
@@ -283,8 +284,7 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
     clock_t cpu_start = clock();
 
     userData.third_condition_flag = false;
-    LBFGSOptimizer optimizer(12, 0.0, 0.0, 0.0, 0);
-    optimizer.optimize(x, minimize_energy_with_triangles, &userData);
+    relax_configuration(x, &userData, 12);
 
     auto wall_end = std::chrono::high_resolution_clock::now();
     clock_t cpu_end = clock();
@@ -698,6 +698,7 @@ void example_1_conti_zanzotto_loading(
   for (size_t i = 0; i < alpha_values.size(); i++) {
     double alpha = alpha_values[i];
     std::cout << "\n=== Processing alpha = " << alpha << " ===" << std::endl;
+    relaxation_begin_step(static_cast<int>(i));
     double pre_area = 1.0;
     double post_area = 1.0;
 
@@ -783,8 +784,7 @@ void example_1_conti_zanzotto_loading(
     clock_t cpu_start = clock();
 
     userData.third_condition_flag = false;
-    LBFGSOptimizer optimizer(13, 0.0, 0.0, 0.0, 0);
-    optimizer.optimize(x, minimize_energy_with_triangles, &userData);
+    relax_configuration(x, &userData, 13);
 
     auto wall_end = std::chrono::high_resolution_clock::now();
     clock_t cpu_end = clock();

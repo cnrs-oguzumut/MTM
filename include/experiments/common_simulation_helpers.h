@@ -9,6 +9,7 @@
 #include "../geometry/Point2D.h"
 #include "../mesh/ElementTriangle2D.h"
 #include "../optimization/LatticeOptimizer.h"
+#include "../optimization/PreconditionedLBFGS.h"
 
 Eigen::Matrix<double, 3, 2>
 calculateShapeDerivatives(const Eigen::Vector2d &p1, const Eigen::Vector2d &p2,
@@ -41,6 +42,21 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
     const std::vector<std::tuple<double, double>> &translation_map,
     const Point2D &domain_dims_point, int max_iterations,
     double reference_area);
+
+// Selects the solver used by relax_configuration() for the rest of the run. Without a
+// call (or with type None) relax_configuration() is the original plain L-BFGS with
+// ALGLIB's automatic stopping, so default behaviour is unchanged. Load steps before
+// `first_step` (see relaxation_begin_step) also use the plain solver, e.g. first_step = 1
+// keeps the initial relaxation of the noisy lattice identical to the plain-solver runs.
+void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
+                                 int first_step = 0);
+
+// Tells relax_configuration() which load step is being solved.
+void relaxation_begin_step(int step);
+
+// Minimizes the energy starting from x (in place) with the configured solver.
+// `corrections` is the L-BFGS memory used by the plain (unpreconditioned) solver.
+void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corrections);
 
 void writeSizesToFile(int Nx, int Ny);
 

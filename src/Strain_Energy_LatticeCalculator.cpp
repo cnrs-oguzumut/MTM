@@ -35,6 +35,12 @@ itensor::ITensor Strain_Energy_LatticeCalculator::calculate_dseconderivative(con
     return energy_functions::ddphi_func(C);
 }
 
+HessianComponents Strain_Energy_LatticeCalculator::calculate_dseconderivative_components(const Eigen::Matrix2d& C,
+                                                                                         const std::function<double(double)>& dpot,
+                                                                                         const std::function<double(double)>& d2pot) {
+    return energy_functions::ddphi_components_func(C);
+}
+
 // Direct analytical energy calculation
 double Strain_Energy_LatticeCalculator::calculate_energy_analytical(const Eigen::Matrix2d& C,
                                                                    const std::function<double(const Eigen::Matrix2d&)>& phi_func,
