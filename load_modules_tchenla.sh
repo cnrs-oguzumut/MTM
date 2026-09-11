@@ -28,6 +28,11 @@ export CPATH=$CGAL_DIR/include:${CPATH}
 module load armadillo/14.4.0
 module load eigen/3.4.0
 
+# 3. MKL Runtime (required by Armadillo on Tchenla)
+if [ -d "/opt/intel/oneapi/mkl/2025.0/lib" ]; then
+    export LD_LIBRARY_PATH="/opt/intel/oneapi/mkl/2025.0/lib:${LD_LIBRARY_PATH}"
+fi
+
 # 3. Python stack for analysis & VTK scripts (optional)
 module load py3-numpy/1.26.4 2>/dev/null || true
 module load py3-scipy/1.5.4 2>/dev/null || true
