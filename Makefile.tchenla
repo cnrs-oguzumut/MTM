@@ -164,7 +164,8 @@ LDFLAGS += $(call add_lib, /usr/lib64 /usr/lib)
 
 # --- 6. Libraries to Link (-l) ---
 # Note: OpenBLAS bundles both BLAS and LAPACK in libopenblas.so
-LIBS := -litensor -larmadillo -lopenblas -lgmp -lmpfr -lboost_system -lboost_thread -ldl -lm
+# Use --start-group / --end-group to resolve cross-references in static libitensor.a
+LIBS := -Wl,--start-group -litensor -larmadillo -lopenblas -lgmp -lmpfr -lboost_system -lboost_thread -ldl -lm -Wl,--end-group
 
 # --- 7. Sources and Objects ---
 OBJ_DIR     := obj_tchenla
