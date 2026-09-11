@@ -72,6 +72,31 @@ def main():
     remesh_status = "enabled" if enable_remeshing else "disabled"
     suffix = "" if enable_remeshing else "_noremesh"
     print(f"  -> Remeshing: {remesh_status.upper()}")
+
+    # L-BFGS preconditioner (see README "Preconditioned L-BFGS")
+    print("L-BFGS preconditioner options:")
+    print("  'stiffness' : analytic FEM stiffness, sparse Cholesky (fastest, ~10-15x on elastic steps)")
+    print("  'laplacian' : reference Laplacian (~3x)")
+    print("  'diag'      : ALGLIB diagonal preconditioner (little gain)")
+    print("  'none'      : original plain L-BFGS")
+    precond = get_input("Select preconditioner", "stiffness").lower()
+    if precond in ("off", "no", "plain", "0", "false"):
+        precond = "none"
+    if precond not in ("stiffness", "laplacian", "diag", "none"):
+        print(f"Warning: Unknown preconditioner '{precond}', defaulting to 'stiffness'.")
+        precond = "stiffness"
+    precond_flags = ""
+    precond_status = "none (plain L-BFGS)"
+    if precond != "none":
+        from_step = int(get_input(
+            "Use plain L-BFGS for load steps before (1 = initial relaxation identical to plain runs)",
+            "1"))
+        precond_flags = f"--precond={precond} --precond-from-step={from_step}"
+        precond_status = f"{precond} (from step {from_step})"
+    # Preconditioned runs are the default; tag folders/jobs of the other choices
+    precond_tag = "" if precond == "stiffness" else ("_plainlbfgs" if precond == "none" else f"_{precond}")
+    suffix += precond_tag
+    print(f"  -> Preconditioner: {precond_status}")
     print()
 
     # 3. Paths and Directories
@@ -87,7 +112,7 @@ def main():
     # 4. SLURM Options
     print()
     print("--- 4. SLURM Options ---")
-    default_job_name = f"shear_{nx}x{ny}" if enable_remeshing else f"shear_{nx}x{ny}_noremesh"
+    default_job_name = f"shear_{nx}x{ny}{suffix}"
     job_name = get_input("SLURM job name", default_job_name)
     nodelist = get_input("Target specific nodes (e.g. 'c[1-4]' for 64-core nodes, or leave blank for any)", "c[1-4]").strip()
 
@@ -109,7 +134,7 @@ def main():
             mode = "negative"
             
         remesh_tag = "remesh" if enable_remeshing else "noremesh"
-        folder = f"{runs_dir}/run_{job_id:02d}_{mode}_seed{seed}_{remesh_tag}"
+        folder = f"{runs_dir}/run_{job_id:02d}_{mode}_seed{seed}_{remesh_tag}{precond_tag}"
         job_specs.append((job_id, nx, ny, mode, seed, remesh_arg, folder))
 
     # Review Configuration
@@ -122,6 +147,7 @@ def main():
     print(f"  Runs Directory:    {runs_dir}")
     print(f"  System Size:       {nx}x{ny}")
     print(f"  Remeshing:         {remesh_status.upper()}")
+    print(f"  Preconditioner:    {precond_status}")
     print(f"  Parallel Jobs:     {n_jobs}")
     print(f"  Threads Per Job:   {threads_per_job}")
     print(f"  Total Cores:       {total_cores}")
@@ -158,6 +184,7 @@ SEED=$5
 REMESH=$6
 RUN_DIR=$7
 EXE="{exe_path}"
+PRECOND_FLAGS="{precond_flags}"
 
 # Ensure stack limit and environment modules are available
 ulimit -s unlimited
@@ -184,10 +211,11 @@ echo "  Parameters:        size=${{NX}}x${{NY}}, mode=${{MODE}}, seed=${{SEED}},
 echo "  CPU affinity:      $(taskset -cp $$ 2>/dev/null || echo 'N/A')"
 echo "  OpenMP threads:    $OMP_NUM_THREADS"
 echo "  Executable:        $EXE"
+echo "  Preconditioner:    ${{PRECOND_FLAGS:-none (plain L-BFGS)}}"
 echo "=========================================================="
 
 # Execute simulation
-"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" > simulation.log 2>&1
+"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" $PRECOND_FLAGS > simulation.log 2>&1
 EXIT_CODE=$?
 
 echo ""
@@ -351,6 +379,7 @@ echo "  System size:     {nx}x{ny}"
 echo "  Mode setting:    {mode_choice}"
 echo "  Start seed:      {start_seed}"
 echo "  Remeshing:       {remesh_status}"
+echo "  Preconditioner:  {precond_status}"
 echo "=========================================================="
 echo ""
 

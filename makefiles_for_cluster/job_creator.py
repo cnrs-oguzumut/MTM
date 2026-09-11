@@ -3,7 +3,7 @@
 Automatic Job Setup Generator for Parallel Crystal Plasticity Simulations
 Creates SLURM script, parallel launcher, and individual run scripts
 adapted for the new lattice_triangulation interface:
-    lattice_triangulation <nx> <ny> <mode> <seed> [remesh]
+    lattice_triangulation <nx> <ny> <mode> <seed> [remesh] [--precond=... --precond-from-step=N]
 """
 
 import os
@@ -63,6 +63,31 @@ def main():
     remesh_status = "enabled" if enable_remeshing else "disabled"
     suffix = "" if enable_remeshing else "_noremesh"
     print(f"  -> Remeshing: {remesh_status.upper()}")
+
+    # L-BFGS preconditioner (see README "Preconditioned L-BFGS")
+    print("L-BFGS preconditioner options:")
+    print("  'stiffness' : analytic FEM stiffness, sparse Cholesky (fastest, ~10-15x on elastic steps)")
+    print("  'laplacian' : reference Laplacian (~3x)")
+    print("  'diag'      : ALGLIB diagonal preconditioner (little gain)")
+    print("  'none'      : original plain L-BFGS")
+    precond = get_input("Select preconditioner", "stiffness").lower()
+    if precond in ("off", "no", "plain", "0", "false"):
+        precond = "none"
+    if precond not in ("stiffness", "laplacian", "diag", "none"):
+        print(f"Warning: Unknown preconditioner '{precond}', defaulting to 'stiffness'.")
+        precond = "stiffness"
+    precond_flags = ""
+    precond_status = "none (plain L-BFGS)"
+    if precond != "none":
+        from_step = int(get_input(
+            "Use plain L-BFGS for load steps before (1 = initial relaxation identical to plain runs)",
+            "1"))
+        precond_flags = f"--precond={precond} --precond-from-step={from_step}"
+        precond_status = f"{precond} (from step {from_step})"
+    # Preconditioned runs are the default; tag folders/jobs of the other choices
+    precond_tag = "" if precond == "stiffness" else ("_plainlbfgs" if precond == "none" else f"_{precond}")
+    suffix += precond_tag
+    print(f"  -> Preconditioner: {precond_status}")
     print()
 
     # 3. Paths and Directories
@@ -78,7 +103,7 @@ def main():
     # 4. SLURM Options
     print()
     print("--- 4. SLURM Cluster Options ---")
-    default_job_name = f"shear_{nx}x{ny}" if enable_remeshing else f"shear_{nx}x{ny}_noremesh"
+    default_job_name = f"shear_{nx}x{ny}{suffix}"
     job_name = get_input("SLURM job name", default_job_name)
     partition = get_input("SLURM partition", "COMPUTE2")
     email = get_input("Email for notifications", "umut.salman@lspm.cnrs.fr")
@@ -106,6 +131,7 @@ def main():
     print()
     print("=" * 70)
     print("Planned Job Configurations:")
+    print(f"  Preconditioner: {precond_status}")
     print("=" * 70)
     for j_id, j_nx, j_ny, j_mode, j_seed, j_remesh, j_dir in job_specs:
         start_cpu = (j_id - 1) * threads_per_job
@@ -138,6 +164,7 @@ SEED=$5
 REMESH=$6
 RUN_DIR=$7
 EXE="{exe_path}"
+PRECOND_FLAGS="{precond_flags}"
 
 # Create run directory and enter it
 mkdir -p "$RUN_DIR"
@@ -157,10 +184,11 @@ echo "  Parameters:        size=${{NX}}x${{NY}}, mode=${{MODE}}, seed=${{SEED}},
 echo "  CPU affinity:      $(taskset -cp $$ 2>/dev/null || echo 'N/A')"
 echo "  OpenMP threads:    $OMP_NUM_THREADS"
 echo "  Executable:        $EXE"
+echo "  Preconditioner:    ${{PRECOND_FLAGS:-none (plain L-BFGS)}}"
 echo "=========================================================="
 
 # Execute simulation
-"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" > simulation.log 2>&1
+"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" $PRECOND_FLAGS > simulation.log 2>&1
 EXIT_CODE=$?
 
 echo ""
@@ -306,6 +334,7 @@ echo "  System size:     {nx}x{ny}"
 echo "  Mode setting:    {mode_choice}"
 echo "  Start seed:      {start_seed}"
 echo "  Remeshing:       {remesh_status}"
+echo "  Preconditioner:  {precond_status}"
 echo "=========================================="
 echo ""
 

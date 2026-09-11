@@ -73,12 +73,43 @@ LDFLAGS  := -fopenmp \
 # --- 6. LIBRARIES TO LINK (-l) ---
 LIBS     := -litensor -larmadillo -llapack -lblas -lgmp -lmpfr -lboost_system -lboost_thread -ldl -lm
 
+# --- 6b. OPTIONAL: CHOLMOD (SuiteSparse) for --precond=stiffness ---
+# Used when both cholmod.h and a shared libcholmod are found; otherwise the
+# preconditioner falls back to Eigen's SimplicialLLT (~2x slower at 150x150).
+# Disable with: make -f Makefile.cluster CHOLMOD=0
+CHOLMOD ?= auto
+CHOLMOD_DEFS :=
+ifneq ($(CHOLMOD),0)
+    CHOLMOD_H := $(firstword $(wildcard \
+        $(MY_LIB_ROOT)/local/include/suitesparse/cholmod.h \
+        $(MY_LIB_ROOT)/local/include/cholmod.h \
+        $(SOFT_ROOT)/*[Ss]uite[Ss]parse*/include/suitesparse/cholmod.h \
+        $(SOFT_ROOT)/*[Ss]uite[Ss]parse*/include/cholmod.h \
+        /usr/include/suitesparse/cholmod.h))
+    ifneq ($(CHOLMOD_H),)
+        CHOLMOD_INC      := $(patsubst %/,%,$(dir $(CHOLMOD_H)))
+        CHOLMOD_PREFIXES := $(abspath $(CHOLMOD_INC)/.. $(CHOLMOD_INC)/../..)
+        CHOLMOD_LIBFILE  := $(firstword $(wildcard \
+            $(addsuffix /lib/libcholmod.so*,$(CHOLMOD_PREFIXES)) \
+            $(addsuffix /lib64/libcholmod.so*,$(CHOLMOD_PREFIXES)) \
+            /usr/lib/x86_64-linux-gnu/libcholmod.so* /usr/lib64/libcholmod.so*))
+        ifneq ($(CHOLMOD_LIBFILE),)
+            CHOLMOD_LIBDIR := $(patsubst %/,%,$(dir $(CHOLMOD_LIBFILE)))
+            CHOLMOD_DEFS   := -DUSE_CHOLMOD=1
+            INCLUDES       += -I$(CHOLMOD_INC)
+            LDFLAGS        += -L$(CHOLMOD_LIBDIR) -Wl,-rpath,$(CHOLMOD_LIBDIR)
+            LIBS           := -lcholmod $(LIBS)
+        endif
+    endif
+endif
+
 # --- 7. SOURCES AND OBJECTS ---
 SRC_DIR     := src
 # Exclude main_splines.cpp to avoid duplicate main() symbols
 ALL_SRCS    := $(shell find $(SRC_DIR) -name "*.cpp")
 SRCS        := $(filter-out $(SRC_DIR)/main_splines.cpp, $(ALL_SRCS))
 OBJS        := $(SRCS:.cpp=.o)
+DEPS        := $(OBJS:.o=.d)
 
 ALGLIB_SRCS := $(wildcard $(ALGLIB_DIR)/src/*.cpp)
 ALGLIB_OBJS := $(ALGLIB_SRCS:.cpp=.o)
@@ -99,10 +130,12 @@ $(TARGET): $(OBJS) $(ALGLIB_OBJS)
 	$(CXX) $(CXXFLAGS) $(OBJS) $(ALGLIB_OBJS) -o $@ $(LDFLAGS) $(LIBS)
 	@echo "Build success: $(TARGET) created!"
 
-# Compile Project Code
+# Compile Project Code (-MMD -MP: recompile every object whose headers changed)
 %.o: %.cpp
 	@echo "Compiling $<"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -DUSE_ITENSOR=1 -DUSE_SPECTRA=1 -DUSE_ARMADILLO=1 -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -DUSE_ITENSOR=1 -DUSE_SPECTRA=1 -DUSE_ARMADILLO=1 $(CHOLMOD_DEFS) -MMD -MP -c $< -o $@
+
+-include $(DEPS)
 
 # Compile ALGLIB
 $(ALGLIB_DIR)/src/%.o: $(ALGLIB_DIR)/src/%.cpp
@@ -112,6 +145,7 @@ $(ALGLIB_DIR)/src/%.o: $(ALGLIB_DIR)/src/%.cpp
 clean:
 	@echo "Cleaning objects and binary..."
 	find $(SRC_DIR) -name "*.o" -delete
+	find $(SRC_DIR) -name "*.d" -delete
 	rm -f $(TARGET) $(ALGLIB_OBJS)
 	@echo "Clean completed."
 
@@ -119,5 +153,6 @@ info:
 	@echo "------------------------------------------------"
 	@echo "Building with GCC (g++)"
 	@echo "  Using System Armadillo: $(ARMADILLO_ROOT)"
+	@echo "  CHOLMOD (precond):      $(if $(CHOLMOD_DEFS),$(CHOLMOD_LIBFILE),not found - Eigen SimplicialLLT fallback)"
 	@echo "  Target Executable:      $(TARGET)"
 	@echo "------------------------------------------------"
