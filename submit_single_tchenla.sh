@@ -18,7 +18,9 @@
 ulimit -s unlimited
 
 # 2. Directory Discovery & Module Loading
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+cd "$SCRIPT_DIR" || exit 1
+
 if [ -f "$SCRIPT_DIR/load_modules_tchenla.sh" ]; then
     source "$SCRIPT_DIR/load_modules_tchenla.sh"
 else

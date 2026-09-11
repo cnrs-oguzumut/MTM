@@ -16,8 +16,8 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --time=48:00:00
 
-# Target the modern 64-core Intel Xeon Gold nodes:
-#SBATCH --nodelist=c[1-4]
+# Optional: Target specific compute node (uncomment if desired)
+# #SBATCH --nodelist=c1
 
 # ------------------------------------------------------------------------------
 # 1. Stack Size Configuration (Recommended by Tchenla Wiki)
@@ -25,9 +25,12 @@
 ulimit -s unlimited
 
 # ------------------------------------------------------------------------------
-# 2. Load Modules & Environment (Required on compute nodes as per Wiki page 3)
+# 2. Directory and Environment Discovery
 # ------------------------------------------------------------------------------
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use SLURM_SUBMIT_DIR (where sbatch was invoked) instead of spool directory
+PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+cd "$PROJECT_DIR" || exit 1
+
 if [ -f "${PROJECT_DIR}/load_modules_tchenla.sh" ]; then
     source "${PROJECT_DIR}/load_modules_tchenla.sh"
 else
