@@ -158,6 +158,7 @@ LDFLAGS += $(call add_lib, $(BOOST_LIB) $(BOOST_ROOT)/lib64 $(BOOST_ROOT)/lib)
 LDFLAGS += $(call add_lib, $(OPENBLAS_LIB) $(OPENBLAS_ROOT)/lib64 $(OPENBLAS_ROOT)/lib)
 LDFLAGS += $(call add_lib, $(CGAL_LIB) $(CGAL_ROOT)/lib64 $(CGAL_ROOT)/lib)
 LDFLAGS += $(call add_lib, $(ITENSOR_DIR)/lib $(ITENSOR_DIR)/build)
+LDFLAGS += $(call add_lib, /opt/intel/oneapi/mkl/2025.0/lib $(wildcard /opt/intel/oneapi/mkl/*/lib) $(wildcard /opt/intel/*/mkl/*/lib))
 LDFLAGS += $(call add_lib, /usr/lib64 /usr/lib)
 
 # ITensor lib
