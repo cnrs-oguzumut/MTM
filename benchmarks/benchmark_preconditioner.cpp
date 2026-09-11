@@ -17,10 +17,15 @@
 //   benchmark_preconditioner [nx ny] [--steps N] [--methods prod,none,diag,laplacian,stiffness]
 //                            [--grad-tol 1e-6] [--alpha0 0.14] [--dalpha 6e-5] [--seed 42]
 //                            [--corrections 13] [--refresh N] [--refresh-its N] [--validate]
-//                            [--csv file]
+//                            [--csv file] [--eig N]
+//
+//   --eig N   after the last load step, compute the N lowest eigenvalues of the stiffness
+//             with FEMHessianAssembler (ITensor K + Spectra/SparseLU, as in data_analysis)
+//             and with lowest_stiffness_modes (fast K + Cholesky shift-invert), and compare.
 
 #include "../include/experiments/experiment_includes.h"
 #include "../include/optimization/PreconditionedLBFGS.h"
+#include "../include/optimization/StiffnessSpectrum.h"
 
 #include <chrono>
 #include <sstream>
@@ -39,6 +44,7 @@ struct Args {
   int refresh = 1;
   int refresh_its = 0;
   bool validate = false;
+  int eig = 0;
   std::string csv = "precond_benchmark.csv";
 };
 
@@ -61,6 +67,7 @@ Args parse_args(int argc, char **argv) {
     else if (a == "--refresh-its") args.refresh_its = std::stoi(next());
     else if (a == "--csv") args.csv = next();
     else if (a == "--validate") args.validate = true;
+    else if (a == "--eig") args.eig = std::stoi(next());
     else if (a == "--methods") {
       args.methods.clear();
       std::stringstream ss(next());
@@ -190,6 +197,121 @@ void validate_stiffness(const alglib::real_1d_array &x, UserData &userData,
   alglib::real_1d_array g;
   g.setlength(n);
   minimize_energy_with_triangles(x, f, g, &userData);
+  std::cout << "===========================================\n" << std::endl;
+}
+
+// Lowest eigenvalues of K at the relaxed x: the data_analysis path (ITensor assembly +
+// Spectra shift-invert with SparseLU, translations included) against lowest_stiffness_modes.
+void compare_eigen_solvers(const alglib::real_1d_array &x, UserData &userData,
+                           BaseLatticeCalculator &calculator,
+                           const std::function<double(double)> &dpot,
+                           const std::function<double(double)> &d2pot, int n_eig) {
+  std::cout << "\n=== LOWEST EIGENVALUES OF K: " << n_eig << " modes ===" << std::endl;
+  const int n = static_cast<int>(x.length());
+  using clk = std::chrono::high_resolution_clock;
+  auto secs = [](clk::time_point t0) {
+    return std::chrono::duration<double>(clk::now() - t0).count();
+  };
+
+  // (1) data_analysis path
+  std::vector<Point2D> points = userData.points;
+  map_solver_array_to_points(x, points, userData.interior_mapping, n / 2);
+  FEMHessianAssembler reference;
+  reference.setEnergyParameters(&calculator, dpot, d2pot, calculator.getUnitCellArea());
+  auto t0 = clk::now();
+  const Eigen::SparseMatrix<double> K_ref =
+      reference.assembleGlobalStiffness(userData.elements, points, n, userData.full_mapping);
+  const double t_ref_asm = secs(t0);
+  t0 = clk::now();
+  const EigenResults ref = reference.computeSmallestEigenvaluesIterative_spectra(K_ref, n_eig, -1);
+  const double t_ref_eig = secs(t0);
+
+  // (2) fast path; the fast path skips the two translations, so ask for n_eig - 2
+  StiffnessSpectrumOptions opt;
+  opt.n_modes = n_eig - 2;
+  opt.verbose = true;
+  t0 = clk::now();
+  const StiffnessSpectrum fast = lowest_stiffness_modes(x, &userData, opt);
+  const double t_fast = secs(t0);
+
+  // Same K?
+  FastStiffnessAssembler assembler;
+  const Eigen::SparseMatrix<double> &K_fast = assembler.assembleStiffness(x, &userData, false);
+  const double k_diff = Eigen::SparseMatrix<double>(K_fast - K_ref).coeffs().cwiseAbs().maxCoeff();
+
+  std::cout << "max |K_fast - K_itensor| = " << k_diff << std::endl;
+  std::cout << "old: assembly " << t_ref_asm << " s + eigensolver " << t_ref_eig
+            << " s = " << t_ref_asm + t_ref_eig << " s  (" << ref.num_computed
+            << " values incl. translations)" << std::endl;
+  std::cout << "new: total " << t_fast << " s = assembly " << fast.assemble_seconds
+            << " + factorization(s) " << fast.factorize_seconds << " + Lanczos "
+            << fast.lanczos_seconds << "  (" << fast.num_computed << " values, "
+            << fast.n_operations << " solves, converged=" << fast.converged << ")" << std::endl;
+  std::cout << "speedup: " << (t_ref_asm + t_ref_eig) / t_fast << "x" << std::endl;
+
+  // Old list without the translations (|lambda| < 1e-8, as in detectRigidBodyModes).
+  // Lanczos may return only one of the two (degenerate) translations when few values are
+  // requested.
+  std::vector<double> old_values;
+  std::cout << "old translation eigenvalues: ";
+  for (int i = 0; i < ref.num_computed; i++) {
+    if (std::abs(ref.eigenvalues(i)) < 1e-8) std::cout << ref.eigenvalues(i) << " ";
+    else old_values.push_back(ref.eigenvalues(i));
+  }
+  std::cout << std::endl;
+  std::sort(old_values.begin(), old_values.end());
+
+  double max_rel = 0.0;
+  const int m = std::min<int>(old_values.size(), fast.num_computed);
+  for (int k = 0; k < m; k++) {
+    const double rel = std::abs(old_values[k] - fast.eigenvalues(k)) /
+                       std::max(std::abs(old_values[k]), 1e-300);
+    max_rel = std::max(max_rel, rel);
+    if (k < 6 || k == m - 1)
+      std::cout << "  mode " << std::setw(3) << k << ": old " << std::setw(14) << old_values[k]
+                << "  new " << std::setw(14) << fast.eigenvalues(k) << std::endl;
+  }
+  std::cout << "max relative difference over " << m << " modes: " << max_rel << std::endl;
+
+  // Residuals of the new eigenpairs on the unprojected K
+  double max_res = 0.0;
+  for (int k = 0; k < fast.num_computed; k++) {
+    const Eigen::VectorXd v = fast.eigenvectors.col(k);
+    max_res = std::max(max_res, (K_fast * v - fast.eigenvalues(k) * v).norm() /
+                                    std::max(1e-300, std::abs(fast.eigenvalues(k))));
+  }
+  std::cout << "max |K v - lambda v| / |lambda| (new): " << max_res << std::endl;
+
+  // Smaller requests, as used for a stability check
+  for (int k : {1, 10}) {
+    StiffnessSpectrumOptions o;
+    o.n_modes = k;
+    o.compute_vectors = true;
+    t0 = clk::now();
+    const StiffnessSpectrum s = lowest_stiffness_modes(x, &userData, o);
+    std::cout << "new, " << k << " mode(s): " << secs(t0) << " s, lambda_min = "
+              << (s.num_computed ? s.eigenvalues(0) : NAN) << ", solves = " << s.n_operations
+              << std::endl;
+  }
+
+  // Unstable case: K - c I has negative eigenvalues lambda_k - c (translations -> -c,
+  // still exact eigenvectors, so they are deflated explicitly).
+  if (fast.num_computed >= 3) {
+    const double c = 0.5 * (fast.eigenvalues(1) + fast.eigenvalues(2)) + 1e-3;
+    Eigen::SparseMatrix<double> I(n, n);
+    I.setIdentity();
+    const Eigen::SparseMatrix<double> K_shifted = K_fast - c * I;
+    StiffnessSpectrumOptions o;
+    o.n_modes = 5;
+    o.deflate_translations = 1;
+    o.verbose = true;
+    const StiffnessSpectrum s = lowest_stiffness_modes(K_shifted, o);
+    std::cout << "unstable test (K - " << c << " I): expected";
+    for (int k = 0; k < 5; k++) std::cout << " " << fast.eigenvalues(k) - c;
+    std::cout << "\n                                  got     ";
+    for (int k = 0; k < s.num_computed; k++) std::cout << " " << s.eigenvalues(k);
+    std::cout << std::endl;
+  }
   std::cout << "===========================================\n" << std::endl;
 }
 
@@ -362,6 +484,11 @@ int main(int argc, char **argv) {
 
     // Advance with the reference (first) method's solution
     map_solver_array_to_points(x_ref, square_points, interior_mapping, n_vars);
+
+    if (args.eig > 0 && step == args.steps - 1) {
+      compare_eigen_solvers(x_ref, userData, calculator, potential_func_der,
+                            potential_func_sder, args.eig);
+    }
   }
 
   // ==================== SUMMARY ====================

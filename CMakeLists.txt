@@ -166,10 +166,14 @@ if(USE_ITENSOR)
     set(ITENSOR_INCLUDE_DIR "${ITENSOR_DIR}")
     set(ITENSOR_LIB_DIR "${ITENSOR_DIR}/lib")
     
+    # The debug library (libitensor-g.a) is much slower (e.g. the ITensor stiffness assembly
+    # at 150x150: 65 s instead of 3.7 s); use it only on request: -DITENSOR_DEBUG_LIB=ON
+    option(ITENSOR_DEBUG_LIB "Link the ITensor debug library libitensor-g.a" OFF)
+
     # Check if ITensor directory exists
     if(EXISTS "${ITENSOR_DIR}" AND EXISTS "${ITENSOR_INCLUDE_DIR}/itensor")
-        # Check if ITensor library exists
-        if(EXISTS "${ITENSOR_LIB_DIR}/libitensor-g.a")
+        # Check if ITensor library exists (release preferred)
+        if(ITENSOR_DEBUG_LIB AND EXISTS "${ITENSOR_LIB_DIR}/libitensor-g.a")
             set(ITENSOR_LIBRARY "${ITENSOR_LIB_DIR}/libitensor-g.a")
             set(ITENSOR_FOUND TRUE)
             message(STATUS "Found ITensor debug library: ${ITENSOR_LIBRARY}")
@@ -177,6 +181,10 @@ if(USE_ITENSOR)
             set(ITENSOR_LIBRARY "${ITENSOR_LIB_DIR}/libitensor.a")
             set(ITENSOR_FOUND TRUE)
             message(STATUS "Found ITensor release library: ${ITENSOR_LIBRARY}")
+        elseif(EXISTS "${ITENSOR_LIB_DIR}/libitensor-g.a")
+            set(ITENSOR_LIBRARY "${ITENSOR_LIB_DIR}/libitensor-g.a")
+            set(ITENSOR_FOUND TRUE)
+            message(WARNING "Only the ITensor debug library was found (slow): ${ITENSOR_LIBRARY}")
         else()
             message(WARNING "ITensor library not found in ${ITENSOR_LIB_DIR}")
             message(WARNING "ITensor support will be disabled")

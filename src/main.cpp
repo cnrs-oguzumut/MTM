@@ -10,6 +10,7 @@
 #include "../include/experiments/stress_controlled_examples.h"
 #include "../include/experiments/acoustic_studies.h"
 #include "../include/experiments/data_analysis.h"
+#include "../include/experiments/stability_monitor.h"
 
 int main(int argc, char **argv) {
   // Default system size and parameters
@@ -30,6 +31,25 @@ int main(int argc, char **argv) {
   relax_options.type = LBFGSPreconditioner::None;
   relax_options.grad_tol = 1e-6;
 
+  // Eigenvalue solver of analyze_data_from_folder (example 11 below):
+  //   --eig-solver=fast     analytic K + Cholesky shift-invert (default)
+  //   --eig-solver=legacy   ITensor K + Spectra/SparseLU (FEMHessianAssembler)
+  StiffnessEigenSolver eig_solver = StiffnessEigenSolver::Fast;
+
+  // Stability monitor during the loading (off by default):
+  //   --eig-every=N           lowest eigenvalues of K at every N-th relaxed state
+  //   --eig-at-avalanche=1    also at the last stable state before and the state after
+  //                           each avalanche, with the soft modes written to eigen_modes/
+  //   --eig-modes=5           eigenvalues per computation (eigen_log.csv)
+  //   --eig-vectors=2         soft modes written per avalanche (never translations)
+  //   --eig-refine=0.2        every step while lambda_min < 0.2 x its value after the last
+  //                           avalanche (0 = off)
+  //   --eig-refine-ahead=2    every step while lambda_min^2, extrapolated linearly, reaches
+  //                           zero within 2 x N steps (0 = off)
+  //   --eig-retro=4           at each instability (stress jump or avalanche), also the last
+  //                           4 relaxed states before it (kept in memory)
+  StabilityMonitorOptions stability_options;
+
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -45,9 +65,26 @@ int main(int argc, char **argv) {
       relax_options.refresh_every = std::stoi(arg.substr(18));
     } else if (arg.rfind("--precond-from-step=", 0) == 0) {
       precond_from_step = std::stoi(arg.substr(20));
+    } else if (arg.rfind("--eig-solver=", 0) == 0) {
+      eig_solver = parse_stiffness_eigen_solver(arg.substr(13));
+    } else if (arg.rfind("--eig-every=", 0) == 0) {
+      stability_options.every = std::stoi(arg.substr(12));
+    } else if (arg.rfind("--eig-at-avalanche=", 0) == 0) {
+      stability_options.at_avalanche = std::stoi(arg.substr(19)) != 0;
+    } else if (arg.rfind("--eig-modes=", 0) == 0) {
+      stability_options.modes = std::stoi(arg.substr(12));
+    } else if (arg.rfind("--eig-vectors=", 0) == 0) {
+      stability_options.vectors = std::stoi(arg.substr(14));
+    } else if (arg.rfind("--eig-refine=", 0) == 0) {
+      stability_options.refine = std::stod(arg.substr(13));
+    } else if (arg.rfind("--eig-refine-ahead=", 0) == 0) {
+      stability_options.refine_ahead = std::stod(arg.substr(19));
+    } else if (arg.rfind("--eig-retro=", 0) == 0) {
+      stability_options.retro = std::stoi(arg.substr(12));
     }
   }
   configure_relaxation_solver(relax_options, precond_from_step);
+  configure_stability_monitor(stability_options);
 
   if (argc >= 3) {
     nx = std::atoi(argv[1]);
@@ -81,6 +118,15 @@ int main(int argc, char **argv) {
               << ", refresh=" << relax_options.refresh_every
               << ", from step " << precond_from_step << ")";
   std::cout << std::endl;
+  if (stability_options.enabled()) {
+    std::cout << "Stability monitor: every " << stability_options.every << " steps"
+              << ", at avalanches " << (stability_options.at_avalanche ? "on" : "off")
+              << ", modes=" << stability_options.modes
+              << ", vectors=" << stability_options.vectors
+              << ", refine=" << stability_options.refine
+              << ", refine-ahead=" << stability_options.refine_ahead
+              << ", retro=" << stability_options.retro << std::endl;
+  }
 
   // =========================================================================
   // LIST OF EXPERIMENT EXAMPLES
@@ -134,7 +180,7 @@ int main(int argc, char **argv) {
 
   // 11. Data Post-Processing / Analysis:
   //     Analyzes configurations and dislocation data from saved folder.
-  // analyze_data_from_folder(0, nx, ny, 3301, 3651, 100);
+  // analyze_data_from_folder(0, nx, ny, 3301, 3651, 100, eig_solver);
 
   return 0;
 }

@@ -1,0 +1,133 @@
+PRECONDITIONED L-BFGS: COMMAND-LINE OPTIONS
+===========================================
+
+Usage
+-----
+  ./lattice_triangulation <nx> <ny> <mode> <seed> <remesh> [precond options]
+
+  <mode>    positive | negative
+  <remesh>  1 (on) | 0 (off)
+
+  The precond options go after the positional arguments. Without any of them
+  the program runs the original plain L-BFGS, exactly as before.
+
+
+--precond=<name>        which preconditioner L-BFGS uses
+------------------------------------------------------------------------------
+  name        what it uses                              elastic-step speed   when to use
+                                                        (150x150)
+  ----------  ----------------------------------------  -------------------  ---------------------------
+  stiffness   analytic FEM stiffness K at the start of  ~15x (CHOLMOD)       default choice, fastest
+              each load step, made positive definite,   ~8x  (Eigen)
+              sparse Cholesky factorization
+  laplacian   reference-mesh Laplacian (mesh only,      ~3x                  cheap and robust, but knows
+              factorized once per mesh)                                      nothing about the material
+  diag        ALGLIB built-in diagonal preconditioner,  ~1.3x (no real gain) comparison only
+              diag(K)
+  none        nothing: original plain L-BFGS            1x                   reference runs; same as
+                                                                             not passing the flag
+
+  Aliases: hessian = stiffness, lap = laplacian, diagonal = diag.
+  An unknown name (e.g. --precond=foo) stops the program at startup with an error.
+
+
+Options that only matter when a preconditioner is active
+------------------------------------------------------------------------------
+  option                    default             meaning
+  ------------------------  ------------------  ---------------------------------------------
+  --precond-from-step=N     0 (program)         plain L-BFGS for load steps < N, including the
+                            1 (job scripts)     remeshing of those steps.
+                                                1 = initial relaxation of the noisy lattice is
+                                                identical to a plain-solver run.
+  --precond-tol=X           1e-6                stop the minimization when the largest force
+                                                component max|dE/dx| is below X.
+  --precond-refresh=N       1                   rebuild and refactorize K every N load steps.
+                                                1 is recommended (a rebuild costs ~40 ms with
+                                                CHOLMOD at 150x150).
+
+
+Stability monitor during the loading (lowest eigenvalues of K at relaxed states)
+------------------------------------------------------------------------------
+  option                    default   meaning
+  ------------------------  --------  ---------------------------------------------
+  --eig-every=N             0 (off)   eigenvalues at every N-th relaxed (POST) state.
+                            5 (job    ~+7% run time at N=5 (0.15 s per computation at
+                            scripts)  150x150).
+  --eig-at-avalanche=0|1    0         also at the last stable state before (POST(i-1),
+                            1 (job    kept in memory) and the state after (POST(i)) each
+                            scripts)  avalanche; soft modes written for POST(i-1).
+  --eig-modes=K             5         eigenvalues per computation.
+  --eig-vectors=K           2         soft modes written per avalanche. Rigid
+                                      translations are never written.
+  --eig-refine=F            0.2       every step (not only every N) while lambda_min is
+                                      below F x its value after the last avalanche,
+                                      to follow the approach to the next instability.
+                                      0 = off. Needs --eig-every > 0.
+  --eig-refine-ahead=F      2         every step while lambda_min^2, extrapolated
+                                      linearly through the last two points, reaches
+                                      zero within F x N steps (near a saddle-node
+                                      lambda_min^2 ~ s (alpha_c - alpha)). 0 = off.
+  --eig-retro=K             4         at each instability (stress jump > 2 elastic
+                                      increments, or saved avalanche), also the last K
+                                      relaxed states before it that were not computed
+                                      (positions kept in memory; same mesh). Resolves
+                                      fast approaches (< 5 steps) for the saddle-node
+                                      fits at a cost of <= K computations per event.
+  Output (run directory):
+    eigen_log.csv                     Iteration, Alpha, Trigger (grid | refine |
+                                      before_avalanche | after_avalanche), FailedShifts
+                                      (> 0: an eigenvalue below the first trial shift,
+                                      i.e. unstable), Seconds, lambda_1..lambda_K
+    eigen_modes/soft_modes_XXXXX.vtk  XXXXX = id of the PRE-avalanche file in
+                                      vtk_output/; POST(i-1) positions, fundamental-
+                                      domain triangles, mode_1, mode_2 (scaled to max
+                                      nodal amplitude 1) + amplitudes; eigenvalues in
+                                      the title line.
+  Saddle-node plot:  python3 plot_saddle_node.py <run_dir>
+                     -> saddle_node.png, saddle_node_fits.csv
+
+
+Eigenvalue analysis (analyze_data_from_folder, example 11 in main.cpp)
+------------------------------------------------------------------------------
+  --eig-solver=fast     (default) analytic K + Cholesky shift-invert Lanczos,
+                        translations projected out and added back explicitly.
+                        150x150, 100 values: ~2.3 s per configuration.
+  --eig-solver=legacy   old path: ITensor K (FEMHessianAssembler) + Spectra with
+                        a sparse LU. 150x150, 100 values: ~20 s (release ITensor),
+                        ~80 s (debug ITensor, libitensor-g.a, only with cmake -DITENSOR_DEBUG_LIB=ON).
+  Aliases: cholesky = fast; old, itensor = legacy.
+  Both write the same second_order_analysis/eigenvalues_vs_shear.dat.
+  The flag only matters when the analyze_data_from_folder(...) line in main.cpp
+  is uncommented; it is passed as its last argument (eig_solver).
+
+
+Examples
+--------
+  Recommended (fastest, same initial state as plain runs):
+    ./lattice_triangulation 150 150 positive 42 1 --precond=stiffness --precond-from-step=1
+
+  Negative loading:
+    ./lattice_triangulation 150 150 negative 42 1 --precond=stiffness --precond-from-step=1
+
+  Original plain L-BFGS (reference):
+    ./lattice_triangulation 150 150 positive 42 1
+
+  Laplacian preconditioner:
+    ./lattice_triangulation 150 150 negative 42 1 --precond=laplacian --precond-from-step=1
+
+  Tighter force tolerance:
+    ./lattice_triangulation 150 150 negative 42 1 --precond=stiffness --precond-tol=1e-7
+
+
+Notes
+-----
+  * The remeshing relaxations follow the same rule as the main solve of the same
+    load step (same --precond-from-step decision).
+  * After an instability (avalanche) the preconditioned solver can end in a
+    different metastable state than plain L-BFGS. Compare statistics over several
+    seeds, not individual avalanches.
+  * On the cluster, "make -f Makefile.cluster info" shows whether CHOLMOD (fast)
+    or the Eigen fallback is used.
+  * The cluster job generators (makefiles_for_cluster/job_creator*.py) ask for the
+    preconditioner; default: stiffness, from step 1.
+  * Full theory and implementation: docs/preconditioned_lbfgs.pdf

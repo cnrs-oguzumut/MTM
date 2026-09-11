@@ -1,0 +1,1382 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\lstdefinestyle{cpp}{
+  language=C++,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!60!black}\bfseries,
+  commentstyle=\color{green!40!black}\itshape,
+  stringstyle=\color{red!50!black},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  framerule=0.3pt,
+  rulecolor=\color{black!30},
+  backgroundcolor=\color{black!3},
+  xleftmargin=1em,
+  framexleftmargin=0.5em,
+  columns=fullflexible,
+  keepspaces=true
+}
+\lstset{style=cpp}
+\setlength{\emergencystretch}{3em}
+
+\newtheorem{proposition}{Proposition}
+\theoremstyle{remark}
+\newtheorem*{remark}{Remark}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\x}{\bm{x}}
+\newcommand{\z}{\bm{z}}
+\newcommand{\g}{\bm{g}}
+\newcommand{\s}{\bm{s}}
+\newcommand{\y}{\bm{y}}
+\newcommand{\dd}{\bm{d}}
+\newcommand{\Cred}{C_{\mathrm{red}}}
+\newcommand{\T}{^{\mathsf T}}
+\newcommand{\mT}{^{-\mathsf T}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Preconditioning L-BFGS with the Analytic FEM Stiffness\\[4pt]
+\large Theory and implementation notes for the MTM lattice-triangulation code}
+\author{Technical note}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The quasi-static shear simulations of the MTM code spend almost all of their time
+(97\% in a $150\times150$ production run) minimizing the energy on the \emph{elastic
+branch}, i.e.\ in load steps where nothing dramatic happens. Plain L-BFGS needs
+$\sim10^3$ iterations per such step, and this number grows with the system size.
+This note explains, from the ground up, why that happens and how we fixed it: we
+build the exact analytic FEM stiffness matrix $K$ from the second derivatives that are
+already coded in the energy functions, factorize it with a sparse Cholesky
+decomposition once per load step, and feed it to ALGLIB's L-BFGS through a linear
+change of variables. ALGLIB itself is not modified. On elastic steps the number of
+iterations drops from $\sim1250$ to $\sim37$ at $150\times150$, and the wall time per
+step from $5.5$\,s to $0.37$\,s (about $15\times$). Along the way we found and fixed a
+factor-of-two inconsistency between the energy and its gradient. Everything is
+opt-in (\code{-{}-precond=stiffness}); the default behaviour of the code is unchanged.
+The same factorization machinery also computes the lowest eigenvalues of $K$ (stability
+analysis) $9$--$60\times$ faster than before (Section~\ref{sec:eig}). Section~\ref{sec:literature}
+and the annotated bibliography place all this in the literature.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%=====================================================================
+\section{The problem we are trying to solve}
+%=====================================================================
+
+Let me start with the physics workflow, because the whole story is about \emph{where}
+the time goes.
+
+A simulation (e.g.\ \code{example\_\allowbreak{}1\_\allowbreak{}conti\_\allowbreak{}zanzotto\_\allowbreak{}loading}) applies simple shear
+\begin{equation}
+F_{\mathrm{ext}}(\alpha) = \begin{pmatrix} 1 & \alpha \\ 0 & 1\end{pmatrix},
+\qquad \alpha = 0.14,\ 0.14006,\ 0.14012,\ \dots,\ 1.0,
+\end{equation}
+in about $14\,334$ small increments $\Delta\alpha = 6\times10^{-5}$. At every load step the
+nodes are first mapped affinely by the increment, and then the total energy is
+\emph{minimized} over the node positions with L-BFGS (ALGLIB \code{minlbfgs}). This is
+the classical quasi-static protocol: the system is assumed to follow a local minimum of
+the energy, and when that minimum disappears (an instability) the minimizer carries the
+system to a new one. Those events are the avalanches / plastic events we are interested
+in.
+
+The key observation is statistical: \emph{avalanches are rare}. In the reference
+$150\times150$ run (\code{run\_\allowbreak{}zanzotto\_\allowbreak{}loading\_\allowbreak{}150x150}, seed 42):
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+& steps & time in the main minimization \\
+\midrule
+elastic steps (no remeshing) & 14\,153 (98.7\%) & 11.3\,h \\
+remeshing / avalanche steps  & 180 (1.3\%)     & 0.4\,h \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+So 97\% of the 11.7\,h wall time is spent solving \emph{boring} problems: a lattice that
+is already in equilibrium receives a tiny homogeneous shear and has to relax a tiny bit.
+Each of those relaxations took on average $\sim2.9$\,s and $\sim10^3$ L-BFGS iterations.
+That is absurdly expensive for what is essentially a linear-elastic response, and it is
+precisely the regime where second-order information (the Hessian) should help
+enormously.
+
+%=====================================================================
+\section{The discrete model}
+%=====================================================================
+
+\subsection{Kinematics}
+
+The reference lattice is triangulated into P1 (linear) triangles. For an element $e$
+with nodes $a=0,1,2$, current positions $\x_a\in\R^2$ and constant shape function
+gradients $\nabla N_a = (\partial N_a/\partial X_1,\partial N_a/\partial X_2)$, the
+deformation gradient is constant on the element:
+\begin{equation}
+F = \sum_{a=0}^{2} \x_a \otimes \nabla N_a
+\qquad\Longleftrightarrow\qquad
+F_{iK} = \sum_a x_{a,i}\,\frac{\partial N_a}{\partial X_K}.
+\label{eq:F}
+\end{equation}
+In the code this is \code{F = x\_\allowbreak{}e * dNdX} with \code{x\_\allowbreak{}e} the $2\times3$ matrix of node
+positions and \code{dNdX} the $3\times2$ matrix of shape-function gradients
+(\code{ElementTriangle2D::\allowbreak{}calculate\_\allowbreak{}deformation\_\allowbreak{}gradient}). With periodic boundary
+conditions a node of an element may be a periodic image; its position is
+$\x_{\text{orig}} + F_{\mathrm{ext}}\bm{t}$ with a fixed lattice translation $\bm{t}$.
+The translation does not depend on the unknowns, so for all derivatives below a periodic
+image behaves exactly like its original node.
+
+The right Cauchy--Green (metric) tensor is $C=F\T F$.
+
+\subsection{Energy and Lagrange reduction}
+
+The strain energy density is the Conti--Zanzotto type function $\varphi(C)$ of the metric,
+invariant under the lattice symmetry group $GL(2,\mathbb{Z})$. It is evaluated on the
+\emph{reduced} metric
+\begin{equation}
+\Cred = Z\T C Z = (FZ)\T(FZ), \qquad Z\in GL(2,\mathbb{Z}),
+\end{equation}
+where $Z$ (\code{m\_\allowbreak{}matrix}) is produced by \code{lagrange::\allowbreak{}reduce(C)} and brings $C$ into
+the fundamental domain. $Z$ is piecewise constant: it only jumps when $C$ crosses the
+boundary of the fundamental domain, and because $\varphi$ is $GL(2,\mathbb{Z})$-invariant
+the energy is continuous across such a jump. Inside each cell of the reduction we can
+therefore differentiate with $Z$ held fixed. This is what the gradient code does, and what
+the Hessian code must do too.
+
+The total energy is
+\begin{equation}
+E(\x) = \sum_{e} A_e\,\frac{\varphi\big(\Cred^{(e)}\big) - \varphi_0}{a^2},
+\label{eq:E}
+\end{equation}
+with $A_e$ the reference area (\code{getReferenceArea()}), $a$ the lattice parameter and
+$\varphi_0$ the energy of the undeformed crystal.
+
+\subsection{Unknowns}
+
+The free nodes are numbered $0,\dots,n-1$ through \code{full\_\allowbreak{}mapping[node].second}, and
+the solver vector is
+\begin{equation}
+\x = (u_0,\dots,u_{n-1},\ v_0,\dots,v_{n-1}) \in \R^{2n},
+\end{equation}
+i.e.\ first all $x$-components, then all $y$-components. At $150\times150$ with PBC,
+$n=22\,500$ and there are $45\,000$ unknowns; there are $45\,000$ elements.
+
+%=====================================================================
+\section{First derivatives: stress and forces}
+%=====================================================================
+
+\subsection{The tensor derivative convention}
+
+$\varphi$ is coded as a function of three scalars $(c_{11},c_{22},c_{12})$. A symmetric
+matrix has four entries but only three independent ones, so we have to be careful what
+``$\partial\varphi/\partial C$'' means. We define the tensor derivative $D$ by requiring
+\begin{equation}
+d\varphi = \sum_{a,b} D_{ab}\, dC_{ab}\quad\text{for all symmetric } dC.
+\end{equation}
+Writing it out, $d\varphi = \varphi_{,11}\,dc_{11} + \varphi_{,22}\,dc_{22} + \varphi_{,12}\,dc_{12}$
+while $\sum D_{ab}dC_{ab} = D_{11}dc_{11}+D_{22}dc_{22}+(D_{12}+D_{21})dc_{12}$, hence
+\begin{equation}
+D_{11}=\varphi_{,11},\qquad D_{22}=\varphi_{,22},\qquad D_{12}=D_{21}=\tfrac12\,\varphi_{,12}.
+\label{eq:D}
+\end{equation}
+This is exactly what \code{dphi\_\allowbreak{}func} returns (it computes $\varphi_{,12}$ and then divides
+the off-diagonal entry by two: ``we go from DE/DC to J''). I checked it against finite
+differences of \code{phi\_\allowbreak{}func}: all three entries agree to $10^{-9}$.
+
+\subsection{First Piola--Kirchhoff stress}
+
+Set $G = FZ$ so that $\Cred = G\T G$, i.e.\ $(\Cred)_{ab} = G_{ia}G_{ib}$ (summation over
+repeated indices). Since $G_{ia}=F_{iM}Z_{Ma}$, we have
+$\partial G_{ia}/\partial F_{jK} = \delta_{ij}Z_{Ka}$ and
+\begin{equation}
+B_{ab,jK} \coloneqq \frac{\partial (\Cred)_{ab}}{\partial F_{jK}}
+= Z_{Ka}\,G_{jb} + Z_{Kb}\,G_{ja}.
+\label{eq:B}
+\end{equation}
+The stress is then (per unit reference area, dropping $1/a^2$ for readability)
+\begin{equation}
+P_{jK} = \frac{\partial\varphi}{\partial F_{jK}} = D_{ab}B_{ab,jK}
+= (G D\T Z\T)_{jK} + (G D Z\T)_{jK} = 2\,(F Z D Z\T)_{jK},
+\label{eq:P}
+\end{equation}
+which is the line in \code{minimize\_\allowbreak{}energy\_\allowbreak{}with\_\allowbreak{}triangles}:
+\begin{lstlisting}
+const Eigen::Matrix2d P = 2.0 * F * result.m_matrix * dE_dC
+                        * result.m_matrix.transpose();
+\end{lstlisting}
+It is also useful to name the second Piola--Kirchhoff stress
+\begin{equation}
+S = 2\,Z D Z\T,\qquad P = FS.
+\end{equation}
+
+\subsection{Nodal forces}
+
+From \eqref{eq:F}, $\partial F_{iK}/\partial x_{a,j} = \delta_{ij}\,\partial N_a/\partial X_K$, so
+the contribution of element $e$ to the gradient is
+\begin{equation}
+\frac{\partial E_e}{\partial \x_a} = A_e\, P\,\nabla N_a\T .
+\label{eq:force}
+\end{equation}
+This is \code{ElementTriangle2D::\allowbreak{}calculate\_\allowbreak{}nodal\_\allowbreak{}forces}: \code{(P * dNdX.row(a).transpose()) * area}.
+
+\subsection{A factor of two we found on the way}
+\label{sec:area}
+
+Until this work, the line computing $P$ in \code{minimize\_\allowbreak{}energy\_\allowbreak{}with\_\allowbreak{}triangles} ended
+with \code{* area}, and \code{calculate\_\allowbreak{}nodal\_\allowbreak{}forces} multiplied by \code{area} again. So
+the code returned $A_e\,\partial E/\partial\x$ instead of $\partial E/\partial\x$.
+
+Why did nobody notice? Because on the square lattice every reference triangle has area
+exactly $A_e=\tfrac12$. (This is even true after remeshing: a Delaunay triangle of the
+lattice contains no other lattice points, and by Pick's theorem such a lattice triangle
+has area $\tfrac12$.) So the gradient was exactly $\tfrac12\nabla E$ everywhere: the zeros
+of the gradient, i.e.\ the equilibria, were correct, and all the physics was fine.
+What was \emph{not} fine is that L-BFGS's line search uses $E$ and $\g$ together (sufficient
+decrease and curvature conditions, cubic interpolation), and they disagreed by a factor 2.
+
+We discovered this while validating the Hessian: the directional check
+$K\bm{v}\approx[\g(\x+\epsilon\bm{v})-\g(\x-\epsilon\bm{v})]/2\epsilon$ came out as
+$0.500000$ for every random direction, and an energy check $dE/dv \approx 2\,\g\cdot\bm{v}$
+told us which side was wrong. After removing the extra area (only in
+\code{minimize\_\allowbreak{}energy\_\allowbreak{}with\_\allowbreak{}triangles}; the \code{\_\allowbreak{}noreduction} variant was left alone on
+purpose) both checks agree to $10^{-7}$, the trajectory of the default solver is unchanged
+to $5\times10^{-10}$ in energy, and the plain solver itself became about 16\% faster (fewer
+line-search evaluations).
+
+%=====================================================================
+\section{Why plain L-BFGS is slow here}
+%=====================================================================
+\label{sec:slow}
+
+\subsection{L-BFGS in one page}
+
+L-BFGS is a quasi-Newton method. At iteration $k$ it moves along
+\begin{equation}
+\dd_k = -H_k\,\g_k,
+\end{equation}
+where $H_k\approx(\nabla^2E)^{-1}$ is an approximation of the inverse Hessian built from
+the last $m$ pairs (ALGLIB with $m=13$ in the code)
+\begin{equation}
+\s_i = \x_{i+1}-\x_i,\qquad \y_i = \g_{i+1}-\g_i .
+\end{equation}
+$H_k$ is never formed; the product $H_k\g_k$ is computed with the famous
+\emph{two-loop recursion}:
+\begin{center}
+\begin{minipage}{0.8\textwidth}
+\begin{tabbing}
+\quad\=\quad\=\kill
+$\bm q \leftarrow \g_k$\\
+for $i=k-1,\dots,k-m$:\> \> $\theta_i = \rho_i\,\s_i\T\bm q,\quad \bm q \leftarrow \bm q - \theta_i\y_i$\qquad ($\rho_i = 1/\y_i\T\s_i$)\\
+$\bm r \leftarrow H_0\,\bm q$ \hspace{3em} $\longleftarrow$ \emph{the preconditioner lives here}\\
+for $i=k-m,\dots,k-1$:\> \> $\beta = \rho_i\,\y_i\T\bm r,\quad \bm r \leftarrow \bm r + (\theta_i-\beta)\s_i$\\
+$\dd_k = -\bm r$
+\end{tabbing}
+\end{minipage}
+\end{center}
+The \emph{initial} inverse Hessian $H_0$ is the only free choice. By default ALGLIB uses a
+multiple of the identity,
+\begin{equation}
+H_0 = \gamma_k I,\qquad \gamma_k = \frac{\s_{k-1}\T\y_{k-1}}{\y_{k-1}\T\y_{k-1}},
+\end{equation}
+which only fixes the overall scale. The step length is then determined by a Mor\'e--Thuente
+line search.
+
+\subsection{Condition number of an elastic body}
+
+Near a stable equilibrium the energy is essentially quadratic,
+$E\approx\tfrac12(\x-\x^*)\T K(\x-\x^*)$, where $K=\nabla^2E$ is the FEM stiffness matrix.
+For linear elasticity discretized with P1 elements on an $L\times L$ grid, $K$ behaves like
+a discrete Laplacian. For the 5-point Laplacian with periodic boundary conditions the
+eigenvalues are
+\begin{equation}
+\lambda(k_1,k_2) = 4\sin^2\!\frac{\pi k_1}{L} + 4\sin^2\!\frac{\pi k_2}{L},
+\qquad k_1,k_2 = 0,\dots,L-1,
+\end{equation}
+so (ignoring the zero mode, a rigid translation)
+\begin{equation}
+\lambda_{\max}\approx 8,\qquad \lambda_{\min}\approx 4\sin^2\frac{\pi}{L}\approx\frac{4\pi^2}{L^2},
+\qquad
+\kappa(K) = \frac{\lambda_{\max}}{\lambda_{\min}} \approx \frac{2L^2}{\pi^2}.
+\end{equation}
+For $L=150$ this is $\kappa\approx4.6\times10^3$ for a homogeneous material; the real lattice
+with heterogeneous (partly reduced, partly soft) elements is worse.
+
+Gradient-type methods (steepest descent, CG, L-BFGS with a diagonal $H_0$) need a number of
+iterations that grows like $\sqrt{\kappa}\propto L$ to damp the smoothest, longest-wavelength
+mode. Physically: information travels one element per iteration, and a global shear has to
+propagate across the whole box. That is exactly what we see in practice:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+& $50\times50$ & $150\times150$\\
+\midrule
+plain L-BFGS, iterations per elastic step & 317 & 1254 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A factor 3 in $L$ gives roughly a factor 4 in iterations. The cure is to give L-BFGS a
+starting inverse Hessian $H_0$ that already knows about the long-wavelength modes.
+
+\subsection{What ALGLIB offers, and why it is not enough}
+
+\code{minlbfgs} in ALGLIB 3.19 has four modes for $H_0$
+(\code{minlbfgssetprec*}):
+
+\begin{center}
+\begin{tabular}{p{3.3cm}p{4.6cm}p{5.3cm}}
+\toprule
+mode & $H_0$ & verdict for us\\
+\midrule
+default & $\gamma_kI$ & what we used so far\\
+diagonal (\code{setprecdiag}) & $D^{-1}$, $D\approx\operatorname{diag}\nabla^2E$ & almost useless (see below)\\
+dense Cholesky (\code{setpreccholesky}) & $(U\T U)^{-1}$ with a dense $N\times N$ factor & impossible: $45\,000^2$ doubles $=16$\,GB, $O(N^2)$ work per iteration\\
+scale (\code{setprecscale}) & $\operatorname{diag}(s_i^2)$ & useless: all our variables have the same scale\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Why the diagonal does not help.} With periodic boundary conditions there are no
+boundary nodes, and in a homogeneous state every node sees exactly the same patch of
+elements. Hence $\operatorname{diag}K$ takes only two values, one for the $u$-components and
+one for the $v$-components. A diagonal preconditioner can therefore do nothing but rescale
+$x$ against $y$; it has no idea about wavelengths. Worse, looking at the ALGLIB source
+(\code{prectype==2} in the two-loop recursion), the diagonal mode \emph{replaces} the
+adaptive $\gamma_k$ scaling by the fixed $D^{-1}$. Measured on elastic steps at the same
+gradient tolerance, diagonal preconditioning gives $1.3\times$, i.e.\ nothing beyond what
+tightening the tolerance does anyway.
+
+\paragraph{A bug in the old helper.} The existing helper
+\code{computeDiagonalPreconditioner} (in \code{FEMHessianAssembler}) returned
+$1/\sqrt{|H_{ii}|}$. ALGLIB wants the diagonal of the Hessian itself ($H_0=D^{-1}$ is
+computed internally), so this would have produced $H_0=\operatorname{diag}\sqrt{H_{ii}}$:
+big steps in stiff directions. It is now fixed to return $\max(H_{ii},\text{floor})$, but as
+argued above it would not have helped much anyway.
+
+So ALGLIB has no \emph{sparse} preconditioner. We could write our own L-BFGS, but there is a
+much cheaper trick.
+
+%=====================================================================
+\section{The key idea: preconditioning by a change of variables}
+%=====================================================================
+\label{sec:change}
+
+\subsection{The transformation}
+
+Let $P$ be any symmetric positive definite matrix that approximates the Hessian, and let
+\begin{equation}
+P = R\,R\T
+\end{equation}
+be a factorization (Cholesky). Instead of minimizing $E(\x)$, minimize
+\begin{equation}
+\tilde E(\z) = E\big(\x_0 + R\mT\z\big),\qquad \z\in\R^{2n},
+\label{eq:cov}
+\end{equation}
+starting from $\z=0$, i.e.\ from $\x=\x_0$. By the chain rule,
+\begin{align}
+\nabla_{\z}\tilde E &= R^{-1}\,\nabla_{\x}E, \label{eq:gz}\\
+\nabla^2_{\z}\tilde E &= R^{-1}\,\nabla^2_{\x}E\;R\mT . \label{eq:Hz}
+\end{align}
+If $P$ is a good approximation of $\nabla^2E$, then $\nabla^2_{\z}\tilde E\approx
+R^{-1}RR\T R\mT = I$: in the $\z$ variables \emph{all directions look equally stiff}. The
+long-wavelength modes that were $10^3$--$10^4$ times softer than the short ones are now of
+order one. The condition number collapses from $O(L^2)$ to $O(1)$, and L-BFGS on
+$\tilde E$ converges in a handful of iterations.
+
+The beauty is that ALGLIB does not need to know anything about this: it just minimizes a
+function of $\z$ whose value and gradient we provide in the callback.
+
+\subsection{This is exactly preconditioned L-BFGS}
+
+It is worth convincing ourselves that this is not ``some other method'' but precisely
+L-BFGS with $H_0 = \gamma_k P^{-1}$ in the original variables.
+
+\begin{proposition}
+Run L-BFGS on $\tilde E(\z)$ with $\tilde H_0 = \gamma I$. Map every iterate back with
+$\x = \x_0+R\mT\z$. The resulting sequence $\x_k$ is identical to that of L-BFGS on $E(\x)$
+with $H_0 = \gamma P^{-1}$, including the line search.
+\end{proposition}
+
+\begin{proof}
+Differences transform as $\tilde\s = R\T\s$ and, by \eqref{eq:gz}, $\tilde\y = R^{-1}\y$.
+Hence $\tilde\y\T\tilde\s = \y\T R\mT R\T\s = \y\T\s$, so all $\rho_i$ are the same. The
+BFGS inverse update in $\z$-space reads
+\[
+\tilde H_{+} = (I-\rho\,\tilde\s\tilde\y\T)\,\tilde H\,(I-\rho\,\tilde\y\tilde\s\T) + \rho\,\tilde\s\tilde\s\T.
+\]
+Assume $\tilde H = R\T H R$. Using $I-\rho\tilde\s\tilde\y\T = R\T(I-\rho\s\y\T)R\mT$ and
+$I-\rho\tilde\y\tilde\s\T = R^{-1}(I-\rho\y\s\T)R$,
+\[
+\tilde H_{+} = R\T\Big[(I-\rho\s\y\T)H(I-\rho\y\s\T)+\rho\s\s\T\Big]R = R\T H_{+}R .
+\]
+By induction $\tilde H_k = R\T H_k R$ for all $k$, provided it holds for $k=0$:
+$\tilde H_0=\gamma I = R\T(\gamma R\mT R^{-1})R = R\T(\gamma P^{-1})R$. The search directions
+match: $\tilde\dd = -\tilde H\tilde\g = -R\T H R R^{-1}\g = R\T\dd$, i.e.\ $R\mT\tilde\dd = \dd$,
+so the trial points along the line are the same in $\x$-space. The function values are the same by
+construction, and the directional derivatives too: $\tilde\g\T\tilde\dd = \g\T R\mT R\T\dd =
+\g\T\dd$. So every test of the line search gives the same answer.
+\end{proof}
+
+Two small remarks. (i) ALGLIB still computes its adaptive scale $\gamma_k$, which in
+$\z$-space equals $\s\T\y/(\y\T P^{-1}\y)$. This corrects the overall scale of $P$, so we do
+not need to worry about normalizing $P$. (ii) The \emph{stopping criteria} of ALGLIB are
+evaluated in $\z$-space: $\|\tilde\g\| = \sqrt{\g\T P^{-1}\g}$ and
+$\|\tilde\s\| = \sqrt{\s\T P\s}$, which are energy norms rather than Euclidean norms. That is
+why we use our own stopping test in $\x$-space (Section~\ref{sec:stop}).
+
+This idea is not new in atomistic simulation: Packwood, Kermode, Mones, Bernstein, Woolley,
+Gould, Ortner and Csányi, \emph{J.\ Chem.\ Phys.}\ \textbf{144}, 164109 (2016), used exactly
+such preconditioners (sparse, Laplacian-like, or built from the Hessian) and showed that the
+iteration count becomes essentially independent of system size.
+
+\subsection{Which $P$?}
+
+The best $P$ is the Hessian itself at the current configuration, $K=\nabla^2E(\x_0)$. Near a
+stable minimum and for a small load increment, the energy is nearly quadratic with Hessian
+$K$, so L-BFGS with $H_0=K^{-1}$ is essentially Newton's method (its very first step is the
+Newton step) and converges in very few iterations. We compute $K$ exactly and analytically
+(Section~\ref{sec:tangent}), with two modifications to make it a valid preconditioner
+(Section~\ref{sec:psd}). A cheaper alternative, the reference Laplacian, is discussed in
+Section~\ref{sec:laplacian}.
+
+%=====================================================================
+\section{The analytic stiffness matrix}
+\label{sec:tangent}
+%=====================================================================
+
+\subsection{Second derivatives of $\varphi$ with respect to the metric}
+
+The energy file already contains, generated by computer algebra, the six independent
+second partials of $\varphi(c_{11},c_{22},c_{12})$:
+\[
+\varphi_{,1111},\ \varphi_{,2222},\ \varphi_{,1122},\ \varphi_{,1112},\ \varphi_{,2212},\ \varphi_{,1212}
+\]
+(\code{c1111}, \dots, \code{c1212} in \code{create\_\allowbreak{}d2phi\_\allowbreak{}func}). As for the first derivative,
+the tensor second derivative $H_{ab,cd} = \partial D_{ab}/\partial C_{cd}$ is obtained by
+differentiating \eqref{eq:D} once more with the same convention. For example
+$dD_{11} = \varphi_{,1111}dc_{11}+\varphi_{,1122}dc_{22}+\varphi_{,1112}dc_{12}$, and $dc_{12}$ is
+shared between $dC_{12}$ and $dC_{21}$, so $H_{11,12}=H_{11,21}=\tfrac12\varphi_{,1112}$.
+Likewise $D_{12}=\tfrac12\varphi_{,12}$ gives $H_{12,12}=H_{12,21}=\tfrac14\varphi_{,1212}$. With
+the ordering $(11,12,21,22)$ of the index pairs:
+\begin{equation}
+H = \begin{pmatrix}
+\varphi_{,1111} & \tfrac12\varphi_{,1112} & \tfrac12\varphi_{,1112} & \varphi_{,1122}\\[2pt]
+\tfrac12\varphi_{,1112} & \tfrac14\varphi_{,1212} & \tfrac14\varphi_{,1212} & \tfrac12\varphi_{,2212}\\[2pt]
+\tfrac12\varphi_{,1112} & \tfrac14\varphi_{,1212} & \tfrac14\varphi_{,1212} & \tfrac12\varphi_{,2212}\\[2pt]
+\varphi_{,1122} & \tfrac12\varphi_{,2212} & \tfrac12\varphi_{,2212} & \varphi_{,2222}
+\end{pmatrix}.
+\label{eq:H}
+\end{equation}
+This is \emph{exactly} the rule implemented in your \code{AcousticTensor::\allowbreak{}computeHessian}
+(``factor 0.5 when one index pair is off-diagonal, 0.25 when both are''), so the physics is
+the same as in your existing code. I verified numerically that the coded
+\code{ddphi\_\allowbreak{}func} components equal the finite-difference derivatives of \code{dphi\_\allowbreak{}func}
+(ratio $1.000000$ for all six). (Finite differences were only used as a \emph{check}; the
+tangent itself is fully analytic.)
+
+\subsection{The Lagrangian tangent}
+
+We need $\mathbb{A}_{iK,jL} = \partial^2\varphi/\partial F_{iK}\partial F_{jL} = \partial P_{iK}/\partial F_{jL}$.
+Differentiate $P_{iK} = D_{ab}B_{ab,iK}$:
+\begin{equation}
+\mathbb{A}_{iK,jL} = B_{ab,iK}\,H_{ab,cd}\,B_{cd,jL} \;+\; D_{ab}\,\frac{\partial^2(\Cred)_{ab}}{\partial F_{iK}\partial F_{jL}} .
+\end{equation}
+From $(\Cred)_{ab}=G_{ma}G_{mb}$ and $\partial G_{ma}/\partial F_{iK} = \delta_{mi}Z_{Ka}$,
+\begin{align*}
+\frac{\partial^2(\Cred)_{ab}}{\partial F_{iK}\partial F_{jL}} &= \delta_{ij}\,(Z_{Ka}Z_{Lb}+Z_{Kb}Z_{La}),\\
+D_{ab}\,\delta_{ij}(Z_{Ka}Z_{Lb}+Z_{Kb}Z_{La}) &= \delta_{ij}\,2(ZDZ\T)_{KL} = \delta_{ij}S_{KL}.
+\end{align*}
+So the tangent is the sum of a \emph{material} part and a \emph{geometric} (initial-stress)
+part:
+\begin{equation}
+\boxed{\;\mathbb{A} = B\T H B \;+\; I\otimes S,\qquad
+B_{ab,iK} = Z_{Ka}G_{ib}+Z_{Kb}G_{ia},\quad G=FZ,\quad S=2ZDZ\T.\;}
+\label{eq:A}
+\end{equation}
+Here $\mathbb{A}$ is stored as a $4\times4$ matrix with row index $2i+K$ and column index
+$2j+L$, $B$ as a $4\times4$ matrix with row $2a+b$ and column $2i+K$, and $H$ as the
+$4\times4$ matrix \eqref{eq:H} divided by $a^2$.
+
+In your \code{AcousticTensor} this same object is built with ITensor contractions: the
+tensor \code{T53} is $\partial C_{mn}/\partial F_{ij} = \delta_{mj}F_{in}+\delta_{nj}F_{im}$ (contracted
+with $Z$ it becomes our $B$), \code{T54} produces the $\delta_{ij}S_{KL}$ term, \code{mm1\dots mm4}
+are the $Z$ matrices, and \code{f1+f2} is the sum in \eqref{eq:A}. The new code computes
+\eqref{eq:A} with fixed-size Eigen matrices:
+\begin{lstlisting}
+Eigen::Matrix4d element_lagrangian_tangent(const Eigen::Matrix2d &F,
+    const Eigen::Matrix2d &Z, const Eigen::Matrix2d &dE_dC_reduced,
+    const HessianComponents &h, double normalisation) {
+  // H: tensor second derivative, same 1/2, 1/4 factors as AcousticTensor::computeHessian
+  const double d1112 = 0.5 * h.c11_c12, d2212 = 0.5 * h.c22_c12, d1212 = 0.25 * h.c12_c12;
+  Eigen::Matrix4d H;
+  H << h.c11_c11, d1112, d1112, h.c11_c22,
+       d1112,     d1212, d1212, d2212,
+       d1112,     d1212, d1212, d2212,
+       h.c11_c22, d2212, d2212, h.c22_c22;
+  H /= normalisation;
+  // B(2a+b, 2i+K) = d(C_red)_ab / dF_iK = Z_Ka G_ib + Z_Kb G_ia,  G = F Z
+  const Eigen::Matrix2d G = F * Z;
+  Eigen::Matrix4d B;
+  for (int a = 0; a < 2; a++) for (int b = 0; b < 2; b++)
+    for (int i = 0; i < 2; i++) for (int K = 0; K < 2; K++)
+      B(2*a+b, 2*i+K) = Z(K,a)*G(i,b) + Z(K,b)*G(i,a);
+  Eigen::Matrix4d A = B.transpose() * H * B;
+  // geometric term delta_ij S_KL, S = 2 Z (dE/dC) Z^T
+  const Eigen::Matrix2d S = 2.0 * Z * dE_dC_reduced * Z.transpose();
+  for (int i = 0; i < 2; i++) for (int K = 0; K < 2; K++) for (int L = 0; L < 2; L++)
+    A(2*i+K, 2*i+L) += S(K,L);
+  return A;
+}
+\end{lstlisting}
+
+\subsection{From the tangent to the element stiffness}
+
+Using $\partial F_{iK}/\partial x_{a,j} = \delta_{ij}\,\partial N_a/\partial X_K$ twice,
+\begin{equation}
+K^{e}_{(a,i),(b,j)} = \frac{\partial^2 E_e}{\partial x_{a,i}\partial x_{b,j}}
+= A_e\sum_{K,L}\mathbb{A}_{iK,jL}\,\frac{\partial N_a}{\partial X_K}\,\frac{\partial N_b}{\partial X_L}.
+\end{equation}
+In matrix form, with the $4\times6$ matrix $\mathcal{G}_{2i+K,\,2a+j} = \delta_{ij}\,\partial N_a/\partial X_K$,
+\begin{equation}
+K^{e} = A_e\,\mathcal{G}\T\,\mathbb{A}\,\mathcal{G}\qquad (6\times6).
+\label{eq:Ke}
+\end{equation}
+This is the same formula as in \code{FEMHessianAssembler::\allowbreak{}computeElementStiffness}.
+
+\subsection{Getting the second derivatives without ITensor}
+
+The existing \code{BaseLatticeCalculator::\allowbreak{}calculate\_\allowbreak{}dseconderivative} returns an ITensor. Building
+and reading ITensors per element is what made the old assembler slow (7.2\,s serially for
+5000 elements). So I added one virtual method,
+\begin{lstlisting}
+virtual HessianComponents calculate_dseconderivative_components(
+    const Eigen::Matrix2d& C, const std::function<double(double)>& dpot,
+    const std::function<double(double)>& d2pot);
+\end{lstlisting}
+which returns the six raw partials in the \code{HessianComponents} struct that already existed
+in the base header. The base-class default reads them back from the ITensor (so any future
+calculator works automatically); \code{Strain\_\allowbreak{}Energy\_\allowbreak{}LatticeCalculator},
+\code{SquareLatticeCalculator} and \code{TriangularLatticeCalculator} override it and never touch
+ITensor. For the strain energy, the huge generated expressions were moved into
+\code{create\_\allowbreak{}d2phi\_\allowbreak{}components\_\allowbreak{}func}; \code{create\_\allowbreak{}d2phi\_\allowbreak{}func} now calls it and packs the ITensor,
+so the expressions exist only once.
+
+\subsection{Global assembly}
+
+$K$ is the $2n\times2n$ sparse matrix $\sum_e (\text{scatter of }K^e)$. The DOF of local entry
+$(a,i)$ is $s_a$ for $i=0$ and $s_a+n$ for $i=1$, with $s_a=$ \code{full\_\allowbreak{}mapping[nn[a]].second}.
+Couplings across the periodic boundary come for free because images carry the DOF of their
+original node.
+
+The implementation (\code{FastStiffnessAssembler::\allowbreak{}assembleStiffness}) is organized for speed:
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Pattern once.} The sparsity pattern depends only on the connectivity. It is built
+once (with \code{setFromTriplets}) and, for every element, the positions of its 36 entries in
+the compressed value array are stored (\code{k\_\allowbreak{}slots\_\allowbreak{}}). A hash of the connectivity
+(\code{mesh\_\allowbreak{}signature}) detects when remeshing changes the mesh, and only then is the pattern
+rebuilt.
+\item \textbf{Values in parallel.} An OpenMP loop over elements computes $F$, reduces $C$,
+evaluates $D$ and $H$, forms $\mathbb{A}$ and $K^e$, and adds the 36 numbers directly into the
+value array with \code{\#pragma omp atomic}.
+\end{enumerate}
+At $50\times50$: 2.9\,ms the first time (pattern included), 0.4\,ms afterwards, versus 7.2\,s for
+the serial ITensor loop. At $150\times150$ assembly takes about 8\,ms.
+
+\subsection{Validation of $K$}
+
+The benchmark executable (\code{benchmark\_\allowbreak{}preconditioner -{}-validate}) checks, on a real relaxed
+configuration with 3106 of 5000 elements Lagrange-reduced:
+\begin{itemize}[leftmargin=*]
+\item element by element against the ITensor \code{computeElementStiffness}:
+$\max|K^e_{\text{fast}}-K^e_{\text{ITensor}}| / \max|K^e| = 3\times10^{-16}$;
+\item symmetry: $\max|K-K\T| = 10^{-14}$;
+\item $K$ against the analytic gradient: $\|K\bm v - [\g(\x+\epsilon\bm v)-\g(\x-\epsilon\bm v)]/2\epsilon\|/\|K\bm v\| \approx 10^{-7}$
+for random unit $\bm v$ (the finite-difference noise level);
+\item gradient against the energy, at a non-equilibrium point: $[E(\x+\epsilon\bm v)-E(\x-\epsilon\bm v)]/(2\epsilon\,\g\cdot\bm v) = 1.0000$.
+\end{itemize}
+In other words, $K$ is the exact Hessian of the discrete energy \eqref{eq:E}, the gradient is its
+exact first derivative, and both coincide with your existing ITensor implementation.
+
+%=====================================================================
+\section{Turning $K$ into a preconditioner}
+%=====================================================================
+\label{sec:psd}
+
+Two things prevent us from Cholesky-factorizing the exact Hessian directly.
+
+\subsection{Indefiniteness: element-wise PSD projection}
+
+Near instabilities, and in the strongly non-equilibrium states after noise or during an
+avalanche, some elements are in a non-convex part of $\varphi$ and $\mathbb{A}$ has negative
+eigenvalues. Then $K$ is indefinite, Cholesky fails, and even if it did not, $H_0=K^{-1}$ would
+not be positive definite and the L-BFGS direction might point uphill.
+
+The fix is a standard trick from projected Newton methods: project every \emph{element}
+tangent onto the positive semi-definite cone before assembly. $\mathbb{A}$ is symmetric
+(major symmetry of a second derivative), so
+\begin{equation}
+\mathbb{A} = Q\Lambda Q\T \quad\longrightarrow\quad \mathbb{A}^{+} = Q\max(\Lambda,0)\,Q\T .
+\end{equation}
+Then $K^{e+} = A_e\mathcal{G}\T\mathbb{A}^+\mathcal{G}$ is PSD, and a sum of PSD matrices is PSD, so
+the assembled $K^+$ is PSD. Where the material is stable nothing changes; where an element
+is unstable its unstable direction simply gets zero stiffness in the preconditioner. That is
+actually a sensible thing to tell the optimizer: ``you may take large steps in this
+direction''. The line search guarantees descent anyway.
+
+The $4\times4$ symmetric eigen-decomposition per element costs almost nothing
+(\code{Eigen::\allowbreak{}SelfAdjointEigenSolver<Matrix4d>}).
+
+\subsection{Rigid translations: a small shift}
+
+With periodic boundary conditions a rigid translation of all nodes does not change any $F$,
+hence $K\bm{t}=0$ for the two translation vectors $\bm t=(1,\dots,1,0,\dots,0)$ and
+$(0,\dots,0,1,\dots,1)$: $K$ has a two-dimensional null space. We factorize
+\begin{equation}
+P = K^{+} + \sigma I,\qquad \sigma = 10^{-6}\,\overline{\operatorname{diag}K^{+}} .
+\end{equation}
+The shift is far below the smallest non-zero eigenvalue ($\sim(2\pi/L)^2$ times the typical
+stiffness, i.e.\ $\sim10^{-3}$ relative at $L=150$), so it does not spoil the preconditioner.
+It is harmless for the translation directions: the net force $\sum_a \partial E/\partial\x_a$
+vanishes identically (because $\sum_a\nabla N_a=0$ on every element), so the gradient has no
+component along the null space. If a factorization nevertheless fails, the code multiplies
+$\sigma$ by 100 and retries (up to 6 times), and as a last resort falls back to plain L-BFGS.
+
+%=====================================================================
+\section{Sparse Cholesky and the two half-solves}
+%=====================================================================
+\label{sec:cholesky}
+
+\subsection{Factorization}
+
+Sparse Cholesky first chooses a fill-reducing permutation $\Pi$ (AMD ordering, computed once
+per mesh in the ``analyze'' phase) and then computes a lower-triangular $L$ with
+\begin{equation}
+\Pi\,P\,\Pi\T = L L\T .
+\end{equation}
+Hence $P = R R\T$ with
+\begin{equation}
+R = \Pi\T L,\qquad R^{-1} = L^{-1}\Pi,\qquad R\mT = \Pi\T L\mT
+\end{equation}
+(a permutation matrix is orthogonal, $\Pi^{-1}=\Pi\T$).
+
+Two back-ends are implemented behind a small interface (\code{SparseCholeskyBackend}):
+\begin{itemize}[leftmargin=*]
+\item \textbf{CHOLMOD} (SuiteSparse, supernodal). Columns of $L$ with identical sparsity are
+grouped into dense ``supernodes'' that are processed with BLAS-3, which is fast and can be
+multithreaded. Used when CMake / \code{Makefile.cluster} finds SuiteSparse
+(\code{-DUSE\_\allowbreak{}CHOLMOD=1}).
+\item \textbf{Eigen \code{SimplicialLLT}} (column by column, serial). Always available; the
+fallback.
+\end{itemize}
+Both use the shift directly in the numeric factorization (\code{cholmod\_\allowbreak{}factorize\_\allowbreak{}p} with
+$\beta=\sigma$, resp.\ \code{SimplicialLLT::\allowbreak{}setShift}), so $K$ itself is never modified.
+
+Measured at $150\times150$ ($45\,000$ unknowns): factorization 0.032\,s with CHOLMOD, 0.33\,s
+with Eigen.
+
+\subsection{Applying $R^{-1}$ and $R\mT$}
+
+We never form $R^{-1}$. The two operations needed per energy evaluation are
+\begin{align}
+\text{gradient to }\z:\quad & \tilde\g = R^{-1}\g = L^{-1}(\Pi\g)
+&& \text{(permute, then forward substitution)}\\
+\text{step back to }\x:\quad & \x-\x_0 = R\mT\z = \Pi\T(L\mT\z)
+&& \text{(back substitution, then inverse permutation)}
+\end{align}
+With CHOLMOD these are \code{cholmod\_\allowbreak{}solve2} calls with \code{CHOLMOD\_\allowbreak{}P}, \code{CHOLMOD\_\allowbreak{}L}
+and \code{CHOLMOD\_\allowbreak{}Lt}, \code{CHOLMOD\_\allowbreak{}Pt}; with Eigen, \code{permutationP()},
+\code{matrixL().solveInPlace()} and \code{matrixU().solveInPlace()},
+\code{permutationPinv()}. Each triangular solve costs $O(\operatorname{nnz}(L))$; together
+about 4\,ms at $150\times150$, versus about 2\,ms for one energy+gradient evaluation.
+
+%=====================================================================
+\section{The algorithm as implemented}
+%=====================================================================
+
+\subsection{One call of \code{PreconditionedLBFGS::optimize}}
+
+For every relaxation (one load step, or one relaxation inside the remeshing loop):
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Build the preconditioner} at the starting point $\x_0$ (\code{buildPreconditioner}):
+assemble $K^+(\x_0)$ ($\approx8$\,ms), factorize $K^++\sigma I$ ($\approx32$\,ms). The
+symbolic analysis (ordering) is redone only when the mesh changes.
+\item \textbf{Run ALGLIB on $\z$} starting from $\z=0$, with the callback
+\code{transformed\_\allowbreak{}energy}:
+\begin{lstlisting}
+static void transformed_energy(const alglib::real_1d_array &z, double &func,
+                               alglib::real_1d_array &grad, void *ptr) {
+  auto *ctx = static_cast<TransformContext *>(ptr);
+  double *x = ctx->x_work.getcontent();
+  factor->apply_inverse_transpose(z.getcontent(), x, n);   // x - x0 = R^{-T} z
+  for (int i = 0; i < n; i++) x[i] += ctx->x0[i];
+  minimize_energy_with_triangles(ctx->x_work, func, ctx->gx_work, ctx->userData);
+  factor->apply_inverse(ctx->gx_work.getcontent(), grad.getcontent(), n); // R^{-1} g
+  // stop on the true force, measured in x-space (see below)
+  if (max_i |g_i| < grad_tol) { remember x; alglib::minlbfgsrequesttermination(*ctx->state); }
+}
+\end{lstlisting}
+Your energy routine \code{minimize\_\allowbreak{}energy\_\allowbreak{}with\_\allowbreak{}triangles} is called unchanged.
+\item \textbf{Map back}: $\x = \x_0 + R\mT\z_{\text{final}}$ and return it in the same array the
+old optimizer used, so all the code after the minimization (remeshing decision, stresses,
+output) is untouched.
+\end{enumerate}
+$K$ is \emph{not} updated during the ALGLIB iterations. What adapts is the L-BFGS memory
+(the 13 pairs), which corrects $H_0=K^{-1}$ with the curvature actually encountered. $K$ cannot
+be swapped in the middle of a run: a new $R$ would define new variables $\z$ and make the stored
+pairs meaningless. Changing $R$ therefore always means restarting ALGLIB, which is what the
+restart logic below does.
+
+\subsection{Stopping criterion}
+\label{sec:stop}
+
+With the change of variables, ALGLIB's own criteria would be measured in $\z$-space (energy
+norms, see above), and its automatic criterion (a small step, $\|\tilde\s\|\le10^{-6}$) would
+mean something different from the production runs. Instead we stop when the true force is
+small,
+\begin{equation}
+\max_i\Big|\frac{\partial E}{\partial x_i}\Big| < \texttt{grad\_tol} = 10^{-6},
+\end{equation}
+checked inside the callback; ALGLIB is then asked to terminate
+(\code{minlbfgsrequesttermination}) and the point that met the criterion is returned. The same
+test is used for all preconditioners, so comparisons are fair. (For reference, the plain
+production runs stop at $\max|g|$ between $10^{-8}$ and $5\times10^{-5}$; energies of the two
+solvers agree to $10^{-10}$.)
+
+\subsection{Restarts when the preconditioner goes stale}
+
+During a large rearrangement (an avalanche, or relaxing the initial noise) the configuration
+moves far away from $\x_0$ and $K(\x_0)$ becomes a poor model. ALGLIB may then stop early for
+numerical reasons without reaching \code{grad\_\allowbreak{}tol}. In that case \code{optimize} rebuilds
+$K$ at the current point, refactorizes, and starts a new ALGLIB run from there (at most 3
+restarts). In the tests below no restart was ever needed on avalanche steps; it is a safety
+net.
+
+\subsection{Refresh policy}
+
+By default ($\texttt{refresh\_every}=1$) $K$ is rebuilt at the start of every load step. One can
+reuse the factorization for several steps (\code{-{}-precond-refresh=N}), optionally refreshing
+early when a solve needed more than a given number of iterations. With CHOLMOD the setup is so
+cheap (40\,ms) that this buys nothing measurable ($14.9\times$ vs $15.2\times$), so the default
+is to refresh every step.
+
+\subsection{The Laplacian variant}
+\label{sec:laplacian}
+
+A much simpler preconditioner uses only the mesh: the scalar P1 Laplacian of the reference
+configuration,
+\begin{equation}
+\mathcal{L}_{s_a s_b} = \sum_e A_e\,\nabla N_a\cdot\nabla N_b,\qquad
+P = \begin{pmatrix}\mathcal{L}+\sigma I & 0\\ 0&\mathcal{L}+\sigma I\end{pmatrix},
+\end{equation}
+which does not depend on $\x$ at all, is factorized once per mesh, and acts on $u$ and $v$
+separately with the same $n\times n$ factor. It captures the long-wavelength problem (the
+$L^2$ condition number) but knows nothing about the actual elastic constants, anisotropy or
+the reduced elements. It gives about $3\times$; the true stiffness gives $15\times$.
+
+\subsection{Cost of one elastic step at $150\times150$}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+& plain L-BFGS & stiffness preconditioner \\
+\midrule
+assembly of $K$ & -- & 0.008\,s \\
+factorization (CHOLMOD) & -- & 0.032\,s \\
+iterations & $\sim1250$ & $\sim37$ \\
+function evaluations & $\sim2490$ & $\sim53$ \\
+cost per evaluation & $\approx2.2$\,ms & $\approx6.2$\,ms \\
+\midrule
+total per step & 5.5\,s & 0.37\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+Each evaluation is about three times more expensive (two triangular solves on top of the
+energy), but we need about 40 times fewer of them.
+
+%=====================================================================
+\section{Results}
+%=====================================================================
+
+All benchmarks were run with \code{benchmark\_\allowbreak{}preconditioner}. At each load step all methods
+start from the \emph{same} configuration, and the state is then advanced with the solution of
+the first method (plain production L-BFGS), so every method solves exactly the same sequence of
+problems. The loading is the production Zanzotto shear, PBC, fixed mesh, M1 Pro with 10 threads.
+
+\subsection{Elastic steps}
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+& \multicolumn{2}{c}{$50\times50$} & \multicolumn{2}{c}{$150\times150$ (CHOLMOD)}\\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+method & its/step & speedup & its/step & speedup\\
+\midrule
+plain (production) & 245 & 1.0 & 1254 & 1.0\\
+plain, same tolerance & 228 & 1.1 & -- & --\\
+diagonal (ALGLIB) & 237$^\ast$ & 1.3$^\ast$ & -- & --\\
+Laplacian & 64 & 3.2 & 207$^\dagger$ & 3.0$^\dagger$\\
+\textbf{stiffness} & \textbf{10.7} & \textbf{12.3} & \textbf{37} & \textbf{14.9}\\
+\bottomrule
+\end{tabular}
+\end{center}
+{\footnotesize $^\ast$ measured before the gradient fix; $^\dagger$ with the Eigen back-end run.
+With Eigen instead of CHOLMOD the stiffness preconditioner gives $7.8\times$ at $150\times150$, the
+difference being entirely the factorization time.}
+
+In all cases the preconditioned solutions coincide with the production solutions to about
+$10^{-10}$ in energy. Note that the iteration count of the preconditioned solver still grows
+somewhat with size ($11\to37$): $K(\x_0)$ is not the Hessian at the solution, the problem is
+nonlinear, and the absolute force tolerance involves more degrees of freedom. But the gap to
+plain L-BFGS widens with size, which is what matters for large systems.
+
+\subsection{Avalanches}
+
+To see many instabilities quickly, a $50\times50$ run with ten times larger increments
+($\Delta\alpha=6\times10^{-4}$, 150 steps, $\alpha$ from 0.14 to 0.23) was used. It contains 9
+energy drops. Total time excluding step 0:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+method & elastic steps (140) & avalanche steps (9) & total \\
+\midrule
+plain & 43.5\,s & 5.8\,s & 49.2\,s\\
+Laplacian & 15.2\,s & 2.1\,s & 17.4\,s\\
+\textbf{stiffness} & \textbf{2.8\,s} & \textbf{1.1\,s} & \textbf{3.9\,s ($12.6\times$)}\\
+\bottomrule
+\end{tabular}
+\end{center}
+On the avalanche steps themselves the stiffness solver needed 50--153 iterations against
+650--1180 for plain L-BFGS, with no restarts. In 7 of the 9 avalanches it ended in exactly the
+same state as plain L-BFGS ($|\Delta E|\sim10^{-11}$). In two it did not: once it found a state
+lower by $0.076$ (the Laplacian found the same one), once a state higher by $0.047$. This is
+discussed in Section~\ref{sec:physics}.
+
+\subsection{The production binary}
+
+Running the real program for 45\,s at $50\times50$:
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+configuration & load steps in 45\,s\\
+\midrule
+plain, before the gradient fix & 182\\
+plain, after the gradient fix & 212\\
+\code{-{}-precond=stiffness -{}-precond-from-step=1} & 2062\\
+\bottomrule
+\end{tabular}
+\end{center}
+With \code{-{}-precond-from-step=1} the first 182 steps match the plain run to $1.2\times10^{-10}$
+in energy and $1.2\times10^{-7}$ in stress.
+
+A full $150\times150$ production-style run (positive shear, seed 42, remeshing on) was started
+with the stiffness preconditioner: after 50 minutes it had completed 6586 steps, with elastic
+steps at 0.30\,s against 2.87\,s in the old run ($9.6\times$, including remeshing overhead), on
+track for $\sim1.8$\,h instead of 11.7\,h.
+
+%=====================================================================
+\section{Physics caveats: path dependence}
+\label{sec:physics}
+%=====================================================================
+
+A preconditioner changes the \emph{path} of the minimizer, not the energy landscape. On a convex
+problem the path is irrelevant: there is one minimum and every method finds it. That is why
+elastic steps agree to $10^{-10}$. But whenever the starting point is far from equilibrium in a
+non-convex landscape, different paths may end in different local minima. Neither answer is
+``wrong'': quasi-static minimization does not define which basin the system falls into after an
+instability; that is decided by the (fictitious) minimization dynamics.
+
+This matters in two places.
+
+\paragraph{Step 0.} The first load step relaxes a lattice sheared to $\alpha=0.14$ with 4\%
+random noise on the positions: a violent, strongly non-convex relaxation ($\sim5000$ iterations
+at $150\times150$). At $50\times50$, plain L-BFGS ends at $E=14.09$ with shear stress
+$+7.1\times10^{-3}$, while the preconditioned solver ends at $E=7.99$ with stress
+$-4.1\times10^{-3}$: a different initial microstructure, i.e.\ effectively a different sample.
+The option \code{-{}-precond-from-step=N} runs the plain solver (including its remeshing) for load
+steps $<N$. With $N=1$ (the default in the job scripts) the initial state is identical to that
+of a plain run, at a cost of about 20\,s out of hours.
+
+(A side remark: at $150\times150$ the step-0 energy of today's code, with or without
+preconditioner, is 122.805, while the old run from 9--10 September gave 116.062. The step-0
+relaxation is so sensitive that the code changes made since then, this morning's optimization of
+\code{minimize\_\allowbreak{}energy\_\allowbreak{}with\_\allowbreak{}triangles} and \code{lagrange::\allowbreak{}reduce} and/or the gradient fix, send
+it to a different minimum. New runs should therefore be compared with new plain runs, or
+statistically.)
+
+\paragraph{Avalanches.} As seen above, most avalanches end in the same state, but not all.
+The scientific output of these simulations is statistical (avalanche size distributions, stress
+drops, dislocation statistics), so the right validation is statistical: run a few seeds with and
+without preconditioner and compare the distributions.
+
+%=====================================================================
+\section{Stability analysis with the same machinery: the lowest eigenvalues of $K$}
+\label{sec:eig}
+%=====================================================================
+
+\subsection{What we want and how it was done before}
+
+The \emph{unprojected} stiffness $K$ is the Hessian of the discrete energy. At a relaxed
+configuration all its eigenvalues are $\ge0$; an avalanche starts when the lowest nontrivial
+eigenvalue $\lambda_{\min}$ crosses zero (a saddle-node bifurcation), and the corresponding
+eigenvector is the soft mode that becomes unstable. The analysis code
+(\code{analyze\_\allowbreak{}data\_\allowbreak{}from\_\allowbreak{}folder} in \code{src/\allowbreak{}experiments/\allowbreak{}data\_\allowbreak{}analysis.cpp})
+therefore loads saved configurations and computes the 100 lowest eigenpairs of $K$:
+\begin{enumerate}[leftmargin=*]
+\item $K$ is assembled by \code{FEMHessianAssembler::\allowbreak{}assembleGlobalStiffness}, element by element
+through ITensor, serially;
+\item \code{computeSmallestEigenvaluesIterative\_\allowbreak{}spectra} runs Spectra's shift-invert Lanczos
+with \code{SparseSymShiftSolve}, which factorizes $K-\sigma I$ with a sparse \emph{LU}
+(\code{Eigen::\allowbreak{}SparseLU}), with $\sigma=-0.01\max_i|K_{ii}|$;
+\item the two rigid translations (eigenvalue $0$ under periodic boundary conditions) come out
+among the 100 and are recognized afterwards (\code{detectRigidBodyModes}).
+\end{enumerate}
+At $150\times150$ this takes 20\,s per configuration: 3.7\,s for the ITensor assembly and 16\,s
+for the eigensolver (with the release ITensor library \code{libitensor.a}; with the debug library
+\code{libitensor-g.a}, which \code{CMakeLists.txt} used to prefer and now links only with
+\code{-DITENSOR\_\allowbreak{}DEBUG\_\allowbreak{}LIB=ON}, the assembly alone takes 65\,s).
+
+\subsection{Shift-invert Lanczos in one paragraph}
+
+Lanczos finds the \emph{extreme} eigenvalues of a symmetric operator quickly, but the lowest
+eigenvalues of a stiffness matrix are extreme only in a useless sense: they are tiny and
+clustered compared with the spread $\lambda_{\max}\sim8\bar K_{ii}$. The spectral
+transformation~\cite{ericsson1980} applies Lanczos to $(K-\sigma I)^{-1}$ instead, whose
+eigenvalues are
+\begin{equation}
+\nu_k = \frac{1}{\lambda_k-\sigma},\qquad \lambda_k = \sigma + \frac1{\nu_k}.
+\end{equation}
+The eigenvalues closest to $\sigma$ become the largest $\nu$'s and are well separated from the
+rest, so they converge in a few tens of iterations. Every Lanczos iteration costs one solve with
+$K-\sigma I$, so the method lives or dies with the factorization of $K-\sigma I$.
+
+\subsection{Three improvements}
+
+\paragraph{1. Fast assembly.} $K$ is assembled by the \code{FastStiffnessAssembler} of
+Section~\ref{sec:tangent} with \code{project\_\allowbreak{}psd=false}: exactly the same matrix (checked:
+$\max|K_{\text{fast}}-K_{\text{ITensor}}|=7\times10^{-13}$), in 25\,ms instead of 3.7\,s.
+
+\paragraph{2. Cholesky instead of LU: put the shift \emph{below} the spectrum.} If
+$\sigma<\lambda_{\min}(K)$, then $K-\sigma I$ is symmetric positive definite and we can use the
+sparse Cholesky factorization of Section~\ref{sec:cholesky} (CHOLMOD, 45\,ms at $150\times150$), which is several
+times cheaper than LU in time and memory and gives faster solves. We do not know
+$\lambda_{\min}$ in advance, but we do not need to: by Sylvester's law of
+inertia~\cite{grimes1994}, the number of negative pivots of a symmetric factorization of
+$K-\sigma I$ equals the number of eigenvalues of $K$ below $\sigma$. In particular
+\begin{equation}
+\text{Cholesky of }K-\sigma I\text{ succeeds}\iff \lambda_{\min}(K)>\sigma .
+\end{equation}
+So we try $\sigma_0=-10^{-4}\,\overline{K_{ii}}$ and, while the factorization fails, set
+$\sigma\leftarrow10\,\sigma$. A failure is not wasted: it is a rigorous statement that $K$ has an
+eigenvalue below $\sigma$, i.e.\ \emph{the configuration is unstable}. After $m$ failures,
+$\lambda_{\min}\in(\sigma,\sigma/10]$, so the shift is always within a factor 10 of
+$|\lambda_{\min}|$ and the lowest modes converge fast.
+
+\paragraph{3. Deflate the translations instead of computing them.} Under PBC every node is free,
+and a uniform translation $\bm t_u=(1,\dots,1,0,\dots,0)$ or $\bm t_v=(0,\dots,0,1,\dots,1)$ does
+not change any deformation gradient, so $K\bm t_u=K\bm t_v=0$ exactly. They are therefore also
+eigenvectors of $(K-\sigma I)^{-1}$, and with the orthogonal projector
+$Q=I-\hat{\bm t}_u\hat{\bm t}_u\T-\hat{\bm t}_v\hat{\bm t}_v\T$ (which just subtracts the mean of
+the $u$ block and of the $v$ block) the operator
+\begin{equation}
+\mathcal{A}\,\bm x = Q\,(K-\sigma I)^{-1}\,Q\,\bm x
+\end{equation}
+is symmetric, has the same eigenpairs as $(K-\sigma I)^{-1}$ on the complement of the
+translations, and maps the translations to $0$, where Lanczos never looks. No eigenpairs are
+spent on them and no detection step is needed. There is a second benefit: the translation
+eigenvalue $0$ is double, and a single-vector Lanczos can return only one copy of a double
+eigenvalue. With the old code and 3 requested values this happens: one translation, $\lambda_1$
+and $\lambda_2$ come back, so the number of ``rigid modes'' found depends on how many values are
+requested. The code checks $\|K\bm t\|_\infty\le10^{-9}\max|K_{ij}|$
+before deflating, so with fixed boundaries (no translation modes) nothing is projected.
+
+\subsection{Results}
+
+Same relaxed $150\times150$ configuration ($n=45\,000$; 3 load steps of the benchmark), M1 Pro,
+CHOLMOD, release ITensor library for the old path:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+values requested & 100 & 12 & 3\\
+(nontrivial modes) & (98) & (10) & (1: $\lambda_{\min}$)\\
+\midrule
+old: ITensor assembly & 3.7\,s & 3.7\,s & 3.6\,s\\
+old: Spectra + SparseLU & 16.2\,s & 6.9\,s & 5.2\,s\\
+\textbf{old total} & \textbf{19.9\,s} & \textbf{10.5\,s} & \textbf{8.8\,s}\\
+\midrule
+new: assembly & 0.03\,s & 0.02\,s & 0.02\,s\\
+new: Cholesky & 0.05\,s & 0.04\,s & 0.04\,s\\
+new: Lanczos (solves) & 2.22\,s (248) & 0.18\,s (45) & 0.08\,s (21)\\
+\textbf{new total} & \textbf{2.32\,s} & \textbf{0.25\,s} & \textbf{0.15\,s}\\
+\midrule
+speedup & $8.6\times$ & $42\times$ & $59\times$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The eigenvalues agree with the old ones to a relative $1.5\times10^{-11}$ (98 modes), and the
+residuals $\|K\bm v-\lambda\bm v\|/|\lambda|$ are $\le1.5\times10^{-11}$. With the debug ITensor
+library the old path takes 79\,s for 100 values. With $\lambda_{\min}$ at 0.15\,s it becomes
+affordable to monitor stability \emph{at every load step} of a simulation, not only at a few saved
+configurations.
+
+\paragraph{In \code{analyze\_\allowbreak{}data\_\allowbreak{}from\_\allowbreak{}folder}.} On saved configurations 1, 3, 5 of
+the $150\times150$ preconditioned run (100 values, release ITensor), the eigenvalue part takes
+2.2\,s (fast) against 14--15\,s (legacy) per configuration; the output file
+\code{eigenvalues\_\allowbreak{}vs\_\allowbreak{}shear.dat} is the same to 11 digits in the first nontrivial
+eigenvalue, with 2 rigid modes detected in both cases.
+
+\paragraph{Unstable test.} To exercise the shift search, the solver was applied to
+$K-cI$ with $c$ chosen so that three eigenvalues are negative. The first shift
+$\sigma_0=-5.5\times10^{-3}$ fails (instability detected), $\sigma=-5.5\times10^{-2}$ succeeds, and
+the five lowest eigenvalues $-3.389\times10^{-2}$, $-1.122\times10^{-3}$, $-8.776\times10^{-4}$,
+$1.018\times10^{-2}$, $1.891\times10^{-2}$ are reproduced to all printed digits.
+
+\paragraph{Usage.} From C++:
+\begin{lstlisting}
+#include "optimization/StiffnessSpectrum.h"
+
+StiffnessSpectrumOptions opt;
+opt.n_modes = 10;                 // lowest 10 nontrivial modes
+StiffnessSpectrum s = lowest_stiffness_modes(x, &userData, opt);
+// s.eigenvalues (ascending), s.eigenvectors (solver layout [u..., v...]),
+// s.failed_shifts > 0  <=>  K has an eigenvalue below the first trial shift
+\end{lstlisting}
+The command \code{benchmark\_\allowbreak{}preconditioner -{}-eig\allowbreak{} 100} reproduces the comparison above.
+The function \code{analyze\_\allowbreak{}data\_\allowbreak{}from\_\allowbreak{}folder} uses the fast path by default and the old
+one with \code{-{}-eig-\allowbreak{}solver=\allowbreak{}legacy} (flag of \code{lattice\_\allowbreak{}triangulation}, passed as the last
+argument of the call in \code{main.cpp}). The fast path adds the two translations back
+explicitly (normalized $\hat{\bm t}_u,\hat{\bm t}_v$, eigenvalue $=$ Rayleigh quotient $\approx10^{-17}$), so the
+rigid-mode detection and the output columns are unchanged.
+
+\subsection{Monitoring stability during the run}
+
+The same routine runs inside the loading loop (\code{StabilityMonitor},
+\code{src/\allowbreak{}experiments/\allowbreak{}stability\_\allowbreak{}monitor.cpp}), always on relaxed (POST) states:
+\begin{itemize}[leftmargin=*]
+\item \emph{grid}: every $N$-th load step (\code{-{}-eig-every=N}); at $150\times150$ one computation
+costs $\approx0.15$\,s against $\approx0.42$\,s per load step, so $N=5$ adds $\approx7\%$;
+\item \emph{refine}: every step while $\lambda_{\min}<0.2\,\lambda_{\mathrm{ref}}$, where
+$\lambda_{\mathrm{ref}}$ is the first value computed after the last avalanche
+(\code{-{}-eig-refine}); near a saddle-node $\lambda_{\min}\propto\sqrt{\alpha_c-\alpha}$, so the
+interesting part of the curve is the last few steps;
+\item \emph{before/after avalanche} (\code{-{}-eig-at-avalanche=1}): the relaxed state of the
+previous step, POST$(i-1)$, the last stable state before the avalanche, is kept in memory
+(positions; its mesh is the one step $i$ starts with), and its eigenpairs are computed
+retroactively once step $i$ is recognized as an avalanche; POST$(i)$ is computed as well.
+\end{itemize}
+Eigenvalues go to \code{eigen\_\allowbreak{}log.csv}; the lowest two nontrivial modes of POST$(i-1)$
+go to \code{eigen\_\allowbreak{}modes/\allowbreak{}soft\_\allowbreak{}modes\_XXXXX.vtk}, next to the PRE-avalanche
+configuration with the same id. Translations are projected out of the solver and, as a
+safeguard, any vector with more than half of its norm in the translations would be skipped.
+
+A first $50\times50$ run (\code{-{}-eig-every=5 -{}-eig-at-avalanche=1}) shows the expected
+behaviour, and one instructive case: at steps 1281--1287 $\lambda_{\min}$ decreases from
+$3.7\times10^{-3}$ to $1.3\times10^{-3}$ and jumps to $3.4\times10^{-2}$ at step 1288, with a 26\%
+stress drop and a 1.4\% energy drop; since remeshing accepted no topological change there,
+this instability is \emph{not} counted as an avalanche and no configuration is saved. The
+eigenvalue log sees it anyway.
+
+\subsection{Saddle-node analysis}
+
+Near a fold (saddle-node) instability at load $\alpha_c$ the lowest eigenvalue at the equilibrium
+behaves as $\lambda_{\min}\simeq\sqrt{s\,(\alpha_c-\alpha)}$, so $\lambda_{\min}^2$ is \emph{linear} in
+$\alpha$: plotting $\lambda_{\min}^2$ instead of $\lambda_{\min}$ turns the approach into a straight line
+whose zero is $\alpha_c$. \code{plot\_\allowbreak{}saddle\_\allowbreak{}node.py <run\_dir>} does this automatically: it finds
+every instability (a stress decrease larger than two typical elastic increments, saved or
+not), fits $\lambda_{\min}^2=A+B\alpha$ on the largest tail of $\ge3$ points with $R^2\ge0.995$, and
+plots $\lambda_{\min}$ with the fitted square roots, the collapse
+$\lambda_{\min}/\sqrt{s\Delta\alpha}$ versus $(\alpha_c-\alpha)/\Delta\alpha$ on the slope $1/2$, and where
+$\alpha_c$ falls relative to the last stable step.
+
+The square-root regime turned out to be short, a few to ten load steps, so sampling every
+5 steps resolves few approaches. Two additions to the monitor fix this: the predictive
+refinement (\code{-{}-eig-refine-ahead}: every step once the linear extrapolation of $\lambda_{\min}^2$
+reaches zero within two grid intervals) and the retroactive computations
+(\code{-{}-eig-retro=4}: the last four relaxed states are kept in memory and computed when an
+instability is detected). In the $50\times50$ test run this gives 63 fits out of 86
+instabilities, 59 of them with $\alpha_c$ within the last load step, for 124 extra
+computations (2\,s). Of the remaining 23, 16 approach so fast that the square-root regime is
+shorter than one load step, and 7 show no softening at all before the jump: $\lambda_{\min}$ stays
+finite, i.e.\ these are not folds of a smooth energy (possibly caused by the non-smoothness of
+the Lagrange-reduced energy or by the remeshing).
+
+\paragraph{Further options.} If many modes are needed repeatedly, LOBPCG~\cite{knyazev2001}
+preconditioned with the PSD-projected Cholesky factor that the L-BFGS solver already has would
+avoid the shift search altogether; and since the Cholesky of $K^+$ is computed at every load step
+anyway, a single extra factorization of $K+\epsilon I$ (no projection) gives a yes/no stability test
+per step for 45\,ms.
+
+%=====================================================================
+\section{Related work: what is known and what is new}
+\label{sec:literature}
+%=====================================================================
+
+It is worth being honest about which parts of this note are textbook material.
+
+\paragraph{Known ingredients.}
+\begin{itemize}[leftmargin=*]
+\item \emph{L-BFGS with a nontrivial initial inverse Hessian.} L-BFGS~\cite{nocedal1980,liu1989}
+only needs a matrix $H_0$ to start its two-loop recursion; that $H_0$ may be any SPD matrix is
+standard~\cite{nocedal2006}. Section~\ref{sec:change} (change of variables $\Leftrightarrow$ $H_0=\gamma P^{-1}$) is a
+reformulation of this well-known fact, needed only because ALGLIB~\cite{alglib} does not accept a
+sparse $H_0$.
+\item \emph{The stiffness matrix as $H_0$ in finite elements.} Quasi-Newton methods started from
+the factorized stiffness go back to Matthies and Strang~\cite{matthies1979} and are the
+``quasi-Newton'' option of commercial FE codes.
+\item \emph{Sparse, physics-based preconditioners for L-BFGS in atomistics.} Jiang et
+al.~\cite{jiang2004} precondition L-BFGS with part of the Hessian of molecular force fields;
+Packwood et al.~\cite{packwood2016} propose a sparse Laplacian-like preconditioner for condensed
+matter, show that the gain grows with system size (our $\kappa\sim L^2$ argument), and ship it in
+ASE; Mones et al.~\cite{mones2018} build it from the Hessian of the force-field terms, keeping
+only the positive definite part, which is what our PSD projection does.
+\item \emph{L-BFGS with a prefactorized Laplacian for hyperelasticity}~\cite{liu2017}
+(computer graphics): essentially our Laplacian variant.
+\item \emph{Element-wise projection of indefinite tangents}~\cite{teran2005} is standard in
+``projected Newton'' methods.
+\item \emph{Shift-invert Lanczos, inertia, sparse Cholesky}~\cite{ericsson1980,grimes1994,chen2008,amestoy1996}
+are classical numerical linear algebra.
+\end{itemize}
+
+\paragraph{What seems specific to this work.}
+\begin{itemize}[leftmargin=*]
+\item The analytic tangent of a $GL(2,\mathbb Z)$-invariant, Lagrange-reduced
+energy~\cite{conti2004,baggio2019}, including the piecewise-constant reduction matrix $Z$
+(eq.~\eqref{eq:A}), and its use as a preconditioner in a landscape where the Hessian
+\emph{jumps} whenever an element changes reduction.
+\item The behaviour through avalanches and remeshing: a $K^+$ built at the start of a load step
+remains effective across reduction switches, with restarts when it goes stale.
+\item The effect of the minimizer on metastable-state selection after instabilities
+(Section~\ref{sec:physics}), which matters for avalanche statistics.
+\end{itemize}
+To our knowledge the Lagrange-reduction plasticity simulations published so far use plain
+first-order minimizers (L-BFGS, FIRE-type dynamics~\cite{bitzek2006}). A publication would need
+more than a speedup: a size-scaling study ($L=50\ldots500$), comparisons with FIRE, nonlinear CG
+and Newton with the same $K$, and statistical equivalence of avalanche distributions over many
+seeds; or, for a numerical-analysis journal, a genuinely new ingredient (convergence theory for the
+non-smooth reduced energy, instability detection or saddle search built on the factorization,
+reuse of the factorization across remeshing, 3D).
+
+%=====================================================================
+\section{Implementation map}
+%=====================================================================
+
+\begin{center}
+\begin{tabular}{p{6.2cm}p{8.3cm}}
+\toprule
+file / symbol & role\\
+\midrule
+\code{include/\allowbreak{}optimization/\allowbreak{}PreconditionedLBFGS.h}, \code{src/\allowbreak{}optimization/\allowbreak{}PreconditionedLBFGS.cpp} & everything described in this note\\
+\quad\code{element\_\allowbreak{}lagrangian\_\allowbreak{}tangent} & $\mathbb{A}$, eq.~\eqref{eq:A}\\
+\quad\code{element\_\allowbreak{}stiffness\_\allowbreak{}from\_\allowbreak{}tangent} & $K^e$, eq.~\eqref{eq:Ke}\\
+\quad\code{FastStiffnessAssembler} & cached pattern, parallel assembly of $K^+$ and of the Laplacian\\
+\code{include/\allowbreak{}optimization/\allowbreak{}SparseCholesky.h}, \code{src/\allowbreak{}optimization/\allowbreak{}SparseCholesky.cpp} & \code{SparseCholeskyBackend}: CHOLMOD / Eigen factorization, half-solves and full solve\\
+\code{include/\allowbreak{}optimization/\allowbreak{}StiffnessSpectrum.h}, \code{src/\allowbreak{}optimization/\allowbreak{}StiffnessSpectrum.cpp} & \code{lowest\_\allowbreak{}stiffness\_\allowbreak{}modes}: lowest eigenpairs of $K$ (Section~\ref{sec:eig})\\
+\code{src/\allowbreak{}experiments/\allowbreak{}stability\_\allowbreak{}monitor.cpp} & eigenvalues during the loading, flags \code{-{}-eig-*}\\
+\quad\code{transformed\_\allowbreak{}energy} & the ALGLIB callback (change of variables)\\
+\quad\code{PreconditionedLBFGS::\allowbreak{}optimize} & setup, ALGLIB run, stopping, restarts\\
+\code{BaseLatticeCalculator::\allowbreak{}calculate\_\allowbreak{}dseconderivative\_\allowbreak{}components} & second derivatives without ITensor (+ overrides)\\
+\code{energy\_\allowbreak{}functions::\allowbreak{}create\_\allowbreak{}d2phi\_\allowbreak{}components\_\allowbreak{}func} & the six analytic partials\\
+\code{relax\_\allowbreak{}configuration()} (\code{common\_\allowbreak{}simulation\_\allowbreak{}helpers.cpp}) & single entry point used by the load steps, \code{memory()} and both remeshing loops; plain L-BFGS unless configured\\
+\code{main.cpp} & flags \code{-{}-precond=}, \code{-{}-precond-tol=}, \code{-{}-precond-refresh=}, \code{-{}-precond-from-step=}\\
+\code{benchmarks/\allowbreak{}benchmark\_\allowbreak{}preconditioner.cpp} & benchmark, \code{-{}-validate}, \code{-{}-eig N}\\
+\code{CMakeLists.txt}, \code{Makefile.cluster} & CHOLMOD detection\\
+\code{makefiles\_\allowbreak{}for\_\allowbreak{}cluster/\allowbreak{}job\_\allowbreak{}creator*.py} & preconditioner prompt (default \code{stiffness}, from step 1)\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Usage.} From the shell:
+\begin{lstlisting}[language=bash]
+./lattice_triangulation 150 150 positive 42 1 --precond=stiffness --precond-from-step=1
+./lattice_triangulation 150 150 positive 42 1      # original plain L-BFGS
+\end{lstlisting}
+
+\paragraph{Remeshing.} The remeshing loop calls \code{relax\_\allowbreak{}configuration()} too, so its
+relaxations are preconditioned as well, following the same \code{-{}-precond-from-step} rule as the
+main solve of that load step. After each remesh the connectivity changes; the solver notices it
+(mesh signature) and rebuilds the pattern and the symbolic factorization, which costs a few tens
+of milliseconds.
+
+\paragraph{Cluster builds.} Without SuiteSparse the Eigen fallback is used ($\sim8\times$ instead of
+$\sim15\times$ at $150\times150$). \code{make -f Makefile.cluster info} tells which one is used.
+Because widely included headers changed (a new virtual method, a new member in \code{UserData}),
+the first rebuild must start from \code{make clean}; \code{Makefile.cluster} now tracks header
+dependencies, \code{Makefile.tchenla} does not yet.
+
+%=====================================================================
+\section{Where the remaining time goes, and possible next steps}
+%=====================================================================
+
+After this change the solve is no longer the only cost: in the running $150\times150$ simulation a
+load step takes $\approx0.45$\,s in total, of which $\approx0.30$\,s is the minimization. The rest is
+the energy/stress evaluations before and after, neighbour and defect analysis, remeshing, and
+output; before, it was hidden behind 2.9\,s of L-BFGS.
+
+Possible next steps:
+\begin{itemize}[leftmargin=*]
+\item profile and trim the per-step overhead outside the solver (another factor $\sim1.5$);
+\item decide whether instabilities without an accepted remeshing (such as step 1288 above)
+should count as avalanches;
+\item refresh $K$ during long solves (every $N$ iterations) if avalanche steps ever become the
+bottleneck;
+\item statistical comparison of avalanche distributions with and without preconditioner over
+several seeds, before using the preconditioned runs for publication-level statistics.
+\end{itemize}
+
+%=====================================================================
+\begin{thebibliography}{99}
+\small
+\newcommand{\why}[1]{\par\smallskip\noindent\begin{minipage}{\linewidth}\itshape #1\end{minipage}\par\medskip}
+
+\bibitem{nocedal1980}
+J.~Nocedal, \emph{Updating quasi-Newton matrices with limited storage},
+Math.\ Comp.\ \textbf{35} (1980) 773--782.
+\why{The original limited-memory BFGS update and the two-loop recursion. The recursion takes an
+arbitrary initial matrix $H_0$; everything in Section~\ref{sec:change} relies on this.}
+
+\bibitem{liu1989}
+D.~C.~Liu and J.~Nocedal, \emph{On the limited memory BFGS method for large scale optimization},
+Math.\ Programming \textbf{45} (1989) 503--528.
+\why{Convergence theory and the scaling $H_0=\gamma_k I$, $\gamma_k=\s\T\y/\y\T\y$, that ALGLIB uses
+by default and that our change of variables turns into $H_0=\gamma_k P^{-1}$.}
+
+\bibitem{nocedal2006}
+J.~Nocedal and S.~J.~Wright, \emph{Numerical Optimization}, 2nd ed., Springer (2006), Chs.~6--7.
+\why{Textbook treatment of (L-)BFGS, preconditioning and its equivalence with a linear change of
+variables, and of Newton and trust-region methods, the natural competitors once $K$ is available.}
+
+\bibitem{alglib}
+S.~Bochkanov, \emph{ALGLIB numerical library}, \url{https://www.alglib.net}, manual of
+\code{minlbfgs} (version~3.19).
+\why{The optimizer we use. Its preconditioners (default, diagonal, dense Cholesky, scale) do not
+include a sparse factorization, which is why we precondition from outside
+(Section~\ref{sec:change}).}
+
+\bibitem{matthies1979}
+H.~Matthies and G.~Strang, \emph{The solution of nonlinear finite element equations},
+Int.\ J.\ Numer.\ Meth.\ Engng.\ \textbf{14} (1979) 1613--1626.
+\why{BFGS started from the factorized FE stiffness matrix, updated with low-rank corrections instead
+of refactorizing: the direct ancestor of what we do. The idea is standard in structural mechanics
+codes; our contribution is its application to a Lagrange-reduced, non-smooth energy.}
+
+\bibitem{jiang2004}
+L.~Jiang, R.~H.~Byrd, E.~Eskow and R.~B.~Schnabel, \emph{A preconditioned L-BFGS algorithm with
+application to molecular energy minimization}, Tech.\ Rep.\ CU-CS-982-04, Univ.\ of Colorado (2004).
+\why{Preconditioned L-BFGS with a sparse preconditioner built from parts of the (partially
+separable) molecular energy; speedups 2--7 in CPU time for proteins. Same philosophy as ours: use
+the structure of the Hessian, not a generic diagonal.}
+
+\bibitem{packwood2016}
+D.~Packwood, J.~Kermode, L.~Mones, N.~Bernstein, J.~Woolley, N.~Gould, C.~Ortner and G.~Cs\'anyi,
+\emph{A universal preconditioner for simulating condensed phase materials},
+J.\ Chem.\ Phys.\ \textbf{144} (2016) 164109.
+\why{The closest reference for the size-scaling argument of Section~\ref{sec:slow}: for materials the condition
+number of the Hessian grows with system size, and a sparse Laplacian-type preconditioner built
+from the neighbour graph removes this growth. Implemented in ASE for L-BFGS and FIRE. Our
+\code{laplacian} option is the FE analogue; our \code{stiffness} option uses the exact Hessian.}
+
+\bibitem{mones2018}
+L.~Mones, C.~Ortner and G.~Cs\'anyi, \emph{Preconditioners for the geometry optimisation and
+saddle point search of molecular systems}, Sci.\ Rep.\ \textbf{8} (2018) 13991.
+\why{Sparse preconditioners built from the Hessian of force-field terms, keeping only the positive
+definite part: conceptually the same as our element-wise PSD projection (Section~\ref{sec:psd}). They also use
+the preconditioner for saddle searches, a possible extension for avalanches.}
+
+\bibitem{liu2017}
+T.~Liu, S.~Bouaziz and L.~Kavan, \emph{Quasi-Newton methods for real-time simulation of
+hyperelastic materials}, ACM Trans.\ Graph.\ \textbf{36} (2017) 23.
+\why{L-BFGS for hyperelastic FE with a prefactorized, constant Laplacian-type matrix as initial
+Hessian; shows the large gains of a good $H_0$ in elasticity. Essentially our \code{laplacian}
+variant; our \code{stiffness} variant goes further by refactorizing the true tangent every step.}
+
+\bibitem{teran2005}
+J.~Teran, E.~Sifakis, G.~Irving and R.~Fedkiw, \emph{Robust quasistatic finite elements and flesh
+simulation}, Proc.\ ACM SIGGRAPH/Eurographics Symp.\ Computer Animation (2005) 181--190.
+\why{Makes indefinite element tangents definite element by element (diagonalization and clamping),
+so that Newton steps are descent directions. Our PSD projection of the $4\times4$ tangent
+$\mathbb A$ is the same idea.}
+
+\bibitem{bitzek2006}
+E.~Bitzek, P.~Koskinen, F.~G\"ahler, M.~Moseler and P.~Gumbsch, \emph{Structural relaxation made
+simple}, Phys.\ Rev.\ Lett.\ \textbf{97} (2006) 170201.
+\why{FIRE, the damped-dynamics minimizer widely used in athermal quasi-static simulations of
+plasticity and amorphous solids; the obvious baseline for any comparison beyond plain L-BFGS.}
+
+\bibitem{ericsson1980}
+T.~Ericsson and A.~Ruhe, \emph{The spectral transformation Lanczos method for the numerical
+solution of large sparse generalized symmetric eigenvalue problems}, Math.\ Comp.\ \textbf{35}
+(1980) 1251--1268.
+\why{Shift-invert (spectral transformation) Lanczos: eigenvalues near a shift $\sigma$ become the
+dominant ones of $(K-\sigma I)^{-1}$. Basis of Section~\ref{sec:eig}.}
+
+\bibitem{grimes1994}
+R.~G.~Grimes, J.~G.~Lewis and H.~D.~Simon, \emph{A shifted block Lanczos algorithm for solving
+sparse symmetric generalized eigenproblems}, SIAM J.\ Matrix Anal.\ Appl.\ \textbf{15} (1994)
+228--272.
+\why{The ``industrial'' shift-invert Lanczos of FE codes; uses the inertia of the $LDL\T$
+factorization of $K-\sigma I$ (Sylvester's law) to count eigenvalues below a shift and to steer
+the shifts. Our shift search is the simplest version of this: a Cholesky failure means an
+eigenvalue below $\sigma$.}
+
+\bibitem{knyazev2001}
+A.~V.~Knyazev, \emph{Toward the optimal preconditioned eigensolver: locally optimal block
+preconditioned conjugate gradient method}, SIAM J.\ Sci.\ Comput.\ \textbf{23} (2001) 517--541.
+\why{LOBPCG: computes the lowest eigenpairs with a preconditioner instead of exact solves. A
+natural option for us, since the PSD-projected Cholesky factor is already available.}
+
+\bibitem{amestoy1996}
+P.~R.~Amestoy, T.~A.~Davis and I.~S.~Duff, \emph{An approximate minimum degree ordering
+algorithm}, SIAM J.\ Matrix Anal.\ Appl.\ \textbf{17} (1996) 886--905.
+\why{AMD, the fill-reducing ordering $\Pi$ used before the Cholesky factorization
+(Section~\ref{sec:cholesky}).}
+
+\bibitem{chen2008}
+Y.~Chen, T.~A.~Davis, W.~W.~Hager and S.~Rajamanickam, \emph{Algorithm 887: CHOLMOD, supernodal
+sparse Cholesky factorization and update/downdate}, ACM Trans.\ Math.\ Softw.\ \textbf{35} (2008) 22.
+\why{The supernodal sparse Cholesky we use (SuiteSparse). Its update/downdate feature could
+later allow modifying the factor after local changes instead of refactorizing.}
+
+\bibitem{spectra}
+Y.~Qiu, \emph{Spectra: C++ library for large scale eigenvalue problems},
+\url{https://spectralib.org}.
+\why{Header-only implicitly restarted Lanczos/Arnoldi (ARPACK-like) used by the eigenvalue code;
+we give it our own Cholesky-based shift-invert operator.}
+
+\bibitem{conti2004}
+S.~Conti and G.~Zanzotto, \emph{A variational model for reconstructive phase transformations in
+crystals, and their relation to dislocations and plasticity}, Arch.\ Rational Mech.\ Anal.\
+\textbf{173} (2004) 69--88.
+\why{The $GL(2,\mathbb Z)$-invariant energy and the Lagrange reduction used in this code.}
+
+\bibitem{baggio2019}
+R.~Baggio, E.~Arbib, P.~Biscari, S.~Conti, L.~Truskinovsky, G.~Zanzotto and O.~U.~Salman,
+\emph{Landau-type theory of planar crystal plasticity}, Phys.\ Rev.\ Lett.\ \textbf{123} (2019)
+205501.
+\why{The Landau-type model of crystal plasticity (Lagrange-reduced energy, quasi-static loading,
+avalanches) that the simulations in this note implement; the physics context of the solver.}
+
+\end{thebibliography}
+
+\end{document}
