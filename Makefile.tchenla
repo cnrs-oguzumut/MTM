@@ -31,8 +31,9 @@ CXXFLAGS := -O3 -std=c++17 -march=native -fopenmp \
 DEFINES  := -DUSE_ARMADILLO=1 -DUSE_SPECTRA=1 -DUSE_ITENSOR=1 -DARMA_DONT_PRINT_FAST_MATH_WARNING
 
 # Helper macros: ONLY add -I or -L flags if the directory actually exists on disk
+comma := ,
 add_inc = $(foreach d,$(1),$(if $(wildcard $(d)),-I$(d)))
-add_lib = $(foreach d,$(1),$(if $(wildcard $(d)),-L$(d) -Wl,-rpath,$(d)))
+add_lib = $(foreach d,$(1),$(if $(wildcard $(d)),-L$(d) -Wl$(comma)-rpath$(comma)$(d)))
 
 # --- 2. Cluster Modules & Library Auto-Detection ---
 OHPC_ROOT := /opt/ohpc/pub
