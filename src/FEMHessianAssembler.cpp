@@ -839,11 +839,7 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_spectra(
 #if defined(__APPLE__)
 #include <Accelerate/Accelerate.h>
 #else
-typedef int __CLPK_integer;
-extern "C" {
-void dsyevd_(char *jobz, char *uplo, int *n, double *a, int *lda, double *w,
-             double *work, int *lwork, int *iwork, int *liwork, int *info);
-}
+#include <lapacke.h>
 #endif
 
 EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
@@ -858,7 +854,7 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
   }
 
   std::cout << "Computing " << N
-            << " smallest eigenvalues using Apple Accelerate..." << std::endl;
+            << " smallest eigenvalues using Accelerate/LAPACK..." << std::endl;
   std::cout << "Matrix size: " << n << " x " << n << std::endl;
 
   try {
@@ -871,11 +867,10 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
       }
     }
 
-    std::cout << "Converted to dense matrix" << std::endl;
-
     // Prepare output arrays
     std::vector<double> eigenvalues(n);
 
+#if defined(__APPLE__)
     // LAPACK parameters for dsyevd (divide-and-conquer, faster than dsyev)
     char jobz = 'V'; // Compute eigenvalues and eigenvectors
     char uplo = 'L'; // Lower triangle of matrix
@@ -911,6 +906,10 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
     // Compute eigenvalues and eigenvectors
     dsyevd_(&jobz, &uplo, &n_lapack, K_dense.data(), &lda, eigenvalues.data(),
             work.data(), &lwork, iwork.data(), &liwork, &info);
+#else
+    std::cout << "Computing eigenvalues with LAPACKE_dsyevd..." << std::endl;
+    int info = LAPACKE_dsyevd(LAPACK_COL_MAJOR, 'V', 'L', n, K_dense.data(), n, eigenvalues.data());
+#endif
 
     if (info != 0) {
       if (info < 0) {

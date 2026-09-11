@@ -28,14 +28,15 @@ CXXFLAGS := -O3 -std=c++17 -march=native -fopenmp \
             -DNDEBUG -w
 
 # Preprocessor definitions required by simulation code
-DEFINES  := -DUSE_ARMADILLO=1 -DUSE_SPECTRA=1 -DUSE_ITENSOR=1
+DEFINES  := -DUSE_ARMADILLO=1 -DUSE_SPECTRA=1 -DUSE_ITENSOR=1 -DARMA_DONT_PRINT_FAST_MATH_WARNING
 
 # Helper macros: ONLY add -I or -L flags if the directory actually exists on disk
 add_inc = $(foreach d,$(1),$(if $(wildcard $(d)),-I$(d)))
 add_lib = $(foreach d,$(1),$(if $(wildcard $(d)),-L$(d) -Wl,-rpath,$(d)))
 
-# --- 2. OpenHPC Cluster Modules Auto-Detection ---
+# --- 2. Cluster Modules & Library Auto-Detection ---
 OHPC_ROOT := /opt/ohpc/pub
+SOFT_ROOT := /opt/software
 
 # Parse standard Lmod environment paths if set
 CPATH_DIRS   := $(subst :, ,$(CPATH))
@@ -43,27 +44,30 @@ LIBPATH_DIRS := $(subst :, ,$(LIBRARY_PATH)) $(subst :, ,$(LD_LIBRARY_PATH))
 
 # Boost (module: boost/1.88.0)
 BOOST_ROOT := $(firstword $(BOOST_DIR) \
+                          $(wildcard $(SOFT_ROOT)/libs/boost/1.88.0) \
                           $(wildcard $(OHPC_ROOT)/libs/gnu14/openmpi5/boost/*) \
                           $(wildcard $(OHPC_ROOT)/libs/gnu14/boost/*) \
                           /usr)
 
-# CGAL (module: cgal/5.6.2)
-AUTO_CGAL := $(shell find $(OHPC_ROOT) -name "basic.h" -path "*/CGAL/basic.h" 2>/dev/null | head -n 1)
+# CGAL (module: cgal/5.6.2) - Explicitly exclude ancient CGAL 4.x / Spack
+AUTO_CGAL := $(shell find $(SOFT_ROOT)/libs $(OHPC_ROOT)/libs -name "basic.h" -path "*/CGAL/basic.h" ! -path "*spack*" ! -path "*cgal-4*" 2>/dev/null | head -n 1)
 CGAL_AUTO_INC := $(if $(AUTO_CGAL),$(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(AUTO_CGAL))))))
 CGAL_ROOT  := $(firstword $(CGAL_DIR) \
+                          $(wildcard $(SOFT_ROOT)/libs/cgal/5.6.2) \
+                          $(wildcard $(SOFT_ROOT)/libs/*/cgal/5.6.2) \
+                          $(wildcard $(OHPC_ROOT)/libs/gnu14/cgal/5.6.2) \
+                          $(wildcard $(OHPC_ROOT)/libs/*/cgal/5.6.2) \
                           $(CGAL_AUTO_INC) \
-                          $(wildcard $(OHPC_ROOT)/libs/gnu14/cgal/*) \
-                          $(wildcard $(OHPC_ROOT)/libs/*/cgal/*) \
                           /usr)
 
 # Armadillo (module: armadillo/14.4.0)
-AUTO_ARMA := $(shell find $(OHPC_ROOT) -name "armadillo" -type f -path "*/include/armadillo" 2>/dev/null | head -n 1)
+AUTO_ARMA := $(shell find $(SOFT_ROOT)/libs $(OHPC_ROOT)/libs -name "armadillo" -type f -path "*/include/armadillo" 2>/dev/null | head -n 1)
 ARMA_AUTO_INC := $(if $(AUTO_ARMA),$(patsubst %/,%,$(dir $(AUTO_ARMA))))
 ARMADILLO_ROOT := $(firstword $(ARMADILLO_DIR) \
+                              $(wildcard $(SOFT_ROOT)/libs/armadillo/14.4.0) \
+                              $(wildcard $(SOFT_ROOT)/libs/gnu14/armadillo/14.4.0) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/armadillo/14.4.0) \
                               $(ARMA_AUTO_INC) \
-                              $(wildcard $(OHPC_ROOT)/libs/gnu14/armadillo/*) \
-                              $(wildcard $(OHPC_ROOT)/libs/*/armadillo/*) \
-                              $(wildcard $(OHPC_ROOT)/libs/gnu14/openblas/armadillo/*) \
                               /usr)
 
 # OpenBLAS (module: openblas/0.3.29)
