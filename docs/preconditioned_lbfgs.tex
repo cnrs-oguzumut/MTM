@@ -1098,6 +1098,30 @@ stress drop and a 1.4\% energy drop; since remeshing accepted no topological cha
 this instability is \emph{not} counted as an avalanche and no configuration is saved. The
 eigenvalue log sees it anyway.
 
+\subsection{Saddle-node analysis}
+
+Near a fold (saddle-node) instability at load $\alpha_c$ the lowest eigenvalue at the equilibrium
+behaves as $\lambda_{\min}\simeq\sqrt{s\,(\alpha_c-\alpha)}$, so $\lambda_{\min}^2$ is \emph{linear} in
+$\alpha$: plotting $\lambda_{\min}^2$ instead of $\lambda_{\min}$ turns the approach into a straight line
+whose zero is $\alpha_c$. \code{plot\_\allowbreak{}saddle\_\allowbreak{}node.py <run\_dir>} does this automatically: it finds
+every instability (a stress decrease larger than two typical elastic increments, saved or
+not), fits $\lambda_{\min}^2=A+B\alpha$ on the largest tail of $\ge3$ points with $R^2\ge0.995$, and
+plots $\lambda_{\min}$ with the fitted square roots, the collapse
+$\lambda_{\min}/\sqrt{s\Delta\alpha}$ versus $(\alpha_c-\alpha)/\Delta\alpha$ on the slope $1/2$, and where
+$\alpha_c$ falls relative to the last stable step.
+
+The square-root regime turned out to be short, a few to ten load steps, so sampling every
+5 steps resolves few approaches. Two additions to the monitor fix this: the predictive
+refinement (\code{-{}-eig-refine-ahead}: every step once the linear extrapolation of $\lambda_{\min}^2$
+reaches zero within two grid intervals) and the retroactive computations
+(\code{-{}-eig-retro=4}: the last four relaxed states are kept in memory and computed when an
+instability is detected). In the $50\times50$ test run this gives 63 fits out of 86
+instabilities, 59 of them with $\alpha_c$ within the last load step, for 124 extra
+computations (2\,s). Of the remaining 23, 16 approach so fast that the square-root regime is
+shorter than one load step, and 7 show no softening at all before the jump: $\lambda_{\min}$ stays
+finite, i.e.\ these are not folds of a smooth energy (possibly caused by the non-smoothness of
+the Lagrange-reduced energy or by the remeshing).
+
 \paragraph{Further options.} If many modes are needed repeatedly, LOBPCG~\cite{knyazev2001}
 preconditioned with the PSD-projected Cholesky factor that the L-BFGS solver already has would
 avoid the shift search altogether; and since the Cholesky of $K^+$ is computed at every load step

@@ -44,6 +44,10 @@ int main(int argc, char **argv) {
   //   --eig-vectors=2         soft modes written per avalanche (never translations)
   //   --eig-refine=0.2        every step while lambda_min < 0.2 x its value after the last
   //                           avalanche (0 = off)
+  //   --eig-refine-ahead=2    every step while lambda_min^2, extrapolated linearly, reaches
+  //                           zero within 2 x N steps (0 = off)
+  //   --eig-retro=4           at each instability (stress jump or avalanche), also the last
+  //                           4 relaxed states before it (kept in memory)
   StabilityMonitorOptions stability_options;
 
   // Scan all arguments for flags
@@ -73,6 +77,10 @@ int main(int argc, char **argv) {
       stability_options.vectors = std::stoi(arg.substr(14));
     } else if (arg.rfind("--eig-refine=", 0) == 0) {
       stability_options.refine = std::stod(arg.substr(13));
+    } else if (arg.rfind("--eig-refine-ahead=", 0) == 0) {
+      stability_options.refine_ahead = std::stod(arg.substr(19));
+    } else if (arg.rfind("--eig-retro=", 0) == 0) {
+      stability_options.retro = std::stoi(arg.substr(12));
     }
   }
   configure_relaxation_solver(relax_options, precond_from_step);
@@ -115,7 +123,9 @@ int main(int argc, char **argv) {
               << ", at avalanches " << (stability_options.at_avalanche ? "on" : "off")
               << ", modes=" << stability_options.modes
               << ", vectors=" << stability_options.vectors
-              << ", refine=" << stability_options.refine << std::endl;
+              << ", refine=" << stability_options.refine
+              << ", refine-ahead=" << stability_options.refine_ahead
+              << ", retro=" << stability_options.retro << std::endl;
   }
 
   // =========================================================================

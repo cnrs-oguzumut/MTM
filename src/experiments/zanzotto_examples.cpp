@@ -1042,7 +1042,7 @@ void example_1_conti_zanzotto_loading(
     // ==================== STABILITY MONITOR (optional) ====================
     // pre_elements is the mesh of the previous POST state; at an avalanche the PRE file
     // written above has id caller_id + file_counter - 2.
-    stability_monitor.end_of_step(static_cast<int>(i), alpha, postOptUserData,
+    stability_monitor.end_of_step(static_cast<int>(i), alpha, post_stress, postOptUserData,
                                   stress_drop_detected, pre_elements,
                                   pre_active_elements, caller_id + file_counter - 2);
 

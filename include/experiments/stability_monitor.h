@@ -4,12 +4,21 @@
 // (analytic K + Cholesky shift-invert Lanczos, translations projected out).
 //
 //   * every N-th load step (--eig-every=N), and every step while lambda_min is below
-//     refine * (lambda_min right after the last avalanche) (--eig-refine),
-//   * at each avalanche (--eig-at-avalanche=1): at POST(i-1), the last stable state before
-//     the avalanche (kept in memory), and at POST(i), the state after it.
+//     refine * (lambda_min right after the last avalanche) (--eig-refine), or while the
+//     linear extrapolation of lambda_min^2 through the last two points reaches zero within
+//     refine_ahead grid intervals (--eig-refine-ahead; near a saddle-node
+//     lambda_min^2 ~ s (alpha_c - alpha), so the approach to an instability is resolved),
+//   * at each instability (a stress jump or a saved avalanche): the last `retro` relaxed
+//     states before it that were not computed yet (--eig-retro=K). They are kept in memory
+//     (positions; on an elastic branch the mesh does not change), so the approach to every
+//     instability is resolved step by step without computing at every step,
+//   * at each saved avalanche (--eig-at-avalanche=1): also the state after it, POST(i), and
+//     the soft modes of POST(i-1), the last stable state.
 //
 // Output (in the run directory):
-//   eigen_log.csv                       step, alpha, trigger, lowest eigenvalues
+//   eigen_log.csv                       step, alpha, trigger, lowest eigenvalues (rows of
+//                                       retroactive computations come after later steps:
+//                                       sort by Iteration)
 //   eigen_modes/soft_modes_XXXXX.vtk    lowest nontrivial modes at POST(i-1) of each
 //                                       avalanche; XXXXX = file id of the PRE-avalanche
 //                                       configuration in vtk_output/. Rigid translations are
@@ -17,6 +26,8 @@
 
 #include <Eigen/Dense>
 #include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <fstream>
 #include <vector>
 
@@ -32,6 +43,11 @@ struct StabilityMonitorOptions {
   int modes = 5;            // eigenvalues per computation
   int vectors = 2;          // soft modes written at POST(i-1) of each avalanche
   double refine = 0.2;      // every step while lambda_min < refine * lambda_ref (0 = off)
+  double refine_ahead = 2.0; // every step while lambda^2 extrapolates to 0 within
+                             // refine_ahead * every steps (0 = off)
+  int retro = 4;            // at each instability, the last `retro` states before it
+  double jump_tol = 2.0;    // instability: stress decrease > jump_tol x median elastic
+                            // stress increment per step (as in plot_saddle_node.py)
   bool enabled() const { return every > 0 || at_avalanche; }
 };
 
@@ -44,10 +60,12 @@ public:
   StabilityMonitor(); // takes the configured options
 
   // Call once per load step, after relaxation, remeshing and the avalanche decision.
+  //   post_stress shear stress of the relaxed state (instability detection)
   //   post        UserData of the relaxed state (points, mesh, F_ext of this step)
-  //   prev_mesh   mesh at the start of this step (= mesh of POST(step-1)), used at avalanches
+  //   avalanche   this step is a saved avalanche
+  //   prev_mesh   mesh at the start of this step (= mesh of POST(step-1))
   //   pre_file_id file id of the PRE-avalanche configuration written for this avalanche
-  void end_of_step(int step, double alpha, UserData &post, bool avalanche,
+  void end_of_step(int step, double alpha, double post_stress, UserData &post, bool avalanche,
                    const std::vector<ElementTriangle2D> &prev_mesh,
                    const std::vector<size_t> &prev_active, int pre_file_id);
 
@@ -60,20 +78,37 @@ private:
                         const std::vector<ElementTriangle2D> &mesh,
                         const std::vector<size_t> &active,
                         const std::vector<std::pair<int, int>> &full_mapping);
-  void update_refinement(const StiffnessSpectrum &s);
+  void update_refinement(int step, const StiffnessSpectrum &s);
+  void start_branch();
 
   StabilityMonitorOptions options_;
   FastStiffnessAssembler assembler_;
   std::ofstream csv_;
 
-  // POST(step-1), kept for the avalanche case
-  int prev_step_ = -1;
-  double prev_alpha_ = 0.0;
-  Eigen::Matrix2d prev_F_ = Eigen::Matrix2d::Identity();
-  std::vector<Point2D> prev_points_;
-  bool prev_computed_ = false;
-  StiffnessSpectrum prev_spectrum_; // valid if prev_computed_
+  bool stress_jump(double alpha, double stress);
+
+  // Last relaxed states, for the computations after an instability
+  struct KeptState {
+    int step;
+    double alpha;
+    Eigen::Matrix2d F;
+    std::vector<Point2D> points;
+    std::uint64_t mesh; // connectivity hash
+    bool computed;
+  };
+  std::deque<KeptState> kept_;
+  int branch_start_ = 0;             // first step after the last instability
+  StiffnessSpectrum last_spectrum_;  // most recent computation of the current state
+  int last_spectrum_step_ = -1;
+
+  // Instability detection from the stress
+  bool have_prev_ = false;
+  double prev_alpha_ = 0.0, prev_stress_ = 0.0;
+  std::vector<double> increments_; // recent elastic stress increments (loading direction)
+  size_t increment_pos_ = 0;
 
   double lambda_ref_ = -1.0; // lambda_min of the first computation after an avalanche
   bool refining_ = false;
+  int last_step_ = -1;       // last computation on the current branch (for extrapolation)
+  double last_lambda_ = 0.0;
 };

@@ -1,5 +1,6 @@
 #include "../../include/experiments/stability_monitor.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -13,6 +14,15 @@ namespace {
 StabilityMonitorOptions g_stability_options;
 
 using Clock = std::chrono::high_resolution_clock;
+
+std::uint64_t mesh_hash(const std::vector<ElementTriangle2D> &elements,
+                        const std::vector<size_t> &active) {
+  std::uint64_t h = 1469598103934665603ULL ^ active.size();
+  for (size_t idx : active)
+    for (int a = 0; a < 3; a++)
+      h = (h ^ static_cast<std::uint64_t>(elements[idx].getNodeIndex(a) + 1)) * 1099511628211ULL;
+  return h;
+}
 
 // Fraction of |v|^2 carried by the two uniform translations (solver layout [u..., v...]).
 double translation_fraction(const Eigen::VectorXd &v) {
@@ -67,12 +77,32 @@ void StabilityMonitor::log(int step, double alpha, const char *trigger,
             << ", " << seconds << " s" << std::endl;
 }
 
-void StabilityMonitor::update_refinement(const StiffnessSpectrum &s) {
+void StabilityMonitor::update_refinement(int step, const StiffnessSpectrum &s) {
   if (s.num_computed == 0) return;
   const double lambda_min = s.eigenvalues(0);
   if (lambda_ref_ < 0.0) lambda_ref_ = lambda_min;
-  refining_ = options_.every > 0 && options_.refine > 0.0 && lambda_ref_ > 0.0 &&
-              lambda_min < options_.refine * lambda_ref_;
+  const bool below = options_.refine > 0.0 && lambda_ref_ > 0.0 &&
+                     lambda_min < options_.refine * lambda_ref_;
+
+  // Saddle-node: lambda^2 ~ s (alpha_c - alpha). Extrapolate lambda^2 linearly through the
+  // previous point of this branch to estimate the steps left until it vanishes.
+  bool approaching = false;
+  if (options_.refine_ahead > 0.0 && last_step_ >= 0 && step > last_step_ &&
+      lambda_min < last_lambda_) {
+    const double l2 = lambda_min * lambda_min;
+    const double drop_per_step =
+        (last_lambda_ * last_lambda_ - l2) / static_cast<double>(step - last_step_);
+    approaching = l2 / drop_per_step < options_.refine_ahead * options_.every;
+  }
+  refining_ = options_.every > 0 && (below || approaching || lambda_min <= 0.0);
+  last_step_ = step;
+  last_lambda_ = lambda_min;
+}
+
+void StabilityMonitor::start_branch() {
+  lambda_ref_ = -1.0;
+  refining_ = false;
+  last_step_ = -1;
 }
 
 void StabilityMonitor::write_soft_modes(int file_id, int step, double alpha,
@@ -141,69 +171,101 @@ void StabilityMonitor::write_soft_modes(int file_id, int step, double alpha,
   std::cout << "Stability monitor: soft modes written to " << name.str() << std::endl;
 }
 
-void StabilityMonitor::end_of_step(int step, double alpha, UserData &post, bool avalanche,
+bool StabilityMonitor::stress_jump(double alpha, double stress) {
+  bool jump = false;
+  if (have_prev_ && alpha != prev_alpha_) {
+    const double direction = alpha > prev_alpha_ ? 1.0 : -1.0;
+    const double increment = direction * (stress - prev_stress_); // > 0 when elastic
+    double median = 0.0;
+    if (!increments_.empty()) {
+      std::vector<double> sorted = increments_;
+      std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+      median = sorted[sorted.size() / 2];
+    }
+    if (median > 0.0 && increment < -options_.jump_tol * median) {
+      jump = true;
+    } else if (increment > 0.0) {
+      constexpr size_t kWindow = 256;
+      if (increments_.size() < kWindow) increments_.push_back(increment);
+      else increments_[increment_pos_++ % kWindow] = increment;
+    }
+  }
+  have_prev_ = true;
+  prev_alpha_ = alpha;
+  prev_stress_ = stress;
+  return jump;
+}
+
+void StabilityMonitor::end_of_step(int step, double alpha, double post_stress, UserData &post,
+                                   bool avalanche,
                                    const std::vector<ElementTriangle2D> &prev_mesh,
                                    const std::vector<size_t> &prev_active, int pre_file_id) {
   if (!options_.enabled()) return;
+  using seconds = std::chrono::duration<double>;
 
-  bool computed = false;
-  StiffnessSpectrum current;
+  const bool jump = stress_jump(alpha, post_stress);
+  const bool instability = step > 0 && (avalanche || jump);
+  const bool avalanche_modes = avalanche && options_.at_avalanche && options_.vectors > 0;
 
-  if (avalanche && options_.at_avalanche && prev_step_ == step - 1) {
-    // POST(step-1): last stable state, reconstructed from the kept positions and the mesh
-    // this step started with.
-    StiffnessSpectrum before;
-    if (prev_computed_ && prev_spectrum_.eigenvectors.cols() >= options_.vectors) {
-      before = prev_spectrum_;
-    } else {
-      std::vector<ElementTriangle2D> mesh = prev_mesh;
-      std::vector<size_t> active = prev_active;
-      UserData prev(prev_points_, mesh, post.calculator, post.energy_function,
-                    post.derivative_function, post.zero_energy, post.ideal_lattice_parameter,
-                    prev_F_, post.interior_mapping, post.full_mapping, active, false);
-      const auto t0 = Clock::now();
-      before = compute(prev, options_.vectors > 0);
-      if (!prev_computed_)
-        log(prev_step_, prev_alpha_, "before_avalanche", before,
-            std::chrono::duration<double>(Clock::now() - t0).count());
+  // 1) Before an instability: the kept states of the branch that ends here. Their mesh is
+  //    the one this step started with unless a remeshing happened in between.
+  if (instability) {
+    const int depth = std::max(options_.retro, avalanche && options_.at_avalanche ? 1 : 0);
+    const std::uint64_t mesh = mesh_hash(prev_mesh, prev_active);
+    for (KeptState &st : kept_) { // oldest first, so the log stays in load order
+      if (st.step < step - depth || st.step < branch_start_) continue;
+      const bool last = (st.step == step - 1);
+      const bool vectors = avalanche_modes && last;
+      StiffnessSpectrum s;
+      if (st.computed) {
+        if (!vectors) continue;
+        if (last_spectrum_step_ == st.step &&
+            last_spectrum_.eigenvectors.cols() >= options_.vectors)
+          s = last_spectrum_;
+      }
+      if (s.num_computed == 0) {
+        if (st.mesh != mesh) continue;
+        std::vector<ElementTriangle2D> elements = prev_mesh;
+        std::vector<size_t> active = prev_active;
+        UserData kept(st.points, elements, post.calculator, post.energy_function,
+                      post.derivative_function, post.zero_energy, post.ideal_lattice_parameter,
+                      st.F, post.interior_mapping, post.full_mapping, active, false);
+        const auto t0 = Clock::now();
+        s = compute(kept, vectors);
+        if (!st.computed)
+          log(st.step, st.alpha, avalanche && last ? "before_avalanche" : "before_instability", s,
+              seconds(Clock::now() - t0).count());
+        st.computed = true;
+      }
+      if (vectors)
+        write_soft_modes(pre_file_id, st.step, st.alpha, s, st.points, prev_mesh, prev_active,
+                         post.full_mapping);
     }
-    if (options_.vectors > 0)
-      write_soft_modes(pre_file_id, prev_step_, prev_alpha_, before, prev_points_, prev_mesh,
-                       prev_active, post.full_mapping);
-
-    const auto t0 = Clock::now();
-    current = compute(post, true);
-    log(step, alpha, "after_avalanche", current,
-        std::chrono::duration<double>(Clock::now() - t0).count());
-    computed = true;
-    lambda_ref_ = -1.0; // new elastic branch: reference = lambda_min right after it
-    refining_ = false;
-    update_refinement(current);
-  } else if (options_.every > 0 && (step % options_.every == 0 || refining_)) {
-    const bool grid = (step % options_.every == 0);
-    const auto t0 = Clock::now();
-    // Vectors are kept so that they can be written if the next step is an avalanche.
-    current = compute(post, options_.at_avalanche && options_.vectors > 0);
-    log(step, alpha, grid ? "grid" : "refine", current,
-        std::chrono::duration<double>(Clock::now() - t0).count());
-    computed = true;
-    if (avalanche) {
-      lambda_ref_ = -1.0;
-      refining_ = false;
-    }
-    update_refinement(current);
-  } else if (avalanche) {
-    lambda_ref_ = -1.0;
-    refining_ = false;
+    start_branch();
+    branch_start_ = step;
   }
 
-  // Keep POST(step) for the next step
-  if (options_.at_avalanche) {
-    prev_step_ = step;
-    prev_alpha_ = alpha;
-    prev_F_ = post.F_external;
-    prev_points_ = post.points;
-    prev_computed_ = computed;
-    if (computed) prev_spectrum_ = std::move(current);
+  // 2) The current state: after a saved avalanche, on the grid, or while refining
+  const char *trigger = nullptr;
+  if (avalanche && options_.at_avalanche) trigger = "after_avalanche";
+  else if (options_.every > 0 && step % options_.every == 0) trigger = "grid";
+  else if (options_.every > 0 && refining_) trigger = "refine";
+  bool computed = false;
+  if (trigger) {
+    const auto t0 = Clock::now();
+    // Vectors are kept so that they can be written if the next step is an avalanche.
+    last_spectrum_ = compute(post, options_.at_avalanche && options_.vectors > 0);
+    last_spectrum_step_ = step;
+    log(step, alpha, trigger, last_spectrum_, seconds(Clock::now() - t0).count());
+    update_refinement(step, last_spectrum_);
+    computed = true;
+  }
+
+  // 3) Keep POST(step)
+  const int keep = std::max(options_.retro, options_.at_avalanche ? 1 : 0);
+  if (keep > 0) {
+    kept_.push_back({step, alpha, post.F_external, post.points,
+                     mesh_hash(post.elements, post.active_elements), computed});
+    while (static_cast<int>(kept_.size()) > keep) kept_.pop_front();
   }
 }

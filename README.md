@@ -72,11 +72,20 @@ Lanczos, rigid translations projected out; ~0.15 s per state at 150x150):
 - `--eig-at-avalanche=1` also the last stable state before and the state after each avalanche
 - `--eig-modes=5` eigenvalues per computation, `--eig-vectors=2` soft modes per avalanche
 - `--eig-refine=0.2` every step while lambda_min < 0.2 x its value after the last avalanche
+- `--eig-refine-ahead=2` every step while lambda_min^2, extrapolated linearly, reaches zero
+  within 2 x N steps
+- `--eig-retro=4` at each instability (stress jump or avalanche) also the last 4 relaxed
+  states before it, kept in memory, so the approach to every instability is resolved
 
 Output: `eigen_log.csv` and `eigen_modes/soft_modes_XXXXX.vtk` (XXXXX = id of the
 PRE-avalanche configuration; translations are never written). Post-processing of saved
 configurations (`analyze_data_from_folder`) uses the same solver, or the old ITensor path
 with `--eig-solver=legacy`.
+
+`python3 plot_saddle_node.py <run_dir>` finds every instability of a run (stress jumps,
+saved or not), fits lambda_min^2 = s (alpha_c - alpha) on the last points before it and
+plots lambda_min with the fitted square roots, the collapse on slope 1/2 and where the
+predicted alpha_c falls (`saddle_node.png`, `saddle_node_fits.csv`).
 
 ## Running Tests
 

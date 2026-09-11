@@ -63,6 +63,16 @@ Stability monitor during the loading (lowest eigenvalues of K at relaxed states)
                                       below F x its value after the last avalanche,
                                       to follow the approach to the next instability.
                                       0 = off. Needs --eig-every > 0.
+  --eig-refine-ahead=F      2         every step while lambda_min^2, extrapolated
+                                      linearly through the last two points, reaches
+                                      zero within F x N steps (near a saddle-node
+                                      lambda_min^2 ~ s (alpha_c - alpha)). 0 = off.
+  --eig-retro=K             4         at each instability (stress jump > 2 elastic
+                                      increments, or saved avalanche), also the last K
+                                      relaxed states before it that were not computed
+                                      (positions kept in memory; same mesh). Resolves
+                                      fast approaches (< 5 steps) for the saddle-node
+                                      fits at a cost of <= K computations per event.
   Output (run directory):
     eigen_log.csv                     Iteration, Alpha, Trigger (grid | refine |
                                       before_avalanche | after_avalanche), FailedShifts
@@ -73,6 +83,8 @@ Stability monitor during the loading (lowest eigenvalues of K at relaxed states)
                                       domain triangles, mode_1, mode_2 (scaled to max
                                       nodal amplitude 1) + amplitudes; eigenvalues in
                                       the title line.
+  Saddle-node plot:  python3 plot_saddle_node.py <run_dir>
+                     -> saddle_node.png, saddle_node_fits.csv
 
 
 Eigenvalue analysis (analyze_data_from_folder, example 11 in main.cpp)
