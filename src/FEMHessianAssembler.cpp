@@ -838,8 +838,6 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvaluesIterative_spectra(
 
 #if defined(__APPLE__)
 #include <Accelerate/Accelerate.h>
-#else
-#include <lapacke.h>
 #endif
 
 EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
@@ -853,8 +851,9 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
     return results;
   }
 
+#if defined(__APPLE__)
   std::cout << "Computing " << N
-            << " smallest eigenvalues using Accelerate/LAPACK..." << std::endl;
+            << " smallest eigenvalues using Apple Accelerate..." << std::endl;
   std::cout << "Matrix size: " << n << " x " << n << std::endl;
 
   try {
@@ -870,7 +869,6 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
     // Prepare output arrays
     std::vector<double> eigenvalues(n);
 
-#if defined(__APPLE__)
     // LAPACK parameters for dsyevd (divide-and-conquer, faster than dsyev)
     char jobz = 'V'; // Compute eigenvalues and eigenvectors
     char uplo = 'L'; // Lower triangle of matrix
@@ -906,10 +904,6 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
     // Compute eigenvalues and eigenvectors
     dsyevd_(&jobz, &uplo, &n_lapack, K_dense.data(), &lda, eigenvalues.data(),
             work.data(), &lwork, iwork.data(), &liwork, &info);
-#else
-    std::cout << "Computing eigenvalues with LAPACKE_dsyevd..." << std::endl;
-    int info = LAPACKE_dsyevd(LAPACK_COL_MAJOR, 'V', 'L', n, K_dense.data(), n, eigenvalues.data());
-#endif
 
     if (info != 0) {
       if (info < 0) {
@@ -953,6 +947,36 @@ EigenResults FEMHessianAssembler::computeSmallestEigenvalues_Accelerate(
     std::cerr << "Exception in Accelerate computation: " << e.what()
               << std::endl;
   }
+#else
+  std::cout << "Computing " << N
+            << " smallest eigenvalues using Eigen dense solver..." << std::endl;
+  std::cout << "Matrix size: " << n << " x " << n << std::endl;
+
+  try {
+    Eigen::MatrixXd K_dense = Eigen::MatrixXd(K_global);
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigensolver(K_dense);
+
+    if (eigensolver.info() != Eigen::Success) {
+      std::cerr << "Error: Eigenvalue computation failed!" << std::endl;
+      return results;
+    }
+
+    results.eigenvalues = eigensolver.eigenvalues().head(N);
+    results.eigenvectors = eigensolver.eigenvectors().leftCols(N);
+    results.num_computed = N;
+
+    std::cout << "Successfully extracted " << N << " smallest eigenvalues."
+              << std::endl;
+    std::cout << "Smallest eigenvalue: " << results.eigenvalues(0) << std::endl;
+    if (N > 1) {
+      std::cout << "Largest of extracted eigenvalues: "
+                << results.eigenvalues(N - 1) << std::endl;
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Exception in eigenvalue computation: " << e.what()
+              << std::endl;
+  }
+#endif
 
   return results;
 }
