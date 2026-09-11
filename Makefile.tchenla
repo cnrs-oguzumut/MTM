@@ -67,28 +67,30 @@ EIGEN_ROOT     := $(firstword $(EIGEN_DIR) \
 
 # --- 3. User Libraries (ALGLIB, ITensor, Spectra) ---
 # Override via environment or command-line: make -f Makefile.tchenla ALGLIB_DIR=/path ...
-MY_LIB_ROOT ?= $(HOME)/libs
+MY_LIB_ROOT ?= $(HOME)/required_libraries
 
-ALGLIB_DIR  ?= $(firstword $(wildcard ./alglib-cpp) \
+ALGLIB_DIR  ?= $(firstword $(wildcard $(HOME)/required_libraries/alglib-cpp) \
+                           $(wildcard /home/usalman/required_libraries/alglib-cpp) \
+                           $(wildcard ./alglib-cpp) \
                            $(wildcard $(HOME)/alglib-cpp) \
-                           $(wildcard $(MY_LIB_ROOT)/alglib-cpp) \
-                           $(wildcard $(HOME)/programming/alglib-cpp) \
-                           $(wildcard $(HOME)/new/alglib-cpp) \
+                           $(wildcard $(HOME)/libs/alglib-cpp) \
                            $(wildcard ../alglib-cpp))
 
-ITENSOR_DIR ?= $(firstword $(wildcard ./itensor) \
+ITENSOR_DIR ?= $(firstword $(wildcard $(HOME)/required_libraries/itensor) \
+                           $(wildcard /home/usalman/required_libraries/itensor) \
+                           $(wildcard $(HOME)/required_libraries/ITensor) \
+                           $(wildcard ./itensor) \
                            $(wildcard ./ITensor) \
                            $(wildcard $(HOME)/itensor) \
                            $(wildcard $(HOME)/ITensor) \
-                           $(wildcard $(MY_LIB_ROOT)/itensor) \
-                           $(wildcard $(MY_LIB_ROOT)/ITensor) \
-                           $(wildcard $(HOME)/programming/itensor) \
-                           $(wildcard $(HOME)/new/ITensor) \
+                           $(wildcard $(HOME)/libs/itensor) \
                            $(wildcard ../itensor))
 
-SPECTRA_DIR ?= $(firstword $(wildcard ./spectra) \
+SPECTRA_DIR ?= $(firstword $(wildcard $(HOME)/required_libraries/spectra) \
+                           $(wildcard /home/usalman/required_libraries/spectra) \
+                           $(wildcard ./spectra) \
                            $(wildcard $(HOME)/spectra) \
-                           $(wildcard $(MY_LIB_ROOT)/spectra))
+                           $(wildcard $(HOME)/libs/spectra))
 
 # --- 4. Include Paths (-I) ---
 INCLUDES := -I./include \
