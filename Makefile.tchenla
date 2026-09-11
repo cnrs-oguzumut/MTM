@@ -30,43 +30,42 @@ CXXFLAGS := -O3 -std=c++17 -march=native -fopenmp \
 # Preprocessor definitions required by simulation code
 DEFINES  := -DUSE_ARMADILLO=1 -DUSE_SPECTRA=1 -DUSE_ITENSOR=1
 
+# Helper macros: ONLY add -I or -L flags if the directory actually exists on disk
+add_inc = $(foreach d,$(1),$(if $(wildcard $(d)),-I$(d)))
+add_lib = $(foreach d,$(1),$(if $(wildcard $(d)),-L$(d) -Wl,-rpath,$(d)))
+
 # --- 2. OpenHPC Cluster Modules Auto-Detection ---
-# On Tchenla (OpenHPC with Lmod), loading modules exports environment
-# variables such as *_DIR, *_INC, and *_LIB.
 OHPC_ROOT := /opt/ohpc/pub
 
-# Boost (module: boost/1.88.0 under gnu14-openmpi5)
+# Boost (module: boost/1.88.0)
 BOOST_ROOT := $(firstword $(BOOST_DIR) \
-                          $(wildcard $(OHPC_ROOT)/moduledeps/gnu14-openmpi5/boost/1.88.0) \
-                          $(wildcard $(OHPC_ROOT)/libs/gnu14/openmpi5/boost/1.88.0) \
+                          $(wildcard $(OHPC_ROOT)/libs/gnu14/openmpi5/boost/*) \
+                          $(wildcard $(OHPC_ROOT)/libs/gnu14/boost/*) \
                           /usr)
 
-# CGAL (module: cgal/5.6.2 under gnu14)
+# CGAL (module: cgal/5.6.2)
 CGAL_ROOT  := $(firstword $(CGAL_DIR) \
-                          $(wildcard $(OHPC_ROOT)/moduledeps/gnu14/cgal/5.6.2) \
-                          $(wildcard $(OHPC_ROOT)/libs/gnu14/cgal/5.6.2) \
+                          $(wildcard $(OHPC_ROOT)/libs/gnu14/cgal/*) \
                           /usr)
 
-# Armadillo (module: armadillo/14.4.0 under gnu14)
+# Armadillo (module: armadillo/14.4.0)
 ARMADILLO_ROOT := $(firstword $(ARMADILLO_DIR) \
-                              $(wildcard $(OHPC_ROOT)/moduledeps/gnu14/armadillo/14.4.0) \
-                              $(wildcard $(OHPC_ROOT)/libs/gnu14/armadillo/14.4.0) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/armadillo/*) \
                               /usr)
 
-# OpenBLAS (module: openblas/0.3.29 under gnu14)
+# OpenBLAS (module: openblas/0.3.29)
 OPENBLAS_ROOT  := $(firstword $(OPENBLAS_DIR) \
-                              $(wildcard $(OHPC_ROOT)/moduledeps/gnu14/openblas/0.3.29) \
-                              $(wildcard $(OHPC_ROOT)/libs/gnu14/openblas/0.3.29) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/openblas/*) \
                               /usr)
 
-# Eigen3 (module: eigen/3.4.0 under modulefiles)
+# Eigen3 (module: eigen/3.4.0)
 EIGEN_ROOT     := $(firstword $(EIGEN_DIR) \
-                              $(wildcard $(OHPC_ROOT)/apps/eigen/3.4.0) \
-                              $(wildcard $(OHPC_ROOT)/libs/gnu14/eigen/3.4.0) \
+                              $(wildcard $(OHPC_ROOT)/apps/eigen/*) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/eigen/*) \
+                              $(wildcard $(OHPC_ROOT)/libs/gnu14/eigen3/*) \
                               /usr)
 
 # --- 3. User Libraries (ALGLIB, ITensor, Spectra) ---
-# Override via environment or command-line: make -f Makefile.tchenla ALGLIB_DIR=/path ...
 MY_LIB_ROOT ?= $(HOME)/required_libraries
 
 ALGLIB_DIR  ?= $(firstword $(wildcard $(HOME)/required_libraries/alglib-cpp) \
@@ -93,98 +92,41 @@ SPECTRA_DIR ?= $(firstword $(wildcard $(HOME)/required_libraries/spectra) \
                            $(wildcard $(HOME)/libs/spectra))
 
 # --- 4. Include Paths (-I) ---
-INCLUDES := -I./include \
-            -I$(SPECTRA_DIR)/include \
-            -I$(SPECTRA_DIR)
+INCLUDES := -I./include
 
-ifneq ($(ALGLIB_DIR),)
-    INCLUDES += -I$(ALGLIB_DIR)/src -I$(ALGLIB_DIR)
-endif
+# Only include directories that actually exist on disk:
+INCLUDES += $(call add_inc, $(SPECTRA_DIR)/include $(SPECTRA_DIR))
+INCLUDES += $(call add_inc, $(ALGLIB_DIR)/src $(ALGLIB_DIR))
+INCLUDES += $(call add_inc, $(ITENSOR_DIR) $(ITENSOR_DIR)/itensor)
 
-ifneq ($(ITENSOR_DIR),)
-    INCLUDES += -I$(ITENSOR_DIR) -I$(ITENSOR_DIR)/itensor
-endif
+# Eigen
+INCLUDES += $(call add_inc, $(EIGEN_INC) $(EIGEN_ROOT)/include/eigen3 $(EIGEN_ROOT)/include /usr/include/eigen3)
 
-# Eigen include (handles both /include and /include/eigen3)
-ifneq ($(EIGEN_INC),)
-    INCLUDES += -I$(EIGEN_INC)
-else ifneq ($(EIGEN_ROOT),)
-    INCLUDES += -I$(EIGEN_ROOT)/include/eigen3 -I$(EIGEN_ROOT)/include
-endif
-INCLUDES += -I/usr/include/eigen3
+# CGAL
+INCLUDES += $(call add_inc, $(CGAL_INC) $(CGAL_ROOT)/include)
 
-# CGAL include
-ifneq ($(CGAL_INC),)
-    INCLUDES += -I$(CGAL_INC)
-else ifneq ($(CGAL_ROOT),)
-    INCLUDES += -I$(CGAL_ROOT)/include
-endif
+# Boost
+INCLUDES += $(call add_inc, $(BOOST_INC) $(BOOST_ROOT)/include)
 
-# Boost include
-ifneq ($(BOOST_INC),)
-    INCLUDES += -I$(BOOST_INC)
-else ifneq ($(BOOST_ROOT),)
-    INCLUDES += -I$(BOOST_ROOT)/include
-endif
+# Armadillo
+INCLUDES += $(call add_inc, $(ARMADILLO_INC) $(ARMADILLO_ROOT)/include)
 
-# Armadillo include
-ifneq ($(ARMADILLO_INC),)
-    INCLUDES += -I$(ARMADILLO_INC)
-else ifneq ($(ARMADILLO_ROOT),)
-    INCLUDES += -I$(ARMADILLO_ROOT)/include
-endif
+# OpenBLAS
+INCLUDES += $(call add_inc, $(OPENBLAS_INC) $(OPENBLAS_ROOT)/include)
 
-# OpenBLAS include
-ifneq ($(OPENBLAS_INC),)
-    INCLUDES += -I$(OPENBLAS_INC)
-else ifneq ($(OPENBLAS_ROOT),)
-    INCLUDES += -I$(OPENBLAS_ROOT)/include
-endif
-
-INCLUDES += -I/usr/include
+INCLUDES += $(call add_inc, /usr/include)
 
 # --- 5. Linker Paths (-L) and RPATH ---
 LDFLAGS := -fopenmp
 
-# Armadillo lib
-ifneq ($(ARMADILLO_LIB),)
-    LDFLAGS += -L$(ARMADILLO_LIB) -Wl,-rpath,$(ARMADILLO_LIB)
-else ifneq ($(ARMADILLO_ROOT),)
-    LDFLAGS += -L$(ARMADILLO_ROOT)/lib64 -L$(ARMADILLO_ROOT)/lib \
-               -Wl,-rpath,$(ARMADILLO_ROOT)/lib64 -Wl,-rpath,$(ARMADILLO_ROOT)/lib
-endif
-
-# Boost lib
-ifneq ($(BOOST_LIB),)
-    LDFLAGS += -L$(BOOST_LIB) -Wl,-rpath,$(BOOST_LIB)
-else ifneq ($(BOOST_ROOT),)
-    LDFLAGS += -L$(BOOST_ROOT)/lib64 -L$(BOOST_ROOT)/lib \
-               -Wl,-rpath,$(BOOST_ROOT)/lib64 -Wl,-rpath,$(BOOST_ROOT)/lib
-endif
-
-# OpenBLAS lib
-ifneq ($(OPENBLAS_LIB),)
-    LDFLAGS += -L$(OPENBLAS_LIB) -Wl,-rpath,$(OPENBLAS_LIB)
-else ifneq ($(OPENBLAS_ROOT),)
-    LDFLAGS += -L$(OPENBLAS_ROOT)/lib64 -L$(OPENBLAS_ROOT)/lib \
-               -Wl,-rpath,$(OPENBLAS_ROOT)/lib64 -Wl,-rpath,$(OPENBLAS_ROOT)/lib
-endif
-
-# CGAL lib (if non-header-only)
-ifneq ($(CGAL_LIB),)
-    LDFLAGS += -L$(CGAL_LIB) -Wl,-rpath,$(CGAL_LIB)
-else ifneq ($(CGAL_ROOT),)
-    LDFLAGS += -L$(CGAL_ROOT)/lib64 -L$(CGAL_ROOT)/lib \
-               -Wl,-rpath,$(CGAL_ROOT)/lib64 -Wl,-rpath,$(CGAL_ROOT)/lib
-endif
+LDFLAGS += $(call add_lib, $(ARMADILLO_LIB) $(ARMADILLO_ROOT)/lib64 $(ARMADILLO_ROOT)/lib)
+LDFLAGS += $(call add_lib, $(BOOST_LIB) $(BOOST_ROOT)/lib64 $(BOOST_ROOT)/lib)
+LDFLAGS += $(call add_lib, $(OPENBLAS_LIB) $(OPENBLAS_ROOT)/lib64 $(OPENBLAS_ROOT)/lib)
+LDFLAGS += $(call add_lib, $(CGAL_LIB) $(CGAL_ROOT)/lib64 $(CGAL_ROOT)/lib)
+LDFLAGS += $(call add_lib, $(ITENSOR_DIR)/lib $(ITENSOR_DIR)/build)
+LDFLAGS += $(call add_lib, /usr/lib64 /usr/lib)
 
 # ITensor lib
-ifneq ($(ITENSOR_DIR),)
-    LDFLAGS += -L$(ITENSOR_DIR)/lib -L$(ITENSOR_DIR)/build \
-               -Wl,-rpath,$(ITENSOR_DIR)/lib -Wl,-rpath,$(ITENSOR_DIR)/build
-endif
-
-LDFLAGS += -L/usr/lib64 -L/usr/lib
 
 # --- 6. Libraries to Link (-l) ---
 LIBS := -litensor -larmadillo -lopenblas -llapack -lblas -lgmp -lmpfr -lboost_system -lboost_thread -ldl -lm
