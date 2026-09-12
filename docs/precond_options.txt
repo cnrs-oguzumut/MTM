@@ -101,6 +101,28 @@ Eigenvalue analysis (analyze_data_from_folder, example 11 in main.cpp)
   is uncommented; it is passed as its last argument (eig_solver).
 
 
+Upgrading an existing setup (scripts written before the stability monitor)
+------------------------------------------------------------------------------
+  * Old job scripts keep working exactly as before. Without --eig-every / and
+    --eig-at-avalanche the monitor is off: no eigenvalue computation, no extra
+    run time, no eigen_log.csv and no eigen_modes/. The same holds for
+    run_simu.sh and any hand-written command line.
+  * --eig-solver only affects analyze_data_from_folder (example 11 in main.cpp,
+    commented out), so it changes nothing in a normal run.
+  * To switch the monitor on in a job script already on the cluster, add the
+    flags to the executable line of run_<job>_one.sh:
+      "$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" $PRECOND_FLAGS \
+             --eig-every=5 --eig-at-avalanche=1 > simulation.log 2>&1
+    Scripts generated from now on ask for it (default: every 5 steps + at
+    avalanches) and put it in an EIG_FLAGS variable.
+  * Rebuild once from clean after pulling, because source files were added:
+      make -f Makefile.cluster clean && make -f Makefile.cluster -j8
+    ("make -f Makefile.cluster info" shows whether CHOLMOD was found.)
+  * Runs made before the monitor existed have no eigen_log.csv, so
+    plot_saddle_node.py cannot analyse them; it needs a run made with
+    --eig-every=N.
+
+
 Examples
 --------
   Recommended (fastest, same initial state as plain runs):
