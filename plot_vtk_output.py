@@ -59,106 +59,208 @@ import matplotlib.tri as mtri
 
 def read_legacy_vtk(filepath):
     """
-    Fast reader for legacy ASCII VTK Unstructured Grid files.
+    Fast reader for legacy VTK Unstructured Grid files (supports both ASCII and BINARY).
     Extracts points, triangular cells, cell scalars, point scalars, and field data.
     """
     path = Path(filepath)
     if not path.is_file():
         raise FileNotFoundError(f"File not found: {path}")
 
-    lines = path.read_text().splitlines()
-    points = None
-    cells = []
-    cell_scalars = {}
-    point_scalars = {}
-    field_data = {}
-    mode = None
-    current_count = 0
-    i = 0
-    n_lines = len(lines)
+    with open(path, "rb") as f:
+        v_line = f.readline().decode("latin1", errors="ignore").strip()
+        t_line = f.readline().decode("latin1", errors="ignore").strip()
+        fmt_line = f.readline().decode("latin1", errors="ignore").strip().upper()
+        ds_line = f.readline().decode("latin1", errors="ignore").strip()
 
-    while i < n_lines:
-        line = lines[i].strip()
-        if not line:
-            i += 1
-            continue
-        parts = line.split()
-        tag = parts[0]
+        is_binary = "BINARY" in fmt_line
 
-        if tag == "POINTS":
-            n_pts = int(parts[1])
-            i += 1
-            pts_vals = []
-            while len(pts_vals) < 3 * n_pts and i < n_lines:
-                pts_vals.extend(float(x) for x in lines[i].split())
-                i += 1
-            points = np.array(pts_vals, dtype=np.float64).reshape(n_pts, 3)[:, :2]
-            continue
+        if not is_binary:
+            f.seek(0)
+            lines = f.read().decode("latin1", errors="ignore").splitlines()
+            points = None
+            cells = []
+            cell_scalars = {}
+            point_scalars = {}
+            field_data = {}
+            mode = None
+            current_count = 0
+            i = 0
+            n_lines = len(lines)
 
-        elif tag == "CELLS":
-            n_cells = int(parts[1])
-            i += 1
-            for _ in range(n_cells):
-                p = [int(x) for x in lines[i].split()]
-                if len(p) >= 4 and p[0] == 3:
-                    cells.append(p[1:4])
-                i += 1
-            continue
-
-        elif tag == "CELL_DATA":
-            mode = "cell"
-            current_count = int(parts[1])
-            i += 1
-            continue
-
-        elif tag == "POINT_DATA":
-            mode = "point"
-            current_count = int(parts[1])
-            i += 1
-            continue
-
-        elif tag == "SCALARS":
-            name = parts[1]
-            i += 1
-            if i < n_lines and lines[i].startswith("LOOKUP_TABLE"):
-                i += 1
-            vals = []
-            while len(vals) < current_count and i < n_lines:
-                vals.extend(float(x) for x in lines[i].split())
-                i += 1
-            arr = np.array(vals[:current_count], dtype=np.float64)
-            if mode == "cell":
-                cell_scalars[name] = arr
-            elif mode == "point":
-                point_scalars[name] = arr
-            continue
-
-        elif tag == "FIELD" and len(parts) >= 3:
-            num_fields = int(parts[2])
-            i += 1
-            for _ in range(num_fields):
-                f_meta = lines[i].split()
-                f_name = f_meta[0]
-                num_comp = int(f_meta[1])
-                num_tuples = int(f_meta[2])
-                i += 1
-                f_vals = []
-                while len(f_vals) < num_comp * num_tuples and i < n_lines:
-                    f_vals.extend(float(x) for x in lines[i].split())
+            while i < n_lines:
+                line = lines[i].strip()
+                if not line:
                     i += 1
-                field_data[f_name] = f_vals[0] if len(f_vals) == 1 else f_vals
-            continue
+                    continue
+                parts = line.split()
+                tag = parts[0]
 
-        i += 1
+                if tag == "POINTS":
+                    n_pts = int(parts[1])
+                    i += 1
+                    pts_vals = []
+                    while len(pts_vals) < 3 * n_pts and i < n_lines:
+                        pts_vals.extend(float(x) for x in lines[i].split())
+                        i += 1
+                    points = np.array(pts_vals, dtype=np.float64).reshape(n_pts, 3)[:, :2]
+                    continue
 
-    return {
-        "path": path,
-        "points": points,
-        "cells": np.array(cells, dtype=np.int32),
-        "cell_scalars": cell_scalars,
-        "point_scalars": point_scalars,
-        "field_data": field_data,
-    }
+                elif tag == "CELLS":
+                    n_cells = int(parts[1])
+                    i += 1
+                    for _ in range(n_cells):
+                        p = [int(x) for x in lines[i].split()]
+                        if len(p) >= 4 and p[0] == 3:
+                            cells.append(p[1:4])
+                        i += 1
+                    continue
+
+                elif tag == "CELL_DATA":
+                    mode = "cell"
+                    current_count = int(parts[1])
+                    i += 1
+                    continue
+
+                elif tag == "POINT_DATA":
+                    mode = "point"
+                    current_count = int(parts[1])
+                    i += 1
+                    continue
+
+                elif tag == "SCALARS":
+                    name = parts[1]
+                    i += 1
+                    if i < n_lines and lines[i].startswith("LOOKUP_TABLE"):
+                        i += 1
+                    vals = []
+                    while len(vals) < current_count and i < n_lines:
+                        vals.extend(float(x) for x in lines[i].split())
+                        i += 1
+                    arr = np.array(vals[:current_count], dtype=np.float64)
+                    if mode == "cell":
+                        cell_scalars[name] = arr
+                    elif mode == "point":
+                        point_scalars[name] = arr
+                    continue
+
+                elif tag == "FIELD" and len(parts) >= 3:
+                    num_fields = int(parts[2])
+                    i += 1
+                    for _ in range(num_fields):
+                        f_meta = lines[i].split()
+                        f_name = f_meta[0]
+                        num_comp = int(f_meta[1])
+                        num_tuples = int(f_meta[2])
+                        i += 1
+                        f_vals = []
+                        while len(f_vals) < num_comp * num_tuples and i < n_lines:
+                            f_vals.extend(float(x) for x in lines[i].split())
+                            i += 1
+                        field_data[f_name] = f_vals[0] if len(f_vals) == 1 else f_vals
+                    continue
+
+                i += 1
+
+            return {
+                "path": path,
+                "points": points,
+                "cells": np.array(cells, dtype=np.int32),
+                "cell_scalars": cell_scalars,
+                "point_scalars": point_scalars,
+                "field_data": field_data,
+            }
+
+        # BINARY parsing
+        points = None
+        cells = []
+        cell_scalars = {}
+        point_scalars = {}
+        field_data = {}
+        mode = None
+        current_count = 0
+
+        while True:
+            line_bytes = f.readline()
+            if not line_bytes:
+                break
+            line = line_bytes.decode("latin1", errors="ignore").strip()
+            if not line:
+                continue
+            parts = line.split()
+            tag = parts[0]
+
+            if tag == "POINTS":
+                n_pts = int(parts[1])
+                raw = np.fromfile(f, dtype='>f4', count=3 * n_pts)
+                points = raw.reshape(n_pts, 3)[:, :2].astype(np.float64)
+                continue
+
+            elif tag == "CELLS":
+                n_cells = int(parts[1])
+                total_ints = int(parts[2])
+                raw = np.fromfile(f, dtype='>i4', count=total_ints)
+                if total_ints == 4 * n_cells:
+                    cells = raw.reshape(n_cells, 4)[:, 1:4]
+                else:
+                    idx = 0
+                    c_list = []
+                    for _ in range(n_cells):
+                        c_len = raw[idx]
+                        if c_len == 3:
+                            c_list.append(raw[idx+1:idx+4])
+                        idx += c_len + 1
+                    cells = np.array(c_list, dtype=np.int32)
+                continue
+
+            elif tag == "CELL_TYPES":
+                n_cells = int(parts[1])
+                _ = np.fromfile(f, dtype='>i4', count=n_cells)
+                continue
+
+            elif tag == "CELL_DATA":
+                mode = "cell"
+                current_count = int(parts[1])
+                continue
+
+            elif tag == "POINT_DATA":
+                mode = "point"
+                current_count = int(parts[1])
+                continue
+
+            elif tag == "SCALARS":
+                name = parts[1]
+                _ = f.readline()  # LOOKUP_TABLE
+                arr = np.fromfile(f, dtype='>f4', count=current_count).astype(np.float64)
+                if mode == "cell":
+                    cell_scalars[name] = arr
+                elif mode == "point":
+                    point_scalars[name] = arr
+                continue
+
+            elif tag == "TENSORS":
+                name = parts[1]
+                _ = np.fromfile(f, dtype='>f4', count=9 * current_count)
+                continue
+
+            elif tag == "FIELD" and len(parts) >= 3:
+                num_fields = int(parts[2])
+                for _ in range(num_fields):
+                    f_meta = f.readline().decode("latin1", errors="ignore").strip().split()
+                    f_name = f_meta[0]
+                    num_comp = int(f_meta[1])
+                    num_tuples = int(f_meta[2])
+                    f_vals = np.fromfile(f, dtype='>f4', count=num_comp * num_tuples).astype(np.float64)
+                    field_data[f_name] = f_vals[0] if len(f_vals) == 1 else f_vals
+                continue
+
+        return {
+            "path": path,
+            "points": points,
+            "cells": np.array(cells, dtype=np.int32),
+            "cell_scalars": cell_scalars,
+            "point_scalars": point_scalars,
+            "field_data": field_data,
+        }
 
 
 def resolve_field(data, requested_field):

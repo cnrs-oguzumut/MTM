@@ -1,7 +1,31 @@
 #include "../include/output/configuration_saver.h"
 #include "../include/reductions/LagrangeReduction.h"
 #include "../include/geometry/DomainDimensions.h"
+#include <cstring>
+#include <cstdint>
 
+namespace {
+    inline uint32_t vtk_swap32(uint32_t val) {
+#if defined(__GNUC__) || defined(__clang__)
+        return __builtin_bswap32(val);
+#else
+        return ((val >> 24) & 0xff) | ((val << 8) & 0xff0000) | ((val >> 8) & 0xff00) | ((val << 24) & 0xff000000);
+#endif
+    }
+
+    inline float vtk_swap_float(float val) {
+        uint32_t as_int;
+        std::memcpy(&as_int, &val, sizeof(float));
+        as_int = vtk_swap32(as_int);
+        float res;
+        std::memcpy(&res, &as_int, sizeof(float));
+        return res;
+    }
+
+    inline int32_t vtk_swap_int(int32_t val) {
+        return static_cast<int32_t>(vtk_swap32(static_cast<uint32_t>(val)));
+    }
+}
 
 void ConfigurationSaver::ensureDirectoryExists(const std::string& directory) {
     std::filesystem::create_directory(directory);
@@ -760,24 +784,30 @@ void ConfigurationSaver::writeToVTK(
         }
     }
     
-    // Open file for writing
-    std::ofstream file(filename.str());
+    // Open file for binary writing
+    std::ofstream file(filename.str(), std::ios::out | std::ios::binary);
     if (!file) {
         std::cerr << "Error: Could not open file " << filename.str() << " for writing." << std::endl;
         return;
     }
     
     // Write VTK header
-    file << "# vtk DataFile Version 1.0\n";
+    file << "# vtk DataFile Version 3.0\n";
     file << "2D Unstructured Grid of Linear Triangles\n";
-    file << "ASCII\n\n";
+    file << "BINARY\n";
     file << "DATASET UNSTRUCTURED_GRID\n";
     
-    // Write points (extended set)
+    // Write points (extended set) as binary big-endian 32-bit floats
     file << "POINTS " << extended_point_count << " float\n";
+    std::vector<float> pt_buf;
+    pt_buf.reserve(extended_point_count * 3);
     for (const auto& point : extended_points) {
-        file << point.x() << " " << point.y() << " " << 0.0 << "\n";
+        pt_buf.push_back(vtk_swap_float(static_cast<float>(point.x())));
+        pt_buf.push_back(vtk_swap_float(static_cast<float>(point.y())));
+        pt_buf.push_back(0.0f);
     }
+    file.write(reinterpret_cast<const char*>(pt_buf.data()), pt_buf.size() * sizeof(float));
+    file << "\n";
     
     // Count valid elements
     int valid_elements = 0;
@@ -787,37 +817,38 @@ void ConfigurationSaver::writeToVTK(
         }
     }
     
-    // Write cells
+    // Write cells (4 ints per triangle: 3, n0, n1, n2)
     file << "CELLS " << valid_elements << " " << (4 * valid_elements) << "\n";
+    std::vector<int32_t> cell_buf;
+    cell_buf.reserve(valid_elements * 4);
+    int32_t three_swapped = vtk_swap_int(3);
     for (size_t elem_idx : userData->active_elements) {
         if (elem_idx >= elements.size() || !elements[elem_idx].isInitialized()) continue;
-        
         const auto& element = elements[elem_idx];
-        file << "3";
-        
-        // Get the extended indices for each node of this element
+        cell_buf.push_back(three_swapped);
         for (int i = 0; i < 3; i++) {
             int original_idx = element.getNodeIndex(i);
             Eigen::Vector2d translation = element.getTranslation(i);
             PairKey node_key(original_idx, translation);
             int extended_idx = node_map[node_key];
-            
-            file << " " << extended_idx;
+            cell_buf.push_back(vtk_swap_int(static_cast<int32_t>(extended_idx)));
         }
-        file << "\n";
     }
+    file.write(reinterpret_cast<const char*>(cell_buf.data()), cell_buf.size() * sizeof(int32_t));
+    file << "\n";
     
-    // Write cell types
+    // Write cell types (5 = VTK_TRIANGLE)
     file << "CELL_TYPES " << valid_elements << "\n";
-    for (int i = 0; i < valid_elements; i++) {
-        file << "5\n"; // Triangle type
-    }
-    
+    std::vector<int32_t> type_buf(valid_elements, vtk_swap_int(5));
+    file.write(reinterpret_cast<const char*>(type_buf.data()), type_buf.size() * sizeof(int32_t));
+    file << "\n";
 
-    // --- NEW: Write Field Data (Global parameters) ---
+    // Write Field Data (Global load parameter)
     file << "\nFIELD FieldData 1\n";
     file << "LoadParameter 1 1 float\n";
-    file << load_strength << "\n";  // REPLACE with your actual load parameter
+    float lp_swapped = vtk_swap_float(static_cast<float>(load_strength));
+    file.write(reinterpret_cast<const char*>(&lp_swapped), sizeof(float));
+    file << "\n";
 
     // --- Write Cell Data (Per-Element Values) ---
     file << "\nCELL_DATA " << valid_elements << "\n";
@@ -825,24 +856,42 @@ void ConfigurationSaver::writeToVTK(
     // Element Energy
     file << "SCALARS ElementEnergy float 1\n";
     file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_energy_buf;
+    elem_energy_buf.reserve(element_energy_values.size());
     for (double val : element_energy_values) {
-        file << val << "\n";
+        elem_energy_buf.push_back(vtk_swap_float(static_cast<float>(val)));
     }
+    file.write(reinterpret_cast<const char*>(elem_energy_buf.data()), elem_energy_buf.size() * sizeof(float));
+    file << "\n";
     
     // Element Projected Stress
     file << "SCALARS ElementProjectedStress float 1\n";
     file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_stress_buf;
+    elem_stress_buf.reserve(element_projected_stress_values.size());
     for (double val : element_projected_stress_values) {
-        file << val << "\n";
+        elem_stress_buf.push_back(vtk_swap_float(static_cast<float>(val)));
     }
+    file.write(reinterpret_cast<const char*>(elem_stress_buf.data()), elem_stress_buf.size() * sizeof(float));
+    file << "\n";
     
     // Element Cauchy Stress Tensor
     file << "TENSORS CauchyStress float\n";
+    std::vector<float> elem_cauchy_buf;
+    elem_cauchy_buf.reserve(element_cauchy_stress_tensors.size() * 9);
     for (const auto& stress : element_cauchy_stress_tensors) {
-        file << stress(0, 0) << " " << stress(0, 1) << " " << 0.0 << "\n";
-        file << stress(1, 0) << " " << stress(1, 1) << " " << 0.0 << "\n";
-        file << 0.0 << " " << 0.0 << " " << 0.0 << "\n\n";
+        elem_cauchy_buf.push_back(vtk_swap_float(static_cast<float>(stress(0, 0))));
+        elem_cauchy_buf.push_back(vtk_swap_float(static_cast<float>(stress(0, 1))));
+        elem_cauchy_buf.push_back(0.0f);
+        elem_cauchy_buf.push_back(vtk_swap_float(static_cast<float>(stress(1, 0))));
+        elem_cauchy_buf.push_back(vtk_swap_float(static_cast<float>(stress(1, 1))));
+        elem_cauchy_buf.push_back(0.0f);
+        elem_cauchy_buf.push_back(0.0f);
+        elem_cauchy_buf.push_back(0.0f);
+        elem_cauchy_buf.push_back(0.0f);
     }
+    file.write(reinterpret_cast<const char*>(elem_cauchy_buf.data()), elem_cauchy_buf.size() * sizeof(float));
+    file << "\n";
     
     // --- Write Point Data (Per-Node Values) ---
     file << "\nPOINT_DATA " << extended_point_count << "\n";
@@ -850,44 +899,70 @@ void ConfigurationSaver::writeToVTK(
     // Nodal Energy
     file << "SCALARS NodalEnergy float 1\n";
     file << "LOOKUP_TABLE default\n";
+    std::vector<float> nodal_energy_buf;
+    nodal_energy_buf.reserve(nodal_energy.size());
     for (double val : nodal_energy) {
-        file << val << "\n";
+        nodal_energy_buf.push_back(vtk_swap_float(static_cast<float>(val)));
     }
+    file.write(reinterpret_cast<const char*>(nodal_energy_buf.data()), nodal_energy_buf.size() * sizeof(float));
+    file << "\n";
 
     // Nodal Projected Stress
     file << "SCALARS NodalProjectedStress float 1\n";
     file << "LOOKUP_TABLE default\n";
+    std::vector<float> nodal_stress_buf;
+    nodal_stress_buf.reserve(nodal_projected_stress.size());
     for (double val : nodal_projected_stress) {
-        file << val << "\n";
+        nodal_stress_buf.push_back(vtk_swap_float(static_cast<float>(val)));
     }
+    file.write(reinterpret_cast<const char*>(nodal_stress_buf.data()), nodal_stress_buf.size() * sizeof(float));
+    file << "\n";
 
     // Number of Elements per Node (Valence/Coordination) - from mesh
     file << "SCALARS NodeValence float 1\n";
     file << "LOOKUP_TABLE default\n";
+    std::vector<float> valence_buf;
+    valence_buf.reserve(node_count.size());
     for (int val : node_count) {
-        file << (val < 5 ? 6 : val) << "\n";
+        valence_buf.push_back(vtk_swap_float(static_cast<float>(val < 5 ? 6 : val)));
     }
+    file.write(reinterpret_cast<const char*>(valence_buf.data()), valence_buf.size() * sizeof(float));
+    file << "\n";
     
-    // NEW: Reference Coordination - from defect analysis (if provided)
+    // Reference Coordination - from defect analysis (if provided)
     if (has_coordination) {
         file << "SCALARS ReferenceCoordination float 1\n";
         file << "LOOKUP_TABLE default\n";
+        std::vector<float> coord_buf;
+        coord_buf.reserve(extended_coordination.size());
         for (int val : extended_coordination) {
-            file << (val < 5 ? 6 : val) << "\n";
+            coord_buf.push_back(vtk_swap_float(static_cast<float>(val < 5 ? 6 : val)));
         }
+        file.write(reinterpret_cast<const char*>(coord_buf.data()), coord_buf.size() * sizeof(float));
+        file << "\n";
         std::cout << "  Included ReferenceCoordination field from defect analysis" << std::endl;
     }
 
     // Nodal Cauchy Stress Tensor
     file << "TENSORS NodalCauchyStress float\n";
+    std::vector<float> nodal_cauchy_buf;
+    nodal_cauchy_buf.reserve(extended_point_count * 9);
     for (int i = 0; i < extended_point_count; i++) {
-        file << nodal_cauchy_xx[i] << " " << nodal_cauchy_xy[i] << " " << 0.0 << "\n";
-        file << nodal_cauchy_xy[i] << " " << nodal_cauchy_yy[i] << " " << 0.0 << "\n";
-        file << 0.0 << " " << 0.0 << " " << 0.0 << "\n\n";
+        nodal_cauchy_buf.push_back(vtk_swap_float(static_cast<float>(nodal_cauchy_xx[i])));
+        nodal_cauchy_buf.push_back(vtk_swap_float(static_cast<float>(nodal_cauchy_xy[i])));
+        nodal_cauchy_buf.push_back(0.0f);
+        nodal_cauchy_buf.push_back(vtk_swap_float(static_cast<float>(nodal_cauchy_xy[i])));
+        nodal_cauchy_buf.push_back(vtk_swap_float(static_cast<float>(nodal_cauchy_yy[i])));
+        nodal_cauchy_buf.push_back(0.0f);
+        nodal_cauchy_buf.push_back(0.0f);
+        nodal_cauchy_buf.push_back(0.0f);
+        nodal_cauchy_buf.push_back(0.0f);
     }
+    file.write(reinterpret_cast<const char*>(nodal_cauchy_buf.data()), nodal_cauchy_buf.size() * sizeof(float));
+    file << "\n";
 
     file.close();
-    std::cout << "Saved VTK file: " << filename.str() << std::endl;
+    std::cout << "Saved VTK file (binary): " << filename.str() << std::endl;
 }
 
 
@@ -1065,24 +1140,30 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
         }
     }
     
-    // Open file for writing
-    std::ofstream file(filename.str());
+    // Open file for binary writing
+    std::ofstream file(filename.str(), std::ios::out | std::ios::binary);
     if (!file) {
         std::cerr << "Error: Could not open file " << filename.str() << " for writing." << std::endl;
         return;
     }
     
     // Write VTK header
-    file << "# vtk DataFile Version 1.0\n";
+    file << "# vtk DataFile Version 3.0\n";
     file << "2D Defect Analysis - Coordination Numbers Only\n";
-    file << "ASCII\n\n";
+    file << "BINARY\n";
     file << "DATASET UNSTRUCTURED_GRID\n";
     
-    // Write points (extended set)
+    // Write points (extended set) as binary big-endian 32-bit floats
     file << "POINTS " << extended_point_count << " float\n";
+    std::vector<float> pt_buf;
+    pt_buf.reserve(extended_point_count * 3);
     for (const auto& point : extended_points) {
-        file << point.x() << " " << point.y() << " " << 0.0 << "\n";
+        pt_buf.push_back(vtk_swap_float(static_cast<float>(point.x())));
+        pt_buf.push_back(vtk_swap_float(static_cast<float>(point.y())));
+        pt_buf.push_back(0.0f);
     }
+    file.write(reinterpret_cast<const char*>(pt_buf.data()), pt_buf.size() * sizeof(float));
+    file << "\n";
     
     // Count valid elements
     int valid_elements = 0;
@@ -1092,31 +1173,31 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
         }
     }
     
-    // Write cells
+    // Write cells (4 ints per triangle: 3, n0, n1, n2)
     file << "CELLS " << valid_elements << " " << (4 * valid_elements) << "\n";
+    std::vector<int32_t> cell_buf;
+    cell_buf.reserve(valid_elements * 4);
+    int32_t three_swapped = vtk_swap_int(3);
     for (size_t elem_idx : userData->active_elements) {
         if (elem_idx >= elements.size() || !elements[elem_idx].isInitialized()) continue;
-        
         const auto& element = elements[elem_idx];
-        file << "3";
-        
-        // Get the extended indices for each node of this element
+        cell_buf.push_back(three_swapped);
         for (int i = 0; i < 3; i++) {
             int original_idx = element.getNodeIndex(i);
             Eigen::Vector2d translation = element.getTranslation(i);
             PairKey node_key(original_idx, translation);
             int extended_idx = node_map[node_key];
-            
-            file << " " << extended_idx;
+            cell_buf.push_back(vtk_swap_int(static_cast<int32_t>(extended_idx)));
         }
-        file << "\n";
     }
+    file.write(reinterpret_cast<const char*>(cell_buf.data()), cell_buf.size() * sizeof(int32_t));
+    file << "\n";
     
-    // Write cell types
+    // Write cell types (5 = VTK_TRIANGLE)
     file << "CELL_TYPES " << valid_elements << "\n";
-    for (int i = 0; i < valid_elements; i++) {
-        file << "5\n"; // Triangle type
-    }
+    std::vector<int32_t> type_buf(valid_elements, vtk_swap_int(5));
+    file.write(reinterpret_cast<const char*>(type_buf.data()), type_buf.size() * sizeof(int32_t));
+    file << "\n";
     
     // --- Write Point Data (Per-Node Values) - ONLY NodeValence ---
     file << "\nPOINT_DATA " << extended_point_count << "\n";
@@ -1124,11 +1205,15 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
     // Number of Elements per Node (Valence/Coordination)
     file << "SCALARS NodeValence float 1\n";
     file << "LOOKUP_TABLE default\n";
+    std::vector<float> valence_buf;
+    valence_buf.reserve(node_count.size());
     for (int val : node_count) {
-        file << (val < 5 ? 6 : val) << "\n";  // Set < 5 to 6
+        valence_buf.push_back(vtk_swap_float(static_cast<float>(val < 5 ? 6 : val)));
     }
+    file.write(reinterpret_cast<const char*>(valence_buf.data()), valence_buf.size() * sizeof(float));
+    file << "\n";
     file.close();
-    std::cout << "Saved defect analysis VTK file: " << filename.str() << std::endl;
+    std::cout << "Saved defect analysis VTK file (binary): " << filename.str() << std::endl;
     
     // Print statistics
     std::map<int, int> valence_histogram;
