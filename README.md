@@ -1,5 +1,7 @@
 # Lattice Triangulation Project
 
+> 📖 **Comprehensive User Manual & Simulation Guide**: See [USER_MANUAL.md](USER_MANUAL.md) for full CLI documentation, METIS cluster setup, preconditioned L-BFGS, single-file checkpoint restart, and SLURM workflow.
+
 This project offers comprehensive tools for 2D lattice generation and manipulation. It enables the creation of lattices with or without periodic boundary conditions and produces optimized triangular meshes through Delaunay triangulation. These high-quality meshes serve as the foundation for minimizing strain-energy functionals that possess GL(2,Z) invariance.
 
 ## Features
