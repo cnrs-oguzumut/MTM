@@ -364,119 +364,11 @@ void ConfigurationSaver::saveTriangleData(
     const Eigen::Matrix2d& F_ext = userData->F_external;
     const std::vector<size_t>& active_elements = userData->active_elements;
     
-    // Create directory if it doesn't exist
+    // NOTE: Generating triangle_data/triangles_*.dat is disabled to eliminate hundreds of GBs
+    // of redundant data. Deformation gradients and metrics are recomputed in memory from points and elements.
     std::filesystem::create_directory("triangle_data");
     
-    // Create filename with iteration number
-    std::stringstream filename;
-    filename << "triangle_data/triangles_" << std::setw(5) << std::setfill('0') << 10000+iteration << ".dat";
-    
-    // Open file for writing
-    std::ofstream file(filename.str());
-    if (!file) {
-        std::cerr << "Error: Could not open file " << filename.str() << " for writing." << std::endl;
-        return;
-    }
-    
-    // Write header
-    file << "# Triangle data for iteration " << iteration << std::endl;
-    file << "# element_number F11 F12 F21 F22 node1_idx node2_idx node3_idx" << std::endl;
-    
-    // Set maximum precision
-    file << std::scientific << std::setprecision(std::numeric_limits<double>::max_digits10);
-    
-    // Loop through all active elements
-    for (size_t elem_idx : active_elements) {
-        if (elem_idx >= elements.size()) {
-            std::cerr << "Warning: Element index " << elem_idx << " out of range." << std::endl;
-            continue;
-        }
-        
-        auto& element = elements[elem_idx];
-        
-        // Skip if the element isn't initialized
-        if (!element.isInitialized()) {
-            continue;
-        }
-        
-        // Set external deformation and recalculate deformation gradient
-        element.setExternalDeformation(F_ext);
-        element.calculate_deformation_gradient(points);
-
-        // Get the deformation gradient
-        const Eigen::Matrix2d& F = element.getDeformationGradient();
-        
-        // Write element data: element_number, F components, node indices
-        Eigen::Vector2d translation0 = element.getTranslation(0);
-        Eigen::Vector2d translation1 = element.getTranslation(1);
-        Eigen::Vector2d translation2 = element.getTranslation(2);
-
-
-        const Eigen::Matrix<double, 3, 2>& dndx = element.getDNdX();
-        double detF = element.getDeformationGradient().determinant();
-        if(detF <0 )  {
-            std::cerr << "Warning: Negative determinant detected for element " << elem_idx << ", reflecting the triangle." << std::endl;
-            std::cerr << "Warning: Negative determinant detected for element " << element.getDeformationGradient().determinant()  << ", reflecting the triangle." << std::endl;
-            
-        }
-
-        if(F(0,0)*F(1,1) - F(0,1)*F(1,0) <0 )  {
-            std::cerr << "#Warning: Negative determinant detected for element " << elem_idx << ", reflecting the triangle." << std::endl;
-            std::cerr << "#Warning: Negative determinant detected for element " << element.getDeformationGradient().determinant()  << ", reflecting the triangle." << std::endl;
-            
-        }
-    
-        int i1 = element.getNodeIndex(0);
-        int i2 = element.getNodeIndex(1);
-        int i3 = element.getNodeIndex(2);
-        if(full_mapping[i1].second == -1 || full_mapping[i2].second == -1|| full_mapping[i3].second  == -1) {
-            // std::cerr << "Warning: boundary node index detected for element " << elem_idx << ", skipping." << std::endl;
-            continue;
-        }
-
-        file << elem_idx << " "                                    // Element number
-             << F(0,0) << " "                                      // F11
-             << F(0,1) << " "                                      // F12
-             << F(1,0) << " "                                      // F21
-             << F(1,1) << " "                                      // F22
-             << element.getNodeIndex(0) << " "                     // Global index of node 1
-             << element.getNodeIndex(1) << " "                     // Global index of node 2
-             << element.getNodeIndex(2) << " "                     // Global index of node 3
-             << points[element.getNodeIndex(0)].coord.x() << " "   // x coordinate of node 1
-             << points[element.getNodeIndex(0)].coord.y() << " "   // y coordinate of node 1
-             << points[element.getNodeIndex(1)].coord.x() << " "   // x coordinate of node 2
-             << points[element.getNodeIndex(1)].coord.y() << " "   // y coordinate of node 2
-             << points[element.getNodeIndex(2)].coord.x() << " "   // x coordinate of node 3
-             << points[element.getNodeIndex(2)].coord.y() << " "   // y coordinate of node 3
-             << translation0.x() << " "                            // Effective translation x
-             << translation0.y() << " "
-             << translation1.x() << " "                            // Effective translation y
-             << translation1.y() << " "                            // Effective translation z
-             << translation2.x() << " "                            // Effective translation x
-             << translation2.y() << " "                            // Effective translation y
-             << domain_dims.size_x << " "                          // Domain size x
-             << domain_dims.size_y << " "                          // Domain size y
-             << offsets[0] << " "                                  // Offset x
-             << offsets[1] << " "                                  // Offset y
-             << F_ext(0,0) << " "                                  // F_ext(0,0)
-             << F_ext(0,1) << " "                                  // F_ext(0,1)
-             << F_ext(1,0) << " "                                  // F_ext(1,0)
-             << F_ext(1,1) << " "                                  // F_ext(1,1)
-             << dndx(0,0) << " "                                   // dN1/dx (shape function derivative)
-             << dndx(0,1) << " "                                   // dN1/dy
-             << dndx(1,0) << " "                                   // dN2/dx
-             << dndx(1,1) << " "                                   // dN2/dy
-             << dndx(2,0) << " "                                   // dN3/dx
-             << dndx(2,1)                                          // dN3/dy
-             << std::endl;                                         // End of line for this triangle
-    }
-   
-    file.close();
-    
-    std::cout << "Saved triangle data to " << filename.str() << std::endl;
-    std::cout << "Processed " << active_elements.size() << " triangles" << std::endl;
-    
-    // NOW SAVE POINT COORDINATES
+    // SAVE POINT COORDINATES
     std::stringstream points_filename;
     points_filename << "triangle_data/points_" << std::setw(5) << std::setfill('0') << 10000+iteration << ".dat";
     
@@ -1595,3 +1487,158 @@ ConfigurationSaver::loadElements(int iteration,
     
     return {elements, active_elements};
 }
+
+void ConfigurationSaver::saveCheckpoint(const std::string& filename, const CheckpointData& data) {
+    std::filesystem::path p(filename);
+    if (p.has_parent_path()) {
+        std::filesystem::create_directories(p.parent_path());
+    }
+
+    std::ofstream file(filename);
+    if (!file) {
+        std::cerr << "Error: Could not open checkpoint file " << filename << " for writing." << std::endl;
+        return;
+    }
+
+    file << "# SIMULATION_CHECKPOINT_V1\n";
+    file << "nx " << data.nx << "\n";
+    file << "ny " << data.ny << "\n";
+    file << "iteration " << data.iteration << "\n";
+    file << std::hexfloat;
+    file << "current_alpha " << data.current_alpha << "\n";
+    file << "step_size " << data.step_size << "\n";
+    file << "alpha_end " << data.alpha_end << "\n";
+    file << "mode " << data.mode << "\n";
+    file << "seed " << data.seed << "\n";
+    file << "enable_remeshing " << (data.enable_remeshing ? 1 : 0) << "\n";
+    file << "F_ext " << data.F_ext(0,0) << " " << data.F_ext(0,1) << " " 
+                     << data.F_ext(1,0) << " " << data.F_ext(1,1) << "\n";
+
+    file << "NODES " << data.points.size() << "\n";
+    for (size_t i = 0; i < data.points.size(); ++i) {
+        file << i << " " << data.points[i].coord.x() << " " << data.points[i].coord.y() << "\n";
+    }
+
+    file << "ELEMENTS " << data.active_elements.size() << "\n";
+    for (size_t elem_idx : data.active_elements) {
+        if (elem_idx >= data.elements.size()) continue;
+        const auto& elem = data.elements[elem_idx];
+        Eigen::Vector2d t0 = elem.getTranslation(0);
+        Eigen::Vector2d t1 = elem.getTranslation(1);
+        Eigen::Vector2d t2 = elem.getTranslation(2);
+        file << elem_idx << " "
+             << elem.getNodeIndex(0) << " "
+             << elem.getNodeIndex(1) << " "
+             << elem.getNodeIndex(2) << " "
+             << t0.x() << " " << t0.y() << " "
+             << t1.x() << " " << t1.y() << " "
+             << t2.x() << " " << t2.y() << " "
+             << elem.getReferenceArea() << "\n";
+    }
+
+    file.close();
+    std::cout << "[CHECKPOINT] Saved checkpoint to " << filename
+              << " (" << data.points.size() << " nodes, "
+              << data.active_elements.size() << " elements)" << std::endl;
+}
+
+bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointData& data,
+                                       const Eigen::Matrix<double, 3, 2>& dndx) {
+    std::ifstream file(filename);
+    if (!file) {
+        std::cerr << "Error: Could not open checkpoint file " << filename << " for reading." << std::endl;
+        return false;
+    }
+
+    std::string line;
+    bool reading_nodes = false;
+    bool reading_elements = false;
+    size_t expected_nodes = 0;
+    size_t expected_elements = 0;
+
+    data.points.clear();
+    data.elements.clear();
+    data.active_elements.clear();
+
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+
+        std::istringstream iss(line);
+        if (!reading_nodes && !reading_elements) {
+            std::string key;
+            if (!(iss >> key)) continue;
+
+            if (key == "nx") iss >> data.nx;
+            else if (key == "ny") iss >> data.ny;
+            else if (key == "iteration") iss >> data.iteration;
+            else if (key == "current_alpha") iss >> data.current_alpha;
+            else if (key == "step_size") iss >> data.step_size;
+            else if (key == "alpha_end") iss >> data.alpha_end;
+            else if (key == "mode") iss >> data.mode;
+            else if (key == "seed") iss >> data.seed;
+            else if (key == "enable_remeshing") {
+                int r = 1;
+                iss >> r;
+                data.enable_remeshing = (r != 0);
+            }
+            else if (key == "F_ext") {
+                double f00, f01, f10, f11;
+                iss >> f00 >> f01 >> f10 >> f11;
+                data.F_ext << f00, f01, f10, f11;
+            }
+            else if (key == "NODES") {
+                iss >> expected_nodes;
+                data.points.reserve(expected_nodes);
+                reading_nodes = true;
+            }
+        } else if (reading_nodes) {
+            if (line.rfind("ELEMENTS", 0) == 0) {
+                std::istringstream eiss(line);
+                std::string dummy;
+                eiss >> dummy >> expected_elements;
+                reading_nodes = false;
+                reading_elements = true;
+                data.active_elements.reserve(expected_elements);
+                continue;
+            }
+            size_t idx;
+            double x, y;
+            if (iss >> idx >> x >> y) {
+                data.points.emplace_back(x, y);
+            }
+        } else if (reading_elements) {
+            size_t elem_idx;
+            int n0, n1, n2;
+            double tx0, ty0, tx1, ty1, tx2, ty2, ref_area;
+            if (iss >> elem_idx >> n0 >> n1 >> n2 >> tx0 >> ty0 >> tx1 >> ty1 >> tx2 >> ty2 >> ref_area) {
+                ElementTriangle2D elem;
+                elem.setNodeIndex(0, n0);
+                elem.setNodeIndex(1, n1);
+                elem.setNodeIndex(2, n2);
+                elem.setTranslation(0, Eigen::Vector2d(tx0, ty0));
+                elem.setTranslation(1, Eigen::Vector2d(tx1, ty1));
+                elem.setTranslation(2, Eigen::Vector2d(tx2, ty2));
+                elem.set_shape_derivatives(dndx);
+                elem.setReferenceArea(ref_area);
+
+                while (data.elements.size() <= elem_idx) {
+                    data.elements.push_back(ElementTriangle2D());
+                }
+                data.elements[elem_idx] = elem;
+                data.active_elements.push_back(elem_idx);
+            }
+        }
+    }
+
+    file.close();
+
+    std::cout << "[CHECKPOINT] Loaded " << filename << ":\n"
+              << "  - nx=" << data.nx << ", ny=" << data.ny << ", mode=" << data.mode
+              << ", seed=" << data.seed << "\n"
+              << "  - iteration=" << data.iteration << ", current_alpha=" << data.current_alpha
+              << ", step_size=" << data.step_size << ", alpha_end=" << data.alpha_end << "\n"
+              << "  - " << data.points.size() << " nodes, "
+              << data.active_elements.size() << " active elements" << std::endl;
+    return true;
+}
+

@@ -49,6 +49,7 @@ int main(int argc, char **argv) {
   //   --eig-retro=4           at each instability (stress jump or avalanche), also the last
   //                           4 relaxed states before it (kept in memory)
   StabilityMonitorOptions stability_options;
+  std::string restart_checkpoint;
 
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
@@ -57,6 +58,10 @@ int main(int argc, char **argv) {
       enable_remeshing = false;
     } else if (arg == "--remesh" || arg == "-r") {
       enable_remeshing = true;
+    } else if (arg.rfind("--restart=", 0) == 0) {
+      restart_checkpoint = arg.substr(10);
+    } else if (arg == "--restart" && i + 1 < argc) {
+      restart_checkpoint = argv[++i];
     } else if (arg.rfind("--precond=", 0) == 0) {
       relax_options.type = parse_lbfgs_preconditioner(arg.substr(10));
     } else if (arg.rfind("--precond-tol=", 0) == 0) {
@@ -85,6 +90,11 @@ int main(int argc, char **argv) {
   }
   configure_relaxation_solver(relax_options, precond_from_step);
   configure_stability_monitor(stability_options);
+
+  if (!restart_checkpoint.empty()) {
+    restart_zanzotto_simulation(restart_checkpoint);
+    return 0;
+  }
 
   if (argc >= 3) {
     nx = std::atoi(argv[1]);

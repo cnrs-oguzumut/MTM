@@ -39,6 +39,26 @@ public:
         Eigen::Matrix2d F_ext;
     };
 
+    struct CheckpointData {
+        int nx = 0;
+        int ny = 0;
+        int iteration = 0;
+        double current_alpha = 0.0;
+        double step_size = 6e-5;
+        double alpha_end = 1.0;
+        std::string mode = "positive";
+        unsigned int seed = 50;
+        bool enable_remeshing = true;
+        Eigen::Matrix2d F_ext = Eigen::Matrix2d::Identity();
+        std::vector<Point2D> points;
+        std::vector<ElementTriangle2D> elements;
+        std::vector<size_t> active_elements;
+    };
+
+    static void saveCheckpoint(const std::string& filename, const CheckpointData& data);
+    static bool loadCheckpoint(const std::string& filename, CheckpointData& data,
+                               const Eigen::Matrix<double, 3, 2>& dndx);
+
     /**
      * Calculate energy and stress from lattice configuration without saving to file
      * 

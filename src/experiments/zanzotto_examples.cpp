@@ -452,7 +452,8 @@ void example_1_conti_zanzotto_loading(
     double step_size,
     double triangulation_perturbation,
     unsigned int seed,
-    bool enable_remeshing) {
+    bool enable_remeshing,
+    const ConfigurationSaver::CheckpointData* restart_chk) {
 
   //     auto compute_even_ny = [](int nx) {
   //     int ny = std::round(2.0 * nx / std::sqrt(3));
@@ -642,21 +643,31 @@ void example_1_conti_zanzotto_loading(
   alglib::real_1d_array original_x_remesh =
       mesher.saveOriginalPositions(free_dofs);
 
-  auto [elements, active_elements] = mesher.createMesh(
-      square_points, free_dofs, Eigen::Matrix2d::Identity(), &dndx);
-  double element_area = elements[0].getReferenceArea();
+  std::vector<ElementTriangle2D> elements;
+  std::vector<size_t> active_elements;
 
-  for (auto &element : elements) {
-    // element.set_reference_mesh(square_points);
-    element.set_dof_mapping(
-        full_mapping); // or interior_mapping depending on needs
-    // double jac = element.calculate_shape_derivatives(x);  // current
-    // positions
-    const Eigen::Matrix<double, 3, 2> &dndx = element.getDNdX();
-    // std::cout<< "dndx: " << dndx << std::endl;
+  if (restart_chk != nullptr) {
+    square_points = restart_chk->points;
+    elements = restart_chk->elements;
+    active_elements = restart_chk->active_elements;
+    for (auto &element : elements) {
+      element.set_reference_mesh(square_points_ref);
+      element.set_dof_mapping(full_mapping);
+      element.setExternalDeformation(restart_chk->F_ext);
+      element.calculate_deformation_gradient(square_points);
+    }
+    std::cout << "[RESTART] Loaded " << square_points.size() << " nodes, "
+              << elements.size() << " elements (" << active_elements.size() << " active)" << std::endl;
+  } else {
+    auto [mesh_elems, mesh_act_elems] = mesher.createMesh(
+        square_points, free_dofs, Eigen::Matrix2d::Identity(), &dndx);
+    elements = std::move(mesh_elems);
+    active_elements = std::move(mesh_act_elems);
+    for (auto &element : elements) {
+      element.set_dof_mapping(full_mapping);
+    }
   }
-
-  // square_points = dipole_points;
+  double element_area = elements.empty() ? 0.5 : elements[0].getReferenceArea();
 
   std::cout << "Created " << elements.size() << " element triangles"
             << std::endl;
@@ -665,19 +676,14 @@ void example_1_conti_zanzotto_loading(
   Strain_Energy_LatticeCalculator calculator(1.0);
 
   Eigen::Matrix2d F_I = Eigen::Matrix2d::Identity();
-  // F_I *= symmetry_constantx;
   Eigen::Matrix2d C_I = F_I.transpose() * F_I; // C = F^T * F
 
   double zero = calculator.calculate_energy(C_I, potential_func, 0);
 
-  // Eigen::Matrix2d C_I = Eigen::Matrix2d::Identity();
-  // double zero = calculator.calculate_energy(C_I, potential_func, 0);
   std::cout << "debugging simple shear test" << std::endl;
   std::cout << "zero energy value: " << zero << std::endl;
-  // debug_deformation_tests();
 
   // ==================== SETUP LOADING SCHEDULE ====================
-  // Calculate number of loading steps supporting both positive and negative loading paths
   int num_alpha_points =
       static_cast<int>(std::abs(alpha_max - alpha_min) / std::abs(step_size)) + 1;
   std::cout << "Loading schedule: " << num_alpha_points << " steps from "
@@ -691,9 +697,23 @@ void example_1_conti_zanzotto_loading(
     alpha_values.push_back(alpha_min + i * step_size);
   }
 
-  int file_counter = 0;
+  int file_counter = (restart_chk != nullptr ? restart_chk->iteration + 1 : 0);
   double post_energy_previous = 0.0;
   double post_stress_previous = 0.0;
+
+  if (restart_chk != nullptr) {
+    bool plasticity = false;
+    UserData checkUserData(square_points, elements, calculator, potential_func,
+                           potential_func_der, zero, optimal_lattice_parameter,
+                           restart_chk->F_ext, interior_mapping, full_mapping,
+                           active_elements, plasticity);
+    Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
+    ConfigurationSaver::calculateEnergyAndStress(&checkUserData, post_energy_previous,
+                                                 stress_tensor, true);
+    post_stress_previous = stress_tensor(0, 1);
+    std::cout << "[RESTART] Resumed state verified: Energy = " << post_energy_previous
+              << ", Stress = " << post_stress_previous << std::endl;
+  }
 
   // Lowest stiffness eigenvalues during the run (off unless --eig-every / --eig-at-avalanche)
   StabilityMonitor stability_monitor;
@@ -713,8 +733,8 @@ void example_1_conti_zanzotto_loading(
     Eigen::Matrix2d dF_ext;
     dF_ext << 1.0, step_size, 0.0, 1.0;
 
-    // Apply initial noise (only for first iteration)
-    if (i == 0) {
+    // Apply initial noise (only for first iteration of a fresh run)
+    if (i == 0 && restart_chk == nullptr) {
       // Use deterministic seed so both positive and negative runs share the exact same initial noise
       std::mt19937 gen(seed);
       double noise_level = 0.04;
@@ -998,6 +1018,21 @@ void example_1_conti_zanzotto_loading(
       ConfigurationSaver::saveElements(pre_elements, pre_active_elements,
                                        pre_file_id);
 
+      // Save pre-avalanche single-file checkpoint
+      {
+        ConfigurationSaver::CheckpointData chk_pre;
+        chk_pre.nx = nx; chk_pre.ny = ny; chk_pre.iteration = pre_file_id;
+        chk_pre.current_alpha = pre_saving_value; chk_pre.step_size = step_size; chk_pre.alpha_end = alpha_max;
+        chk_pre.mode = (step_size > 0 ? "positive" : "negative");
+        chk_pre.seed = seed; chk_pre.enable_remeshing = enable_remeshing;
+        chk_pre.F_ext = pre_F_ext; chk_pre.points = pre_points;
+        chk_pre.elements = pre_elements; chk_pre.active_elements = pre_active_elements;
+
+        std::stringstream chk_ss;
+        chk_ss << "checkpoints/checkpoint_" << std::setw(5) << std::setfill('0') << pre_file_id << ".chk";
+        ConfigurationSaver::saveCheckpoint(chk_ss.str(), chk_pre);
+      }
+
       auto [num_dislocations_pre, coordination_pre] =
           DefectAnalysis::analyzeDefectsInReferenceConfig(
               &preOptUserData, pre_file_id, dndx, offsets, original_domain_map,
@@ -1021,6 +1056,22 @@ void example_1_conti_zanzotto_loading(
                                            domain_dims, offsets, full_mapping);
       ConfigurationSaver::saveElements(elements, active_elements, post_file_id);
 
+      // Save post-avalanche single-file checkpoint & latest.chk
+      {
+        ConfigurationSaver::CheckpointData chk_post;
+        chk_post.nx = nx; chk_post.ny = ny; chk_post.iteration = post_file_id;
+        chk_post.current_alpha = alpha; chk_post.step_size = step_size; chk_post.alpha_end = alpha_max;
+        chk_post.mode = (step_size > 0 ? "positive" : "negative");
+        chk_post.seed = seed; chk_post.enable_remeshing = enable_remeshing;
+        chk_post.F_ext = F_ext; chk_post.points = square_points;
+        chk_post.elements = elements; chk_post.active_elements = active_elements;
+
+        std::stringstream chk_ss;
+        chk_ss << "checkpoints/checkpoint_" << std::setw(5) << std::setfill('0') << post_file_id << ".chk";
+        ConfigurationSaver::saveCheckpoint(chk_ss.str(), chk_post);
+        ConfigurationSaver::saveCheckpoint("checkpoints/latest.chk", chk_post);
+      }
+
       auto [num_dislocations_post, coordination_post] =
           DefectAnalysis::analyzeDefectsInReferenceConfig(
               &postOptUserData, post_file_id, dndx, offsets,
@@ -1036,7 +1087,22 @@ void example_1_conti_zanzotto_loading(
                 << " at load=" << pre_saving_value << std::endl;
 
     } else {
-      // Elastic step: no files written to disk, zero disk churn, nothing to delete!
+      // Elastic step: no VTK or defect churn, but periodically save single-file checkpoint
+      if ((i + 1) % 50 == 0) {
+        ConfigurationSaver::CheckpointData chk_periodic;
+        chk_periodic.nx = nx; chk_periodic.ny = ny;
+        chk_periodic.iteration = (restart_chk != nullptr ? restart_chk->iteration + static_cast<int>(i) + 1 : static_cast<int>(i) + 1);
+        chk_periodic.current_alpha = alpha; chk_periodic.step_size = step_size; chk_periodic.alpha_end = alpha_max;
+        chk_periodic.mode = (step_size > 0 ? "positive" : "negative");
+        chk_periodic.seed = seed; chk_periodic.enable_remeshing = enable_remeshing;
+        chk_periodic.F_ext = F_ext; chk_periodic.points = square_points;
+        chk_periodic.elements = elements; chk_periodic.active_elements = active_elements;
+
+        std::stringstream chk_ss;
+        chk_ss << "checkpoints/checkpoint_step_" << std::setw(5) << std::setfill('0') << chk_periodic.iteration << ".chk";
+        ConfigurationSaver::saveCheckpoint(chk_ss.str(), chk_periodic);
+        ConfigurationSaver::saveCheckpoint("checkpoints/latest.chk", chk_periodic);
+      }
     }
 
     // ==================== STABILITY MONITOR (optional) ====================
@@ -1065,17 +1131,53 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                double alpha_max,
                                                double step_size,
                                                unsigned int seed,
-                                               bool enable_remeshing) {
-  // Negative continuous shear loading:
-  // - Starts at load alpha_min and increments with step_size down to alpha_max
-  // - Flips initial mesh orientation by applying a -1e-7 shear perturbation to the Delaunay mesher,
-  //   matching the orientation change technique established in the shifting experiments.
-  // - Uses deterministic seed for identical initial noise generation.
+                                               bool enable_remeshing,
+                                               const ConfigurationSaver::CheckpointData* restart_chk) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
                                    /*step_size=*/step_size,
                                    /*triangulation_perturbation=*/-1e-7,
                                    /*seed=*/seed,
-                                   /*enable_remeshing=*/enable_remeshing);
+                                   /*enable_remeshing=*/enable_remeshing,
+                                   restart_chk);
+}
+
+void restart_zanzotto_simulation(const std::string& checkpoint_path) {
+  std::string path = checkpoint_path;
+  if (path == "latest" || path == "checkpoints/latest") {
+    path = "checkpoints/latest.chk";
+  }
+
+  double h = 1.0;
+  Eigen::Vector2d p1(0.0, 0.0);
+  Eigen::Vector2d p2(h, 0.0);
+  Eigen::Vector2d p3(0.0, h);
+  Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+
+  ConfigurationSaver::CheckpointData chk;
+  if (!ConfigurationSaver::loadCheckpoint(path, chk, dndx)) {
+    std::cerr << "Fatal Error: Could not load checkpoint from " << path << std::endl;
+    exit(EXIT_FAILURE);
+  }
+
+  double next_alpha = chk.current_alpha + chk.step_size;
+  std::cout << "\n" << std::string(60, '=') << std::endl;
+  std::cout << "RESTARTING SIMULATION FROM: " << path << std::endl;
+  std::cout << "  - System: " << chk.nx << "x" << chk.ny << " (" << chk.mode << " loading)" << std::endl;
+  std::cout << "  - Resuming from iteration " << chk.iteration << " at alpha = " << next_alpha << std::endl;
+  std::cout << "  - Target alpha_end = " << chk.alpha_end << " (step size: " << chk.step_size << ")" << std::endl;
+  std::cout << std::string(60, '=') << "\n" << std::endl;
+
+  if (chk.mode == "positive") {
+    example_1_conti_zanzotto_loading(
+        0, chk.nx, chk.ny,
+        next_alpha, chk.alpha_end, chk.step_size,
+        0.0, chk.seed, chk.enable_remeshing, &chk);
+  } else {
+    example_1_conti_zanzotto_negative_loading(
+        0, chk.nx, chk.ny,
+        next_alpha, chk.alpha_end, chk.step_size,
+        chk.seed, chk.enable_remeshing, &chk);
+  }
 }
