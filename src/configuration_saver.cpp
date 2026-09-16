@@ -63,19 +63,20 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     double normalisation = calculator.getUnitCellArea();
    
     
-    // Create directory if it doesn't exist
+    // NOTE: Writing trajectory/configuration_full_2d_XXXXX.xyz is disabled to eliminate
+    // redundant disk storage and I/O flushes (~72 MB per avalanche at 600x600).
+    // All coordinate, stress, energy, and deformation gradient fields are preserved in vtk_output/ (binary VTK)
+    // and checkpoints/ (IEEE-754 bitwise restart).
+    /*
     std::filesystem::create_directory("trajectory");
-    
-    // Create filename with iteration number
     std::stringstream filename;
     filename << "trajectory/configuration_full_2d_" << std::setw(5) << std::setfill('0') << iteration << ".xyz";
-    
-    // Open file for writing
     std::ofstream file(filename.str());
     if (!file) {
         std::cerr << "Error: Could not open file " << filename.str() << " for writing." << std::endl;
         return;
     }
+    */
     
     // Calculate nodal stress and energy values
     std::vector<double> nodal_stress(points.size(), 0.0);
@@ -226,7 +227,8 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         }
     }
     
-    // Write XYZ format (number of atoms followed by comment line)
+    // XYZ file writing disabled
+    /*
     file << points.size() << std::endl;
     file << "Iteration " << iteration << " Total_Energy " << recalculated_total_energy 
          << " Total_Stress " << recalculated_total_stress << std::endl;
@@ -255,6 +257,8 @@ file << "A " << std::fixed << std::setprecision(16)
      << F_ext(1, 1) << std::endl; // F_ext_yy component (13th column)
          }    
     file.close();
+    std::cout << "Saved 2D configuration with stress and energy data to " << filename.str() << std::endl;
+    */
     
     // Find min and max values for reporting
     double min_stress = *std::min_element(nodal_stress.begin(), nodal_stress.end());
@@ -263,110 +267,69 @@ file << "A " << std::fixed << std::setprecision(16)
     double min_energy = *std::min_element(nodal_energy.begin(), nodal_energy.end());
     double max_energy = *std::max_element(nodal_energy.begin(), nodal_energy.end());
     
-    std::cout << "Saved 2D configuration with stress and energy data to " << filename.str() << std::endl;
-    std::cout << "Stress range: [" << min_stress << ", " << max_stress << "]" << std::endl;
-    std::cout << "Energy range: [" << min_energy << ", " << max_energy << "]" << std::endl;
+    std::cout << "Nodal stress range: [" << min_stress << ", " << max_stress << "]" << std::endl;
+    std::cout << "Nodal energy range: [" << min_energy << ", " << max_energy << "]" << std::endl;
 
-// After saving the XYZ file, add this code to print row profiles
-
-// Create directory for profiles if it doesn't exist
-//std::filesystem::create_directory("profiles");
-createFolder("./profiles");
-
-// Group points into rows based on y-coordinates (within a tolerance)
-const double row_tolerance = ideal_lattice_parameter * 0.6; // Adjust tolerance as needed
-std::cout<<"Row tolerance: " << row_tolerance << std::endl;
-std::map<double, std::vector<size_t>> rows;
-
-// Group points by their y-coordinate
-for (size_t i = 0; i < points.size(); i++) {
-    bool added = false;
-    const auto& point = points[i];
-    
-    // Skip boundary points if desired
-    if (full_mapping[i].second == -1) continue;
-    
-    // Try to add to existing row
-    for (auto& row : rows) {
-        if (std::abs(point.coord.y() - row.first) < row_tolerance) {
-            row.second.push_back(i);
-            added = true;
-            break;
+    // NOTE: Writing profiles/row_*_iter_*.dat is disabled to eliminate redundant file clutter.
+    // Line cuts across any defect plane or crystal direction can be computed directly from vtk_output/
+    // using plot_dislocation_profiles.py.
+    /*
+    createFolder("./profiles");
+    const double row_tolerance = ideal_lattice_parameter * 0.6;
+    std::map<double, std::vector<size_t>> rows;
+    for (size_t i = 0; i < points.size(); i++) {
+        bool added = false;
+        const auto& point = points[i];
+        if (full_mapping[i].second == -1) continue;
+        for (auto& row : rows) {
+            if (std::abs(point.coord.y() - row.first) < row_tolerance) {
+                row.second.push_back(i);
+                added = true;
+                break;
+            }
+        }
+        if (!added) {
+            rows[point.coord.y()] = {i};
         }
     }
-    
-    // If not added to existing row, create new row
-    if (!added) {
-        rows[point.coord.y()] = {i};
+    std::vector<std::pair<double, std::vector<size_t>>> sorted_rows;
+    for (const auto& row : rows) {
+        sorted_rows.push_back(row);
     }
-}
-
-// Convert map to vector for easier sorting
-std::vector<std::pair<double, std::vector<size_t>>> sorted_rows;
-for (const auto& row : rows) {
-    sorted_rows.push_back(row);
-}
-
-// Sort rows by y-coordinate
-std::sort(sorted_rows.begin(), sorted_rows.end(), 
-    [](const auto& a, const auto& b) { return a.first < b.first; });
-
-// Find middle row
-size_t middle_row_idx = sorted_rows.size() / 2;
-std::cout<<"middle_row_idx: " << middle_row_idx << std::endl;
-
-int rows_to_show =3; // Number of rows to show above and below middle
-
-// Output each row to a separate file
-for (int r = -rows_to_show; r <= rows_to_show; r++) {
-    int row_idx = middle_row_idx + r;
-    if (row_idx >= 0 && row_idx < sorted_rows.size()) {
-        const auto& row = sorted_rows[row_idx];
-        
-        // Create filename for this row
-        std::stringstream row_filename;
-        row_filename << "profiles/row_" 
-                     << std::setw(2) << std::setfill('0') << (r + rows_to_show) 
-                     << "_iter_" << std::setw(5) << std::setfill('0') << iteration 
-                     << ".dat";
-        
-        std::ofstream row_file(row_filename.str());
-        if (!row_file) {
-            std::cerr << "Error: Could not open file " << row_filename.str() << " for writing." << std::endl;
-            continue;
+    std::sort(sorted_rows.begin(), sorted_rows.end(), 
+        [](const auto& a, const auto& b) { return a.first < b.first; });
+    size_t middle_row_idx = sorted_rows.size() / 2;
+    int rows_to_show = 3;
+    for (int r = -rows_to_show; r <= rows_to_show; r++) {
+        int row_idx = middle_row_idx + r;
+        if (row_idx >= 0 && row_idx < sorted_rows.size()) {
+            const auto& row = sorted_rows[row_idx];
+            std::stringstream row_filename;
+            row_filename << "profiles/row_" 
+                         << std::setw(2) << std::setfill('0') << (r + rows_to_show) 
+                         << "_iter_" << std::setw(5) << std::setfill('0') << iteration 
+                         << ".dat";
+            std::ofstream row_file(row_filename.str());
+            if (!row_file) continue;
+            row_file << "# Row profile for y = " << row.first << "\n";
+            row_file << "# point_idx x_coord stress energy cauchy_xx cauchy_xy cauchy_yy\n";
+            std::vector<size_t> sorted_points = row.second;
+            std::sort(sorted_points.begin(), sorted_points.end(), 
+                [&points](size_t a, size_t b) { return points[a].coord.x() < points[b].coord.x(); });
+            for (size_t point_idx : sorted_points) {
+                row_file << std::fixed << std::setprecision(8)
+                    << point_idx << " "
+                    << points[point_idx].coord.x() << " "
+                    << nodal_stress[point_idx] << " "
+                    << nodal_energy[point_idx] << " "
+                    << nodal_cauchy_xx[point_idx] << " "
+                    << nodal_cauchy_xy[point_idx] << " "
+                    << nodal_cauchy_yy[point_idx] << "\n";
+            }
+            row_file.close();
         }
-        
-        // Write header
-        row_file << "# Row profile for y = " << row.first 
-                << " (row " << (r + rows_to_show) << ", " 
-                << (r < 0 ? std::abs(r) : 0) << " rows below middle, "
-                << (r > 0 ? r : 0) << " rows above middle)\n";
-        row_file << "# point_idx x_coord stress energy cauchy_xx cauchy_xy cauchy_yy\n";
-        
-        // Sort points in this row by x-coordinate
-        std::vector<size_t> sorted_points = row.second;
-        std::sort(sorted_points.begin(), sorted_points.end(), 
-            [&points](size_t a, size_t b) { return points[a].coord.x() < points[b].coord.x(); });
-        
-        // Output each point in this row
-        for (size_t point_idx : sorted_points) {
-            row_file << std::fixed << std::setprecision(8)
-                << point_idx << " "               // Point index
-                << points[point_idx].coord.x() << " " // X-coordinate
-                << nodal_stress[point_idx] << " "     // Stress
-                << nodal_energy[point_idx] << " "     // Energy
-                << nodal_cauchy_xx[point_idx] << " "  // Cauchy xx
-                << nodal_cauchy_xy[point_idx] << " "  // Cauchy xy
-                << nodal_cauchy_yy[point_idx] << " "  // Cauchy yy
-                << "\n";
-        }
-        
-        row_file.close();
-        //std::cout << "Row " << (r + rows_to_show) << " profile saved to " << row_filename.str() << std::endl;
     }
-}
-
-
+    */
 }
 
 void ConfigurationSaver::saveTriangleData(
