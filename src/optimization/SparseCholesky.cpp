@@ -4,6 +4,8 @@
 #include <Eigen/SparseCholesky>
 #include <algorithm>
 #include <vector>
+#include <memory>
+#include <iostream>
 
 #ifdef USE_CHOLMOD
 #include <cholmod.h>
@@ -64,8 +66,34 @@ public:
   void analyze(const SpMat &M) override {
     if (factor_) cholmod_free_factor(&factor_, &common_);
     cholmod_sparse A = view(M);
+
+    // Force METIS-based ordering: evaluate CHOLMOD_NESDIS (METIS + CAMD) and CHOLMOD_METIS
+    common_.nmethods = 2;
+    common_.method[0].ordering = CHOLMOD_NESDIS;
+    common_.method[1].ordering = CHOLMOD_METIS;
+    common_.postorder = 1;
+
     factor_ = cholmod_analyze(&A, &common_);
+    if (!factor_ || common_.status != CHOLMOD_OK) {
+      // Fallback to default tournament (AMD, etc.) if METIS is not available
+      common_.nmethods = 0;
+      factor_ = cholmod_analyze(&A, &common_);
+    }
     n_ = static_cast<int>(M.rows());
+
+    static bool printed_ordering = false;
+    if (!printed_ordering && factor_) {
+      const char *ord_name = "unknown";
+      if (factor_->ordering == CHOLMOD_AMD) ord_name = "AMD";
+      else if (factor_->ordering == CHOLMOD_METIS) ord_name = "METIS (pure NodeND)";
+      else if (factor_->ordering == CHOLMOD_NESDIS) ord_name = "NESDIS (METIS Nested Dissection + CAMD)";
+      else if (factor_->ordering == CHOLMOD_NATURAL) ord_name = "Natural";
+      std::cout << "[CHOLMOD] Supernodal Cholesky initialized:" << std::endl;
+      std::cout << "  - Fill-reducing ordering: " << ord_name << " (FORCED METIS)" << std::endl;
+      std::cout << "  - Supernodes: " << factor_->nsuper << std::endl;
+      std::cout << "  - Factor nonzeros (L_nz): " << static_cast<long long>(factor_->xsize) << std::endl;
+      printed_ordering = true;
+    }
   }
   bool factorize(const SpMat &M, double shift) override {
     cholmod_sparse A = view(M);

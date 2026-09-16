@@ -81,24 +81,28 @@ CHOLMOD ?= auto
 CHOLMOD_DEFS :=
 ifneq ($(CHOLMOD),0)
     CHOLMOD_H := $(firstword $(wildcard \
+        /usr/include/suitesparse/cholmod.h \
         $(MY_LIB_ROOT)/local/include/suitesparse/cholmod.h \
         $(MY_LIB_ROOT)/local/include/cholmod.h \
         $(SOFT_ROOT)/*[Ss]uite[Ss]parse*/include/suitesparse/cholmod.h \
-        $(SOFT_ROOT)/*[Ss]uite[Ss]parse*/include/cholmod.h \
-        /usr/include/suitesparse/cholmod.h))
+        $(SOFT_ROOT)/*[Ss]uite[Ss]parse*/include/cholmod.h))
     ifneq ($(CHOLMOD_H),)
         CHOLMOD_INC      := $(patsubst %/,%,$(dir $(CHOLMOD_H)))
         CHOLMOD_PREFIXES := $(abspath $(CHOLMOD_INC)/.. $(CHOLMOD_INC)/../..)
         CHOLMOD_LIBFILE  := $(firstword $(wildcard \
+            /usr/lib/x86_64-linux-gnu/libcholmod.so* \
+            /usr/lib64/libcholmod.so* \
             $(addsuffix /lib/libcholmod.so*,$(CHOLMOD_PREFIXES)) \
-            $(addsuffix /lib64/libcholmod.so*,$(CHOLMOD_PREFIXES)) \
-            /usr/lib/x86_64-linux-gnu/libcholmod.so* /usr/lib64/libcholmod.so*))
+            $(addsuffix /lib64/libcholmod.so*,$(CHOLMOD_PREFIXES))))
         ifneq ($(CHOLMOD_LIBFILE),)
             CHOLMOD_LIBDIR := $(patsubst %/,%,$(dir $(CHOLMOD_LIBFILE)))
             CHOLMOD_DEFS   := -DUSE_CHOLMOD=1
             INCLUDES       += -I$(CHOLMOD_INC)
             LDFLAGS        += -L$(CHOLMOD_LIBDIR) -Wl,-rpath,$(CHOLMOD_LIBDIR)
             LIBS           := -lcholmod $(LIBS)
+            ifneq ($(wildcard $(CHOLMOD_LIBDIR)/libmetis.*),)
+                LIBS       := -lmetis $(LIBS)
+            endif
         endif
     endif
 endif
