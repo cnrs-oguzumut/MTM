@@ -119,29 +119,70 @@ plt.close(fig2)
 print(f'Saved: {f2_path}')
 
 # ==============================================================================
-# FIGURE 3: Semi-Log Cumulative Energy E(R) vs ln(R/h)
+# FIGURE 3: Semi-Log Cumulative Energy E(R) vs ln(R/h) & Dislocation Core Energy
 # ==============================================================================
-radii = np.linspace(0.5, 70.0, 100)
+radii = np.geomspace(0.5, 70.0, 120)
 cum_e1 = np.array([np.sum(e1[r1 <= R]) for R in radii])
 cum_e2 = np.array([np.sum(e2[r2 <= R]) for R in radii])
 
-fig3, ax3 = plt.subplots(figsize=(10, 5.5), dpi=300)
+K = 5.444183943723
+b = 1.0
+S_theo = K * b**2 / (4 * np.pi)  # 0.433234
+
+# Fit in linear elastic regime R in [15, 60]h
+mask_fit = (radii >= 15.0) & (radii <= 60.0)
+ln_R = np.log(radii[mask_fit])
+E_core1 = np.mean(cum_e1[mask_fit] - S_theo * ln_R)
+E_core2 = np.mean(cum_e2[mask_fit] - S_theo * ln_R)
+rc1 = np.exp(-E_core1 / S_theo)
+rc2 = np.exp(-E_core2 / S_theo)
+
+print(f"Extracted Core Energy E_core (r0 = 1.0h): without remesh = {E_core1:.4f}, with remesh = {E_core2:.4f}")
+print(f"Effective core cutoff radius rc: without remesh = {rc1:.4f}h, with remesh = {rc2:.4f}h")
+
+fig3, ax3 = plt.subplots(figsize=(10, 5.8), dpi=300)
 ax3.plot(radii, cum_e1, 'o-', color='#d9534f', lw=2.0, ms=3.5, alpha=0.9, label='Without Remeshing')
 ax3.plot(radii, cum_e2, 's--', color='#0275d8', lw=1.8, ms=3.5, mfc='none', markeredgewidth=1.5, label='With Remeshing')
 ax3.set_xscale('log')
 
-# Continuum linear elastic fit in range R in [7, 65]h
-mask_fit = (radii >= 7.0) & (radii <= 65.0)
-fit_p = np.polyfit(np.log(radii[mask_fit]), cum_e1[mask_fit], 1)
-fit_r = np.geomspace(5.0, 70.0, 60)
-ax3.plot(fit_r, fit_p[0]*np.log(fit_r) + fit_p[1], 'k-.', lw=2.0, label='Continuum Slope')
-ax3.axvline(x=5.0, color='gray', ls=':', lw=1.5, label='Core Cutoff')
+# Exact Analytical Continuum Solution: E(R) = S_theo * ln(R/h) + E_core
+fit_r = np.geomspace(rc1, 70.0, 100)
+e_continuum = S_theo * np.log(fit_r) + E_core1
+ax3.plot(fit_r, e_continuum, 'k-.', lw=2.2, label=r'Analytical Continuum: $\frac{K b^2}{4\pi}\ln(R/h) + E_{\rm core}$')
+
+# Core energy reference point at R = 1.0h (ln(R/h) = 0)
+ax3.plot([1.0], [E_core1], 'o', color='#333333', ms=7, zorder=5)
+ax3.axvline(x=1.0, color='#666666', ls=':', lw=1.2)
+ax3.axhline(y=E_core1, color='#666666', ls=':', lw=1.2)
+
+# Mark core cutoff rc where continuum extrapolates to zero
+ax3.axvline(x=5.0, color='gray', ls='--', lw=1.2, label='Core Boundary ($R = 5h$)')
 
 ax3.set_xlim(0.5, 75.0)
-ax3.set_xlabel('Radius from Core $R / h$', fontsize=13, fontweight='bold', labelpad=8)
+ax3.set_ylim(-0.05, 2.25)
+ax3.set_xlabel(r'Radius from Core $R / h$', fontsize=13, fontweight='bold', labelpad=8)
 ax3.set_ylabel(r'Cumulative Strain Energy $\sum_{r_i \leq R} E_i$', fontsize=13, fontweight='bold', labelpad=8)
-ax3.set_title(r'Semi-Log: Cumulative Strain Energy $E(R)$ vs. $\ln(R/h)$ ($300 \times 300$, $R_{\rm free} = 70h$)', fontsize=14, fontweight='bold', pad=12)
-ax3.legend(loc='lower right', frameon=True, facecolor='white', framealpha=0.95, edgecolor='#cccccc', fontsize=11)
+ax3.set_title(r'Semi-Log: Cumulative Strain Energy and Core Energy Extraction ($300 \times 300$, $R_{\rm free} = 70h$)', fontsize=13, fontweight='bold', pad=12)
+
+# Annotated box with extracted core parameters
+info_text = (
+    r"$\mathbf{Continuum\ Parameters:}$" + "\n"
+    r"$\bullet\ \mathrm{Slope}\ \frac{K b^2}{4\pi} = 0.4332$" + "\n"
+    r"$\bullet\ E_{\rm core}\,(r_0 = 1.0h) = " + f"{E_core1:.3f}" + r"$" + "\n"
+    r"$\bullet\ r_c\,(E=0) = " + f"{rc1:.3f}h" + r"$" + "\n"
+    r"$\bullet\ \Delta E_{\rm core}^{\rm remesh} = " + f"{(E_core1 - E_core2):.4f}" + r"$"
+)
+ax3.text(0.04, 0.62, info_text, transform=ax3.transAxes, fontsize=10.5,
+         verticalalignment='top', bbox=dict(boxstyle='round,pad=0.6', facecolor='#f8f9fa', edgecolor='#ced4da', alpha=0.95))
+
+# Annotation pointing to E_core at R = 1.0h
+ax3.annotate(f'$E_{{\\rm core}} = {E_core1:.3f}$\nat $R = 1.0h$',
+             xy=(1.0, E_core1), xytext=(1.4, 0.05),
+             arrowprops=dict(facecolor='#333333', shrink=0.08, width=1.2, headwidth=5),
+             fontsize=10, fontweight='bold',
+             bbox=dict(boxstyle='round,pad=0.3', facecolor='#ffffff', edgecolor='#aaaaaa', alpha=0.9))
+
+ax3.legend(loc='lower right', frameon=True, facecolor='white', framealpha=0.95, edgecolor='#cccccc', fontsize=10.5)
 ax3.grid(True, which='both')
 plt.tight_layout()
 
