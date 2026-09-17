@@ -87,6 +87,8 @@ int main(int argc, char **argv) {
       stability_options.refine_ahead = std::stod(arg.substr(19));
     } else if (arg.rfind("--eig-retro=", 0) == 0) {
       stability_options.retro = std::stoi(arg.substr(12));
+    } else if (arg == "--shift" || arg == "--staircase") {
+      mode = "shift";
     } else if (arg == "--trace-avalanche" || arg == "--trace-avalanche=1" || arg == "--trace=1") {
       AvalancheRecorder::instance().setEnabled(true);
     } else if (arg == "--trace-avalanche=0" || arg == "--trace=0") {
@@ -151,7 +153,12 @@ int main(int argc, char **argv) {
 
   // 1. Shifting Examples:
   //    Simulates vertical and horizontal shifts of crystal blocks with relaxation.
-  // run_final_shift_tests(nx, ny, 100, 100);
+  if (mode == "shift" || mode == "final_shift" || mode == "staircase") {
+    std::cout << "\n>>> Running staircase shifting tests with nx=" << nx
+              << ", ny=" << ny << " <<<\n" << std::endl;
+    run_final_shift_tests(nx, ny, 100, 100);
+    return 0;
+  }
 
   // 2. Dislocation Studies:
   //    Simulates single dislocation nucleation and relaxation on square lattice.

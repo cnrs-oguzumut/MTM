@@ -26,6 +26,7 @@
 #include "../include/mesh/Remesher.h"
 #include "../include/optimization/LBFGSOptimizer.h"
 #include "../include/optimization/LatticeOptimizer.h"
+#include "../include/output/AvalancheRecorder.h"
 #include "../include/output/configuration_saver.h"
 
 Eigen::Matrix<double, 3, 2>
@@ -487,6 +488,13 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
     analyzer.setDebugMode(false);
     auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
 
+    if (AvalancheRecorder::instance().isEnabled()) {
+      AvalancheRecorder::instance().startLoadStep(step);
+      AvalancheRecorder::instance().recordStep(
+          AvalancheEventType::INITIAL_GUESS, 0, pre_energy, pre_stress, 0.0,
+          elements.size(), 0, "initial guess after prescribed shift increment");
+    }
+
     userData.third_condition_flag = false;
     LBFGSOptimizer optimizer(13, 0.00001, 0, 0, 0);
     optimizer.optimize(x, minimize_energy_with_triangles, &userData);
@@ -504,13 +512,19 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
     double post_stress = stress_tensor(0, 1);
     post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
+    if (AvalancheRecorder::instance().isEnabled()) {
+      AvalancheRecorder::instance().recordStep(
+          AvalancheEventType::LBFGS_CONVERGED, -1, post_energy, post_stress, 0.0,
+          elements.size(), 0, "initial continuous relaxation converged");
+    }
+
     bool shouldRemesh =
         remeshing_enabled && (post_energy < post_energy_previous || step == 0);
 
+    int hasChanges = 0;
     if (shouldRemesh) {
       std::vector<int> contact_atoms;
       int max_iterations = 1000;
-      int hasChanges = 0;
       auto [post_energy_re, stress_tensor_re, iterations] =
           perform_remeshing_loop_reduction(
               x, &userData, contact_atoms, fixed_nodes, F_ext, dndx, offsets,
@@ -527,6 +541,17 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
       }
       for (auto &element : elements) {
         element.set_dof_mapping(full_mapping);
+      }
+    }
+
+    if (AvalancheRecorder::instance().isEnabled()) {
+      if (hasChanges > 0) {
+        AvalancheRecorder::instance().recordStep(
+            AvalancheEventType::AVALANCHE_COMPLETE, -1, post_energy, post_stress, 0.0,
+            elements.size(), 0, "remeshing cascade completed");
+        AvalancheRecorder::instance().commitToFile("avalanche_trace", file_id - 1, file_id);
+      } else {
+        AvalancheRecorder::instance().discard();
       }
     }
 
