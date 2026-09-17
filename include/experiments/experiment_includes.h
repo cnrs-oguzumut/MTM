@@ -45,6 +45,7 @@
 #include "../output/ChangeMeasures.h"
 #include "../output/configuration_saver.h"
 #include "../output/triangulation_to_vtk.h"
+#include "../output/AvalancheRecorder.h"
 #include "../utils/dislocation_utils.h"
 
 #include "acoustic_studies.h"

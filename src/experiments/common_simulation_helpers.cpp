@@ -86,6 +86,12 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     std::cout << "Energy of OLD state: " << std::scientific
               << std::setprecision(8) << energy_old << std::endl;
 
+    std::string current_remesh_phase = "REMESH_PASS_" + std::to_string(mesh_iteration + 1);
+    AvalancheRecorder::instance().setPhase(current_remesh_phase);
+    AvalancheRecorder::instance().recordStep(
+        AvalancheEventType::BEFORE_REMESH, -1, energy_old, stress_old(0, 1), 0.0,
+        elements.size(), 0, "before topological reconnection");
+
     // === PERFORM REMESHING ===
     AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
                           translation_map, full_mapping,
@@ -109,6 +115,21 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
                          potential_func, potential_func_der, zero,
                          ideal_lattice_parameter, F_ext, interior_mapping,
                          full_mapping, active_elements, plasticity);
+
+    // Evaluate immediate post-reconnection energy (coordinates x frozen)
+    double energy_reconnected = 0.0;
+    Eigen::Matrix2d stress_reconnected;
+    ConfigurationSaver::calculateEnergyAndStress(&newUserData, energy_reconnected,
+                                                 stress_reconnected, true);
+    double delta_E_topo = energy_reconnected - energy_old;
+    std::cout << "Energy of RECONNECTED state (pure topology change): " << std::scientific
+              << std::setprecision(8) << energy_reconnected
+              << " (ΔE_topo = " << delta_E_topo << ")" << std::endl;
+
+    AvalancheRecorder::instance().recordStep(
+        AvalancheEventType::AFTER_REMESH, -1, energy_reconnected, stress_reconnected(0, 1), 0.0,
+        elements.size(), (hasConnectivityChanged(old_elements, elements, old_active_elements, active_elements) ? 1 : 0),
+        "after topological reconnection (coordinates frozen)");
 
     // === OPTIMIZE ON NEW MESH ===
     std::cout << "Optimization in REMESHING loop" << std::endl;
@@ -160,6 +181,10 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       std::cout << "⚠️  REJECTING remesh - energy increased!" << std::endl;
       std::cout << "    Restoring previous state..." << std::endl;
 
+      AvalancheRecorder::instance().recordStep(
+          AvalancheEventType::REMESH_REJECTED, -1, energy_old, stress_old(0, 1), 0.0,
+          old_elements.size(), 0, "remesh rejected: energy increased");
+
       // RESTORE OLD STATE
       x = old_x;
       square_points = old_points;
@@ -181,6 +206,10 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
 
     } else {
       std::cout << "✓ ACCEPTING remesh - energy decreased" << std::endl;
+
+      AvalancheRecorder::instance().recordStep(
+          AvalancheEventType::REMESH_ACCEPTED, -1, energy_new, stress_new(0, 1), 0.0,
+          elements.size(), 0, "remesh accepted: energy decreased");
 
       // Keep new state (already in place)
       final_energy = energy_new;
@@ -222,7 +251,17 @@ void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
     g_relaxation_solver.reset();
     return;
   }
-  g_relaxation_solver = std::make_unique<PreconditionedLBFGS>(options);
+  PreconditionedLBFGSOptions opts = options;
+  if (!opts.progress_callback) {
+    opts.progress_callback = [](int nfev, double energy, double grad_max) {
+      if (AvalancheRecorder::instance().isEnabled()) {
+        AvalancheRecorder::instance().recordStep(
+            AvalancheEventType::LBFGS_ITER, nfev, energy, 0.0, grad_max,
+            0, 0, "L-BFGS evaluation");
+      }
+    };
+  }
+  g_relaxation_solver = std::make_unique<PreconditionedLBFGS>(opts);
 }
 
 void relaxation_begin_step(int step) { g_relaxation_step = step; }

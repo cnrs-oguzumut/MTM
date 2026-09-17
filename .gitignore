@@ -15,4 +15,5 @@ __pycache__/
 run_*/
 outputs/
 scratch/
-profile_output.txt
+test_*/
+avalanche_trace/

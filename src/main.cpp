@@ -11,6 +11,7 @@
 #include "../include/experiments/acoustic_studies.h"
 #include "../include/experiments/data_analysis.h"
 #include "../include/experiments/stability_monitor.h"
+#include "../include/output/AvalancheRecorder.h"
 
 int main(int argc, char **argv) {
   // Default system size and parameters
@@ -86,6 +87,10 @@ int main(int argc, char **argv) {
       stability_options.refine_ahead = std::stod(arg.substr(19));
     } else if (arg.rfind("--eig-retro=", 0) == 0) {
       stability_options.retro = std::stoi(arg.substr(12));
+    } else if (arg == "--trace-avalanche" || arg == "--trace-avalanche=1" || arg == "--trace=1") {
+      AvalancheRecorder::instance().setEnabled(true);
+    } else if (arg == "--trace-avalanche=0" || arg == "--trace=0") {
+      AvalancheRecorder::instance().setEnabled(false);
     }
   }
   configure_relaxation_solver(relax_options, precond_from_step);
@@ -122,6 +127,7 @@ int main(int argc, char **argv) {
   std::cout << "System size: nx=" << nx << ", ny=" << ny
             << " | mode=" << mode << " | seed=" << seed
             << " | remeshing=" << (enable_remeshing ? "enabled" : "disabled")
+            << " | trace=" << (AvalancheRecorder::instance().isEnabled() ? "enabled" : "disabled")
             << " | precond=" << to_string(relax_options.type);
   if (relax_options.type != LBFGSPreconditioner::None)
     std::cout << " (grad_tol=" << relax_options.grad_tol

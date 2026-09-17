@@ -106,6 +106,9 @@ struct PreconditionedLBFGSOptions {
   // Stiffness only: rebuild the preconditioner at the current point and continue when
   // the run stalls before grad_tol (the start-point K went stale), at most this often.
   int max_restarts = 3;
+  // Optional iteration callback for fine-grained trajectory / avalanche surgery tracing.
+  // Called at each energy/gradient evaluation: (nfev, energy, grad_max).
+  std::function<void(int nfev, double energy, double grad_max)> progress_callback;
   bool verbose = true;
 };
 
