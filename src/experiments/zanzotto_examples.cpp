@@ -777,6 +777,12 @@ void example_1_conti_zanzotto_loading(
     std::cout << "Pre-optimization - Energy: " << pre_energy
               << ", Stress: " << pre_stress << std::endl;
 
+    // Start in-memory trace for this load step
+    AvalancheRecorder::instance().startLoadStep(static_cast<int>(i));
+    AvalancheRecorder::instance().recordStep(
+        AvalancheEventType::INITIAL_GUESS, 0, pre_energy, pre_stress, 0.0,
+        elements.size(), 0, "initial guess after affine deformation increment");
+
     // Store original positions
     alglib::real_1d_array original_x;
     original_x.setlength(x.length());
@@ -855,6 +861,10 @@ void example_1_conti_zanzotto_loading(
               << ", Stress: " << post_stress << std::endl;
     std::cout << "Energy change: " << (post_energy - pre_energy)
               << ", Stress change: " << (post_stress - pre_stress) << std::endl;
+
+    AvalancheRecorder::instance().recordStep(
+        AvalancheEventType::LBFGS_CONVERGED, -1, post_energy, post_stress, 0.0,
+        elements.size(), 0, "initial continuous relaxation converged");
 
     // ==================== REMESHING DECISION ====================
     // bool shouldRemesh2 =
@@ -1086,7 +1096,23 @@ void example_1_conti_zanzotto_loading(
       std::cout << "POST-avalanche saved as file " << post_file_id
                 << " at load=" << pre_saving_value << std::endl;
 
+      AvalancheRecorder::instance().recordStep(
+          AvalancheEventType::AVALANCHE_COMPLETE, -1, post_energy, post_stress, 0.0,
+          elements.size(), 0, "avalanche cascade fully completed");
+      AvalancheRecorder::instance().commitToFile("avalanche_trace");
+
     } else {
+      if (hasChanges > 0) {
+        // Remeshing occurred and was accepted even if fractional stress drop didn't meet 10% threshold
+        AvalancheRecorder::instance().recordStep(
+            AvalancheEventType::AVALANCHE_COMPLETE, -1, post_energy, post_stress, 0.0,
+            elements.size(), 0, "remeshing cascade completed (sub-avalanche threshold)");
+        AvalancheRecorder::instance().commitToFile("avalanche_trace");
+      } else {
+        // Pure elastic step: discard in-memory buffer without disk I/O
+        AvalancheRecorder::instance().discard();
+      }
+
       // Elastic step: no VTK or defect churn, but periodically save single-file checkpoint
       if ((i + 1) % 50 == 0) {
         ConfigurationSaver::CheckpointData chk_periodic;

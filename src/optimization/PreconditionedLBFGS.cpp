@@ -314,6 +314,8 @@ struct TransformContext {
   alglib::minlbfgsstate *state = nullptr;
   bool hit = false;
   std::vector<double> x_hit;
+  int nfev = 0;
+  const std::function<void(int nfev, double energy, double grad_max)> *progress_callback = nullptr;
 };
 
 } // namespace
@@ -403,6 +405,7 @@ static void transformed_energy(const alglib::real_1d_array &z, double &func,
   }
 
   minimize_energy_with_triangles(ctx->x_work, func, ctx->gx_work, ctx->userData);
+  ctx->nfev++;
 
   const double *gx = ctx->gx_work.getcontent();
   if (factor) {
@@ -411,9 +414,16 @@ static void transformed_energy(const alglib::real_1d_array &z, double &func,
     std::copy(gx, gx + n, grad.getcontent());
   }
 
-  if (ctx->grad_tol > 0.0 && !ctx->hit) {
-    double gmax = 0.0;
+  double gmax = 0.0;
+  if (ctx->grad_tol > 0.0 || ctx->progress_callback) {
     for (int i = 0; i < n; i++) gmax = std::max(gmax, std::abs(gx[i]));
+  }
+
+  if (ctx->progress_callback && *ctx->progress_callback) {
+    (*ctx->progress_callback)(ctx->nfev, func, gmax);
+  }
+
+  if (ctx->grad_tol > 0.0 && !ctx->hit) {
     if (gmax < ctx->grad_tol) {
       ctx->hit = true;
       ctx->x_hit.assign(x, x + n);
@@ -443,6 +453,9 @@ PreconditionedLBFGSReport PreconditionedLBFGS::optimize(alglib::real_1d_array &x
   ctx.x_work.setlength(n);
   ctx.gx_work.setlength(n);
   ctx.grad_tol = options_.grad_tol;
+  if (options_.progress_callback) {
+    ctx.progress_callback = &options_.progress_callback;
+  }
 
   alglib::real_1d_array z;
   z.setlength(n);
