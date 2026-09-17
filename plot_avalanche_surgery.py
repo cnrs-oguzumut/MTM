@@ -101,8 +101,9 @@ def plot_surgery(csv_path, output_png=None):
     y_range = y_max - y_min
 
     # Clean, unboxed phase labels along the top margin with Delta E (no boxes, no arrows)
+    has_narrow_phase = any((pb[2] - pb[1]) < 220 for pb in phase_boundaries)
     for p_idx, (p_name, p_start, p_end) in enumerate(phase_boundaries):
-        clean_name = p_name.replace("_", " ").title().replace("Remesh Pass", "Pass")
+        clean_name = p_name.replace("_", " ").title().replace("Remesh Pass", "Re-construct")
         if p_name in phase_delta_e:
             de_val = phase_delta_e[p_name]
             label_text = f"{clean_name}\n({de_val:+.2f})"
@@ -110,11 +111,10 @@ def plot_surgery(csv_path, output_png=None):
             label_text = clean_name
 
         mid_x = 0.5 * (p_start + p_end)
-        # Stagger slightly if phases are narrow to keep completely clear
-        is_narrow = (p_end - p_start) < 160
-        y_pos = y_max + (y_range * 0.11 if (is_narrow and p_idx % 2 == 1) else y_range * 0.04)
+        # Alternate tiers if any phase is narrow so wider labels like "Re-construct" never collide
+        y_pos = y_max + (y_range * 0.12 if (has_narrow_phase and p_idx % 2 == 1) else y_range * 0.04)
         ax_energy.text(mid_x, y_pos, label_text, ha='center', va='bottom',
-                       fontsize=8.5, fontweight='bold', color='#495057', zorder=8)
+                       fontsize=8.0, fontweight='bold', color='#495057', zorder=8)
 
     # Vertical event lines (clean dashed/dotted lines, no arrows)
     for i, ev in enumerate(event_type):
