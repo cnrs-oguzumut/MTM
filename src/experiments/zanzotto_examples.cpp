@@ -1099,7 +1099,7 @@ void example_1_conti_zanzotto_loading(
       AvalancheRecorder::instance().recordStep(
           AvalancheEventType::AVALANCHE_COMPLETE, -1, post_energy, post_stress, 0.0,
           elements.size(), 0, "avalanche cascade fully completed");
-      AvalancheRecorder::instance().commitToFile("avalanche_trace");
+      AvalancheRecorder::instance().commitToFile("avalanche_trace", pre_file_id, post_file_id);
 
     } else {
       if (hasChanges > 0) {

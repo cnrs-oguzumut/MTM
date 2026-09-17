@@ -120,13 +120,21 @@ public:
         return !buffer_.empty();
     }
 
-    void commitToFile(const std::string& directory = "avalanche_trace") {
+    void commitToFile(const std::string& directory = "avalanche_trace",
+                      int pre_file_id = -1,
+                      int post_file_id = -1) {
         if (!enabled_ || buffer_.empty()) return;
 
         std::filesystem::create_directories(directory);
 
         std::stringstream ss;
-        ss << directory << "/step_" << std::setw(5) << std::setfill('0') << current_load_step_ << "_surgery.csv";
+        if (pre_file_id >= 0 && post_file_id >= 0) {
+            ss << directory << "/config_" << std::setw(5) << std::setfill('0') << pre_file_id
+               << "_to_" << std::setw(5) << std::setfill('0') << post_file_id
+               << "_step_" << std::setw(5) << std::setfill('0') << current_load_step_ << ".csv";
+        } else {
+            ss << directory << "/step_" << std::setw(5) << std::setfill('0') << current_load_step_ << "_surgery.csv";
+        }
         std::string filename = ss.str();
 
         std::ofstream file(filename);

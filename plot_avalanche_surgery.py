@@ -78,10 +78,18 @@ def plot_surgery(csv_path, output_png=None):
         for ax in (ax_energy, ax_stress, ax_grad):
             ax.axvspan(p_start, p_end, facecolor=bg_col, alpha=0.6, zorder=0)
 
+    import re
+    match = re.search(r'config_(\d+)_to_(\d+)_step_(\d+)', csv_file.stem)
+    if match:
+        pre_cfg, post_cfg, step_str = match.groups()
+        title_str = f"Avalanche Micro-Surgery Trace — Load Step {int(step_str)} (configuration_{pre_cfg}.vtk → configuration_{post_cfg}.vtk)"
+    else:
+        title_str = f"Avalanche Micro-Surgery Trace — Load Step {load_step}"
+
     # 1. Energy panel
     ax_energy.plot(x, energy, color=color_lbfgs, lw=2.2, label="Total Energy $E$", zorder=3)
     ax_energy.set_ylabel("Energy $E$", fontsize=12, fontweight='bold')
-    ax_energy.set_title(f"Avalanche Micro-Surgery Trace — Load Step {load_step}", fontsize=14, fontweight='bold', pad=12)
+    ax_energy.set_title(title_str, fontsize=14, fontweight='bold', pad=12)
 
     # Annotate phase labels at top of energy panel
     y_min, y_max = np.min(energy), np.max(energy)
