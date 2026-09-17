@@ -92,8 +92,7 @@ def plot_surgery(csv_path, output_png=None):
     ax_energy.set_title(title_str, fontsize=14, fontweight='bold', pad=12)
 
     # Collect Delta E_topo and jumps for each phase
-    jump_events = [] # list of (x_pre, E_pre, x_post, E_post, de_val, phase_name)
-    phase_delta_e = {}
+    jump_events = []  # list of (x_pre, E_pre, x_post, E_post, de_val, phase_name)
     for i, ev in enumerate(event_type):
         if ev == 'AFTER_REMESH' and i > 0 and event_type[i-1] == 'BEFORE_REMESH':
             x_pre = x[i-1]
@@ -102,46 +101,36 @@ def plot_surgery(csv_path, output_png=None):
             E_post = energy[i]
             de = energy_change[i]
             jump_events.append((x_pre, E_pre, x_post, E_post, de, phase[i]))
-            phase_delta_e[phase[i]] = de
 
-    # Highlight topological jumps with prominent crimson stems & apex markers
-    for (x_pre, E_pre, x_post, E_post, de, p_name) in jump_events:
-        # Bold crimson jump line connecting pre-remesh to post-remesh
-        ax_energy.plot([x_pre, x_post], [E_pre, E_post], color=color_remesh_line, lw=3.0, zorder=5)
-        # Apex marker at the top of the jump
-        ax_energy.scatter([x_post], [E_post], color=color_remesh_line, marker='^', s=85, edgecolor='#500a0a', lw=1.2, zorder=7)
-
-    # Annotate phase labels at top of energy panel (staggered to prevent overlap on narrow phases)
     y_min, y_max = np.min(energy), np.max(energy)
     y_range = y_max - y_min
-    base_label_y = y_max + y_range * 0.05
-    stagger_offset = y_range * 0.08
 
+    # Highlight topological jumps with prominent crimson stems & apex markers + compact text (no arrows, no boxes)
+    for (x_pre, E_pre, x_post, E_post, de, p_name) in jump_events:
+        # Bold crimson jump line connecting pre-remesh to post-remesh
+        ax_energy.plot([x_pre, x_post], [E_pre, E_post], color=color_remesh_line, lw=2.8, zorder=5)
+        # Apex marker at the top of the jump
+        ax_energy.scatter([x_post], [E_post], color=color_remesh_line, marker='^', s=80, edgecolor='#500a0a', lw=1.2, zorder=7)
+        # Clean, unboxed compact text directly above the peak
+        ax_energy.text(x_post, E_post + y_range * 0.025, f"+{de:.2f}",
+                       ha='center', va='bottom', fontsize=8.5, fontweight='bold',
+                       color='#900c3f', zorder=8)
+
+    # Clean, unboxed phase labels along the top margin
     for p_idx, (p_name, p_start, p_end) in enumerate(phase_boundaries):
         clean_name = p_name.replace("_", " ").title()
-        if p_name in phase_delta_e:
-            de_val = phase_delta_e[p_name]
-            label_text = f"{clean_name}\n($\\Delta E_{{topo}} = {de_val:+.2f}$)"
-        else:
-            label_text = clean_name
-
+        # Shorten "Remesh Pass X" -> "Pass X" for neatness
+        clean_name = clean_name.replace("Remesh Pass", "Pass")
         mid_x = 0.5 * (p_start + p_end)
-        # Stagger every other tag if phases are narrow (< 180 steps)
-        phase_width = p_end - p_start
-        stagger = (p_idx % 2 == 1) if any((pb[2] - pb[1]) < 180 for pb in phase_boundaries) else False
-        y_text = base_label_y + (stagger_offset if stagger else 0.0)
+        ax_energy.text(mid_x, y_max + y_range * 0.08, clean_name, ha='center', va='bottom',
+                       fontsize=8.5, fontweight='bold', color='#495057', zorder=8)
 
-        ax_energy.text(mid_x, y_text, label_text, ha='center', va='bottom',
-                       fontsize=8.0, fontweight='bold', color='#343a40',
-                       bbox=dict(boxstyle='round,pad=0.25', facecolor='white', edgecolor='#adb5bd', alpha=0.92, lw=0.8),
-                       zorder=8)
-        
-        # Subtle dashed phase boundary line (clean single separator, avoids red/green clutter)
+        # Subtle phase boundary line
         if p_idx > 0:
             for ax in (ax_energy, ax_stress, ax_grad):
-                ax.axvline(p_start, color='#6c757d', linestyle='--', alpha=0.4, lw=0.9, zorder=1)
+                ax.axvline(p_start, color='#adb5bd', linestyle='--', alpha=0.5, lw=0.9, zorder=1)
 
-    ax_energy.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.30)
+    ax_energy.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.16)
 
     # 2. Stress panel
     mask_stress = stress != 0.0
@@ -158,19 +147,14 @@ def plot_surgery(csv_path, output_png=None):
     ax_grad.set_ylabel("$\\|\\nabla E\\|_\\infty$ (log)", fontsize=12, fontweight='bold')
     ax_grad.set_xlabel("Global Micro-Step", fontsize=12, fontweight='bold')
 
-    # Mark Rejected remesh passes (e.g. Pass 6) with red X
+    # Mark Rejected remesh pass (e.g. Pass 6) with red X (no box, no arrow)
     for i, ev in enumerate(event_type):
         if ev == 'REMESH_REJECTED':
             rej_x = x[i]
             rej_E = energy[i]
             ax_energy.scatter([rej_x], [rej_E], color='#dc3545', marker='X', s=90, edgecolor='#721c24', lw=1.2, zorder=9)
-            ax_energy.annotate("Remesh Rejected\n(reverted)",
-                               xy=(rej_x, rej_E),
-                               xytext=(rej_x - max(1, len(x) * 0.12), rej_E + y_range * 0.08),
-                               arrowprops=dict(arrowstyle="->", color='#dc3545', lw=1.5),
-                               fontsize=8, fontweight='bold', color='#721c24',
-                               bbox=dict(boxstyle="round,pad=0.25", fc="#f8d7da", ec="#dc3545", lw=1.0, alpha=0.9),
-                               zorder=11)
+            ax_energy.text(rej_x, rej_E + y_range * 0.025, "Rejected", ha='center', va='bottom',
+                           fontsize=8.0, fontweight='bold', color='#dc3545', zorder=9)
 
     # Identify the final accepted state
     final_accepted_idx = None
@@ -190,32 +174,21 @@ def plot_surgery(csv_path, output_png=None):
     final_E = energy[final_accepted_idx]
     final_stress = stress[final_accepted_idx]
 
-    # Annotate Final Accepted State on Energy panel
+    # Annotate Final Accepted State on Energy panel with golden star & vertical guideline (no arrows, no boxes)
     ax_energy.scatter([final_x], [final_E], color='#d4ac0d', edgecolor='#7d6608', s=240, marker='*', zorder=10)
-    # Vertical line indicating the final accepted equilibrium point across all panels
     for ax in (ax_energy, ax_stress, ax_grad):
         ax.axvline(final_x, color='#d4ac0d', linestyle=':', lw=1.6, alpha=0.85, zorder=2)
-
-    # Position text cleanly
-    text_offset_x = -max(1, len(x) * 0.14) if final_x > len(x) * 0.6 else max(1, len(x) * 0.05)
-    ax_energy.annotate(f"Final Accepted State\n$E = {final_E:.6f}$",
-                       xy=(final_x, final_E),
-                       xytext=(final_x + text_offset_x, final_E + y_range * 0.12),
-                       arrowprops=dict(arrowstyle="->", color='#b7950b', lw=2),
-                       fontsize=9, fontweight='bold', color='#7d6608',
-                       bbox=dict(boxstyle="round,pad=0.35", fc="#fef9e7", ec="#d4ac0d", lw=1.5, alpha=0.95),
-                       zorder=11)
 
     if final_stress != 0.0:
         ax_stress.scatter([final_x], [final_stress], color='#d4ac0d', edgecolor='#7d6608', s=180, marker='*', zorder=10)
 
-    # Custom legend for events
+    # Custom legend for events with exact values in the legend (saving plot space)
     custom_lines = [
         Line2D([0], [0], color=color_lbfgs, lw=2.2, label="L-BFGS Continuous Relaxation"),
         Line2D([0], [0], color=color_remesh_line, lw=2.8, marker='^', markerfacecolor=color_remesh_line,
-               markeredgecolor='#500a0a', markersize=8, label="Topological Reconnection (Jump & Apex)"),
+               markeredgecolor='#500a0a', markersize=8, label="Topological Reconnection Peak ($\\Delta E_{topo}$)"),
         Line2D([0], [0], marker='*', color='#fef9e7', markerfacecolor='#d4ac0d', markeredgecolor='#7d6608',
-               markersize=14, label="Final Accepted Equilibrium State"),
+               markersize=14, label=f"Final Accepted State ($E = {final_E:.6f}$)"),
         Line2D([0], [0], marker='X', color='#f8d7da', markerfacecolor='#dc3545', markeredgecolor='#721c24',
                markersize=9, label="Rejected Remesh Pass (Reverted)")
     ]
