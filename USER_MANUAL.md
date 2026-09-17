@@ -24,6 +24,13 @@ This manual covers the installation, compilation, command-line usage, high-perfo
 6. [Simulation Outputs & File Layout](#6-simulation-outputs--file-layout)
 7. [Post-Processing & Visualization](#7-post-processing--visualization)
 8. [HPC & Cluster Workflow (SLURM)](#8-hpc--cluster-workflow-slurm)
+9. [Dislocation Studies & Multi-Shift Core Analysis](#9-dislocation-studies--multi-shift-core-analysis)
+   - [Overview & Physical Context](#overview--physical-context)
+   - [Running & Re-running Simulations](#running--re-running-simulations)
+   - [Core Center Tracking: Peak vs. Centroid](#core-center-tracking-peak-vs-centroid)
+   - [Core Broadening, FWHM & Adaptive Core Radius](#core-broadening-fwhm--adaptive-core-radius)
+   - [Aligned Core Energy Profiles $E(x - x_c)$](#aligned-core-energy-profiles-ex---xc)
+   - [Automated Analysis & Plotting Script](#automated-analysis--plotting-script)
 
 ---
 
@@ -274,3 +281,86 @@ If your cluster enforces an 8-hour or 24-hour walltime limit:
 sbatch run_cluster.sbatch
 ```
 When the time limit is reached, simply resubmit the same script. It will automatically detect `checkpoints/latest.chk` and resume seamless, bitwise-exact integration from the exact point of interruption.
+
+---
+
+## 9. Dislocation Studies & Multi-Shift Core Analysis
+
+### Overview & Physical Context
+The framework includes dedicated modules to investigate isolated edge dislocation cores, their non-linear core energies, and their response to applied simple shear loading:
+- **Lattice Setup**: Square $100 \times 100$ crystal ($10,000$ atoms).
+- **Deformation Protocol**:
+  1. Upper half ($y > y_{\rm mid}$) shifted horizontally in $x$ by $s \times h$ ($s \in \{0, 1, 2, 3, 4, 5\}$).
+  2. Analytical Volterra edge dislocation field installed at $(x_0, y_0) = (49.5, 49.5)$ with Burgers vector $\mathbf{b} = (1.0, 0)$.
+  3. Fixed outer frame boundary conditions.
+  4. Energy relaxed to equilibrium via stiffness-preconditioned L-BFGS.
+  5. Connectivity remains fixed on the pristine crystal (no remeshing).
+
+### Running & Re-running Simulations
+Simulations can be executed or re-run directly with a single command:
+```bash
+# Run multi-shift dislocation study across all shifts (s = 0, 1, 2, 3, 4, 5)
+./build/lattice_triangulation 100 100 shifted_dislocation
+```
+This automatically:
+- Creates the study folder `shifted_dislocation_study/`.
+- Computes states for shifts $s = 0, 1, 2, 3, 4, 5$ into individual subdirectories `shift_0/` through `shift_5/`.
+- Exports VTK meshes (`configuration_00000.vtk` unrelaxed, `configuration_00001.vtk` relaxed, and `defects_00001.vtk`).
+- Outputs the master data table `shifted_dislocation_summary.csv`.
+
+---
+
+### Core Center Tracking: Peak vs. Centroid
+Under applied upper crystal shear, the dislocation core moves (glides) along the slip plane. Therefore, measuring core energies centered at the fixed initial position $(49.5, 49.5)$ produces inaccurate off-center results.
+
+Two primary metrics are used to locate the core center $x_c$:
+1. **Discrete Energy Peak on Slip Plane ($x_{\rm peak}$)**:
+   $$x_{\rm peak} = \arg\max_x E(x, y_{\rm slip})$$
+   Identifies the single node with the highest strain energy density.
+2. **Core Energy Centroid / Center of Mass ($x_{\rm cm}$)**:
+   $$x_{\rm cm} = \frac{\sum_{i \in \text{core}} x_i \cdot E(x_i)}{\sum_{i \in \text{core}} E(x_i)} \quad \text{for nodes with } E(x_i) \ge \frac{1}{2} E_{\max}$$
+
+> **Why the Centroid is Superior**: At higher shifts ($s \ge 3$), the top half is shifted by multiple lattice spacings relative to the bottom half. The energy density flattens into a plateau with distinct shoulders on the top and bottom atomic layers. The centroid $x_{\rm cm}$ cleanly balances these contributions, providing a stable, symmetric reference for the true core position.
+
+| Shift $s$ | Upper Shift $u_x$ | Peak Slip $x_{\rm peak}$ | Centroid $x_{\rm cm}$ | Full Mesh Peak $(x, y)$ | Core Width $\text{FWHM}$ | Adaptive $R_{\rm core}(s)$ |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **$0$** | $0.0h$ | $49.76h$ | **$49.3h$** | $(49.76, 48.77)$ | **$5.3h$** | $3.64h$ |
+| **$1$** | $1.0h$ | $49.73h$ | **$50.2h$** | $(49.73, 48.78)$ | **$5.3h$** | $3.64h$ |
+| **$2$** | $2.0h$ | $50.76h$ | **$50.4h$** | $(49.69, 48.79)$ | **$5.3h$** | $3.66h$ |
+| **$3$** | $3.0h$ | $51.80h$ | **$51.3h$** | $(53.13, 49.77)$ | **$7.4h$** | $4.70h$ |
+| **$4$** | $4.0h$ | $53.89h$ | **$51.3h$** | $(54.08, 49.76)$ | **$9.4h$** | $5.72h$ |
+| **$5$** | $5.0h$ | $55.89h$ | **$52.8h$** | $(56.10, 49.76)$ | **$10.5h$** | $6.23h$ |
+
+---
+
+### Core Broadening, FWHM & Adaptive Core Radius
+As shear is applied, the dislocation core delocalizes across the slip plane:
+- **Core Width Broadening**: The Full Width at Half Maximum ($\text{FWHM}$) expands from **$5.3h$** at $s = 0$ to **$10.5h$** at $s = 5$ (nearly doubling in width).
+- **Peak Softening**: The maximum nodal energy density drops from $0.0636$ to $0.0399$ as mismatch strain distributes over a larger plastic zone.
+- **Adaptive Core Radius**: To prevent truncating the broadening core, an adaptive integration cutoff radius is used:
+  $$R_{\rm core}(s) = \max\left(3.0,\; \frac{\text{FWHM}(s)}{2} + 1.0\right)h$$
+  This expands from $3.64h$ to $6.23h$, correctly bounding the nonlinear core across all deformation levels.
+
+---
+
+### Aligned Core Energy Profiles $E(x - x_c)$
+To directly compare core structures across shifts, profiles along the slip plane are shifted by their core center:
+$$x_{\rm rel} = x - x_c$$
+This superimposes all 6 dislocation profiles at $x = 0$:
+1. **Absolute Profile $E(x - x_c)$**: Clearly demonstrates peak drop and symmetrical tail broadening.
+2. **Normalized Profile $E(x - x_c) / E_{\max}$**: Normalizes all peaks to $1.0$, giving a direct geometric visualization of the $\text{FWHM}$ core delocalization under shear.
+
+---
+
+### Automated Analysis & Plotting Script
+Run the automated post-processing script from the project root:
+```bash
+python3 shifted_dislocation_study/plot_shifted_dislocation_study.py
+```
+This script automatically computes the centroid positions, widths, and adaptive radii, generating:
+- `shifted_dislocation_adaptive_core_summary.csv`: Tabulated values of $E_{\rm tot}$, $x_{\rm peak}$, $x_{\rm cm}$, $\text{FWHM}$, $R_{\rm core}$, and core energies.
+- `shifted_dislocation_energy_profile_aligned.png`: Side-by-side aligned $E(x - x_c)$ and normalized shape comparisons.
+- `shifted_dislocation_energy_profile_x.png`: Slip-plane energy profiles showing horizontal core gliding.
+- `shifted_dislocation_core_energy_vs_R.png`: Cumulative radial energy $E(R)$ centered at each core's true position.
+- `shifted_dislocation_energy_vs_shift.png`: 3-panel figure tracking core glide $x_c(s)$, core width $\text{FWHM}(s)$, and total vs. adaptive core energy.
+

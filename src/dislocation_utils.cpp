@@ -69,6 +69,43 @@ Eigen::Vector2d VolterraDisplacement::calculateEdgeDisplacement(
     return Eigen::Vector2d(ux, uy);
 }
 
+Eigen::Vector2d VolterraDisplacement::calculateAnisotropicEdgeDisplacement(
+    const Eigen::Vector2d& position,
+    const Eigen::Vector2d& burgers_vector
+) {
+    double x1 = position.x();
+    double x2 = position.y();
+    double b = burgers_vector.x();
+
+    double r2 = x1 * x1 + x2 * x2;
+    if (r2 < 1e-12) {
+        return Eigen::Vector2d::Zero();
+    }
+
+    // Exact Stroh / Eshelby-Read-Shockley parameters for the square crystal model
+    // C11 = 21.728397, C12 = 18.273383, C66 = 6.075140 (Zener anisotropy A = 3.517)
+    const double alpha = 0.811631903366989;
+    const double beta  = 0.584169199322318;
+    const double B1    = 0.138015350741272;
+    const double C2    = 0.283532289410972;
+    const double D2    = 0.034024641618305;
+
+    double dx1 = x1 - alpha * x2;
+    double dx2 = x1 + alpha * x2;
+    double by  = beta * x2;
+
+    double r1_sq = dx1 * dx1 + by * by;
+    double r2_sq = dx2 * dx2 + by * by;
+
+    double th1 = std::atan2(by, dx1);
+    double th2 = std::atan2(by, dx2);
+
+    double u1 = (b / M_PI) * (0.25 * (th1 + th2) - 0.5 * B1 * std::log(r1_sq / r2_sq));
+    double u2 = (b / M_PI) * (C2 * (th1 - th2) - 0.5 * D2 * std::log(r1_sq * r2_sq));
+
+    return Eigen::Vector2d(u1, u2);
+}
+
 // Non-singular dislocation displacement calculation implementation
 Eigen::Vector2d NonSingularDisplacement::calculateEdgeDisplacement(
     const Eigen::Vector2d& position,

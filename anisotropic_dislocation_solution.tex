@@ -1,0 +1,244 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,bm}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\title{\textbf{Exact Anisotropic Edge Dislocation Solution for a Square Crystal Lattice}\\[0.5em]
+\large Eshelby--Read--Shockley and Stroh Formulations in 2D Plane Elasticity}
+\author{Documentation \& Theoretical Reference}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document presents the detailed mathematical derivation of the exact anisotropic elastic displacement and stress fields for a straight edge dislocation embedded in a square (cubic symmetry) crystal lattice. The solution is obtained via the Stroh and Eshelby--Read--Shockley formalisms in 2D plane elasticity. Closed-form real expressions for both Cartesian displacement components $u_1(x_1, x_2)$ and $u_2(x_1, x_2)$ are provided, alongside explicit numerical evaluation for the harmonic interatomic square lattice potential ($C_{11} = 21.728397$, $C_{12} = 18.273383$, $C_{66} = 6.075140$). We discuss why the standard isotropic Volterra solution severely violates mechanical equilibrium due to the lattice's large Zener elastic anisotropy ratio ($A = 3.52$).
+\end{abstract}
+
+\section{Governing Elasticity Equations}
+
+Consider an infinite, homogeneous 2D crystal domain in the $(x_1, x_2)$ plane under plane strain or plane stress conditions. Let $\bm{u}(x_1, x_2) = (u_1, u_2)^T$ denote the in-plane displacement field. The linearized strain tensor is given by:
+\begin{equation}
+\varepsilon_{ij} = \frac{1}{2} \left( \frac{\partial u_i}{\partial x_j} + \frac{\partial u_j}{\partial x_i} \right), \quad i, j \in \{1, 2\}.
+\end{equation}
+
+For a square lattice whose primary crystal axes $[10]$ and $[01]$ are aligned with the Cartesian coordinates $(x_1, x_2)$, Hooke's law in Voigt notation exhibits fourfold rotational symmetry ($C_{11} = C_{22}$, $C_{16} = C_{26} = 0$):
+\begin{equation}
+\begin{pmatrix}
+\sigma_{11} \\
+\sigma_{22} \\
+\sigma_{12}
+\end{pmatrix}
+=
+\begin{pmatrix}
+C_{11} & C_{12} & 0 \\
+C_{12} & C_{11} & 0 \\
+0 & 0 & C_{66}
+\end{pmatrix}
+\begin{pmatrix}
+\varepsilon_{11} \\
+\varepsilon_{22} \\
+2\varepsilon_{12}
+\end{pmatrix}.
+\end{equation}
+
+The Cauchy equilibrium equations in the absence of body forces ($\partial_j \sigma_{ij} = 0$) require:
+\begin{align}
+\frac{\partial \sigma_{11}}{\partial x_1} + \frac{\partial \sigma_{12}}{\partial x_2} &= 0 \implies C_{11} \frac{\partial^2 u_1}{\partial x_1^2} + C_{66} \frac{\partial^2 u_1}{\partial x_2^2} + (C_{12} + C_{66}) \frac{\partial^2 u_2}{\partial x_1 \partial x_2} = 0, \label{eq:equil1} \\
+\frac{\partial \sigma_{12}}{\partial x_1} + \frac{\partial \sigma_{22}}{\partial x_2} &= 0 \implies (C_{12} + C_{66}) \frac{\partial^2 u_1}{\partial x_1 \partial x_2} + C_{66} \frac{\partial^2 u_2}{\partial x_1^2} + C_{11} \frac{\partial^2 u_2}{\partial x_2^2} = 0. \label{eq:equil2}
+\end{align}
+
+\section{The Stroh / Lekhnitskii Complex Variable Formulation}
+
+Following the classical approach of Eshelby, Read, and Shockley (1953) and Stroh (1958), we seek general solutions for the displacements in the form of analytic functions of the generalized complex coordinate $z = x_1 + p x_2$:
+\begin{equation}
+\bm{u}(x_1, x_2) = 2 \operatorname{Re} \sum_{\alpha=1}^2 \bm{A}_\alpha f_\alpha(x_1 + p_\alpha x_2),
+\end{equation}
+where $p_\alpha$ are complex characteristic roots and $\bm{A}_\alpha = (A_{1\alpha}, A_{2\alpha})^T$ are the corresponding displacement eigenvectors.
+
+Substituting $u_k = A_k f(x_1 + p x_2)$ into the system of PDEs (\ref{eq:equil1})--(\ref{eq:equil2}) yields the linear algebraic eigenvalue problem:
+\begin{equation}
+\begin{pmatrix}
+C_{11} + C_{66} p^2 & (C_{12} + C_{66}) p \\
+(C_{12} + C_{66}) p & C_{66} + C_{11} p^2
+\end{pmatrix}
+\begin{pmatrix}
+A_1 \\
+A_2
+\end{pmatrix}
+=
+\begin{pmatrix}
+0 \\
+0
+\end{pmatrix}.
+\end{equation}
+
+For non-trivial eigenvector solutions $\bm{A} \neq \bm{0}$, the characteristic determinant must vanish:
+\begin{equation}
+\det
+\begin{pmatrix}
+C_{11} + C_{66} p^2 & (C_{12} + C_{66}) p \\
+(C_{12} + C_{66}) p & C_{66} + C_{11} p^2
+\end{pmatrix}
+= 0.
+\end{equation}
+
+Expanding the determinant:
+\begin{equation}
+(C_{11} + C_{66} p^2)(C_{66} + C_{11} p^2) - (C_{12} + C_{66})^2 p^2 = 0.
+\end{equation}
+Regrouping powers of $p$ and dividing through by $C_{11} C_{66}$:
+\begin{equation}
+p^4 + 2 \kappa \, p^2 + 1 = 0,
+\label{eq:biquadratic}
+\end{equation}
+where the dimensionless parameter $\kappa$ is defined as:
+\begin{equation}
+\kappa = \frac{C_{11}^2 - C_{12}^2 - 2 C_{12} C_{66}}{2 C_{11} C_{66}}.
+\end{equation}
+
+\section{Characteristic Roots for the Square Crystal}
+
+The roots of the biquadratic equation (\ref{eq:biquadratic}) depend on the value of $\kappa$:
+\begin{equation}
+p^2 = -\kappa \pm i \sqrt{1 - \kappa^2}.
+\end{equation}
+Whenever $-1 < \kappa < 1$ (which holds for stable crystals with positive-definite elastic energy that are not degenerately isotropic), the four roots are two complex conjugate pairs. By convention in the Stroh formalism, we select the two roots in the upper half of the complex plane ($\operatorname{Im}(p_\alpha) > 0$):
+\begin{equation}
+p_1 = -\alpha + i \beta, \quad p_2 = +\alpha + i \beta,
+\end{equation}
+where the real parameters $\alpha$ and $\beta$ are given by:
+\begin{equation}
+\alpha = \sqrt{\frac{1 - \kappa}{2}}, \quad \beta = \sqrt{\frac{1 + \kappa}{2}}.
+\end{equation}
+Note that identically:
+\begin{equation}
+\alpha^2 + \beta^2 = 1, \quad p_1 p_2 = \beta^2 - \alpha^2 + 2 i \alpha \beta = -\kappa + i \sqrt{1-\kappa^2}.
+\end{equation}
+
+\section{Boundary Conditions for an Edge Dislocation}
+
+An isolated edge dislocation located at the origin with Burgers vector $\bm{b} = (b, 0)^T$ parallel to the $x_1$-axis requires:
+\begin{enumerate}
+    \item \textbf{Displacement discontinuity}: The displacement field must increase by the Burgers vector along any closed path $\Gamma$ enclosing the dislocation core:
+    \begin{equation}
+    \oint_\Gamma d\bm{u} = \bm{b} = \begin{pmatrix} b \\ 0 \end{pmatrix}.
+    \end{equation}
+    This requires logarithmic complex potentials:
+    \begin{equation}
+    f_\alpha(z_\alpha) = q_\alpha \ln z_\alpha = q_\alpha \ln(x_1 + p_\alpha x_2),
+    \end{equation}
+    where $q_\alpha$ are complex coefficients to be determined.
+    \item \textbf{Equilibrium of core tractions}: The net resultant traction on any closed circuit enclosing the core must vanish:
+    \begin{equation}
+    \oint_\Gamma \bm{\sigma} \cdot \bm{n} \, ds = \bm{0}.
+    \end{equation}
+\end{enumerate}
+
+Defining the Stroh traction vectors $\bm{L}_\alpha$ associated with the eigenvectors $\bm{A}_\alpha$:
+\begin{equation}
+L_{1\alpha} = -C_{66} p_\alpha A_{1\alpha} - C_{66} A_{2\alpha}, \quad
+L_{2\alpha} = -C_{12} A_{1\alpha} - C_{11} p_\alpha A_{2\alpha},
+\end{equation}
+the conditions of Burgers jump and zero net force translate into the linear system:
+\begin{equation}
+\sum_{\alpha=1}^2 \left( A_{k\alpha} q_\alpha - \bar{A}_{k\alpha} \bar{q}_\alpha \right) = \frac{b_k}{2\pi i}, \quad
+\sum_{\alpha=1}^2 \left( L_{k\alpha} q_\alpha - \bar{L}_{k\alpha} \bar{q}_\alpha \right) = 0.
+\end{equation}
+
+\section{Closed-Form Real Displacement Field}
+
+Decomposing the generalized complex coordinates into polar variables:
+\begin{equation}
+z_\alpha = x_1 + p_\alpha x_2 = (x_1 \mp \alpha x_2) + i (\beta x_2) = r_\alpha e^{i \theta_\alpha},
+\end{equation}
+we define:
+\begin{align}
+r_1^2 &= (x_1 - \alpha x_2)^2 + (\beta x_2)^2, \quad \theta_1 = \operatorname{atan2}(\beta x_2, \, x_1 - \alpha x_2), \\
+r_2^2 &= (x_1 + \alpha x_2)^2 + (\beta x_2)^2, \quad \theta_2 = \operatorname{atan2}(\beta x_2, \, x_1 + \alpha x_2).
+\end{align}
+
+Taking the real part of the complex potentials, the displacement field components evaluate in exact closed form to:
+\begin{align}
+u_1(x_1, x_2) &= \frac{b}{\pi} \left[ \frac{1}{4} (\theta_1 + \theta_2) - \frac{B_1}{2} \ln\left(\frac{r_1^2}{r_2^2}\right) \right], \label{eq:u1} \\
+u_2(x_1, x_2) &= \frac{b}{\pi} \left[ C_2 (\theta_1 - \theta_2) - \frac{D_2}{2} \ln\left(r_1^2 \cdot r_2^2\right) \right]. \label{eq:u2}
+\end{align}
+
+The dimensionless elasticity coefficients appearing in (\ref{eq:u1})--(\ref{eq:u2}) are:
+\begin{equation}
+B_1 = \frac{C_{11} - C_{12}}{4(C_{11} + C_{12})} \cdot \frac{\alpha}{\beta}, \quad
+C_2 = \frac{C_{11} - C_{12}}{4 C_{11} \beta}, \quad
+D_2 = \frac{C_{66}}{4 C_{11} \alpha}.
+\end{equation}
+
+The cumulative strain energy $E(R)$ contained within a cylinder of radius $R$ beyond the core cutoff $r_0$ satisfies:
+\begin{equation}
+E(R) = E_{\rm core} + \frac{K b^2}{4\pi} \ln\left(\frac{R}{r_0}\right),
+\end{equation}
+where the anisotropic energy factor $K$ for a square/cubic crystal is:
+\begin{equation}
+K = \frac{C_{11} + C_{12}}{2} \sqrt{\frac{C_{66}(C_{11} - C_{12})}{C_{11}(C_{11} + C_{12} + 2 C_{66})}}.
+\end{equation}
+
+\section{Numerical Evaluation for the Simulated Crystal}
+
+For the non-convex interatomic potential utilized in our 2D simulations, the exact second derivatives evaluated at the stress-free ground state configuration yield the following elastic stiffness coefficients:
+\begin{equation}
+C_{11} = 21.728397, \quad C_{12} = 18.273383, \quad C_{66} = 6.075140.
+\end{equation}
+
+Direct substitution into the theoretical formulas yields:
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Parameter} & \textbf{Formula} & \textbf{Numerical Value} \\
+\midrule
+$\kappa$ & $\frac{C_{11}^2 - C_{12}^2 - 2 C_{12} C_{66}}{2 C_{11} C_{66}}$ & $-0.318728907318$ \\
+$\alpha$ & $\sqrt{(1 - \kappa)/2}$ & $0.811631903367$ \\
+$\beta$  & $\sqrt{(1 + \kappa)/2}$ & $0.584169199322$ \\
+$B_1$    & $\frac{C_{11}-C_{12}}{4(C_{11}+C_{12})} \cdot \frac{\alpha}{\beta}$ & $0.138015350741$ \\
+$C_2$    & $\frac{C_{11}-C_{12}}{4 C_{11} \beta}$ & $0.283532289411$ \\
+$D_2$    & $\frac{C_{66}}{4 C_{11} \alpha}$ & $0.034024641618$ \\
+$K$      & Anisotropic energy factor & $0.835706240292$ \\
+$C_{\rm continuum}$ & $\frac{K b^2}{4\pi}$ ($b = 1.0$) & $0.066503254921$ \\
+\bottomrule
+\end{tabular}
+\caption{Calculated anisotropic parameters for the square crystal.}
+\label{tab:params}
+\end{table}
+
+\section{Why the Isotropic Volterra Solution Failed}
+
+For an isotropic linear elastic solid, the shear modulus $G$ must satisfy Cauchy's isotropy relation:
+\begin{equation}
+C_{66}^{\rm iso} = \frac{C_{11} - C_{12}}{2} = \frac{21.728397 - 18.273383}{2} = 1.727507.
+\end{equation}
+
+The Zener elastic anisotropy ratio of our lattice is:
+\begin{equation}
+A = \frac{2 C_{66}}{C_{11} - C_{12}} = \frac{2 \times 6.075140}{3.455014} = 3.516709 \gg 1.
+\end{equation}
+
+Because $A = 3.52$, the crystal is more than \textbf{3.5 times stiffer in shear} than an equivalent isotropic material. When an isotropic Volterra displacement field:
+\begin{equation}
+u_1^{\rm iso} = \frac{b}{2\pi} \left[ \theta + \frac{\sin 2\theta}{4(1-\nu)} \right], \quad
+u_2^{\rm iso} = -\frac{b}{2\pi} \left[ \frac{1-2\nu}{2(1-\nu)} \ln r + \frac{\cos 2\theta}{4(1-\nu)} \right],
+\end{equation}
+is imposed as a boundary Dirichlet condition on the frozen outer mantle of the crystal ($r > R_{\rm free}$), it creates non-zero divergence of the stress tensor:
+\begin{equation}
+\operatorname{div}\bm{\sigma} \neq \bm{0}.
+\end{equation}
+This mismatch imposed an artificial radial and shear traction on the outer boundary of the relaxed cylinder, forcing the relaxed energy density $\bar{E}(r)$ to bend upward by $+80\%$ at $r \to R_{\rm free} = 70h$. Prescribing the exact Stroh solution (\ref{eq:u1})--(\ref{eq:u2}) restores exact equilibrium $\operatorname{div}\bm{\sigma} = \bm{0}$ throughout the crystal, completely eliminating the boundary flare.
+
+\end{document}

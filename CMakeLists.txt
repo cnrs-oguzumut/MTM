@@ -332,6 +332,7 @@ set(EXPERIMENT_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/shifting_examples.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/stress_controlled_examples.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/zanzotto_examples.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/experiments/shifted_dislocation_study.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shift_vertical_horizontal.cpp"
 )
 

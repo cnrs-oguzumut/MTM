@@ -8,9 +8,9 @@
 #include "../include/experiments/shifted_crystal_study.h"
 #include "../include/experiments/zanzotto_examples.h"
 #include "../include/experiments/stress_controlled_examples.h"
-#include "../include/experiments/acoustic_studies.h"
 #include "../include/experiments/data_analysis.h"
 #include "../include/experiments/stability_monitor.h"
+#include "../include/experiments/shifted_dislocation_study.h"
 #include "../include/output/AvalancheRecorder.h"
 
 int main(int argc, char **argv) {
@@ -20,6 +20,9 @@ int main(int argc, char **argv) {
   std::string mode = "negative"; // "positive" or "negative"
   unsigned int seed = 42;
   bool enable_remeshing = true;
+  double r_free = 20.0;
+  bool use_cylinder = false;
+  bool export_full_mesh = true;
 
   // Energy relaxation solver (default: plain L-BFGS, unchanged behaviour).
   //   --precond=stiffness|laplacian|diag|none   L-BFGS preconditioner
@@ -89,6 +92,17 @@ int main(int argc, char **argv) {
       stability_options.retro = std::stoi(arg.substr(12));
     } else if (arg == "--shift" || arg == "--staircase") {
       mode = "shift";
+    } else if (arg.rfind("--r-free=", 0) == 0) {
+      r_free = std::stod(arg.substr(9));
+      use_cylinder = true;
+    } else if (arg == "--cylinder" || arg == "--cylinder=1") {
+      use_cylinder = true;
+    } else if (arg == "--volterra" || arg == "--dislocation") {
+      mode = "volterra";
+    } else if (arg == "--full-mesh" || arg == "--all-elements") {
+      export_full_mesh = true;
+    } else if (arg == "--circle" || arg == "--circle-only" || arg == "--active-only") {
+      export_full_mesh = false;
     } else if (arg == "--trace-avalanche" || arg == "--trace-avalanche=1" || arg == "--trace=1") {
       AvalancheRecorder::instance().setEnabled(true);
     } else if (arg == "--trace-avalanche=0" || arg == "--trace=0") {
@@ -161,7 +175,20 @@ int main(int argc, char **argv) {
   }
 
   // 2. Dislocation Studies:
-  //    Simulates single dislocation nucleation and relaxation on square lattice.
+  //    Simulates single dislocation in a cylinder / boundary-fixed crystal.
+  if (mode == "volterra" || mode == "cylinder" || mode == "dislocation") {
+    std::cout << "\n>>> Running single dislocation cylinder relaxation with nx=" << nx
+              << ", ny=" << ny << ", R_free=" << r_free
+              << ", mesh=" << (export_full_mesh ? "full" : "circle") << " <<<\n" << std::endl;
+    single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh);
+    return 0;
+  }
+
+  // 3. Multi-Shift Dislocation Study (no remeshing):
+  if (mode == "shifted_dislocation" || mode == "shift_dislocation" || mode == "shifts") {
+    run_shifted_dislocation_study(0, nx, ny, {0, 1, 2, 3, 4, 5}, use_cylinder, r_free);
+    return 0;
+  }
   // single_dislocation_study(0, nx, ny);
 
   // 3. Shifted Upper Crystal Study:

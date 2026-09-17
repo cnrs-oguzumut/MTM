@@ -129,7 +129,7 @@ void single_dislocation_study(int caller_id, int nx, int ny) {
   // Volterra edge-dislocation field.
   Eigen::Vector2d burgers_vector(lattice_constant, 0.0); // unit Burgers, x-dir
   double core_radius = 6.0;                              // core regularization
-  double poisson_ratio = 0.3;                            // material Poisson
+  double poisson_ratio = 1.0 / 3.0;                      // material Poisson
   size_t middle_atom_index = findMiddleAtom(square_points, true);
 
   std::vector<Point2D> dislocated_points =
@@ -299,3 +299,284 @@ void single_dislocation_study(int caller_id, int nx, int ny) {
   ConfigurationSaver::logDislocationData(0.0, num_dislocations_post);
   std::cout << "Saved relaxed dislocated config " << post_file_id << std::endl;
 }
+
+// ============================================================================
+// single_dislocation_cylinder_relaxation
+//
+// Installs an analytical Volterra edge dislocation on an nx x ny lattice:
+// - All atoms are initially given the analytical Volterra displacement field.
+// - Atoms outside radius R_free from the core are FROZEN (Dirichlet boundary).
+// - Atoms inside radius R_free are FREE to relax by energy minimization.
+// - Supports L-BFGS preconditioning (--precond=stiffness/laplacian/diag/none).
+// ============================================================================
+void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
+                                           double R_free,
+                                           bool enable_remeshing,
+                                           bool export_full_mesh) {
+  if (nx <= 0 || ny <= 0) {
+    std::cerr << "Error: nx and ny must be positive integers." << std::endl;
+    exit(EXIT_FAILURE);
+  }
+
+  writeSizesToFile(nx, ny);
+
+  std::string lattice_type = "square";
+  double h = 1.0;
+
+  // Reference triangle shape derivatives
+  Eigen::Vector2d p1(0.0, 0.0);
+  Eigen::Vector2d p2(h, 0.0);
+  Eigen::Vector2d p3(0.0, h);
+  Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+
+  // Energy potential
+  std::function<double(double)> potential_func = square_energy;
+  std::function<double(double)> potential_func_der = square_energy_der;
+
+  double optimal_lattice_parameter = 1.0;
+  double lattice_constant = optimal_lattice_parameter;
+
+  // Generate pristine reference lattice
+  std::vector<Point2D> square_points_ref =
+      LatticeGenerator::generate_2d_lattice(nx, ny, lattice_constant, lattice_type);
+  std::vector<Point2D> square_points = square_points_ref;
+  int n_points = square_points.size();
+
+  DomainInfo domain_size = compute_domain_size(square_points_ref);
+  const std::array<double, 2> offsets = {lattice_constant, lattice_constant};
+  DomainDimensions domain_dims(domain_size.get_width(), domain_size.get_height());
+  Point2D domain_dims_point(domain_dims.size_x, domain_dims.size_y);
+  bool pbc = false;
+
+  auto [original_domain_map, translation_map] =
+      MeshGenerator::create_domain_maps(n_points, domain_dims, offsets);
+
+  // Calculate bounding box and place dislocation core at center on slip plane
+  double x_min = std::numeric_limits<double>::max();
+  double x_max = std::numeric_limits<double>::lowest();
+  double y_min = std::numeric_limits<double>::max();
+  double y_max = std::numeric_limits<double>::lowest();
+  for (const auto &p : square_points_ref) {
+    x_min = std::min(x_min, p.coord.x());
+    x_max = std::max(x_max, p.coord.x());
+    y_min = std::min(y_min, p.coord.y());
+    y_max = std::max(y_max, p.coord.y());
+  }
+  double core_x = 0.5 * (x_min + x_max);
+  double core_y = 0.5 * (y_min + y_max);
+  Eigen::Vector2d dislocation_core(core_x, core_y);
+
+  std::cout << "\n=== VOLTERRA DISLOCATION CYLINDER RELAXATION ===" << std::endl;
+  std::cout << "Lattice: " << nx << " x " << ny << " (" << n_points << " atoms)" << std::endl;
+  std::cout << "Dislocation core at: (" << core_x << ", " << core_y << ")" << std::endl;
+  std::cout << "Relaxation radius R_free: " << R_free << " h" << std::endl;
+
+  // Apply analytical anisotropic Stroh / Eshelby-Read-Shockley displacement to all atoms
+  Eigen::Vector2d burgers_vector(lattice_constant, 0.0);
+
+  for (size_t i = 0; i < square_points.size(); ++i) {
+    Eigen::Vector2d rel_pos = square_points_ref[i].coord - dislocation_core;
+    Eigen::Vector2d u_dislocation = VolterraDisplacement::calculateAnisotropicEdgeDisplacement(
+        rel_pos, burgers_vector);
+    square_points[i].coord = square_points_ref[i].coord + u_dislocation;
+  }
+
+  // Partition into free nodes (r <= R_free) and fixed nodes (r > R_free)
+  std::vector<std::pair<int, int>> interior_mapping;
+  std::vector<std::pair<int, int>> full_mapping;
+  interior_mapping.reserve(n_points);
+  full_mapping.reserve(n_points);
+
+  std::vector<int> fixed_nodes;
+  int solver_idx = 0;
+  for (size_t i = 0; i < square_points.size(); ++i) {
+    double dist = (square_points_ref[i].coord - dislocation_core).norm();
+    if (dist <= R_free) {
+      interior_mapping.push_back({static_cast<int>(i), solver_idx});
+      full_mapping.push_back({static_cast<int>(i), solver_idx});
+      solver_idx++;
+    } else {
+      full_mapping.push_back({static_cast<int>(i), -1});
+      fixed_nodes.push_back(static_cast<int>(i));
+    }
+  }
+
+  int n_free_nodes = interior_mapping.size();
+  int n_fixed_nodes = fixed_nodes.size();
+  std::cout << "Partition: " << n_free_nodes << " free (relaxed) nodes, "
+            << n_fixed_nodes << " frozen (Volterra Dirichlet) nodes." << std::endl;
+
+  // Build mesh with full DOF mapping
+  AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
+                        translation_map, full_mapping, 1e-6, pbc);
+  mesher.setUsePeriodicCopies(pbc);
+
+  alglib::real_1d_array x;
+  int n_vars = interior_mapping.size();
+  x.setlength(2 * n_vars);
+  map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
+
+  alglib::real_1d_array x_ref;
+  x_ref.setlength(2 * n_vars);
+  map_points_to_solver_array(x_ref, square_points_ref, interior_mapping, n_vars);
+
+  // Both simulations start from the exact same pristine crystal mesh,
+  // exactly like the avalanche / shifted crystal simulations.
+  // When enable_remeshing is true, perform_remeshing_loop_reduction will perform
+  // successive remesh-relaxation cycles on the relaxed configuration.
+  auto [elements, active_elements] = mesher.createMesh(
+      square_points_ref, x_ref,
+      Eigen::Matrix2d::Identity(), &dndx);
+  double element_area = elements.empty() ? 0.0 : elements[0].getReferenceArea();
+
+  for (auto &element : elements) {
+    element.set_reference_mesh(square_points);
+    element.set_dof_mapping(full_mapping);
+  }
+  std::cout << "Mesh created: " << elements.size() << " triangular elements ("
+            << (enable_remeshing ? "reconnected Delaunay" : "fixed pristine lattice") << ")." << std::endl;
+
+  // Setup energy calculation
+  Strain_Energy_LatticeCalculator calculator(1.0);
+  Eigen::Matrix2d F_I = Eigen::Matrix2d::Identity();
+  Eigen::Matrix2d C_I = F_I.transpose() * F_I;
+  double zero = calculator.calculate_energy(C_I, potential_func, 0);
+
+  Eigen::Matrix2d F_ext = Eigen::Matrix2d::Identity();
+  bool plasticity = false;
+  UserData userData(square_points, elements, calculator, potential_func,
+                    potential_func_der, zero, optimal_lattice_parameter, F_ext,
+                    interior_mapping, full_mapping, active_elements, plasticity);
+
+  // Compute pre-relaxation energy and stress
+  double pre_energy = 0.0;
+  Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
+  ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy, stress_tensor, true);
+  double pre_stress = stress_tensor(0, 1);
+  double pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
+
+  std::cout << "State 0 (Unrelaxed Volterra): Energy = " << pre_energy
+            << ", Stress_12 = " << pre_stress << std::endl;
+
+  // Prepare mesh indices for visualization based on export_full_mesh:
+  // export_full_mesh = true  -> exports entire crystal (all elements)
+  // export_full_mesh = false -> exports only the active elements (cylinder core)
+  std::vector<size_t> vis_elements;
+  std::vector<std::pair<int, int>> vis_full_mapping;
+  if (export_full_mesh) {
+    vis_elements.resize(elements.size());
+    std::iota(vis_elements.begin(), vis_elements.end(), 0);
+    vis_full_mapping.resize(n_points);
+    for (int i = 0; i < n_points; ++i) {
+      vis_full_mapping[i] = {i, i};
+    }
+  } else {
+    vis_elements = active_elements;
+    vis_full_mapping = full_mapping;
+  }
+
+  // Save State 0 (Unrelaxed Volterra state)
+  int initial_file_id = caller_id;
+  UserData visUserDataPre(square_points, elements, calculator, potential_func,
+                          potential_func_der, zero, optimal_lattice_parameter, F_ext,
+                          interior_mapping, vis_full_mapping, vis_elements, plasticity);
+  ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+      &visUserDataPre, initial_file_id, pre_energy, pre_stress, true);
+  ConfigurationSaver::saveTriangleData(&visUserDataPre, initial_file_id, domain_dims, offsets, full_mapping);
+  ConfigurationSaver::saveElements(elements, vis_elements, initial_file_id);
+
+  auto [num_dislocations_pre, coordination_pre] =
+      DefectAnalysis::analyzeDefectsInReferenceConfig(
+          &visUserDataPre, initial_file_id, dndx, offsets, original_domain_map,
+          translation_map, domain_dims_point, element_area, pbc, true);
+  ConfigurationSaver::writeToVTK(visUserDataPre.points, visUserDataPre.elements, &visUserDataPre,
+                                 initial_file_id, true, coordination_pre, 0.0);
+  ConfigurationSaver::logDislocationData(0.0, num_dislocations_pre);
+  std::cout << "Saved initial state as configuration_"
+            << std::setw(5) << std::setfill('0') << initial_file_id << ".vtk ("
+            << (export_full_mesh ? "full mesh" : "active elements only") << ")" << std::endl;
+
+  // Energy minimization within R_free
+  std::cout << "Minimizing energy of free nodes within R_free..." << std::endl;
+  userData.third_condition_flag = false;
+  relaxation_begin_step(0);
+  relax_configuration(x, &userData, 13);
+
+  map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+  userData.points = square_points;
+
+  // Compute post-relaxation energy and stress
+  double post_energy = 0.0;
+  stress_tensor.setZero();
+  ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor, true);
+  double post_stress = stress_tensor(0, 1);
+
+  std::cout << "State 1 (Relaxed core): Energy = " << post_energy
+            << " (drop: " << (pre_energy - post_energy) << ")"
+            << ", Stress_12 = " << post_stress << std::endl;
+
+  // Optional remeshing/reconnection loop around core
+  if (enable_remeshing) {
+    std::cout << "Running remeshing/reconnection around the relaxed core..." << std::endl;
+    std::vector<int> contact_atoms;
+    int max_iterations = 100;
+    int hasChanges = 0;
+    auto [post_energy_re, stress_tensor_re, iterations] =
+        perform_remeshing_loop_reduction(
+            x, &userData, contact_atoms, fixed_nodes, F_ext, dndx, offsets,
+            original_domain_map, translation_map, domain_dims_point,
+            hasChanges, max_iterations, element_area, pbc, true);
+
+    post_energy = post_energy_re;
+    post_stress = stress_tensor_re(0, 1);
+    square_points = userData.points;
+    elements = userData.elements;
+    active_elements = userData.active_elements;
+    if (!elements.empty()) {
+      element_area = elements[0].getReferenceArea();
+    }
+    for (auto &element : elements) {
+      element.set_dof_mapping(full_mapping);
+    }
+    std::cout << "Remeshing finished (" << iterations << " iterations, changes: "
+              << hasChanges << ", final energy: " << post_energy << ")" << std::endl;
+  }
+
+  // Save State 1 (Relaxed state)
+  int relaxed_file_id = caller_id + 1;
+  std::vector<size_t> vis_elements_post;
+  if (export_full_mesh) {
+    vis_elements_post.resize(elements.size());
+    std::iota(vis_elements_post.begin(), vis_elements_post.end(), 0);
+  } else {
+    vis_elements_post = active_elements;
+  }
+  UserData postOptUserData(square_points, elements, calculator, potential_func,
+                           potential_func_der, zero, optimal_lattice_parameter,
+                           F_ext, interior_mapping, vis_full_mapping, vis_elements_post, plasticity);
+
+  ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+      &postOptUserData, relaxed_file_id, post_energy, post_stress, true);
+  ConfigurationSaver::saveTriangleData(&postOptUserData, relaxed_file_id, domain_dims, offsets, full_mapping);
+  ConfigurationSaver::saveElements(elements, vis_elements_post, relaxed_file_id);
+
+  auto [num_dislocations_post, coordination_post] =
+      DefectAnalysis::analyzeDefectsInReferenceConfig(
+          &postOptUserData, relaxed_file_id, dndx, offsets, original_domain_map,
+          translation_map, domain_dims_point, element_area, pbc, true);
+
+  ConfigurationSaver::writeToVTK(postOptUserData.points, postOptUserData.elements,
+                                 &postOptUserData, relaxed_file_id, true, coordination_post, 1.0);
+  ConfigurationSaver::logDislocationData(1.0, num_dislocations_post);
+
+  double post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
+  ConfigurationSaver::logEnergyAndStress_v2(1, 1.0, pre_energy, pre_stress,
+                                            post_energy, post_stress, pre_area,
+                                            post_area, enable_remeshing);
+
+  std::cout << "Saved relaxed state as configuration_"
+            << std::setw(5) << std::setfill('0') << relaxed_file_id << ".vtk ("
+            << (export_full_mesh ? "full mesh" : "active elements only") << ")" << std::endl;
+  std::cout << "=== VOLTERRA DISLOCATION RELAXATION COMPLETE ===\n" << std::endl;
+}
+

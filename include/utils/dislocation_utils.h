@@ -53,6 +53,21 @@ public:
         const Eigen::Vector2d& burgers_vector,
         double poisson_ratio = 0.3
     );
+
+    /**
+     * @brief Calculate edge dislocation displacement in an anisotropic square crystal
+     * 
+     * Computes the exact Stroh / Eshelby-Read-Shockley displacement field for an edge
+     * dislocation in a 2D orthotropic/square crystal.
+     * 
+     * @param position Position vector relative to dislocation core
+     * @param burgers_vector Burgers vector of the dislocation
+     * @return Displacement vector (ux, uy)
+     */
+    static Eigen::Vector2d calculateAnisotropicEdgeDisplacement(
+        const Eigen::Vector2d& position,
+        const Eigen::Vector2d& burgers_vector
+    );
 };
 
 /**
