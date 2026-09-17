@@ -91,46 +91,42 @@ def plot_surgery(csv_path, output_png=None):
     ax_energy.set_ylabel("Energy $E$", fontsize=12, fontweight='bold')
     ax_energy.set_title(title_str, fontsize=14, fontweight='bold', pad=12)
 
-    # Collect Delta E_topo and jumps for each phase
-    jump_events = []  # list of (x_pre, E_pre, x_post, E_post, de_val, phase_name)
+    # Collect Delta E_topo for each phase
+    phase_delta_e = {}
     for i, ev in enumerate(event_type):
-        if ev == 'AFTER_REMESH' and i > 0 and event_type[i-1] == 'BEFORE_REMESH':
-            x_pre = x[i-1]
-            E_pre = energy[i-1]
-            x_post = x[i]
-            E_post = energy[i]
-            de = energy_change[i]
-            jump_events.append((x_pre, E_pre, x_post, E_post, de, phase[i]))
+        if ev == 'AFTER_REMESH':
+            phase_delta_e[phase[i]] = energy_change[i]
 
     y_min, y_max = np.min(energy), np.max(energy)
     y_range = y_max - y_min
 
-    # Highlight topological jumps with prominent crimson stems & apex markers + compact text (no arrows, no boxes)
-    for (x_pre, E_pre, x_post, E_post, de, p_name) in jump_events:
-        # Bold crimson jump line connecting pre-remesh to post-remesh
-        ax_energy.plot([x_pre, x_post], [E_pre, E_post], color=color_remesh_line, lw=2.8, zorder=5)
-        # Apex marker at the top of the jump
-        ax_energy.scatter([x_post], [E_post], color=color_remesh_line, marker='^', s=80, edgecolor='#500a0a', lw=1.2, zorder=7)
-        # Clean, unboxed compact text directly above the peak
-        ax_energy.text(x_post, E_post + y_range * 0.025, f"+{de:.2f}",
-                       ha='center', va='bottom', fontsize=8.5, fontweight='bold',
-                       color='#900c3f', zorder=8)
-
-    # Clean, unboxed phase labels along the top margin
+    # Clean, unboxed phase labels along the top margin with Delta E (no boxes, no arrows)
     for p_idx, (p_name, p_start, p_end) in enumerate(phase_boundaries):
-        clean_name = p_name.replace("_", " ").title()
-        # Shorten "Remesh Pass X" -> "Pass X" for neatness
-        clean_name = clean_name.replace("Remesh Pass", "Pass")
+        clean_name = p_name.replace("_", " ").title().replace("Remesh Pass", "Pass")
+        if p_name in phase_delta_e:
+            de_val = phase_delta_e[p_name]
+            label_text = f"{clean_name}\n({de_val:+.2f})"
+        else:
+            label_text = clean_name
+
         mid_x = 0.5 * (p_start + p_end)
-        ax_energy.text(mid_x, y_max + y_range * 0.08, clean_name, ha='center', va='bottom',
+        # Stagger slightly if phases are narrow to keep completely clear
+        is_narrow = (p_end - p_start) < 160
+        y_pos = y_max + (y_range * 0.11 if (is_narrow and p_idx % 2 == 1) else y_range * 0.04)
+        ax_energy.text(mid_x, y_pos, label_text, ha='center', va='bottom',
                        fontsize=8.5, fontweight='bold', color='#495057', zorder=8)
 
-        # Subtle phase boundary line
-        if p_idx > 0:
+    # Vertical event lines (clean dashed/dotted lines, no arrows)
+    for i, ev in enumerate(event_type):
+        step_val = x[i]
+        if ev == 'BEFORE_REMESH':
             for ax in (ax_energy, ax_stress, ax_grad):
-                ax.axvline(p_start, color='#adb5bd', linestyle='--', alpha=0.5, lw=0.9, zorder=1)
+                ax.axvline(step_val, color=color_remesh_line, linestyle='--', alpha=0.75, lw=1.2, zorder=2)
+        elif ev == 'REMESH_ACCEPTED':
+            for ax in (ax_energy, ax_stress, ax_grad):
+                ax.axvline(step_val, color=color_accept_line, linestyle=':', alpha=0.85, lw=1.4, zorder=2)
 
-    ax_energy.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.16)
+    ax_energy.set_ylim(y_min - y_range * 0.05, y_max + y_range * 0.22)
 
     # 2. Stress panel
     mask_stress = stress != 0.0
@@ -184,13 +180,11 @@ def plot_surgery(csv_path, output_png=None):
 
     # Custom legend for events with exact values in the legend (saving plot space)
     custom_lines = [
-        Line2D([0], [0], color=color_lbfgs, lw=2.2, label="L-BFGS Continuous Relaxation"),
-        Line2D([0], [0], color=color_remesh_line, lw=2.8, marker='^', markerfacecolor=color_remesh_line,
-               markeredgecolor='#500a0a', markersize=8, label="Topological Reconnection Peak ($\\Delta E_{topo}$)"),
+        Line2D([0], [0], color=color_lbfgs, lw=2.2, label="L-BFGS Relaxation ($E$)"),
+        Line2D([0], [0], color=color_remesh_line, linestyle='--', lw=1.5, label="Topology Reconnected"),
+        Line2D([0], [0], color=color_accept_line, linestyle=':', lw=1.5, label="Remesh Accepted"),
         Line2D([0], [0], marker='*', color='#fef9e7', markerfacecolor='#d4ac0d', markeredgecolor='#7d6608',
-               markersize=14, label=f"Final Accepted State ($E = {final_E:.6f}$)"),
-        Line2D([0], [0], marker='X', color='#f8d7da', markerfacecolor='#dc3545', markeredgecolor='#721c24',
-               markersize=9, label="Rejected Remesh Pass (Reverted)")
+               markersize=14, label=f"Final Accepted State ($E = {final_E:.6f}$)")
     ]
     ax_energy.legend(handles=custom_lines, loc="lower left", frameon=True, framealpha=0.92, fontsize=8.5)
 
