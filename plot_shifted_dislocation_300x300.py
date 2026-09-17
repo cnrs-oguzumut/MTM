@@ -149,9 +149,8 @@ for s, col, mark in zip(shifts, colors, markers):
     ax3.plot(radii, cum_e, 'o-', color=col, lw=1.8, ms=3.0, alpha=0.9, label=f'Shift $s = {s}$')
 
 # Continuum slope reference
-fit_r = np.geomspace(5.0, 70.0, 60)
-# Anisotropic slope prefactor: K b^2 / (4 pi) = 0.0665
-c_slope = 0.066503
+# Continuum slope prefactor: K b^2 / (4 pi) = 0.4332 (Foreman 1955)
+c_slope = 0.433234
 if 0 in data:
     r0_data = data[0]['r_from_cm']
     e0_data = data[0]['e']

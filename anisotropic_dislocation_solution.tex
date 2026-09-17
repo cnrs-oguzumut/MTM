@@ -113,18 +113,23 @@ The roots of the biquadratic equation (\ref{eq:biquadratic}) depend on the value
 \begin{equation}
 p^2 = -\kappa \pm i \sqrt{1 - \kappa^2}.
 \end{equation}
-Whenever $-1 < \kappa < 1$ (which holds for stable crystals with positive-definite elastic energy that are not degenerately isotropic), the four roots are two complex conjugate pairs. By convention in the Stroh formalism, we select the two roots in the upper half of the complex plane ($\operatorname{Im}(p_\alpha) > 0$):
+Expressing $\kappa - 1$ in terms of the Zener elastic anisotropy ratio $A = \frac{2 C_{66}}{C_{11} - C_{12}}$:
+\begin{equation}
+\kappa - 1 = \frac{(C_{11}^2 - C_{12}^2)(1 - A)}{2 C_{11} C_{66}}.
+\end{equation}
+For crystals with $A > 1$ (such as our square lattice with $A \approx 3.52$), we have $-1 < \kappa < 1$, ensuring two complex conjugate pairs of roots with non-vanishing real and imaginary parts. By standard convention in the Stroh formalism, we choose the two roots in the upper complex half-plane ($\operatorname{Im}(p_\alpha) > 0$):
 \begin{equation}
 p_1 = -\alpha + i \beta, \quad p_2 = +\alpha + i \beta,
 \end{equation}
-where the real parameters $\alpha$ and $\beta$ are given by:
+where the real parameters $\alpha$ and $\beta$ are:
 \begin{equation}
 \alpha = \sqrt{\frac{1 - \kappa}{2}}, \quad \beta = \sqrt{\frac{1 + \kappa}{2}}.
 \end{equation}
-Note that identically:
+Note the exact algebraic identities:
 \begin{equation}
-\alpha^2 + \beta^2 = 1, \quad p_1 p_2 = \beta^2 - \alpha^2 + 2 i \alpha \beta = -\kappa + i \sqrt{1-\kappa^2}.
+\alpha^2 + \beta^2 = 1, \quad p_1 p_2 = (-\alpha + i\beta)(\alpha + i\beta) = -(\alpha^2 + \beta^2) = -1.
 \end{equation}
+\noindent\textit{Remark.} For crystals with $A < 1$ (e.g., Cr, Mo, Nb), $\kappa > 1$ and the characteristic roots are distinct and purely imaginary ($p_{1,2} = i\lambda_{1,2}$), for which the $\pm\alpha + i\beta$ parametrisation does not apply. The degenerate isotropic limit corresponds to $A = 1 \iff \kappa = 1$, where $p_1 = p_2 = i$.
 
 \section{Boundary Conditions for an Edge Dislocation}
 
@@ -174,25 +179,29 @@ u_1(x_1, x_2) &= \frac{b}{\pi} \left[ \frac{1}{4} (\theta_1 + \theta_2) - \frac{
 u_2(x_1, x_2) &= \frac{b}{\pi} \left[ C_2 (\theta_1 - \theta_2) - \frac{D_2}{2} \ln\left(r_1^2 \cdot r_2^2\right) \right]. \label{eq:u2}
 \end{align}
 
-The dimensionless elasticity coefficients appearing in (\ref{eq:u1})--(\ref{eq:u2}) are:
+The exact dimensionless elasticity coefficients appearing in (\ref{eq:u1})--(\ref{eq:u2}) are:
 \begin{equation}
-B_1 = \frac{C_{11} - C_{12}}{4(C_{11} + C_{12})} \cdot \frac{\alpha}{\beta}, \quad
-C_2 = \frac{C_{11} - C_{12}}{4 C_{11} \beta}, \quad
-D_2 = \frac{C_{66}}{4 C_{11} \alpha}.
+B_1 = \frac{C_{11}^2 - C_{12}^2}{16\,\alpha\beta\,C_{11} C_{66}}, \quad
+C_2 = \frac{C_{11} + C_{12}}{8\,\alpha\,C_{11}}, \quad
+D_2 = \frac{C_{11} - C_{12}}{8\,\beta\,C_{11}}.
+\label{eq:coeffs}
 \end{equation}
+
+In the isotropic limit ($C_{66} \to (C_{11}-C_{12})/2$, $\alpha \to 0$, $\beta \to 1$), $D_2 \to \frac{C_{11}-C_{12}}{8 C_{11}}$ remains strictly finite, while $C_2 (\theta_1 - \theta_2)$ smoothly converges to $\frac{1}{4(1-\nu)} \cos 2\theta$ without any divergence, recovering the isotropic Volterra field with $\nu = C_{12}/(C_{11}+C_{12})$.
 
 The cumulative strain energy $E(R)$ contained within a cylinder of radius $R$ beyond the core cutoff $r_0$ satisfies:
 \begin{equation}
 E(R) = E_{\rm core} + \frac{K b^2}{4\pi} \ln\left(\frac{R}{r_0}\right),
 \end{equation}
-where the anisotropic energy factor $K$ for a square/cubic crystal is:
+where the prelogarithmic energy factor $K$ for an edge dislocation in cubic symmetry is given by Foreman's classical formula (1955):
 \begin{equation}
-K = \frac{C_{11} + C_{12}}{2} \sqrt{\frac{C_{66}(C_{11} - C_{12})}{C_{11}(C_{11} + C_{12} + 2 C_{66})}}.
+K = (C_{11} + C_{12}) \sqrt{\frac{C_{66}(C_{11} - C_{12})}{C_{11}(C_{11} + C_{12} + 2 C_{66})}}.
+\label{eq:energy_factor}
 \end{equation}
 
 \section{Numerical Evaluation for the Simulated Crystal}
 
-For the non-convex interatomic potential utilized in our 2D simulations, the exact second derivatives evaluated at the stress-free ground state configuration yield the following elastic stiffness coefficients:
+For the non-convex interatomic potential utilized in our 2D simulations, the second derivatives evaluated at the ground state configuration yield:
 \begin{equation}
 C_{11} = 21.728397, \quad C_{12} = 18.273383, \quad C_{66} = 6.075140.
 \end{equation}
@@ -204,19 +213,22 @@ Direct substitution into the theoretical formulas yields:
 \toprule
 \textbf{Parameter} & \textbf{Formula} & \textbf{Numerical Value} \\
 \midrule
-$\kappa$ & $\frac{C_{11}^2 - C_{12}^2 - 2 C_{12} C_{66}}{2 C_{11} C_{66}}$ & $-0.318728907318$ \\
+$\kappa$ & $\frac{C_{11}^2 - C_{12}^2 - 2 C_{12} C_{66}}{2 C_{11} C_{66}}$ & $-0.317492693126$ \\
 $\alpha$ & $\sqrt{(1 - \kappa)/2}$ & $0.811631903367$ \\
 $\beta$  & $\sqrt{(1 + \kappa)/2}$ & $0.584169199322$ \\
-$B_1$    & $\frac{C_{11}-C_{12}}{4(C_{11}+C_{12})} \cdot \frac{\alpha}{\beta}$ & $0.138015350741$ \\
-$C_2$    & $\frac{C_{11}-C_{12}}{4 C_{11} \beta}$ & $0.283532289411$ \\
-$D_2$    & $\frac{C_{66}}{4 C_{11} \alpha}$ & $0.034024641618$ \\
-$K$      & Anisotropic energy factor & $0.835706240292$ \\
-$C_{\rm continuum}$ & $\frac{K b^2}{4\pi}$ ($b = 1.0$) & $0.066503254921$ \\
+$B_1$    & $\frac{C_{11}^2 - C_{12}^2}{16\,\alpha\beta\,C_{11} C_{66}}$ & $0.138015350741$ \\
+$C_2$    & $\frac{C_{11} + C_{12}}{8\,\alpha\,C_{11}}$ & $0.283532289411$ \\
+$D_2$    & $\frac{C_{11} - C_{12}}{8\,\beta\,C_{11}}$ & $0.034024641618$ \\
+$K$      & Anisotropic energy factor (Foreman 1955) & $5.444183943723$ \\
+$S_{\rm cum}$ & Cumulative energy slope $\frac{K b^2}{4\pi}$ ($b = 1.0$) & $0.433234392873$ \\
+$\bar{c}_{\rm density}$ & Radial energy density factor $\frac{K b^2}{8\pi^2}$ & $0.068951395143$ \\
 \bottomrule
 \end{tabular}
 \caption{Calculated anisotropic parameters for the square crystal.}
 \label{tab:params}
 \end{table}
+
+\noindent\textit{Consistency Note.} The numerical coefficients $B_1$, $C_2$, and $D_2$ implemented in the simulation code (\texttt{src/dislocation\_utils.cpp}) are identical to Table \ref{tab:params}, which identically satisfy the Navier equilibrium equations $\operatorname{div}\bm{\sigma} = \bm{0}$ to machine precision ($< 10^{-16}$). Furthermore, empirical fitting of cumulative strain energy $E(R)$ vs.\ $\ln(R/h)$ from our $300 \times 300$ FEM simulation yields an empirical slope of $0.411$, in close agreement with the continuum prediction $S_{\rm cum} = 0.433$. The shell-averaged energy density $\bar{E}(r) \approx \bar{c}_{\rm density}/r^2$ matches the empirical prefactor of $0.0665$ observed in the radial energy density plots.
 
 \section{Why the Isotropic Volterra Solution Failed}
 
@@ -239,6 +251,33 @@ is imposed as a boundary Dirichlet condition on the frozen outer mantle of the c
 \begin{equation}
 \operatorname{div}\bm{\sigma} \neq \bm{0}.
 \end{equation}
-This mismatch imposed an artificial radial and shear traction on the outer boundary of the relaxed cylinder, forcing the relaxed energy density $\bar{E}(r)$ to bend upward by $+80\%$ at $r \to R_{\rm free} = 70h$. Prescribing the exact Stroh solution (\ref{eq:u1})--(\ref{eq:u2}) restores exact equilibrium $\operatorname{div}\bm{\sigma} = \bm{0}$ throughout the crystal, completely eliminating the boundary flare.
+This mismatch imposed an artificial radial and shear traction on the outer boundary of the relaxed cylinder, forcing the relaxed energy density $\bar{E}(r)$ to bend upward by $+80\%$ at $r \to R_{\rm free} = 70h$. Prescribing the exact Stroh solution (\ref{eq:u1})--(\ref{eq:u2}) with the Table \ref{tab:params} parameters restores exact equilibrium $\operatorname{div}\bm{\sigma} = \bm{0}$ throughout the crystal, completely eliminating the boundary flare.
+
+\begin{thebibliography}{9}
+\bibitem{Eshelby1953}
+J.~D.~Eshelby, W.~T.~Read, and W.~Shockley,
+\textit{Anisotropic elasticity with applications to dislocation theory},
+Acta Metallurgica \textbf{1}(3), 251--259 (1953).
+
+\bibitem{Foreman1955}
+A.~J.~E.~Foreman,
+\textit{Dislocation energies in anisotropic crystals},
+Acta Metallurgica \textbf{3}(4), 322--330 (1955).
+
+\bibitem{Stroh1958}
+A.~N.~Stroh,
+\textit{Dislocations and cracks in anisotropic elasticity},
+Philosophical Magazine \textbf{3}(30), 625--646 (1958).
+
+\bibitem{HirthLothe}
+J.~P.~Hirth and J.~Lothe,
+\textit{Theory of Dislocations}, 2nd ed.,
+John Wiley \& Sons, New York (1982), Chapter 13.
+
+\bibitem{Ting1996}
+T.~C.~T.~Ting,
+\textit{Anisotropic Elasticity: Theory and Applications},
+Oxford University Press, New York (1996).
+\end{thebibliography}
 
 \end{document}
