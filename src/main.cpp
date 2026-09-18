@@ -23,6 +23,9 @@ int main(int argc, char **argv) {
   double r_free = 20.0;
   bool use_cylinder = false;
   bool export_full_mesh = true;
+  double alpha_start = 0.14;
+  double alpha_end = 1.0;
+  double step_size = 6e-5;
 
   // Energy relaxation solver (default: plain L-BFGS, unchanged behaviour).
   //   --precond=stiffness|laplacian|diag|none   L-BFGS preconditioner
@@ -107,6 +110,16 @@ int main(int argc, char **argv) {
       AvalancheRecorder::instance().setEnabled(true);
     } else if (arg == "--trace-avalanche=0" || arg == "--trace=0") {
       AvalancheRecorder::instance().setEnabled(false);
+    } else if (arg.rfind("--alpha-end=", 0) == 0) {
+      alpha_end = std::stod(arg.substr(12));
+    } else if (arg.rfind("--alpha-max=", 0) == 0) {
+      alpha_end = std::stod(arg.substr(12));
+    } else if (arg.rfind("--alpha-start=", 0) == 0) {
+      alpha_start = std::stod(arg.substr(14));
+    } else if (arg.rfind("--alpha-min=", 0) == 0) {
+      alpha_start = std::stod(arg.substr(12));
+    } else if (arg.rfind("--step-size=", 0) == 0) {
+      step_size = std::stod(arg.substr(12));
     }
   }
   configure_relaxation_solver(relax_options, precond_from_step);
@@ -143,6 +156,8 @@ int main(int argc, char **argv) {
   std::cout << "System size: nx=" << nx << ", ny=" << ny
             << " | mode=" << mode << " | seed=" << seed
             << " | remeshing=" << (enable_remeshing ? "enabled" : "disabled")
+            << " | alpha_start=" << alpha_start << " | alpha_end=" << alpha_end
+            << " | step_size=" << step_size
             << " | trace=" << (AvalancheRecorder::instance().isEnabled() ? "enabled" : "disabled")
             << " | precond=" << to_string(relax_options.type);
   if (relax_options.type != LBFGSPreconditioner::None)
@@ -210,10 +225,6 @@ int main(int argc, char **argv) {
 
   // 7. Zanzotto Continuous Shear Loading:
   //    Configure loading schedule once; automatically negated for negative loading
-  double alpha_start = 0.14;
-  double alpha_end = 1.0;
-  double step_size = 6e-5;
-
   if (mode == "positive") {
     example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing);
   } else {
