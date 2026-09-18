@@ -75,7 +75,7 @@ if [ ! -f "$EXE" ]; then
 fi
 
 # Execute simulation and stream to both console (slurm-%j.out) and simulation.log
-"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" 2>&1 | tee simulation.log
+"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" "${@:6}" 2>&1 | tee simulation.log
 EXIT_CODE=${PIPESTATUS[0]}
 
 echo ""

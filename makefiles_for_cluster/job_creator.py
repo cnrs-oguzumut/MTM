@@ -1,34 +1,96 @@
 #!/usr/bin/env python3
 """
-Automatic Job Setup Generator for Parallel Crystal Plasticity Simulations
+Automatic Job Setup Generator for Parallel Crystal Plasticity Simulations (Magi Cluster)
 Creates SLURM script, parallel launcher, and individual run scripts
-adapted for the new lattice_triangulation interface:
-    lattice_triangulation <nx> <ny> <mode> <seed> [remesh] [--precond=... --precond-from-step=N]
+adapted for the lattice_triangulation interface:
+    lattice_triangulation <nx> <ny> <mode> <seed> [remesh] [--precond=... --precond-from-step=N] [--alpha-end=... --alpha-start=... --step-size=...]
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
 
 
 def get_input(prompt, default=None):
-    """Get user input with optional default"""
+    """Get user input with optional default; uses default if non-interactive"""
+    if not sys.stdin.isatty() and default is not None:
+        return str(default)
     if default is not None:
-        user_input = input(f"{prompt} [{default}]: ").strip()
-        return user_input if user_input else str(default)
-    return input(f"{prompt}: ").strip()
+        try:
+            user_input = input(f"{prompt} [{default}]: ").strip()
+            return user_input if user_input else str(default)
+        except (EOFError, KeyboardInterrupt):
+            return str(default)
+    try:
+        return input(f"{prompt}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
+def resolve_val(cli_val, prompt, default, converter=str, auto_yes=False):
+    """Use CLI value if specified; otherwise prompt interactively (or use default if auto_yes)"""
+    if cli_val is not None:
+        return converter(cli_val)
+    if auto_yes:
+        return converter(default)
+    return converter(get_input(prompt, default))
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Parallel Job Setup Generator for Crystal Plasticity Simulations (Magi Cluster)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    # 1. Hardware & Cores
+    parser.add_argument("--n-jobs", type=int, default=None, help="Number of parallel jobs to run simultaneously")
+    parser.add_argument("--threads", "--threads-per-job", dest="threads_per_job", type=int, default=None, help="OpenMP threads per job")
+
+    # 2. Physics & System Parameters
+    parser.add_argument("--nx", type=int, default=None, help="System size nx")
+    parser.add_argument("--ny", type=int, default=None, help="System size ny")
+    parser.add_argument("--mode", choices=["both", "positive", "negative"], default=None, help="Loading mode ('both', 'positive', 'negative')")
+    parser.add_argument("--seed", "--start-seed", dest="start_seed", type=int, default=None, help="Starting random seed")
+    parser.add_argument("--seed-strategy", choices=["unique", "paired"], default=None, help="Seed strategy for 'both' mode")
+    parser.add_argument("--remesh", dest="remesh", action="store_true", default=None, help="Enable adaptive remeshing")
+    parser.add_argument("--no-remesh", dest="remesh", action="store_false", help="Disable adaptive remeshing")
+
+    # Loading schedule parameters
+    parser.add_argument("--alpha-end", "--alpha-max", dest="alpha_end", type=float, default=None, help="Target shear strain magnitude |alpha_end| (e.g. 1.0 or 3.0)")
+    parser.add_argument("--alpha-start", "--alpha-min", dest="alpha_start", type=float, default=None, help="Initial shear strain magnitude |alpha_start| (default: 0.14)")
+    parser.add_argument("--step-size", type=float, default=None, help="Step size magnitude |d_alpha| (default: 6e-5)")
+
+    # Preconditioner
+    parser.add_argument("--precond", choices=["stiffness", "laplacian", "diag", "none"], default=None, help="L-BFGS preconditioner")
+    parser.add_argument("--precond-from-step", type=int, default=None, help="Use preconditioned solver from step N")
+
+    # Stability monitor
+    parser.add_argument("--eig-every", type=int, default=None, help="Stability monitor: eigenvalues every N steps (0 = off)")
+    parser.add_argument("--eig-at-avalanche", type=int, choices=[0, 1], default=None, help="Eigenvalues before/after avalanches (0 or 1)")
+
+    # 3. Paths & Cluster
+    parser.add_argument("--base-dir", default=None, help="Base directory for MTM on cluster")
+    parser.add_argument("--exe-path", default=None, help="Executable path")
+    parser.add_argument("--runs-dir", default=None, help="Runs output directory")
+
+    # 4. SLURM Options
+    parser.add_argument("--job-name", default=None, help="SLURM job name")
+    parser.add_argument("--partition", default=None, help="SLURM partition")
+    parser.add_argument("--email", default=None, help="Email for notifications")
+    parser.add_argument("-y", "--yes", action="store_true", help="Auto-confirm script generation without interactive prompt")
+
+    args = parser.parse_args()
+
     print("=" * 70)
-    print("  Parallel Job Setup Generator (Lattice Triangulation)")
+    print("  Parallel Job Setup Generator (Lattice Triangulation - Magi Cluster)")
     print("=" * 70)
     print()
 
     # 1. Resource Configuration
     print("--- 1. Hardware & Core Allocation ---")
-    n_jobs = int(get_input("Number of parallel jobs to run simultaneously", "4"))
-    threads_per_job = int(get_input("OpenMP threads per job", "32"))
+    n_jobs = resolve_val(args.n_jobs, "Number of parallel jobs to run simultaneously", "4", int, args.yes)
+    threads_per_job = resolve_val(args.threads_per_job, "OpenMP threads per job", "32", int, args.yes)
     total_cores = n_jobs * threads_per_job
 
     print(f"  -> Total cores allocated: {total_cores} ({n_jobs} jobs x {threads_per_job} threads)")
@@ -36,41 +98,79 @@ def main():
 
     # 2. Physics & Simulation Parameters
     print("--- 2. Simulation Parameters ---")
-    nx = int(get_input("System size nx", "150"))
-    ny = int(get_input("System size ny", "150"))
+    nx = resolve_val(args.nx, "System size nx", "150", int, args.yes)
+    ny = resolve_val(args.ny, "System size ny", "150", int, args.yes)
     
-    print("Loading mode options:")
-    print("  'both'     : Launch paired positive & negative runs with matching seeds")
-    print("  'positive' : All jobs run positive loading with sequential seeds")
-    print("  'negative' : All jobs run negative loading with sequential seeds")
-    mode_choice = get_input("Select loading mode ('both', 'positive', 'negative')", "both").lower()
-    if mode_choice not in ("both", "positive", "negative"):
-        print(f"Warning: Unknown mode '{mode_choice}', defaulting to 'both'.")
+    if args.mode is not None:
+        mode_choice = args.mode.lower()
+    elif args.yes:
         mode_choice = "both"
+    else:
+        print("Loading mode options:")
+        print("  'both'     : Launch paired positive & negative runs with matching seeds")
+        print("  'positive' : All jobs run positive loading with sequential seeds")
+        print("  'negative' : All jobs run negative loading with sequential seeds")
+        mode_choice = get_input("Select loading mode ('both', 'positive', 'negative')", "both").lower()
+        if mode_choice not in ("both", "positive", "negative"):
+            print(f"Warning: Unknown mode '{mode_choice}', defaulting to 'both'.")
+            mode_choice = "both"
 
-    start_seed = int(get_input("Starting random seed", "42"))
+    start_seed = resolve_val(args.start_seed, "Starting random seed", "42", int, args.yes)
     seed_strategy = "unique"
     if mode_choice == "both":
-        seed_strategy = get_input(
-            "Seed strategy for 'both' mode: 'unique' (44, 45, 46, 47) or 'paired' (44, 44, 45, 45)",
-            "unique"
-        ).lower()
+        if args.seed_strategy is not None:
+            seed_strategy = args.seed_strategy.lower()
+        elif args.yes:
+            seed_strategy = "unique"
+        else:
+            seed_strategy = get_input(
+                "Seed strategy for 'both' mode: 'unique' (44, 45, 46, 47) or 'paired' (44, 44, 45, 45)",
+                "unique"
+            ).lower()
 
     # Remeshing configuration
-    remesh_choice = get_input("Enable adaptive remeshing? ('yes' / 'no')", "yes").lower()
-    enable_remeshing = remesh_choice in ("y", "yes", "true", "1", "remesh")
+    if args.remesh is not None:
+        enable_remeshing = args.remesh
+    elif args.yes:
+        enable_remeshing = True
+    else:
+        remesh_choice = get_input("Enable adaptive remeshing? ('yes' / 'no')", "yes").lower()
+        enable_remeshing = remesh_choice in ("y", "yes", "true", "1", "remesh")
     remesh_arg = "1" if enable_remeshing else "0"
     remesh_status = "enabled" if enable_remeshing else "disabled"
     suffix = "" if enable_remeshing else "_noremesh"
     print(f"  -> Remeshing: {remesh_status.upper()}")
 
+    # Loading schedule parameters (alpha_start, alpha_end, step_size)
+    print("Loading schedule parameters:")
+    alpha_end = resolve_val(args.alpha_end, "Target shear strain magnitude |alpha_end|", "1.0", float, args.yes)
+    alpha_start = resolve_val(args.alpha_start, "Initial shear strain magnitude |alpha_start|", "0.14", float, args.yes)
+    step_size = resolve_val(args.step_size, "Step size magnitude |d_alpha|", "6e-5", float, args.yes)
+
+    loading_flags_list = []
+    if alpha_end != 1.0:
+        loading_flags_list.append(f"--alpha-end={alpha_end:g}")
+        suffix += f"_alpha{alpha_end:g}"
+    if alpha_start != 0.14:
+        loading_flags_list.append(f"--alpha-start={alpha_start:g}")
+    if step_size != 6e-5:
+        loading_flags_list.append(f"--step-size={step_size:g}")
+    loading_flags = " ".join(loading_flags_list)
+    loading_status = f"|alpha| = {alpha_start:g} -> {alpha_end:g} (step {step_size:g})"
+    print(f"  -> Loading schedule: {loading_status}")
+
     # L-BFGS preconditioner (see README "Preconditioned L-BFGS")
-    print("L-BFGS preconditioner options:")
-    print("  'stiffness' : analytic FEM stiffness, sparse Cholesky (fastest, ~10-15x on elastic steps)")
-    print("  'laplacian' : reference Laplacian (~3x)")
-    print("  'diag'      : ALGLIB diagonal preconditioner (little gain)")
-    print("  'none'      : original plain L-BFGS")
-    precond = get_input("Select preconditioner", "stiffness").lower()
+    if args.precond is not None:
+        precond = args.precond.lower()
+    elif args.yes:
+        precond = "stiffness"
+    else:
+        print("L-BFGS preconditioner options:")
+        print("  'stiffness' : analytic FEM stiffness, sparse Cholesky (fastest, ~10-15x on elastic steps)")
+        print("  'laplacian' : reference Laplacian (~3x)")
+        print("  'diag'      : ALGLIB diagonal preconditioner (little gain)")
+        print("  'none'      : original plain L-BFGS")
+        precond = get_input("Select preconditioner", "stiffness").lower()
     if precond in ("off", "no", "plain", "0", "false"):
         precond = "none"
     if precond not in ("stiffness", "laplacian", "diag", "none"):
@@ -79,9 +179,13 @@ def main():
     precond_flags = ""
     precond_status = "none (plain L-BFGS)"
     if precond != "none":
-        from_step = int(get_input(
+        from_step = resolve_val(
+            args.precond_from_step,
             "Use plain L-BFGS for load steps before (1 = initial relaxation identical to plain runs)",
-            "1"))
+            "1",
+            int,
+            args.yes
+        )
         precond_flags = f"--precond={precond} --precond-from-step={from_step}"
         precond_status = f"{precond} (from step {from_step})"
     # Preconditioned runs are the default; tag folders/jobs of the other choices
@@ -89,16 +193,18 @@ def main():
     suffix += precond_tag
     print(f"  -> Preconditioner: {precond_status}")
 
-    # Stability monitor: lowest stiffness eigenvalues during the run (eigen_log.csv,
-    # eigen_modes/); about +7% run time with N = 5
-    eig_every = int(get_input(
-        "Stability monitor: eigenvalues every N load steps (0 = off)", "5"))
+    # Stability monitor: lowest stiffness eigenvalues during the run
+    eig_every = resolve_val(args.eig_every, "Stability monitor: eigenvalues every N load steps (0 = off)", "5", int, args.yes)
     eig_flags = ""
     eig_status = "off"
     if eig_every > 0:
-        eig_aval = get_input(
-            "  Also before/after each avalanche, with soft modes? ('yes' / 'no')", "yes").lower()
-        eig_at_avalanche = 1 if eig_aval in ("y", "yes", "true", "1") else 0
+        if args.eig_at_avalanche is not None:
+            eig_at_avalanche = args.eig_at_avalanche
+        elif args.yes:
+            eig_at_avalanche = 1
+        else:
+            eig_aval = get_input("  Also before/after each avalanche, with soft modes? ('yes' / 'no')", "yes").lower()
+            eig_at_avalanche = 1 if eig_aval in ("y", "yes", "true", "1") else 0
         eig_flags = f"--eig-every={eig_every} --eig-at-avalanche={eig_at_avalanche}"
         eig_status = f"every {eig_every} steps" + (", before/after avalanches" if eig_at_avalanche else "")
     print(f"  -> Stability monitor: {eig_status}")
@@ -108,19 +214,19 @@ def main():
     print("--- 3. Cluster Paths ---")
     current_cwd = os.getcwd()
     default_base = current_cwd if "MTM" in current_cwd else "/home/dist/umut.salman/latest_MTM"
-    base_dir = get_input("Base directory for MTM", default_base)
-    exe_path = get_input("Executable path", f"{base_dir}/lattice_triangulation")
+    base_dir = resolve_val(args.base_dir, "Base directory for MTM", default_base, str, args.yes)
+    exe_path = resolve_val(args.exe_path, "Executable path", f"{base_dir}/lattice_triangulation", str, args.yes)
     
     default_runs_dir = f"{base_dir}/runs_{nx}x{ny}{suffix}"
-    runs_dir = get_input("Runs output directory", default_runs_dir)
+    runs_dir = resolve_val(args.runs_dir, "Runs output directory", default_runs_dir, str, args.yes)
 
     # 4. SLURM Options
     print()
     print("--- 4. SLURM Cluster Options ---")
     default_job_name = f"shear_{nx}x{ny}{suffix}"
-    job_name = get_input("SLURM job name", default_job_name)
-    partition = get_input("SLURM partition", "COMPUTE2")
-    email = get_input("Email for notifications", "umut.salman@lspm.cnrs.fr")
+    job_name = resolve_val(args.job_name, "SLURM job name", default_job_name, str, args.yes)
+    partition = resolve_val(args.partition, "SLURM partition", "COMPUTE2", str, args.yes)
+    email = resolve_val(args.email, "Email for notifications", "umut.salman@lspm.cnrs.fr", str, args.yes)
 
     # Build per-job specifications: [(job_id, nx, ny, mode, seed, remesh_arg, run_folder)]
     job_specs = []
@@ -145,8 +251,9 @@ def main():
     print()
     print("=" * 70)
     print("Planned Job Configurations:")
-    print(f"  Preconditioner: {precond_status}")
-    print(f"  Stability monitor: {eig_status}")
+    print(f"  Loading schedule: {loading_status}")
+    print(f"  Preconditioner:   {precond_status}")
+    print(f"  Stability monitor:{eig_status}")
     print("=" * 70)
     for j_id, j_nx, j_ny, j_mode, j_seed, j_remesh, j_dir in job_specs:
         start_cpu = (j_id - 1) * threads_per_job
@@ -156,10 +263,11 @@ def main():
     print("=" * 70)
     print()
 
-    confirm = get_input("Generate scripts with these parameters? (y/n)", "y").lower()
-    if confirm not in ("y", "yes"):
-        print("Aborted.")
-        sys.exit(0)
+    if not args.yes:
+        confirm = get_input("Generate scripts with these parameters? (y/n)", "y").lower()
+        if confirm not in ("y", "yes"):
+            print("Aborted.")
+            sys.exit(0)
 
     print()
     print("Generating files...")
@@ -181,6 +289,7 @@ RUN_DIR=$7
 EXE="{exe_path}"
 PRECOND_FLAGS="{precond_flags}"
 EIG_FLAGS="{eig_flags}"
+LOADING_FLAGS="{loading_flags}"
 
 # Create run directory and enter it
 mkdir -p "$RUN_DIR"
@@ -202,10 +311,11 @@ echo "  OpenMP threads:    $OMP_NUM_THREADS"
 echo "  Executable:        $EXE"
 echo "  Preconditioner:    ${{PRECOND_FLAGS:-none (plain L-BFGS)}}"
 echo "  Stability monitor: ${{EIG_FLAGS:-off}}"
+echo "  Loading schedule:  ${{LOADING_FLAGS:-default (|alpha|=0.14->1.0, step 6e-5)}}"
 echo "=========================================================="
 
 # Execute simulation
-"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" $PRECOND_FLAGS $EIG_FLAGS > simulation.log 2>&1
+"$EXE" "$NX" "$NY" "$MODE" "$SEED" "$REMESH" $PRECOND_FLAGS $EIG_FLAGS $LOADING_FLAGS > simulation.log 2>&1
 EXIT_CODE=$?
 
 echo ""
@@ -351,6 +461,7 @@ echo "  System size:     {nx}x{ny}"
 echo "  Mode setting:    {mode_choice}"
 echo "  Start seed:      {start_seed}"
 echo "  Remeshing:       {remesh_status}"
+echo "  Loading range:   {loading_status}"
 echo "  Preconditioner:  {precond_status}"
 echo "  Stability mon.:  {eig_status}"
 echo "=========================================="
