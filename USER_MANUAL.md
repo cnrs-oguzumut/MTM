@@ -119,11 +119,14 @@ Tracks the lowest eigenvalues ($\lambda_{\min}$) of the analytic stiffness matri
 
 ---
 
-### Checkpoint & Restart Options
+### Checkpoint, Avalanche & Data Saving Options
 
-| Option | Syntax | Description |
-| :--- | :--- | :--- |
-| `--restart=<file>` | `--restart=checkpoints/latest.chk`<br>`--restart checkpoints/checkpoint_00015.chk` | Directly resumes an interrupted simulation from the specified single-file checkpoint. |
+| Option | Syntax | Default | Description |
+| :--- | :--- | :---: | :--- |
+| `--checkpoint-interval=<N>` | `--checkpoint-interval=500` | `500` | Periodic elastic checkpoint interval in steps (`0` = disable periodic checkpoints, saving only at avalanches). |
+| `--stress-drop-threshold=<VAL>` | `--stress-drop=0.10` | `0.10` | Fractional stress drop threshold $\Delta \sigma / |\sigma|$ required to trigger avalanche saving (PRE/POST checkpoints & VTK). |
+| `--save-triangle-data` | `--save-triangle-data` | disabled | Enable legacy `triangle_data/points_*.dat` and `elements_*.dat` output. Disabled by default to save 15+ GB of disk space. |
+| `--restart=<file>` | `--restart=checkpoints/latest.chk`<br>`--restart checkpoints/checkpoint_00015.chk` | — | Directly resumes an interrupted simulation from the specified single-file checkpoint. |
 
 ---
 
@@ -132,9 +135,9 @@ Tracks the lowest eigenvalues ($\lambda_{\min}$) of the analytic stiffness matri
 ### How Checkpointing Works
 During continuous loading, the engine automatically saves checkpoints inside the `checkpoints/` directory:
 1. **Avalanche Checkpoints**:
-   - Every time a stress drop or avalanche is detected, the engine saves the exact post-avalanche state to `checkpoints/checkpoint_XXXXX.chk` (where `XXXXX` matches the VTK file ID).
+   - Every time a stress drop or avalanche exceeding `--stress-drop-threshold` is detected, the engine saves the exact pre- and post-avalanche state to `checkpoints/checkpoint_XXXXX.chk` (where `XXXXX` matches the VTK file ID).
 2. **Periodic Checkpoints**:
-   - During long elastic loading segments, the engine automatically saves a periodic checkpoint every 50 steps: `checkpoints/checkpoint_step_XXXXX.chk`.
+   - During long elastic loading segments, the engine automatically saves a periodic checkpoint every $N$ steps (`checkpoints/checkpoint_step_XXXXX.chk`), controlled by `--checkpoint-interval=<N>` (default: `500`).
 3. **Latest Pointer**:
    - `checkpoints/latest.chk` is automatically updated on every checkpoint save.
 

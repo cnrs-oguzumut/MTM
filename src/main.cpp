@@ -58,6 +58,14 @@ int main(int argc, char **argv) {
   StabilityMonitorOptions stability_options;
   std::string restart_checkpoint;
 
+  // Data saving and checkpoint controls:
+  //   --checkpoint-interval=N (or --chk-interval=N)  periodic elastic checkpoint every N steps (default: 500, 0 = disabled)
+  //   --stress-drop-threshold=VAL (or --stress-drop=VAL) fractional stress drop to trigger avalanche save (default: 0.10)
+  //   --triangle-data / --no-triangle-data           write legacy triangle_data/points_*.dat and elements_*.dat (default: disabled)
+  int checkpoint_interval = 500;
+  double stress_drop_threshold = 0.10;
+  bool save_triangle_data = false;
+
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -120,13 +128,25 @@ int main(int argc, char **argv) {
       alpha_start = std::stod(arg.substr(12));
     } else if (arg.rfind("--step-size=", 0) == 0) {
       step_size = std::stod(arg.substr(12));
+    } else if (arg.rfind("--checkpoint-interval=", 0) == 0) {
+      checkpoint_interval = std::stoi(arg.substr(22));
+    } else if (arg.rfind("--chk-interval=", 0) == 0) {
+      checkpoint_interval = std::stoi(arg.substr(15));
+    } else if (arg.rfind("--stress-drop-threshold=", 0) == 0) {
+      stress_drop_threshold = std::stod(arg.substr(24));
+    } else if (arg.rfind("--stress-drop=", 0) == 0) {
+      stress_drop_threshold = std::stod(arg.substr(14));
+    } else if (arg == "--save-triangle-data" || arg == "--triangle-data" || arg == "--save-triangle-data=1" || arg == "--triangle-data=1") {
+      save_triangle_data = true;
+    } else if (arg == "--no-triangle-data" || arg == "--save-triangle-data=0" || arg == "--triangle-data=0") {
+      save_triangle_data = false;
     }
   }
   configure_relaxation_solver(relax_options, precond_from_step);
   configure_stability_monitor(stability_options);
 
   if (!restart_checkpoint.empty()) {
-    restart_zanzotto_simulation(restart_checkpoint);
+    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data);
     return 0;
   }
 
@@ -165,6 +185,12 @@ int main(int argc, char **argv) {
               << ", refresh=" << relax_options.refresh_every
               << ", from step " << precond_from_step << ")";
   std::cout << std::endl;
+  std::cout << "Saving controls: chk_interval=";
+  if (checkpoint_interval > 0) std::cout << checkpoint_interval << " steps";
+  else std::cout << "disabled (avalanches only)";
+  std::cout << " | stress_drop_threshold=" << (stress_drop_threshold * 100.0) << "%"
+            << " | triangle_data=" << (save_triangle_data ? "enabled" : "disabled")
+            << std::endl;
   if (stability_options.enabled()) {
     std::cout << "Stability monitor: every " << stability_options.every << " steps"
               << ", at avalanches " << (stability_options.at_avalanche ? "on" : "off")
@@ -226,9 +252,9 @@ int main(int argc, char **argv) {
   // 7. Zanzotto Continuous Shear Loading:
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
-    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing);
+    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data);
   } else {
-    example_1_conti_zanzotto_negative_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, seed, enable_remeshing);
+    example_1_conti_zanzotto_negative_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

@@ -61,6 +61,11 @@ def main():
     parser.add_argument("--alpha-start", "--alpha-min", dest="alpha_start", type=float, default=None, help="Initial shear strain magnitude |alpha_start| (default: 0.14)")
     parser.add_argument("--step-size", type=float, default=None, help="Step size magnitude |d_alpha| (default: 6e-5)")
 
+    # Data saving & checkpoint controls
+    parser.add_argument("--checkpoint-interval", "--chk-interval", dest="checkpoint_interval", type=int, default=None, help="Periodic elastic checkpoint interval in steps (0 = disabled, default: 500)")
+    parser.add_argument("--stress-drop-threshold", "--stress-drop", dest="stress_drop_threshold", type=float, default=None, help="Fractional stress drop threshold to trigger avalanche save (default: 0.10)")
+    parser.add_argument("--save-triangle-data", dest="save_triangle_data", action="store_true", default=False, help="Enable legacy triangle_data output (default: disabled)")
+
     # Preconditioner
     parser.add_argument("--precond", choices=["stiffness", "laplacian", "diag", "none"], default=None, help="L-BFGS preconditioner")
     parser.add_argument("--precond-from-step", type=int, default=None, help="Use preconditioned solver from step N")
@@ -155,6 +160,12 @@ def main():
         loading_flags_list.append(f"--alpha-start={alpha_start:g}")
     if step_size != 6e-5:
         loading_flags_list.append(f"--step-size={step_size:g}")
+    if args.checkpoint_interval is not None:
+        loading_flags_list.append(f"--checkpoint-interval={args.checkpoint_interval}")
+    if args.stress_drop_threshold is not None:
+        loading_flags_list.append(f"--stress-drop-threshold={args.stress_drop_threshold:g}")
+    if args.save_triangle_data:
+        loading_flags_list.append("--save-triangle-data")
     loading_flags = " ".join(loading_flags_list)
     loading_status = f"|alpha| = {alpha_start:g} -> {alpha_end:g} (step {step_size:g})"
     print(f"  -> Loading schedule: {loading_status}")

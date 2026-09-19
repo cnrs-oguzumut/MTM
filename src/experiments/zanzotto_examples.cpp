@@ -453,7 +453,10 @@ void example_1_conti_zanzotto_loading(
     double triangulation_perturbation,
     unsigned int seed,
     bool enable_remeshing,
-    const ConfigurationSaver::CheckpointData* restart_chk) {
+    const ConfigurationSaver::CheckpointData* restart_chk,
+    int checkpoint_interval,
+    double stress_drop_threshold,
+    bool save_triangle_data) {
 
   //     auto compute_even_ny = [](int nx) {
   //     int ny = std::round(2.0 * nx / std::sqrt(3));
@@ -957,12 +960,12 @@ void example_1_conti_zanzotto_loading(
     // Avalanche acceptance conditions:
     // 1) Remeshing accepted topological changes (hasChanges > 0) [if remeshing enabled]
     // 2) Energy decreased (post_energy < post_energy_previous)
-    // 3) Stress magnitude dropped by at least 10% (fractional_stress_drop >= 0.10)
+    // 3) Stress magnitude dropped by at least threshold (fractional_stress_drop >= stress_drop_threshold)
     bool remesh_accepted = (hasChanges > 0);
-    bool stress_drop_10pct = (fractional_stress_drop >= 0.10);
+    bool stress_drop_criterion = (fractional_stress_drop >= stress_drop_threshold);
     bool stress_drop_detected = enable_remeshing
-        ? ((i > 0) && remesh_accepted && energy_dropped && stress_drop_10pct)
-        : ((i > 0) && energy_dropped && stress_drop_10pct);
+        ? ((i > 0) && remesh_accepted && energy_dropped && stress_drop_criterion)
+        : ((i > 0) && energy_dropped && stress_drop_criterion);
 
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
@@ -1023,10 +1026,12 @@ void example_1_conti_zanzotto_loading(
 
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
           &preOptUserData, pre_file_id, pre_energy_val, pre_stress_val, true);
-      ConfigurationSaver::saveTriangleData(&preOptUserData, pre_file_id,
-                                           domain_dims, offsets, full_mapping);
-      ConfigurationSaver::saveElements(pre_elements, pre_active_elements,
-                                       pre_file_id);
+      if (save_triangle_data) {
+        ConfigurationSaver::saveTriangleData(&preOptUserData, pre_file_id,
+                                             domain_dims, offsets, full_mapping);
+        ConfigurationSaver::saveElements(pre_elements, pre_active_elements,
+                                         pre_file_id);
+      }
 
       // Save pre-avalanche single-file checkpoint
       {
@@ -1062,9 +1067,11 @@ void example_1_conti_zanzotto_loading(
 
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
           &postOptUserData, post_file_id, post_energy, post_stress, true);
-      ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id,
-                                           domain_dims, offsets, full_mapping);
-      ConfigurationSaver::saveElements(elements, active_elements, post_file_id);
+      if (save_triangle_data) {
+        ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id,
+                                             domain_dims, offsets, full_mapping);
+        ConfigurationSaver::saveElements(elements, active_elements, post_file_id);
+      }
 
       // Save post-avalanche single-file checkpoint & latest.chk
       {
@@ -1114,7 +1121,7 @@ void example_1_conti_zanzotto_loading(
       }
 
       // Elastic step: no VTK or defect churn, but periodically save single-file checkpoint
-      if ((i + 1) % 50 == 0) {
+      if (checkpoint_interval > 0 && (i + 1) % checkpoint_interval == 0) {
         ConfigurationSaver::CheckpointData chk_periodic;
         chk_periodic.nx = nx; chk_periodic.ny = ny;
         chk_periodic.iteration = (restart_chk != nullptr ? restart_chk->iteration + static_cast<int>(i) + 1 : static_cast<int>(i) + 1);
@@ -1158,7 +1165,10 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                double step_size,
                                                unsigned int seed,
                                                bool enable_remeshing,
-                                               const ConfigurationSaver::CheckpointData* restart_chk) {
+                                               const ConfigurationSaver::CheckpointData* restart_chk,
+                                               int checkpoint_interval,
+                                               double stress_drop_threshold,
+                                               bool save_triangle_data) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1166,10 +1176,16 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    /*triangulation_perturbation=*/-1e-7,
                                    /*seed=*/seed,
                                    /*enable_remeshing=*/enable_remeshing,
-                                   restart_chk);
+                                   restart_chk,
+                                   checkpoint_interval,
+                                   stress_drop_threshold,
+                                   save_triangle_data);
 }
 
-void restart_zanzotto_simulation(const std::string& checkpoint_path) {
+void restart_zanzotto_simulation(const std::string& checkpoint_path,
+                                 int checkpoint_interval,
+                                 double stress_drop_threshold,
+                                 bool save_triangle_data) {
   std::string path = checkpoint_path;
   if (path == "latest" || path == "checkpoints/latest") {
     path = "checkpoints/latest.chk";
@@ -1199,11 +1215,13 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path) {
     example_1_conti_zanzotto_loading(
         0, chk.nx, chk.ny,
         next_alpha, chk.alpha_end, chk.step_size,
-        0.0, chk.seed, chk.enable_remeshing, &chk);
+        0.0, chk.seed, chk.enable_remeshing, &chk,
+        checkpoint_interval, stress_drop_threshold, save_triangle_data);
   } else {
     example_1_conti_zanzotto_negative_loading(
         0, chk.nx, chk.ny,
         next_alpha, chk.alpha_end, chk.step_size,
-        chk.seed, chk.enable_remeshing, &chk);
+        chk.seed, chk.enable_remeshing, &chk,
+        checkpoint_interval, stress_drop_threshold, save_triangle_data);
   }
 }
