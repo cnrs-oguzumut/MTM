@@ -52,6 +52,7 @@ sbatch run_shear_300x300_alpha3.sh
 | `--alpha-end` / `--alpha-max` | Float | `1.0` | Target shear strain magnitude (e.g. `3.0` runs up to $\alpha = \pm 3.0$). |
 | `--alpha-start` / `--alpha-min`| Float | `0.14` | Starting shear strain magnitude before incremental loading. |
 | `--step-size` | Float | `6e-5` | Strain increment per step $|d\alpha|$. |
+| `--remesh` / `--no-remesh` | Flag | enabled | Enable/disable adaptive remeshing (fixed mesh). |
 | `--checkpoint-interval` | Integer | `500` | Periodic elastic checkpoint interval in steps (`0` = disabled, saving only at avalanches). |
 | `--stress-drop-threshold` | Float | `0.10` | Fractional stress drop $\Delta \sigma / \|\sigma\|$ threshold to trigger avalanche save (**larger saves less**, e.g. `0.20`). |
 | `--save-triangle-data` | Flag | disabled | Enable legacy ASCII `triangle_data/` dump (disabled by default to save 15+ GB). |
@@ -64,6 +65,27 @@ sbatch run_shear_300x300_alpha3.sh
 ---
 
 ## 3. Useful Recipes
+
+### Fixed Mesh (No Remeshing) up to $\alpha = \pm 3.0$
+```bash
+python3 makefiles_for_cluster/job_creator.py \
+    --nx 300 --ny 300 \
+    --alpha-end 3.0 \
+    --no-remesh \
+    --checkpoint-interval 500 \
+    --stress-drop-threshold 0.10 \
+    --n-jobs 2 \
+    --threads 32 \
+    --mode both \
+    -y
+
+# Submit to SLURM:
+sbatch run_shear_300x300_noremesh_alpha3.sh
+
+# Monitor:
+tail -f runs_300x300_noremesh_alpha3/run_01_positive_seed42_noremesh_alpha3/simulation.log
+tail -f runs_300x300_noremesh_alpha3/run_02_negative_seed43_noremesh_alpha3/simulation.log
+```
 
 ### Save Minimum Data (Maximum Speed & Quota Efficiency)
 To save only major avalanches ($\ge 20\%$ drop) and disable periodic elastic checkpoints entirely:
