@@ -254,7 +254,33 @@ plt.show()
 
 ## 8. HPC & Cluster Workflow (SLURM)
 
-### Example SLURM Batch Script (`run_cluster.sbatch`)
+### Automated Multi-Job Setup (Magi & Tchenla Clusters)
+
+The repository provides automated Python script generators in `makefiles_for_cluster/` to generate SLURM job scripts, configure CPU pinning, and coordinate parallel positive/negative shear runs:
+
+#### Quick Command:
+```bash
+python3 makefiles_for_cluster/job_creator.py \
+    --nx 300 --ny 300 \
+    --alpha-end 3.0 \
+    --checkpoint-interval 500 \
+    --stress-drop-threshold 0.10 \
+    --n-jobs 2 \
+    --threads 32 \
+    --mode both \
+    -y
+
+# Submit generated SLURM job
+sbatch run_shear_300x300_alpha3.sh
+```
+
+*(For the Tchenla cluster, use `python3 makefiles_for_cluster/job_creator_tchenla.py` with identical flags).*
+
+For full CLI options and recipes, see [makefiles_for_cluster/README.md](makefiles_for_cluster/README.md).
+
+---
+
+### Example Standalone SLURM Batch Script (`run_cluster.sbatch`)
 ```bash
 #!/bin/bash
 #SBATCH --job-name=fem_zanzotto_600
