@@ -94,43 +94,38 @@ def load_vtk_data(filepath):
 def plot_option1_sequence(surgery_dir, output_base):
     setup_publication_style()
     files = [
-        ("step_00165_pass_01_1_before_remesh.vtk", r"$\mathbf{A}$ ($k=395$): Pre-avalanche"),
-        ("step_00165_pass_01_3_relaxed_accepted.vtk", r"$\mathbf{B}$ ($k=770$): Pass 1"),
-        ("step_00165_pass_02_3_relaxed_accepted.vtk", r"$\mathbf{C}$ ($k=1015$): Pass 2"),
-        ("step_00165_pass_04_3_relaxed_accepted.vtk", r"$\mathbf{D}$ ($k=1381$): Final")
+        ("step_00165_pass_01_1_before_remesh.vtk", "(a) $\\mathbf{A}$\n($k=395$)"),
+        ("step_00165_pass_01_3_relaxed_accepted.vtk", "(b) $\\mathbf{B}$\n($k=770$)"),
+        ("step_00165_pass_02_3_relaxed_accepted.vtk", "(c) $\\mathbf{C}$\n($k=1015$)"),
+        ("step_00165_pass_04_3_relaxed_accepted.vtk", "(d) $\\mathbf{D}$\n($k=1381$)")
     ]
-    labels = ["(a)", "(b)", "(c)", "(d)"]
     
     datasets = [load_vtk_data(surgery_dir / f[0]) for f in files]
     
     vmin = -0.28
     vmax = 0.28
     
-    fig, axes = plt.subplots(1, 4, figsize=(6.8, 2.25), sharex=True, sharey=True,
-                             gridspec_kw={"wspace": 0.08, "left": 0.07, "right": 0.89, "top": 0.86, "bottom": 0.18})
+    fig, axes = plt.subplots(1, 4, figsize=(6.8, 2.45), sharex=True, sharey=True,
+                             gridspec_kw={"wspace": 0.08, "left": 0.07, "right": 0.89, "top": 0.95, "bottom": 0.26})
     
     im_ref = None
-    for i, (ax, data, (fname, title), lab) in enumerate(zip(axes, datasets, files, labels)):
+    for i, (ax, data, (fname, lab)) in enumerate(zip(axes, datasets, files)):
         triang = mtri.Triangulation(data["points"][:, 0], data["points"][:, 1], data["triangles"])
         im = ax.tripcolor(triang, data["s_xy"], shading="gouraud", cmap="RdBu_r", vmin=vmin, vmax=vmax)
         im_ref = im
         ax.set_aspect("equal")
         ax.set_xlim(-18, 105)
         ax.set_ylim(-3, 103)
-        ax.set_title(title, fontsize=7.8, pad=3)
         
-        # Subplot letter aligned at bottom-left
-        ax.text(0.05, 0.06, lab, transform=ax.transAxes, fontsize=8.5, fontweight="bold",
-                bbox=dict(boxstyle="square,pad=0.2", facecolor="white", alpha=0.85, edgecolor="none"))
-        
-        ax.set_xlabel(r"$x$", labelpad=1)
+        # Bottom label below image
+        ax.set_xlabel(r"$x$" + "\n" + lab, labelpad=2, fontsize=8.2)
         if i == 0:
             ax.set_ylabel(r"$y$", labelpad=1)
         else:
             ax.tick_params(labelleft=False)
             
     # Shared vertical colorbar
-    cbar_ax = fig.add_axes([0.905, 0.20, 0.015, 0.64])
+    cbar_ax = fig.add_axes([0.905, 0.28, 0.015, 0.62])
     cb = fig.colorbar(im_ref, cax=cbar_ax)
     cb.set_label(r"Shear stress $\sigma_{xy}$", fontsize=8.5)
     cb.ax.tick_params(labelsize=7.5)
@@ -230,7 +225,7 @@ def plot_option3_zoom_surgery(surgery_dir, output_base):
     data4 = load_vtk_data(surgery_dir / "step_00165_pass_04_3_relaxed_accepted.vtk")
     
     fig, axes = plt.subplots(1, 3, figsize=(6.8, 2.7), sharex=True, sharey=True,
-                             gridspec_kw={"wspace": 0.10, "left": 0.08, "right": 0.89, "top": 0.87, "bottom": 0.16})
+                             gridspec_kw={"wspace": 0.10, "left": 0.08, "right": 0.89, "top": 0.95, "bottom": 0.24})
     
     xlim = (41, 51)
     ylim = (47, 57)
@@ -238,13 +233,13 @@ def plot_option3_zoom_surgery(surgery_dir, output_base):
     vmax = 0.28
     
     panels = [
-        (data1, r"$\mathbf{A}$: Pre-reconnection ($k=395$)", "(a)"),
-        (data2, r"$\mathbf{A}^*$: Reconnected ($k=396$)", "(b)"),
-        (data4, r"$\mathbf{D}$: Final relaxed ($k=1381$)", "(c)"),
+        (data1, "(a) Pre-reconnection\n($k=395$)"),
+        (data2, "(b) Post-reconnection\n($k=395$)"),
+        (data4, "(c) Final relaxed\n($k=1381$)"),
     ]
     
     im_last = None
-    for i, (ax, (data, title, lab)) in enumerate(zip(axes, panels)):
+    for i, (ax, (data, lab)) in enumerate(zip(axes, panels)):
         triang = mtri.Triangulation(data["points"][:, 0], data["points"][:, 1], data["triangles"])
         im = ax.tripcolor(triang, data["s_xy"], shading="gouraud", cmap="RdBu_r", vmin=vmin, vmax=vmax, alpha=0.85)
         im_last = im
@@ -253,16 +248,15 @@ def plot_option3_zoom_surgery(surgery_dir, output_base):
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
         ax.set_aspect("equal")
-        ax.set_title(title, fontsize=8.5, pad=3)
-        ax.set_xlabel(r"$x$", labelpad=1)
-        ax.text(0.05, 0.06, lab, transform=ax.transAxes, fontsize=9.5, fontweight="bold",
-                bbox=dict(boxstyle="square,pad=0.2", facecolor="white", alpha=0.85, edgecolor="none"))
+        
+        # Bottom label below image
+        ax.set_xlabel(r"$x$" + "\n" + lab, labelpad=2, fontsize=8.5)
         if i == 0:
             ax.set_ylabel(r"$y$", labelpad=1)
         else:
             ax.tick_params(labelleft=False)
             
-    cbar_ax = fig.add_axes([0.905, 0.18, 0.015, 0.67])
+    cbar_ax = fig.add_axes([0.905, 0.25, 0.015, 0.67])
     cb = fig.colorbar(im_last, cax=cbar_ax)
     cb.set_label(r"$\sigma_{xy}$", fontsize=9)
     cb.ax.tick_params(labelsize=8)
@@ -341,7 +335,7 @@ def plot_option4_composite(csv_path, surgery_dir, output_base):
         "A": (-14, 14),
         "B": (-14, 14),
         "C": (-14, 14),
-        "D": (-14, 14)
+        "D": (14, 14)
     }
     for k_val, let in zip(milestone_k, letters):
         e_val = energy[np.where(x == k_val)[0][0]]
@@ -363,10 +357,10 @@ def plot_option4_composite(csv_path, surgery_dir, output_base):
     ax_s.set_ylim(-0.0145, -0.0035)
     
     text_offsets_s = {
-        "A": (12, -2),    # to the right of marker A, well below the inset
-        "B": (12, 4),     # above-right of marker B
-        "C": (-10, 7),    # above-left of marker C
-        "D": (12, 4)      # above-right of marker D
+        "A": (14, -4),     # cleanly below inset and to the right of marker A
+        "B": (12, -4),     # below-right of V-tip marker B
+        "C": (-12, 7),     # above-left of marker C
+        "D": (0, -13)      # directly below marker D in wide open space
     }
     for k_val, let in zip(milestone_k, letters):
         idx_near = np.argmin(np.abs(x_s - k_val))
@@ -406,8 +400,13 @@ def plot_option4_composite(csv_path, surgery_dir, output_base):
     # Subfig 1: 4 Spatial Snapshots (Bottom Row)
     # =========================================================================
     axes_bot = subfigs[1].subplots(1, 4, sharex=True, sharey=True,
-                                   gridspec_kw={"wspace": 0.08, "left": 0.07, "right": 0.89, "top": 0.86, "bottom": 0.18})
-    sub_labels = ["(c)", "(d)", "(e)", "(f)"]
+                                   gridspec_kw={"wspace": 0.08, "left": 0.07, "right": 0.89, "top": 0.95, "bottom": 0.26})
+    sub_labels = [
+        "(c) $\\mathbf{A}$\n($k=395$)",
+        "(d) $\\mathbf{B}$\n($k=770$)",
+        "(e) $\\mathbf{C}$\n($k=1015$)",
+        "(f) $\\mathbf{D}$\n($k=1381$)"
+    ]
     vmin = -0.28
     vmax = 0.28
     im_spatial = None
@@ -419,11 +418,9 @@ def plot_option4_composite(csv_path, surgery_dir, output_base):
         ax_m.set_aspect("equal")
         ax_m.set_xlim(-18, 105)
         ax_m.set_ylim(-3, 103)
-        ax_m.set_title(title, fontsize=8.0, pad=3)
-        ax_m.set_xlabel(r"$x$", labelpad=1)
         
-        ax_m.text(0.05, 0.06, lab, transform=ax_m.transAxes, fontsize=8.5, fontweight="bold",
-                  bbox=dict(boxstyle="square,pad=0.2", facecolor="white", alpha=0.85, edgecolor="none"))
+        # Bottom label below image
+        ax_m.set_xlabel(r"$x$" + "\n" + lab, labelpad=2, fontsize=8.2)
         
         if i == 0:
             ax_m.set_ylabel(r"$y$", labelpad=1)
@@ -431,7 +428,7 @@ def plot_option4_composite(csv_path, surgery_dir, output_base):
             ax_m.tick_params(labelleft=False)
             
     # Shared colorbar for bottom spatial snapshots
-    cbar_ax = subfigs[1].add_axes([0.905, 0.20, 0.015, 0.64])
+    cbar_ax = subfigs[1].add_axes([0.905, 0.28, 0.015, 0.62])
     cb = subfigs[1].colorbar(im_spatial, cax=cbar_ax)
     cb.set_label(r"$\sigma_{xy}$", fontsize=8.5)
     cb.ax.tick_params(labelsize=7.5)
