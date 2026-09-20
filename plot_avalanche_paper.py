@@ -88,12 +88,12 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     x_s = x[mask_s]
     s_vals = stress[mask_s]
 
-    # Colors
-    col_energy = "#154360"    # Deep navy
-    col_reconn = "#922b21"    # Dark burgundy / crimson
-    col_accept = "#1e8449"    # Dark forest green
-    col_reject = "#7d3c98"    # Purple / slate
-    col_stress = "#78281f"    # Wine red
+    # Colors & Markers (Accepted conf shown as RED DOT)
+    col_energy = "#154360"    # Deep navy for L-BFGS path
+    col_reconn = "#2e86c1"    # Cyan/blue dotted stem for topological jump
+    col_accept = "#c0392b"    # RED DOT for accepted configuration
+    col_reject = "#7f8c8d"    # Gray cross for rejected configuration
+    col_stress = "#78281f"    # Wine red for stress
 
     # Dimensions
     if layout == "sidebyside":
@@ -116,33 +116,33 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     ax_e.set_ylim(y_min_e - 0.04 * y_range_e, y_max_e + 0.18 * y_range_e)
 
     # --- Panel (a): Energy Trajectory ---
-    ax_e.plot(x, energy, color=col_energy, lw=1.25, zorder=3, label="L-BFGS path")
+    ax_e.plot(x, energy, color=col_energy, lw=1.25, zorder=3, label="Minimization path")
 
-    # Topological reconnection jumps
+    # Topological reconnection jumps (Delta E_topo)
     for idx in reconn_idx:
         ax_e.plot([x[idx-1], x[idx]], [energy[idx-1], energy[idx]],
                   color=col_reconn, lw=1.0, ls=":", zorder=4)
         ax_e.plot(x[idx], energy[idx], marker="^", color=col_reconn,
-                  markersize=4.2, zorder=5)
+                  markerfacecolor="white", markeredgewidth=1.1, markersize=4.5, zorder=5)
 
-    # Accepted states
+    # Accepted states (RED DOTS as requested)
     for idx in accepted_idx:
         ax_e.plot(x[idx], energy[idx], marker="o", color=col_accept,
-                  markersize=3.8, zorder=6)
+                  markersize=4.5, zorder=6)
 
     # Rejected states
     for idx in rejected_idx:
         ax_e.plot(x[idx], energy[idx], marker="x", color=col_reject,
-                  markersize=5.0, mew=1.4, zorder=6)
+                  markersize=5.0, mew=1.5, zorder=6)
 
-    ax_e.set_ylabel(r"Internal Energy $E$")
+    ax_e.set_ylabel(r"Internal energy $E$")
     ax_e.text(0.025, 0.92, "(a)", transform=ax_e.transAxes,
               fontsize=11, fontweight="bold", va="top")
 
     # Phase dividers and top labels
     for p_idx, (p_name, p_start, p_end) in enumerate(phase_boundaries):
         mid_x = 0.5 * (p_start + p_end)
-        p_label = f"P{p_idx}" if p_idx > 0 else "Init"
+        p_label = f"Pass {p_idx}" if p_idx > 0 else "Initial"
         ax_e.text(mid_x, y_max_e + 0.08 * y_range_e, p_label,
                   ha="center", va="bottom", fontsize=7.5, color="#555555")
         if p_idx < len(phase_boundaries) - 1:
@@ -152,12 +152,12 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     # Clean, compact legend in Panel (a)
     legend_elements = [
         Line2D([0], [0], color=col_energy, lw=1.25, label="Minimization"),
-        Line2D([0], [0], marker="^", color=col_reconn, ls=":", lw=1.0, markersize=4.2, label=r"$\Delta E_{\rm topo}$ jump"),
-        Line2D([0], [0], marker="o", color=col_accept, ls="none", markersize=3.8, label="Accepted"),
+        Line2D([0], [0], marker="^", color=col_reconn, markerfacecolor="white", ls=":", lw=1.0, markersize=4.5, label=r"$\Delta E_{\rm topo}$ reconnection"),
+        Line2D([0], [0], marker="o", color=col_accept, ls="none", markersize=4.5, label="Accepted state"),
     ]
     if rejected_idx:
         legend_elements.append(
-            Line2D([0], [0], marker="x", color=col_reject, ls="none", markersize=5.0, mew=1.4, label="Rejected")
+            Line2D([0], [0], marker="x", color=col_reject, ls="none", markersize=5.0, mew=1.5, label="Rejected state")
         )
     ax_e.legend(handles=legend_elements, loc="upper right", frameon=True,
                 framealpha=0.92, edgecolor="#d0d0d0", fontsize=7.5)
@@ -173,11 +173,12 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     ax_s.text(0.025, 0.92, "(b)", transform=ax_s.transAxes,
               fontsize=11, fontweight="bold", va="top")
 
+    xlabel_text = r"Inner minimization step $k$"
     if layout == "sidebyside":
-        ax_e.set_xlabel(r"Micro-step $k$")
-        ax_s.set_xlabel(r"Micro-step $k$")
+        ax_e.set_xlabel(xlabel_text)
+        ax_s.set_xlabel(xlabel_text)
     else:
-        ax_s.set_xlabel(r"Micro-step $k$")
+        ax_s.set_xlabel(xlabel_text)
 
     fig.tight_layout(pad=0.6)
 
