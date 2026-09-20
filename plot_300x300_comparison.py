@@ -57,7 +57,7 @@ def main():
     file_remesh = dir_remesh / "energy_stress_log.csv"
     file_noremesh = dir_noremesh / "energy_stress_log.csv"
 
-    alpha_max = 1.25
+    alpha_max = 1.10
     print("Loading data up to alpha =", alpha_max)
     a_r, e_r, s_r, _ = load_data(file_remesh, alpha_max)
     a_nr, e_nr, s_nr, _ = load_data(file_noremesh, alpha_max)
@@ -94,9 +94,9 @@ def main():
     ax1.plot(a_nr, e_nr, color=color_noremesh, lw=1.6, ls="--", label="Non-reconnecting")
 
     ax1.set_xlabel(r"Shear strain $\alpha$")
-    ax1.set_ylabel(r"Post-relaxation energy $E_{\mathrm{post}}$")
+    ax1.set_ylabel(r"Energy $E$")
     ax1.set_xlim(0.14, alpha_max)
-    ax1.set_ylim(-100, 4800)
+    ax1.set_ylim(-100, 4300)
     ax1.grid(True, ls=":", color="#cccccc", alpha=0.7)
     ax1.legend(loc="upper left", frameon=True, facecolor="white", edgecolor="#cccccc", framealpha=0.92)
 
@@ -112,7 +112,7 @@ def main():
     ax2.plot(a_nr, s_nr, color=color_noremesh, lw=1.4, ls="--", label="Non-reconnecting")
 
     ax2.set_xlabel(r"Shear strain $\alpha$")
-    ax2.set_ylabel(r"Post-relaxation shear stress $\sigma_{xy, \mathrm{post}}$")
+    ax2.set_ylabel(r"Shear stress $\sigma_{xy}$")
     ax2.set_xlim(0.14, alpha_max)
     ax2.set_ylim(-0.012, 0.235)
     ax2.grid(True, ls=":", color="#cccccc", alpha=0.7)
