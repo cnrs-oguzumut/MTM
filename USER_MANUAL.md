@@ -287,6 +287,25 @@ When running with `--save-surgery-vtk` and `--trace-avalanche`, the exact remesh
    - **Top Subplot**: Total system energy $E$ across every L-BFGS micro-step, highlighting initial relaxation drops, reconnection spikes ($\Delta E_{\text{topo}}$), accepted remeshing passes (green bands), and rejected passes (red bands). If the unrelaxed initial guess is an outlier, an automatic inset zoom is embedded to keep all subtle topological jumps clearly legible.
    - **Bottom Subplot**: Average shear stress $\sigma_{xy}$ micro-step evolution and stress drops across each pass.
 
+3. **Publication-Ready Figures for Academic Papers (`plot_avalanche_paper.py`)**:
+   For inclusion in double-column or single-column journal papers (Physical Review, Acta Materialia, JMPS), use `plot_avalanche_paper.py`. This script produces clean, academic styling:
+   - **Styling**: Computer Modern math font, serif typography, boxed axes with inward tick marks on all 4 sides, and subtle gray pass dividers (no rainbow pastel shading).
+   - **Vector Output**: Outputs both vector `.pdf` (for LaTeX `\includegraphics`) and 300+ DPI `.png`.
+   - **Layouts**:
+     * `--layout=stacked` (Default): 2-row stacked panels with shared x-axis `(a)` Energy $E$ and `(b)` Stress $\sigma_{xy}$.
+     * `--layout=sidebyside`: Side-by-side panels `(a)` and `(b)` spanning double-column width (~6.8 in).
+     * `--col=single`: Sized for a single-column width (~3.37 in).
+   ```bash
+   # Generate stacked paper figure (both .pdf and .png)
+   python3 plot_avalanche_paper.py vtk_surgery/step_00165_avalanche_surgery.csv --layout=stacked
+
+   # Generate side-by-side double-column paper figure
+   python3 plot_avalanche_paper.py vtk_surgery/step_00165_avalanche_surgery.csv --layout=sidebyside
+
+   # Batch process all avalanches in a folder
+   python3 plot_avalanche_paper.py vtk_surgery/ --layout=stacked
+   ```
+
 ---
 
 ## 8. HPC & Cluster Workflow (SLURM)
