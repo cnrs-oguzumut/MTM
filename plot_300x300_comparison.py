@@ -100,10 +100,9 @@ def main():
     ax1.grid(True, ls=":", color="#cccccc", alpha=0.7)
     ax1.legend(loc="upper left", frameon=True, facecolor="white", edgecolor="#cccccc", framealpha=0.92)
 
-    # Bottom left label (a)
-    ax1.text(0.04, 0.08, r"$\mathbf{(a)}$", transform=ax1.transAxes,
-             fontsize=13.0, fontweight="bold", va="bottom", ha="left",
-             bbox=dict(boxstyle="square,pad=0.15", facecolor="white", edgecolor="none", alpha=0.9))
+    # Bottom left label (a) outside the plot frame (not overlaid on data)
+    ax1.text(-0.06, -0.13, r"$\mathbf{(a)}$", transform=ax1.transAxes,
+             fontsize=13.0, fontweight="bold", va="center", ha="left")
 
     # -------------------------------------------------------------------------
     # Panel (b): Alpha vs PostStress
@@ -118,10 +117,9 @@ def main():
     ax2.grid(True, ls=":", color="#cccccc", alpha=0.7)
     ax2.legend(loc="upper right", frameon=True, facecolor="white", edgecolor="#cccccc", framealpha=0.92)
 
-    # Bottom left label (b)
-    ax2.text(0.04, 0.08, r"$\mathbf{(b)}$", transform=ax2.transAxes,
-             fontsize=13.0, fontweight="bold", va="bottom", ha="left",
-             bbox=dict(boxstyle="square,pad=0.15", facecolor="white", edgecolor="none", alpha=0.9))
+    # Bottom left label (b) outside the plot frame (not overlaid on data)
+    ax2.text(-0.06, -0.13, r"$\mathbf{(b)}$", transform=ax2.transAxes,
+             fontsize=13.0, fontweight="bold", va="center", ha="left")
 
     # Save destinations
     repo_fig_dir = Path(__file__).resolve().parent / "figures"
