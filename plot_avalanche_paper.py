@@ -87,6 +87,13 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     accepted_idx = [i for i, ev in enumerate(event_type) if ev == 'REMESH_ACCEPTED']
     rejected_idx = [i for i, ev in enumerate(event_type) if ev == 'REMESH_REJECTED']
 
+    if accepted_idx:
+        final_accepted_idx = [accepted_idx[-1]]
+    else:
+        init_conv = [i for i, (ev, ph) in enumerate(zip(event_type, phase))
+                     if ev == 'LBFGS_CONVERGED' and ph == 'INITIAL_RELAX']
+        final_accepted_idx = init_conv if init_conv else [0]
+
     # Non-zero stress checkpoints
     mask_s = stress != 0.0
     x_s = x[mask_s]
@@ -144,10 +151,10 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
         ax_e.plot(x[idx], energy[idx], marker="^", color=col_reconn,
                   markerfacecolor="white", markeredgewidth=1.1, markersize=4.5, zorder=5)
 
-    # Accepted states (RED DOTS)
-    for idx in accepted_idx:
+    # Final accepted state (single RED DOT)
+    for idx in final_accepted_idx:
         ax_e.plot(x[idx], energy[idx], marker="o", color=col_accept,
-                  markersize=4.5, zorder=6)
+                  markersize=5.0, zorder=6)
 
     # Rejected states
     for idx in rejected_idx:
@@ -174,7 +181,7 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     legend_elements = [
         Line2D([0], [0], color=col_energy, lw=1.25, label="Minimization"),
         Line2D([0], [0], marker="^", color=col_reconn, markerfacecolor="white", ls=":", lw=1.0, markersize=4.5, label=r"$\Delta E_{\rm topo}$ reconnection"),
-        Line2D([0], [0], marker="o", color=col_accept, ls="none", markersize=4.5, label="Accepted state"),
+        Line2D([0], [0], marker="o", color=col_accept, ls="none", markersize=5.0, label="Final accepted state"),
     ]
     if rejected_idx:
         legend_elements.append(
@@ -230,11 +237,11 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
             xlabel_3p = r"Inner step $k$"
             for ax in all_axes:
                 ax.set_xlabel(xlabel_3p)
-            ax_e.text(0.0, -0.155, "(a)", transform=ax_e.transAxes,
+            ax_e.text(-0.06, -0.155, "(a)", transform=ax_e.transAxes,
                       fontsize=11, fontweight="bold", ha="left", va="center")
-            ax_s.text(0.0, -0.155, "(b)", transform=ax_s.transAxes,
+            ax_s.text(-0.06, -0.155, "(b)", transform=ax_s.transAxes,
                       fontsize=11, fontweight="bold", ha="left", va="center")
-            ax_f.text(0.0, -0.155, "(c)", transform=ax_f.transAxes,
+            ax_f.text(-0.06, -0.155, "(c)", transform=ax_f.transAxes,
                       fontsize=11, fontweight="bold", ha="left", va="center")
             fig.tight_layout(rect=[0.01, 0, 0.98, 0.92], pad=0.6)
         else:
@@ -247,9 +254,9 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
         if layout == "sidebyside":
             ax_e.set_xlabel(xlabel_text)
             ax_s.set_xlabel(xlabel_text)
-            ax_e.text(0.0, -0.155, "(a)", transform=ax_e.transAxes,
+            ax_e.text(-0.06, -0.155, "(a)", transform=ax_e.transAxes,
                       fontsize=11, fontweight="bold", ha="left", va="center")
-            ax_s.text(0.0, -0.155, "(b)", transform=ax_s.transAxes,
+            ax_s.text(-0.06, -0.155, "(b)", transform=ax_s.transAxes,
                       fontsize=11, fontweight="bold", ha="left", va="center")
             fig.tight_layout(rect=[0, 0, 1, 0.92], pad=0.6)
         else:
