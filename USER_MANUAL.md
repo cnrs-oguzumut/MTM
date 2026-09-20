@@ -34,6 +34,13 @@ This manual covers the installation, compilation, command-line usage, high-perfo
    - [Core Broadening, FWHM & Adaptive Core Radius](#core-broadening-fwhm--adaptive-core-radius)
    - [Aligned Core Energy Profiles $E(x - x_c)$](#aligned-core-energy-profiles-ex---xc)
    - [Automated Analysis & Plotting Script](#automated-analysis--plotting-script)
+10. [Continuous Loading & Topological Remeshing Statistics (Pre-Yield vs. Post-Yield)](#10-continuous-loading--topological-remeshing-statistics-pre-yield-vs-post-yield)
+   - [Overview & Physical Workflow](#overview--physical-workflow)
+   - [Command-Line Execution (Running from Scratch)](#command-line-execution-running-from-scratch)
+   - [Dynamic Yield Point Determination](#dynamic-yield-point-determination)
+   - [Nodal State Jump Formulation](#nodal-state-jump-formulation)
+   - [Automated Analysis & Plotting Scripts](#automated-analysis--plotting-scripts-1)
+   - [Reference Verification Values](#reference-verification-values)
 
 ---
 
@@ -448,4 +455,113 @@ This script automatically computes the centroid positions, widths, and adaptive 
 - `shifted_dislocation_energy_profile_x.png`: Slip-plane energy profiles showing horizontal core gliding.
 - `shifted_dislocation_core_energy_vs_R.png`: Cumulative radial energy $E(R)$ centered at each core's true position.
 - `shifted_dislocation_energy_vs_shift.png`: 3-panel figure tracking core glide $x_c(s)$, core width $\text{FWHM}(s)$, and total vs. adaptive core energy.
+
+---
+
+## 10. Continuous Loading & Topological Remeshing Statistics (Pre-Yield vs. Post-Yield)
+
+### Overview & Physical Workflow
+During continuous simple shear loading, severe local lattice distortion triggers adaptive Delaunay remeshing ("surgery passes") to restore optimal triangulation. Because the triangulation connectivity $\mathcal{T}$ changes while nodal coordinates $\mathbf{x}$ remain frozen, element-wise comparison across topology changes lacks a 1-to-1 correspondence. Instead, energy and Cauchy stresses are partitioned to the nodes, providing an exact, node-wise tracking of state jumps across each topological reconnection event.
+
+This study analyzes how local nodal energy and shear stress jumps change as the material transitions from micro-plastic precursors before macroscopic yield ($\alpha < \alpha_{\text{yield}}$) into catastrophic plastic avalanches after yield ($\alpha \ge \alpha_{\text{yield}}$).
+
+---
+
+### Command-Line Execution (Running from Scratch)
+To execute the positive shear loading simulation on a $100 \times 100$ lattice up to $\alpha = 1.0$ with surgery snapshot logging:
+
+```bash
+# Create and navigate to the simulation working directory
+mkdir -p study_100x100_positive && cd study_100x100_positive
+
+# Run with 6 OpenMP threads using stiffness-preconditioned L-BFGS
+OMP_NUM_THREADS=6 ../build/lattice_triangulation 100 100 positive 42 1 \
+    --precond=stiffness \
+    --surgery-vtk \
+    --trace=1 \
+    --alpha-end=1.0 > simulation.log 2>&1
+```
+
+**Key Parameters Explained**:
+- `100 100`: System dimensions ($nx = 100, ny = 100$; 10,000 nodes, 20,000 initial triangles).
+- `positive`: Continuous shear schedule in the positive direction ($\alpha \in [0.14, 1.0]$, step size $6 \times 10^{-5}$).
+- `42`: Random seed for initial perturbation.
+- `1`: Adaptive remeshing enabled.
+- `--precond=stiffness`: Stiffness-preconditioned L-BFGS energy relaxation.
+- `--surgery-vtk`: Exports paired `step_XXXXX_pass_YY_1_before_remesh.vtk` and `step_XXXXX_pass_YY_2_after_remesh.vtk` snapshots before and after every reconnection.
+- `--trace=1`: Enables high-resolution energy and stress logging into `energy_stress_log.csv`.
+- `--alpha-end=1.0`: Extends loading through pre-yield and deeply into the post-yield plastic flow regime.
+
+---
+
+### Dynamic Yield Point Determination
+Rather than prescribing an arbitrary empirical threshold (e.g. $\alpha = 0.60$), the macroscopic yield strain $\alpha_{\text{yield}}$ is identified directly from the global maximum of the post-optimization macroscopic shear stress $\sigma_{xy,\text{post}}(\alpha)$:
+$$\alpha_{\text{yield}} = \operatorname{argmax}_\alpha \sigma_{xy,\text{post}}(\alpha)$$
+
+For the standard $100 \times 100$ positive simulation (seed 42):
+- **Yield strain**: $\alpha_{\text{yield}} = 0.57776 \approx 0.578$
+- **Peak shear stress**: $\sigma_{\text{yield}} = 0.30305$
+- **Total surgery passes**: 366 passes (140 pre-yield, 226 post-yield).
+
+---
+
+### Nodal State Jump Formulation
+For each surgery pass $k$, the nodal energy $e_a$ and nodal Cauchy shear stress $\sigma_{xy, a}$ are extracted from the paired binary VTK files at frozen coordinates $\mathbf{x}_a$:
+$$\Delta e_a^{(k)} = e_a^{(k),\text{after}} - e_a^{(k),\text{before}},$$
+$$\Delta \sigma_{xy, a}^{(k)} = \sigma_{xy, a}^{(k),\text{after}} - \sigma_{xy, a}^{(k),\text{before}}.$$
+
+Nodes that do not undergo local reconnectivity have $|\Delta e_a^{(k)}| \le 10^{-9}$ and $|\Delta \sigma_{xy, a}^{(k)}| \le 10^{-6}$ (zero jumps, omitted from log distributions).
+
+---
+
+### Automated Analysis & Plotting Scripts
+
+From the repository root directory, run the post-processing scripts:
+
+#### 1. Comparative Reference Figure (Energy & Stress Jumps)
+```bash
+python3 plot_comparison_like_reference.py
+```
+This processes all 366 surgery passes in `study_100x100_positive/` and outputs:
+- `figures/flip_jump_distributions_comparison.png` (High-resolution raster)
+- `figures/flip_jump_distributions_comparison.pdf` (Publication vector format)
+
+**Features**:
+- Side-by-side subplots:
+  - **(a)**: Probability per logarithmic bin of the nodal energy jump $|\Delta e_a^{(k)}|$ ($10^{-9}$ to $10^0$).
+  - **(b)**: Probability per logarithmic bin of the nodal shear stress jump $|\Delta \sigma_{xy, a}^{(k)}|$ ($10^{-6}$ to $10^0$).
+- Stepped histograms comparing pre-yield ($\alpha < 0.578$, blue) and post-yield ($\alpha \ge 0.578$, orange).
+- Physical reference lines:
+  - Panel (a): Zanzotto single-element maximum barrier $E_{\max} \approx 0.0481$ at shear strain $\gamma = 0.5$.
+  - Panel (b): Theoretical shear stress at loss of ellipticity $\sigma_{xy} \approx 0.334$ at $\gamma = 0.1322$.
+- Bottom-left callout box showing Min, Mean, and Max values for both deformation regimes.
+
+#### 2. Regime-Specific 4-Panel Diagnostic Figures
+```bash
+python3 plot_two_yield_distributions.py
+```
+Outputs:
+- `figures/nodal_distribution_pre_yield.{png,pdf}`
+- `figures/nodal_distribution_post_yield.{png,pdf}`
+
+**Each figure includes**:
+- **Panel (a)**: Semilog probability density $p(\Delta e_a)$ with explicit Min, Mean, and Max vertical markers.
+- **Panel (b)**: Log-log magnitude spectrum $p(|\Delta e_a|)$ with sample size and variance statistics.
+- **Panel (c)**: Spatial tripcolor map $\Delta e_a(x, y)$ of a representative avalanche surgery zone.
+- **Panel (d)**: Energy balance bar chart quantifying barrier jump fraction ($\Delta e_a > 0$) versus local elastic release fraction ($\Delta e_a < 0$).
+
+---
+
+### Reference Verification Values
+When repeating or benchmarking this study with seed 42, verify that your extracted statistics match:
+
+| Metric | Pre-Yield ($\alpha < 0.578$) | Post-Yield ($\alpha \ge 0.578$) |
+| :--- | :---: | :---: |
+| **Active Reconnected Events** | 492,665 | 504,181 |
+| **$|\Delta e_a^{(k)}|$ Minimum** | $1.05 \times 10^{-9}$ | $1.07 \times 10^{-9}$ |
+| **$|\Delta e_a^{(k)}|$ Mean** | $9.84 \times 10^{-4}$ | $5.21 \times 10^{-3}$ |
+| **$|\Delta e_a^{(k)}|$ Maximum** | $0.377$ | $0.667$ |
+| **$|\Delta \sigma_{xy, a}^{(k)}|$ Minimum** | $1.00 \times 10^{-6}$ | $1.00 \times 10^{-6}$ |
+| **$|\Delta \sigma_{xy, a}^{(k)}|$ Mean** | $2.87 \times 10^{-3}$ | $8.70 \times 10^{-3}$ |
+| **$|\Delta \sigma_{xy, a}^{(k)}|$ Maximum** | $0.495$ | $0.691$ |
 

@@ -538,11 +538,15 @@ void ConfigurationSaver::logEnergyAndStress_v2(
         if (log_file.is_open()) {
             log_file.close();
         }
-        log_file.open("energy_stress_log.csv");
-        
-        // Write header
-        log_file << "Iteration,Alpha,PreEnergy,PreStress,PostEnergy,PostStress,"
-                 << "EnergyChange,StressChange,PreArea,PostArea,shouldRemesh\n";
+        bool exists = std::filesystem::exists("energy_stress_log.csv") && (iteration > 0);
+        if (exists) {
+            log_file.open("energy_stress_log.csv", std::ios::app);
+        } else {
+            log_file.open("energy_stress_log.csv");
+            // Write header
+            log_file << "Iteration,Alpha,PreEnergy,PreStress,PostEnergy,PostStress,"
+                     << "EnergyChange,StressChange,PreArea,PostArea,shouldRemesh\n";
+        }
         
         // Set maximum precision for all subsequent writes
         log_file << std::scientific 

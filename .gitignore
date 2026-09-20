@@ -17,3 +17,12 @@ outputs/
 scratch/
 test_*/
 avalanche_trace/
+*.vtk
+*.chk
+*.log
+study_*/
+!study_100x100_positive/*.py
+trajectory/
+triangle_data/
+vtk_defects/
+vtk_output/
