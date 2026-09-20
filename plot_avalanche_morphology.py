@@ -250,15 +250,6 @@ def plot_option3_zoom_surgery(surgery_dir, output_base):
         im_last = im
         ax.triplot(triang, color="black", lw=0.55, alpha=0.75)
         ax.scatter(data["points"][:, 0], data["points"][:, 1], color="black", s=6, zorder=5)
-        
-        # Highlight reconnected edge in panel (b)
-        if i == 1:
-            ax.plot([46.14, 46.95], [50.30, 50.81], color="crimson", lw=2.4, zorder=6,
-                    label=r"Flipped edge ($\Delta E_{\rm topo}$)")
-            ax.scatter([46.14, 46.95], [50.30, 50.81], color="crimson", s=18, zorder=7)
-            ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor="none",
-                      framealpha=0.9, fontsize=7.2, handlelength=1.4)
-            
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
         ax.set_aspect("equal")
@@ -345,12 +336,12 @@ def plot_option4_composite(csv_path, surgery_dir, output_base):
     final_k = x[final_idx]
     ax_e.scatter([final_k], [energy[final_idx]], color="red", s=28, zorder=6)
     
-    # Annotate milestones A, B, C, D on Energy curve
+    # Annotate milestones A, B, C, D on Energy curve (cleanly floating in open space above markers)
     text_offsets_e = {
-        "A": (0, 7),
-        "B": (0, -13),
-        "C": (0, -13),
-        "D": (-12, 7)
+        "A": (-14, 14),
+        "B": (-14, 14),
+        "C": (-14, 14),
+        "D": (-14, 14)
     }
     for k_val, let in zip(milestone_k, letters):
         e_val = energy[np.where(x == k_val)[0][0]]
@@ -358,39 +349,24 @@ def plot_option4_composite(csv_path, surgery_dir, output_base):
         dx, dy = text_offsets_e[let]
         ax_e.annotate(r"$\mathbf{" + let + "}$", (k_val, e_val),
                       textcoords="offset points", xytext=(dx, dy),
-                      ha="center", fontsize=8.5, fontweight="bold", color="navy")
+                      ha="center", va="center", fontsize=9.0, fontweight="bold", color="navy")
         
     ax_e.set_ylabel(r"Internal energy $E$", labelpad=2)
     ax_e.set_xlabel(r"Inner minimization step $k$", labelpad=2)
     ax_e.grid(True, linestyle=":", alpha=0.5, color="gray")
     ax_e.text(-0.06, -0.155, "(a)", transform=ax_e.transAxes, fontsize=10, fontweight="bold", va="center")
     
-    # Top Left Inset: Zoom on reconnection jump
-    ax_ins_e = ax_e.inset_axes([0.48, 0.46, 0.48, 0.48])
-    k_first_jump = x[reconn_idx[0]]
-    ins_mask = (x >= k_first_jump - 15) & (x <= k_first_jump + 80)
-    ax_ins_e.plot(x[ins_mask], energy[ins_mask], color=col_e, lw=1.2)
-    ax_ins_e.plot([k_first_jump, k_first_jump], [energy[reconn_idx[0]-1], energy[reconn_idx[0]]],
-                  color="darkorange", lw=1.5)
-    ax_ins_e.scatter([k_first_jump], [energy[reconn_idx[0]]], color="darkorange", s=14, zorder=5)
-    ax_ins_e.annotate(r"$\Delta E_{\rm topo}$",
-                      xy=(k_first_jump, 0.5 * (energy[reconn_idx[0]-1] + energy[reconn_idx[0]])),
-                      xytext=(k_first_jump + 15, 0.5 * (energy[reconn_idx[0]-1] + energy[reconn_idx[0]])),
-                      arrowprops=dict(arrowstyle="->", color="darkorange", lw=0.8),
-                      fontsize=7.2, color="darkorange", va="center")
-    ax_ins_e.tick_params(labelsize=6.5, direction="in")
-    ax_ins_e.grid(True, linestyle=":", alpha=0.4)
-    
     # --- Top Right: Stress ---
     col_s = "#003366"
     ax_s.plot(x_s, s_vals, color=col_s, lw=1.2, label=r"$\sigma(k)$", zorder=3)
     ax_s.scatter([final_k], [s_vals[-1]], color="red", s=28, zorder=6)
+    ax_s.set_ylim(-0.0145, -0.0035)
     
     text_offsets_s = {
-        "A": (0, 7),
-        "B": (10, 5),
-        "C": (-8, 7),
-        "D": (10, 5)
+        "A": (12, -2),    # to the right of marker A, well below the inset
+        "B": (12, 4),     # above-right of marker B
+        "C": (-10, 7),    # above-left of marker C
+        "D": (12, 4)      # above-right of marker D
     }
     for k_val, let in zip(milestone_k, letters):
         idx_near = np.argmin(np.abs(x_s - k_val))
@@ -399,21 +375,21 @@ def plot_option4_composite(csv_path, surgery_dir, output_base):
         dx, dy = text_offsets_s[let]
         ax_s.annotate(r"$\mathbf{" + let + "}$", (x_s[idx_near], s_val),
                       textcoords="offset points", xytext=(dx, dy),
-                      ha="center", fontsize=8.5, fontweight="bold", color="navy")
+                      ha="center", va="center", fontsize=9.0, fontweight="bold", color="navy")
         
     ax_s.set_ylabel(r"Shear stress $\sigma_{xy}$", labelpad=2)
     ax_s.set_xlabel(r"Inner minimization step $k$", labelpad=2)
     ax_s.grid(True, linestyle=":", alpha=0.5, color="gray")
     ax_s.text(-0.06, -0.155, "(b)", transform=ax_s.transAxes, fontsize=10, fontweight="bold", va="center")
     
-    # Top Right Inset: Gradient norm (raised to upper-left clear of the curve)
-    ax_ins_s = ax_s.inset_axes([0.16, 0.52, 0.42, 0.38])
+    # Top Right Inset: Gradient norm (raised to upper-left well clear of marker A)
+    ax_ins_s = ax_s.inset_axes([0.12, 0.54, 0.42, 0.36])
     grad_mask = (grad_norm > 0) & np.isfinite(grad_norm)
     if np.any(grad_mask):
         ax_ins_s.semilogy(x[grad_mask], grad_norm[grad_mask], color="#8b0000", lw=0.85)
-        ax_ins_s.set_ylabel(r"$\|\nabla E\|_\infty$", fontsize=7.2, labelpad=1)
-        ax_ins_s.set_title(r"Residual $\|\nabla E\|_\infty$", fontsize=7.2, pad=2)
-        ax_ins_s.tick_params(labelsize=6.5, direction="in")
+        ax_ins_s.set_ylabel(r"$\|\nabla E\|_\infty$", fontsize=6.8, labelpad=1)
+        ax_ins_s.set_title(r"Residual $\|\nabla E\|_\infty$", fontsize=7.0, pad=1.5)
+        ax_ins_s.tick_params(labelsize=6.0, direction="in")
         ax_ins_s.grid(True, linestyle=":", alpha=0.4)
         
     # Top header legend
