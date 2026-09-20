@@ -106,7 +106,7 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     if forces == "panel":
         if layout == "sidebyside":
             fig_w = 7.2
-            fig_h = 2.75
+            fig_h = 2.7
             fig, (ax_e, ax_s, ax_f) = plt.subplots(1, 3, figsize=(fig_w, fig_h), dpi=300)
         else:
             fig_w = 6.8 if col_width == "double" else 3.37
@@ -116,7 +116,7 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     else:
         if layout == "sidebyside":
             fig_w = 6.8 if col_width == "double" else 5.5
-            fig_h = 2.75
+            fig_h = 2.7
             fig, (ax_e, ax_s) = plt.subplots(1, 2, figsize=(fig_w, fig_h), dpi=300)
         else:
             fig_w = 6.8 if col_width == "double" else 3.37
@@ -227,15 +227,16 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     xlabel_text = r"Inner minimization step $k$"
     if forces == "panel":
         if layout == "sidebyside":
+            xlabel_3p = r"Inner step $k$"
             for ax in all_axes:
-                ax.set_xlabel(xlabel_text)
-            ax_e.text(0.5, -0.30, "(a)", transform=ax_e.transAxes,
-                      fontsize=11, fontweight="bold", ha="center", va="top")
-            ax_s.text(0.5, -0.30, "(b)", transform=ax_s.transAxes,
-                      fontsize=11, fontweight="bold", ha="center", va="top")
-            ax_f.text(0.5, -0.30, "(c)", transform=ax_f.transAxes,
-                      fontsize=11, fontweight="bold", ha="center", va="top")
-            fig.tight_layout(rect=[0.01, 0.02, 0.98, 0.92], pad=0.6)
+                ax.set_xlabel(xlabel_3p)
+            ax_e.text(0.0, -0.155, "(a)", transform=ax_e.transAxes,
+                      fontsize=11, fontweight="bold", ha="left", va="center")
+            ax_s.text(0.0, -0.155, "(b)", transform=ax_s.transAxes,
+                      fontsize=11, fontweight="bold", ha="left", va="center")
+            ax_f.text(0.0, -0.155, "(c)", transform=ax_f.transAxes,
+                      fontsize=11, fontweight="bold", ha="left", va="center")
+            fig.tight_layout(rect=[0.01, 0, 0.98, 0.92], pad=0.6)
         else:
             ax_f.set_xlabel(xlabel_text)
             ax_e.text(-0.12, 0.5, "(a)", transform=ax_e.transAxes, fontsize=11, fontweight="bold", ha="right", va="center")
@@ -246,11 +247,11 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
         if layout == "sidebyside":
             ax_e.set_xlabel(xlabel_text)
             ax_s.set_xlabel(xlabel_text)
-            ax_e.text(0.5, -0.30, "(a)", transform=ax_e.transAxes,
-                      fontsize=11, fontweight="bold", ha="center", va="top")
-            ax_s.text(0.5, -0.30, "(b)", transform=ax_s.transAxes,
-                      fontsize=11, fontweight="bold", ha="center", va="top")
-            fig.tight_layout(rect=[0, 0.02, 1, 0.92], pad=0.6)
+            ax_e.text(0.0, -0.155, "(a)", transform=ax_e.transAxes,
+                      fontsize=11, fontweight="bold", ha="left", va="center")
+            ax_s.text(0.0, -0.155, "(b)", transform=ax_s.transAxes,
+                      fontsize=11, fontweight="bold", ha="left", va="center")
+            fig.tight_layout(rect=[0, 0, 1, 0.92], pad=0.6)
         else:
             ax_s.set_xlabel(xlabel_text)
             ax_e.text(-0.12, 0.5, "(a)", transform=ax_e.transAxes, fontsize=11, fontweight="bold", ha="right", va="center")
