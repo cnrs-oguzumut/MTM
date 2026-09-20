@@ -106,7 +106,7 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     if forces == "panel":
         if layout == "sidebyside":
             fig_w = 7.2
-            fig_h = 2.7
+            fig_h = 2.75
             fig, (ax_e, ax_s, ax_f) = plt.subplots(1, 3, figsize=(fig_w, fig_h), dpi=300)
         else:
             fig_w = 6.8 if col_width == "double" else 3.37
@@ -116,7 +116,7 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     else:
         if layout == "sidebyside":
             fig_w = 6.8 if col_width == "double" else 5.5
-            fig_h = 2.7
+            fig_h = 2.75
             fig, (ax_e, ax_s) = plt.subplots(1, 2, figsize=(fig_w, fig_h), dpi=300)
         else:
             fig_w = 6.8 if col_width == "double" else 3.37
@@ -155,8 +155,6 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
                   markersize=5.0, mew=1.5, zorder=6)
 
     ax_e.set_ylabel(r"Internal energy $E$")
-    ax_e.text(0.025, 0.92, "(a)", transform=ax_e.transAxes,
-              fontsize=11, fontweight="bold", va="top")
 
     # Phase dividers and top labels
     has_short_phase = any((pb[2] - pb[1]) < 250 for pb in phase_boundaries)
@@ -203,8 +201,6 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
         ax_s.plot(x, stress, color=col_stress, lw=1.2, zorder=3)
 
     ax_s.set_ylabel(r"Shear stress $\sigma_{xy}$")
-    ax_s.text(0.025, 0.92, "(b)", transform=ax_s.transAxes,
-              fontsize=11, fontweight="bold", va="top")
 
     # --- Inner Force / Gradient Inset inside Panel (b) ---
     if forces == "inset" and mask_g.any():
@@ -226,8 +222,6 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
         if mask_g.any():
             ax_f.semilogy(x[mask_g], grad_norm[mask_g], color=col_force, lw=1.0, zorder=3)
         ax_f.set_ylabel(r"Residual $\|\nabla E\|_\infty$")
-        ax_f.text(0.025, 0.92, "(c)", transform=ax_f.transAxes,
-                  fontsize=11, fontweight="bold", va="top")
         ax_f.grid(True, ls=":", lw=0.5, color="#dddddd")
 
     xlabel_text = r"Inner minimization step $k$"
@@ -235,17 +229,32 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
         if layout == "sidebyside":
             for ax in all_axes:
                 ax.set_xlabel(xlabel_text)
-            fig.tight_layout(rect=[0.01, 0, 0.98, 0.92], pad=0.6)
+            ax_e.text(0.5, -0.30, "(a)", transform=ax_e.transAxes,
+                      fontsize=11, fontweight="bold", ha="center", va="top")
+            ax_s.text(0.5, -0.30, "(b)", transform=ax_s.transAxes,
+                      fontsize=11, fontweight="bold", ha="center", va="top")
+            ax_f.text(0.5, -0.30, "(c)", transform=ax_f.transAxes,
+                      fontsize=11, fontweight="bold", ha="center", va="top")
+            fig.tight_layout(rect=[0.01, 0.02, 0.98, 0.92], pad=0.6)
         else:
             ax_f.set_xlabel(xlabel_text)
+            ax_e.text(-0.12, 0.5, "(a)", transform=ax_e.transAxes, fontsize=11, fontweight="bold", ha="right", va="center")
+            ax_s.text(-0.12, 0.5, "(b)", transform=ax_s.transAxes, fontsize=11, fontweight="bold", ha="right", va="center")
+            ax_f.text(-0.12, 0.5, "(c)", transform=ax_f.transAxes, fontsize=11, fontweight="bold", ha="right", va="center")
             fig.tight_layout(rect=[0, 0, 1, 0.94], pad=0.5)
     else:
         if layout == "sidebyside":
             ax_e.set_xlabel(xlabel_text)
             ax_s.set_xlabel(xlabel_text)
-            fig.tight_layout(rect=[0, 0, 1, 0.92], pad=0.6)
+            ax_e.text(0.5, -0.30, "(a)", transform=ax_e.transAxes,
+                      fontsize=11, fontweight="bold", ha="center", va="top")
+            ax_s.text(0.5, -0.30, "(b)", transform=ax_s.transAxes,
+                      fontsize=11, fontweight="bold", ha="center", va="top")
+            fig.tight_layout(rect=[0, 0.02, 1, 0.92], pad=0.6)
         else:
             ax_s.set_xlabel(xlabel_text)
+            ax_e.text(-0.12, 0.5, "(a)", transform=ax_e.transAxes, fontsize=11, fontweight="bold", ha="right", va="center")
+            ax_s.text(-0.12, 0.5, "(b)", transform=ax_s.transAxes, fontsize=11, fontweight="bold", ha="right", va="center")
             fig.tight_layout(rect=[0, 0, 1, 0.94], pad=0.5)
 
     # Output naming
