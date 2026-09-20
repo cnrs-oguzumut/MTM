@@ -505,38 +505,59 @@ For the standard $100 \times 100$ positive simulation (seed 42):
 
 ---
 
-### Nodal State Jump Formulation
+### Localization Formulations
+
+Two complementary methodologies are available to extract localized energetic and stress jumps during discrete reconnection passes:
+
+#### 1. Nodal State Jump Formulation
 For each surgery pass $k$, the nodal energy $e_a$ and nodal Cauchy shear stress $\sigma_{xy, a}$ are extracted from the paired binary VTK files at frozen coordinates $\mathbf{x}_a$:
 $$\Delta e_a^{(k)} = e_a^{(k),\text{after}} - e_a^{(k),\text{before}},$$
 $$\Delta \sigma_{xy, a}^{(k)} = \sigma_{xy, a}^{(k),\text{after}} - \sigma_{xy, a}^{(k),\text{before}}.$$
 
 Nodes that do not undergo local reconnectivity have $|\Delta e_a^{(k)}| \le 10^{-9}$ and $|\Delta \sigma_{xy, a}^{(k)}| \le 10^{-6}$ (zero jumps, omitted from log distributions).
 
+#### 2. Cavity / Patch Decomposition Formulation
+At the instant of Delaunay remeshing (nodal positions fixed), triangles common to both meshes ($\mathcal{T}_{\text{before}} \cap \mathcal{T}_{\text{after}}$) have identically zero energy change. The rewired region partitions into removed triangles $\mathcal{T}_{\text{removed}} = \mathcal{T}_{\text{before}} \setminus \mathcal{T}_{\text{after}}$ and newly created triangles $\mathcal{T}_{\text{added}} = \mathcal{T}_{\text{after}} \setminus \mathcal{T}_{\text{before}}$.
+Connected-component clustering (via shared vertices) partitions this rewired zone into $P$ spatially disjoint local topological cavities $p = 1, \dots, P$:
+
+- **Cavity Energy Jump**:
+  $$\Delta E_{\text{cavity}}^{(p)} = \left| \sum_{T \in \mathcal{T}_{\text{added}}^{(p)}} E_T^{\text{after}} - \sum_{T \in \mathcal{T}_{\text{removed}}^{(p)}} E_T^{\text{before}} \right|$$
+  *(Exact conservation: $\sum_p \Delta E_{\text{cavity}}^{(p)} = \Delta E_{\text{topo}}$).*
+
+- **Area-Weighted Cavity Shear Stress Jump**:
+  $$\Delta \sigma_{xy, \text{cavity}}^{(p)} = \left| \bar{\sigma}_{xy, \text{after}}^{(p)} - \bar{\sigma}_{xy, \text{before}}^{(p)} \right|$$
+  where $\bar{\sigma}_{xy}^{(p)} = \frac{1}{\sum A_T} \sum_{T \in \text{cavity}} A_T \sigma_{xy, T}$.
+
 ---
 
 ### Automated Analysis & Plotting Scripts
 
-From the repository root directory, run the post-processing scripts:
+From the repository root directory (or from inside `study_100x100_positive/`), run the post-processing scripts:
 
-#### 1. Comparative Reference Figure (Energy & Stress Jumps)
+#### 1. Cavity / Patch Jump Distributions
+```bash
+python3 plot_cavity_energy_distribution.py
+```
+Clusters rewired triangles into disjoint geometric cavities across all 366 surgery passes and outputs:
+- `figures/cavity_jump_distributions_comparison.png`
+- `figures/cavity_jump_distributions_comparison.pdf`
+
+**Layout**:
+- **Panel (a)**: Probability per logarithmic bin of cavity energy jump $|\Delta E_{\text{cavity}}^{(p)}|$ ($10^{-9}$ to $10^1$).
+- **Panel (b)**: Probability per logarithmic bin of cavity shear stress jump $|\Delta \sigma_{xy, \text{cavity}}^{(p)}|$ ($10^{-6}$ to $10^0$).
+- Stepped histograms comparing pre-yield ($\alpha < 0.578$, blue) vs. post-yield ($\alpha \ge 0.578$, orange).
+- Reference lines: Zanzotto single-element maximum barrier $E_{\max} \approx 0.0481$ and stress at loss of ellipticity $\sigma_{xy} \approx 0.334$.
+- Monospace summary callout showing Min, Mean, and Max for both regimes.
+
+#### 2. Nodal State Jump Distributions
 ```bash
 python3 plot_comparison_like_reference.py
 ```
-This processes all 366 surgery passes in `study_100x100_positive/` and outputs:
-- `figures/flip_jump_distributions_comparison.png` (High-resolution raster)
-- `figures/flip_jump_distributions_comparison.pdf` (Publication vector format)
+Computes node-by-node state jumps across all 366 surgery passes and outputs:
+- `figures/flip_jump_distributions_comparison.png`
+- `figures/flip_jump_distributions_comparison.pdf`
 
-**Features**:
-- Side-by-side subplots:
-  - **(a)**: Probability per logarithmic bin of the nodal energy jump $|\Delta e_a^{(k)}|$ ($10^{-9}$ to $10^0$).
-  - **(b)**: Probability per logarithmic bin of the nodal shear stress jump $|\Delta \sigma_{xy, a}^{(k)}|$ ($10^{-6}$ to $10^0$).
-- Stepped histograms comparing pre-yield ($\alpha < 0.578$, blue) and post-yield ($\alpha \ge 0.578$, orange).
-- Physical reference lines:
-  - Panel (a): Zanzotto single-element maximum barrier $E_{\max} \approx 0.0481$ at shear strain $\gamma = 0.5$.
-  - Panel (b): Theoretical shear stress at loss of ellipticity $\sigma_{xy} \approx 0.334$ at $\gamma = 0.1322$.
-- Bottom-left callout box showing Min, Mean, and Max values for both deformation regimes.
-
-#### 2. Regime-Specific 4-Panel Diagnostic Figures
+#### 3. Regime-Specific 4-Panel Diagnostic Figures
 ```bash
 python3 plot_two_yield_distributions.py
 ```
@@ -555,12 +576,24 @@ Outputs:
 ### Reference Verification Values
 When repeating or benchmarking this study with seed 42, verify that your extracted statistics match:
 
+#### Cavity Decomposition Metrics:
 | Metric | Pre-Yield ($\alpha < 0.578$) | Post-Yield ($\alpha \ge 0.578$) |
 | :--- | :---: | :---: |
-| **Active Reconnected Events** | 492,665 | 504,181 |
+| **Identified Cavities ($n$)** | 10,265 | 34,994 |
+| **$|\Delta E_{\text{cavity}}^{(p)}|$ Minimum** | $1.75 \times 10^{-9}$ | $3.73 \times 10^{-9}$ |
+| **$|\Delta E_{\text{cavity}}^{(p)}|$ Mean** | $2.42 \times 10^{-2}$ | $6.01 \times 10^{-2}$ |
+| **$|\Delta E_{\text{cavity}}^{(p)}|$ Maximum** | $2.706$ | $25.339$ |
+| **$|\Delta \sigma_{xy, \text{cavity}}^{(p)}|$ Minimum** | $1.00 \times 10^{-6}$ | $1.00 \times 10^{-6}$ |
+| **$|\Delta \sigma_{xy, \text{cavity}}^{(p)}|$ Mean** | $3.78 \times 10^{-3}$ | $1.06 \times 10^{-2}$ |
+| **$|\Delta \sigma_{xy, \text{cavity}}^{(p)}|$ Maximum** | $0.557$ | $0.528$ |
+
+#### Nodal State Jump Metrics:
+| Metric | Pre-Yield ($\alpha < 0.578$) | Post-Yield ($\alpha \ge 0.578$) |
+| :--- | :---: | :---: |
+| **Active Reconnected Events ($n$)** | 70,309 | 392,028 |
 | **$|\Delta e_a^{(k)}|$ Minimum** | $1.05 \times 10^{-9}$ | $1.07 \times 10^{-9}$ |
-| **$|\Delta e_a^{(k)}|$ Mean** | $9.84 \times 10^{-4}$ | $5.21 \times 10^{-3}$ |
-| **$|\Delta e_a^{(k)}|$ Maximum** | $0.377$ | $0.667$ |
+| **$|\Delta e_a^{(k)}|$ Mean** | $1.28 \times 10^{-3}$ | $2.15 \times 10^{-3}$ |
+| **$|\Delta e_a^{(k)}|$ Maximum** | $0.252$ | $0.246$ |
 | **$|\Delta \sigma_{xy, a}^{(k)}|$ Minimum** | $1.00 \times 10^{-6}$ | $1.00 \times 10^{-6}$ |
 | **$|\Delta \sigma_{xy, a}^{(k)}|$ Mean** | $2.87 \times 10^{-3}$ | $8.70 \times 10^{-3}$ |
 | **$|\Delta \sigma_{xy, a}^{(k)}|$ Maximum** | $0.495$ | $0.691$ |
