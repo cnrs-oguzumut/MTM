@@ -191,6 +191,11 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
                ncol=len(legend_elements), frameon=False, fontsize=7.5)
 
     # --- Panel (b): Stress Evolution ---
+    s_active = s_vals if len(x_s) > 0 else stress
+    y_min_s, y_max_s = np.min(s_active), np.max(s_active)
+    y_range_s = y_max_s - y_min_s if y_max_s != y_min_s else 1.0
+    ax_s.set_ylim(y_min_s - 0.05 * y_range_s, y_max_s + 0.20 * y_range_s)
+
     if len(x_s) > 0:
         ax_s.plot(x_s, s_vals, color=col_stress, lw=1.2, marker="s",
                   markersize=3.5, markerfacecolor="white", markeredgewidth=1.0, zorder=3)
@@ -204,11 +209,11 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     # --- Inner Force / Gradient Inset inside Panel (b) ---
     if forces == "inset" and mask_g.any():
         if layout == "sidebyside":
-            # Upper-left of panel (b) avoids the stress curve with proper headroom
-            ax_ins = ax_s.inset_axes([0.18, 0.42, 0.42, 0.40])
+            # Raised upper-left of panel (b) well clear of the stress curve
+            ax_ins = ax_s.inset_axes([0.18, 0.52, 0.42, 0.38])
         else:
-            # Lower-left of stacked panel (b)
-            ax_ins = ax_s.inset_axes([0.18, 0.42, 0.35, 0.40])
+            # Raised in stacked panel (b)
+            ax_ins = ax_s.inset_axes([0.18, 0.52, 0.35, 0.38])
         ax_ins.semilogy(x[mask_g], grad_norm[mask_g], color=col_force, lw=0.85, zorder=3)
         ax_ins.tick_params(direction="in", top=True, right=True, which="both", labelsize=6.5)
         ax_ins.tick_params(which="major", length=2.5, width=0.5)
