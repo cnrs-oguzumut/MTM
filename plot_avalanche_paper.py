@@ -140,16 +140,20 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
               fontsize=11, fontweight="bold", va="top")
 
     # Phase dividers and top labels
+    has_short_phase = any((pb[2] - pb[1]) < 250 for pb in phase_boundaries)
     for p_idx, (p_name, p_start, p_end) in enumerate(phase_boundaries):
         mid_x = 0.5 * (p_start + p_end)
-        p_label = f"Pass {p_idx}" if p_idx > 0 else "Initial"
-        ax_e.text(mid_x, y_max_e + 0.08 * y_range_e, p_label,
+        if layout == "sidebyside" or has_short_phase:
+            p_label = f"P{p_idx}" if p_idx > 0 else "Init"
+        else:
+            p_label = f"Pass {p_idx}" if p_idx > 0 else "Initial"
+        ax_e.text(mid_x, y_max_e + 0.05 * y_range_e, p_label,
                   ha="center", va="bottom", fontsize=7.5, color="#555555")
         if p_idx < len(phase_boundaries) - 1:
             ax_e.axvline(p_end, color="#cccccc", ls="--", lw=0.6, zorder=1)
             ax_s.axvline(p_end, color="#cccccc", ls="--", lw=0.6, zorder=1)
 
-    # Clean, compact legend in Panel (a)
+    # Clean, horizontal legend placed OUTSIDE at the top (never blocks curves or pass labels)
     legend_elements = [
         Line2D([0], [0], color=col_energy, lw=1.25, label="Minimization"),
         Line2D([0], [0], marker="^", color=col_reconn, markerfacecolor="white", ls=":", lw=1.0, markersize=4.5, label=r"$\Delta E_{\rm topo}$ reconnection"),
@@ -159,8 +163,8 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
         legend_elements.append(
             Line2D([0], [0], marker="x", color=col_reject, ls="none", markersize=5.0, mew=1.5, label="Rejected state")
         )
-    ax_e.legend(handles=legend_elements, loc="upper right", frameon=True,
-                framealpha=0.92, edgecolor="#d0d0d0", fontsize=7.5)
+    fig.legend(handles=legend_elements, loc="upper center", bbox_to_anchor=(0.5, 0.99),
+               ncol=len(legend_elements), frameon=False, fontsize=7.8)
 
     # --- Panel (b): Stress Evolution ---
     if len(x_s) > 0:
@@ -177,10 +181,10 @@ def plot_paper_figure(csv_path, output_base=None, layout="stacked", col_width="d
     if layout == "sidebyside":
         ax_e.set_xlabel(xlabel_text)
         ax_s.set_xlabel(xlabel_text)
+        fig.tight_layout(rect=[0, 0, 1, 0.92], pad=0.6)
     else:
         ax_s.set_xlabel(xlabel_text)
-
-    fig.tight_layout(pad=0.6)
+        fig.tight_layout(rect=[0, 0, 1, 0.94], pad=0.5)
 
     # Output naming
     if output_base is None:
