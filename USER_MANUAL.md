@@ -23,6 +23,9 @@ This manual covers the installation, compilation, command-line usage, high-perfo
 5. [Preconditioned L-BFGS & METIS Acceleration](#5-preconditioned-l-bfgs--metis-acceleration)
 6. [Simulation Outputs & File Layout](#6-simulation-outputs--file-layout)
 7. [Post-Processing & Visualization](#7-post-processing--visualization)
+   - [Plotting Stress-Strain & Energy Curves](#plotting-stress-strain--energy-curves)
+   - [Visualizing Dislocation Microstructures in ParaView](#visualizing-dislocation-microstructures-in-paraview)
+   - [Micro-Surgery & Avalanche Micro-Step Analysis](#micro-surgery--avalanche-micro-step-analysis)
 8. [HPC & Cluster Workflow (SLURM)](#8-hpc--cluster-workflow-slurm)
 9. [Dislocation Studies & Multi-Shift Core Analysis](#9-dislocation-studies--multi-shift-core-analysis)
    - [Overview & Physical Context](#overview--physical-context)
@@ -127,6 +130,9 @@ Tracks the lowest eigenvalues ($\lambda_{\min}$) of the analytic stiffness matri
 | `--stress-drop-threshold=<VAL>` | `--stress-drop=0.10` | `0.10` | Fractional stress drop threshold $\Delta \sigma / |\sigma|$ required to trigger avalanche saving (PRE/POST checkpoints & VTK). |
 | `--save-triangle-data` | `--save-triangle-data` | disabled | Enable legacy `triangle_data/points_*.dat` and `elements_*.dat` output. Disabled by default to save 15+ GB of disk space. |
 | `--restart=<file>` | `--restart=checkpoints/latest.chk`<br>`--restart checkpoints/checkpoint_00015.chk` | — | Directly resumes an interrupted simulation from the specified single-file checkpoint. |
+| `--trace-avalanche` | `--trace-avalanche=1` (or `--trace=1`) | disabled (`0`) | Records every micro-step of L-BFGS minimization and topological remeshing reconnection jumps into `avalanche_trace/*.csv`. |
+| `--save-surgery-vtk` | `--save-surgery-vtk` (or `--surgery-vtk`) | disabled (`0`) | Saves 3-stage surgical VTK snapshots per remeshing pass (`before_remesh`, `after_remesh`, `relaxed_accepted`/`rejected`) into `vtk_surgery/` with Lagrange reduction enabled, and automatically generates `step_XXXXX_avalanche_surgery.png`. |
+| `--max-avalanches=<N>` | `--max-avalanches=10` (or `--avalanches=10`) | disabled (`0`) | Cleanly terminates the simulation after $N$ avalanches have been completed (ideal for targeted avalanche studies). |
 
 ---
 
@@ -203,6 +209,13 @@ When running a simulation, the output directory contains:
 │   ├── configuration_00000.vtk    # Initial configuration (Binary legacy VTK, 32-bit floats)
 │   ├── configuration_00001.vtk    # Pre-avalanche state (Binary legacy VTK, 32-bit floats)
 │   └── configuration_00002.vtk    # Post-avalanche state (Binary legacy VTK, 32-bit floats)
+├── vtk_surgery/                   # (With --save-surgery-vtk) Micro-surgery remeshing snapshots
+│   ├── step_XXXXX_pass_YY_1_before_remesh.vtk
+│   ├── step_XXXXX_pass_YY_2_after_remesh.vtk
+│   ├── step_XXXXX_pass_YY_3_relaxed_accepted.vtk
+│   └── step_XXXXX_avalanche_surgery.png
+├── avalanche_trace/               # (With --trace-avalanche) Micro-step CSV records
+│   └── config_00001_to_00002_step_00075.csv
 ├── eigen_log.csv                  # (Optional) Lowest stiffness eigenvalues
 └── eigen_modes/                   # (Optional) Soft-mode displacement VTK fields
 ```
@@ -249,6 +262,30 @@ plt.show()
 2. Load `vtk_output/configuration_*.vtk`.
 3. Apply the **Warp By Vector** filter using nodal displacements.
 4. Color by `coordination` (highlights dislocation cores) or `stress_tensor_xy`.
+
+### Micro-Surgery & Avalanche Micro-Step Analysis
+
+When running with `--save-surgery-vtk` and `--trace-avalanche`, the exact remeshing mechanics during an avalanche are dissected pass-by-pass:
+
+1. **Comparing Mesh Surgery in ParaView**:
+   For any given load step (e.g. Load Step 75, Pass 1), open the 3 surgical snapshots side-by-side:
+   - `step_00075_pass_01_1_before_remesh.vtk`: Strained mesh topology immediately before reconnecting.
+   - `step_00075_pass_01_2_after_remesh.vtk`: Reconnected Delaunay triangulation topology exhibiting the instantaneous topological energy jump $\Delta E_{\text{topo}}$.
+   - `step_00075_pass_01_3_relaxed_accepted.vtk`: Final L-BFGS minimized state for this pass (with Lagrange reduction enabled, guaranteeing physical energy and stress metrics).
+   - Set representation to **Surface With Edges** and color by `NodalEnergy` or `stress_tensor_xy` to inspect local edge flips.
+
+2. **Generating Avalanche Surgery Graphs**:
+   Avalanche surgery graphs are automatically produced into `vtk_surgery/step_XXXXX_avalanche_surgery.png` upon avalanche completion. You can also re-plot or batch-process them manually:
+   ```bash
+   # Single trace file
+   python3 plot_avalanche_surgery.py avalanche_trace/config_00002_to_00003_step_00075.csv -o step_00075.png
+
+   # Batch process all traces in a directory
+   python3 plot_avalanche_surgery.py avalanche_trace/ -o vtk_surgery/
+   ```
+   The plot displays:
+   - **Top Subplot**: Total system energy $E$ across every L-BFGS micro-step, highlighting initial relaxation drops, reconnection spikes ($\Delta E_{\text{topo}}$), accepted remeshing passes (green bands), and rejected passes (red bands). If the unrelaxed initial guess is an outlier, an automatic inset zoom is embedded to keep all subtle topological jumps clearly legible.
+   - **Bottom Subplot**: Average shear stress $\sigma_{xy}$ micro-step evolution and stress drops across each pass.
 
 ---
 

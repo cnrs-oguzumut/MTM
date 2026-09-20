@@ -92,6 +92,16 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
         AvalancheEventType::BEFORE_REMESH, -1, energy_old, stress_old(0, 1), 0.0,
         elements.size(), 0, "before topological reconnection");
 
+    if (AvalancheRecorder::instance().isSurgeryVTKEnabled()) {
+      int load_step = AvalancheRecorder::instance().currentLoadStep();
+      const std::string &dir = AvalancheRecorder::instance().getSurgeryVTKDir();
+      std::stringstream ss_before;
+      ss_before << dir << "/step_" << std::setw(5) << std::setfill('0') << load_step
+                << "_pass_" << std::setw(2) << std::setfill('0') << (mesh_iteration + 1)
+                << "_1_before_remesh.vtk";
+      ConfigurationSaver::writeToVTKFile(ss_before.str(), old_points, old_elements, &oldUserData, true, {}, 0.0);
+    }
+
     // === PERFORM REMESHING ===
     AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
                           translation_map, full_mapping,
@@ -130,6 +140,16 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
         AvalancheEventType::AFTER_REMESH, -1, energy_reconnected, stress_reconnected(0, 1), 0.0,
         elements.size(), (hasConnectivityChanged(old_elements, elements, old_active_elements, active_elements) ? 1 : 0),
         "after topological reconnection (coordinates frozen)");
+
+    if (AvalancheRecorder::instance().isSurgeryVTKEnabled()) {
+      int load_step = AvalancheRecorder::instance().currentLoadStep();
+      const std::string &dir = AvalancheRecorder::instance().getSurgeryVTKDir();
+      std::stringstream ss_after;
+      ss_after << dir << "/step_" << std::setw(5) << std::setfill('0') << load_step
+               << "_pass_" << std::setw(2) << std::setfill('0') << (mesh_iteration + 1)
+               << "_2_after_remesh.vtk";
+      ConfigurationSaver::writeToVTKFile(ss_after.str(), square_points, elements, &newUserData, true, {}, 0.0);
+    }
 
     // === OPTIMIZE ON NEW MESH ===
     std::cout << "Optimization in REMESHING loop" << std::endl;
@@ -176,6 +196,15 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
               << std::endl;
     std::cout << "└─────────────────────────────────────────────────────┘\n"
               << std::endl;
+    if (AvalancheRecorder::instance().isSurgeryVTKEnabled()) {
+      int load_step = AvalancheRecorder::instance().currentLoadStep();
+      const std::string &dir = AvalancheRecorder::instance().getSurgeryVTKDir();
+      std::stringstream ss_rel;
+      ss_rel << dir << "/step_" << std::setw(5) << std::setfill('0') << load_step
+             << "_pass_" << std::setw(2) << std::setfill('0') << (mesh_iteration + 1)
+             << (energy_change >= 0 ? "_3_relaxed_rejected.vtk" : "_3_relaxed_accepted.vtk");
+      ConfigurationSaver::writeToVTKFile(ss_rel.str(), square_points, elements, &newUserData_after, true, {}, 0.0);
+    }
 
     if (energy_change >= 0) {
       std::cout << "⚠️  REJECTING remesh - energy increased!" << std::endl;

@@ -575,15 +575,27 @@ void ConfigurationSaver::writeToVTK(
     const UserData* userData,
     int iteration, 
     bool reduction,
-    const std::vector<int>& coordination,// NEW: Optional coordination vector
+    const std::vector<int>& coordination,
     double load_strength)  
 {
-    // Create directory if it doesn't exist
-    std::filesystem::create_directory("vtk_output");
-    
-    // Create filename with iteration number
     std::stringstream filename;
     filename << "vtk_output/configuration_" << std::setw(5) << std::setfill('0') << iteration << ".vtk";
+    writeToVTKFile(filename.str(), points, elements, userData, reduction, coordination, load_strength);
+}
+
+void ConfigurationSaver::writeToVTKFile(
+    const std::string& full_filepath,
+    const std::vector<Point2D>& points,
+    const std::vector<ElementTriangle2D>& elements,
+    const UserData* userData,
+    bool reduction,
+    const std::vector<int>& coordination,
+    double load_strength)
+{
+    std::filesystem::path p(full_filepath);
+    if (p.has_parent_path()) {
+        std::filesystem::create_directories(p.parent_path());
+    }
     
     // Get original domain points count
     int original_points_count = points.size();
@@ -748,9 +760,9 @@ void ConfigurationSaver::writeToVTK(
     }
     
     // Open file for binary writing
-    std::ofstream file(filename.str(), std::ios::out | std::ios::binary);
+    std::ofstream file(full_filepath, std::ios::out | std::ios::binary);
     if (!file) {
-        std::cerr << "Error: Could not open file " << filename.str() << " for writing." << std::endl;
+        std::cerr << "Error: Could not open file " << full_filepath << " for writing." << std::endl;
         return;
     }
     
@@ -925,7 +937,7 @@ void ConfigurationSaver::writeToVTK(
     file << "\n";
 
     file.close();
-    std::cout << "Saved VTK file (binary): " << filename.str() << std::endl;
+    std::cout << "Saved VTK file (binary): " << full_filepath << std::endl;
 }
 
 

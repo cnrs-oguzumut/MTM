@@ -9,6 +9,7 @@
 #include <iostream>
 #include <filesystem>
 #include <cmath>
+#include <cstdlib>
 
 enum class AvalancheEventType {
     INITIAL_GUESS,
@@ -53,6 +54,8 @@ struct MicroStepRecord {
 class AvalancheRecorder {
 private:
     bool enabled_ = false;
+    bool save_surgery_vtk_ = false;
+    std::string surgery_vtk_dir_ = "vtk_surgery";
     int current_load_step_ = -1;
     std::string current_phase_ = "INITIAL_RELAX";
     int global_micro_counter_ = 0;
@@ -71,6 +74,24 @@ public:
 
     bool isEnabled() const {
         return enabled_;
+    }
+
+    void setSaveSurgeryVTK(bool save_vtk, const std::string& dir = "vtk_surgery") {
+        save_surgery_vtk_ = save_vtk;
+        surgery_vtk_dir_ = dir;
+        if (save_vtk) enabled_ = true;
+    }
+
+    bool isSurgeryVTKEnabled() const {
+        return enabled_ && save_surgery_vtk_;
+    }
+
+    const std::string& getSurgeryVTKDir() const {
+        return surgery_vtk_dir_;
+    }
+
+    int currentLoadStep() const {
+        return current_load_step_;
     }
 
     void startLoadStep(int load_step) {
@@ -163,6 +184,32 @@ public:
         file.close();
         std::cout << "✓ Avalanche surgery trace written: " << filename
                   << " (" << buffer_.size() << " micro-steps)" << std::endl;
+
+        if (save_surgery_vtk_) {
+            std::filesystem::create_directories(surgery_vtk_dir_);
+            std::stringstream ss_png, ss_csv;
+            ss_png << surgery_vtk_dir_ << "/step_" << std::setw(5) << std::setfill('0') << current_load_step_
+                   << "_avalanche_surgery.png";
+            ss_csv << surgery_vtk_dir_ << "/step_" << std::setw(5) << std::setfill('0') << current_load_step_
+                   << "_avalanche_surgery.csv";
+
+            try {
+                std::filesystem::copy_file(filename, ss_csv.str(), std::filesystem::copy_options::overwrite_existing);
+            } catch (...) {}
+
+            std::string script_path = "";
+            if (std::filesystem::exists("plot_avalanche_surgery.py")) {
+                script_path = "plot_avalanche_surgery.py";
+            } else if (std::filesystem::exists("../plot_avalanche_surgery.py")) {
+                script_path = "../plot_avalanche_surgery.py";
+            }
+
+            if (!script_path.empty()) {
+                std::string cmd = "python3 " + script_path + " " + filename + " -o " + ss_png.str() + " > /dev/null 2>&1";
+                int ret = std::system(cmd.c_str());
+                (void)ret;
+            }
+        }
     }
 
     void discard() {

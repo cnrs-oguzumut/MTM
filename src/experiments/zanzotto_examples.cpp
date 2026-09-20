@@ -456,7 +456,8 @@ void example_1_conti_zanzotto_loading(
     const ConfigurationSaver::CheckpointData* restart_chk,
     int checkpoint_interval,
     double stress_drop_threshold,
-    bool save_triangle_data) {
+    bool save_triangle_data,
+    int max_avalanches) {
 
   //     auto compute_even_ny = [](int nx) {
   //     int ny = std::round(2.0 * nx / std::sqrt(3));
@@ -720,6 +721,7 @@ void example_1_conti_zanzotto_loading(
 
   // Lowest stiffness eigenvalues during the run (off unless --eig-every / --eig-at-avalanche)
   StabilityMonitor stability_monitor;
+  int avalanche_counter = 0;
 
   // Process each alpha value
   for (size_t i = 0; i < alpha_values.size(); i++) {
@@ -1156,6 +1158,17 @@ void example_1_conti_zanzotto_loading(
     std::cout << "Iteration " << i
               << " ended: setting post_energy_previous = " << post_energy
               << ", post_stress_previous = " << post_stress << std::endl;
+
+    if (stress_drop_detected || i == 0) {
+      avalanche_counter++;
+      if (max_avalanches > 0 && avalanche_counter >= max_avalanches) {
+        std::cout << "\n======================================================\n"
+                  << ">>> Reached target of " << avalanche_counter << " / " << max_avalanches
+                  << " avalanches. Stopping simulation. <<<\n"
+                  << "======================================================\n" << std::endl;
+        break;
+      }
+    }
   }
 }
 
@@ -1168,7 +1181,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                const ConfigurationSaver::CheckpointData* restart_chk,
                                                int checkpoint_interval,
                                                double stress_drop_threshold,
-                                               bool save_triangle_data) {
+                                               bool save_triangle_data,
+                                               int max_avalanches) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1179,13 +1193,15 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    restart_chk,
                                    checkpoint_interval,
                                    stress_drop_threshold,
-                                   save_triangle_data);
+                                   save_triangle_data,
+                                   max_avalanches);
 }
 
 void restart_zanzotto_simulation(const std::string& checkpoint_path,
                                  int checkpoint_interval,
                                  double stress_drop_threshold,
-                                 bool save_triangle_data) {
+                                 bool save_triangle_data,
+                                 int max_avalanches) {
   std::string path = checkpoint_path;
   if (path == "latest" || path == "checkpoints/latest") {
     path = "checkpoints/latest.chk";
@@ -1216,12 +1232,14 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
         0, chk.nx, chk.ny,
         next_alpha, chk.alpha_end, chk.step_size,
         0.0, chk.seed, chk.enable_remeshing, &chk,
-        checkpoint_interval, stress_drop_threshold, save_triangle_data);
+        checkpoint_interval, stress_drop_threshold, save_triangle_data,
+        max_avalanches);
   } else {
     example_1_conti_zanzotto_negative_loading(
         0, chk.nx, chk.ny,
         next_alpha, chk.alpha_end, chk.step_size,
         chk.seed, chk.enable_remeshing, &chk,
-        checkpoint_interval, stress_drop_threshold, save_triangle_data);
+        checkpoint_interval, stress_drop_threshold, save_triangle_data,
+        max_avalanches);
   }
 }

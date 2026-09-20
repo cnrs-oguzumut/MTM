@@ -65,6 +65,7 @@ int main(int argc, char **argv) {
   int checkpoint_interval = 500;
   double stress_drop_threshold = 0.10;
   bool save_triangle_data = false;
+  int max_avalanches = 0;
 
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
@@ -118,6 +119,12 @@ int main(int argc, char **argv) {
       AvalancheRecorder::instance().setEnabled(true);
     } else if (arg == "--trace-avalanche=0" || arg == "--trace=0") {
       AvalancheRecorder::instance().setEnabled(false);
+    } else if (arg == "--save-surgery-vtk" || arg == "--save-surgery-vtk=1" ||
+               arg == "--surgery-vtk" || arg == "--surgery-vtk=1" ||
+               arg == "--save-remesh-vtk" || arg == "--save-remesh-vtk=1") {
+      AvalancheRecorder::instance().setSaveSurgeryVTK(true);
+    } else if (arg == "--save-surgery-vtk=0" || arg == "--surgery-vtk=0" || arg == "--no-surgery-vtk") {
+      AvalancheRecorder::instance().setSaveSurgeryVTK(false);
     } else if (arg.rfind("--alpha-end=", 0) == 0) {
       alpha_end = std::stod(arg.substr(12));
     } else if (arg.rfind("--alpha-max=", 0) == 0) {
@@ -140,13 +147,17 @@ int main(int argc, char **argv) {
       save_triangle_data = true;
     } else if (arg == "--no-triangle-data" || arg == "--save-triangle-data=0" || arg == "--triangle-data=0") {
       save_triangle_data = false;
+    } else if (arg.rfind("--max-avalanches=", 0) == 0) {
+      max_avalanches = std::stoi(arg.substr(17));
+    } else if (arg.rfind("--avalanches=", 0) == 0) {
+      max_avalanches = std::stoi(arg.substr(13));
     }
   }
   configure_relaxation_solver(relax_options, precond_from_step);
   configure_stability_monitor(stability_options);
 
   if (!restart_checkpoint.empty()) {
-    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data);
+    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
     return 0;
   }
 
@@ -179,7 +190,10 @@ int main(int argc, char **argv) {
             << " | alpha_start=" << alpha_start << " | alpha_end=" << alpha_end
             << " | step_size=" << step_size
             << " | trace=" << (AvalancheRecorder::instance().isEnabled() ? "enabled" : "disabled")
-            << " | precond=" << to_string(relax_options.type);
+            << " | surgery_vtk=" << (AvalancheRecorder::instance().isSurgeryVTKEnabled() ? "enabled" : "disabled");
+  if (max_avalanches > 0)
+    std::cout << " | max_avalanches=" << max_avalanches;
+  std::cout << " | precond=" << to_string(relax_options.type);
   if (relax_options.type != LBFGSPreconditioner::None)
     std::cout << " (grad_tol=" << relax_options.grad_tol
               << ", refresh=" << relax_options.refresh_every
@@ -252,9 +266,9 @@ int main(int argc, char **argv) {
   // 7. Zanzotto Continuous Shear Loading:
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
-    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data);
+    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
   } else {
-    example_1_conti_zanzotto_negative_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data);
+    example_1_conti_zanzotto_negative_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

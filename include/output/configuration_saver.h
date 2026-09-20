@@ -154,6 +154,15 @@ public:
         const std::vector<int>& coordination= std::vector<int>(),
         double load_strength=0);
 
+    static void writeToVTKFile(
+        const std::string& full_filepath,
+        const std::vector<Point2D>& points,
+        const std::vector<ElementTriangle2D>& elements,
+        const UserData* userData,
+        bool reduction = true,
+        const std::vector<int>& coordination = std::vector<int>(),
+        double load_strength = 0);
+
 
     static void writeToVTK_DefectAnalysis(
         const std::vector<Point2D>& points,

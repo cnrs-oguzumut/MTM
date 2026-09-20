@@ -100,21 +100,23 @@ def plot_surgery(csv_path, output_png=None):
     y_min, y_max = np.min(energy), np.max(energy)
     y_range = y_max - y_min
 
-    # Clean, unboxed phase labels along the top margin with Delta E (no boxes, no arrows)
-    has_narrow_phase = any((pb[2] - pb[1]) < 220 for pb in phase_boundaries)
-    for p_idx, (p_name, p_start, p_end) in enumerate(phase_boundaries):
-        clean_name = p_name.replace("_", " ").title().replace("Remesh Pass", "Re-construct")
-        if p_name in phase_delta_e:
-            de_val = phase_delta_e[p_name]
-            label_text = f"{clean_name}\n({de_val:+.2f})"
-        else:
-            label_text = clean_name
+    is_initial_outlier = (len(energy) > 2 and energy[0] > 1.8 * np.max(energy[1:]))
 
-        mid_x = 0.5 * (p_start + p_end)
-        # Alternate tiers if any phase is narrow so wider labels like "Re-construct" never collide
-        y_pos = y_max + (y_range * 0.12 if (has_narrow_phase and p_idx % 2 == 1) else y_range * 0.04)
-        ax_energy.text(mid_x, y_pos, label_text, ha='center', va='bottom',
-                       fontsize=8.0, fontweight='bold', color='#495057', zorder=8)
+    # Clean, unboxed phase labels along the top margin with Delta E (no boxes, no arrows)
+    if not is_initial_outlier:
+        has_narrow_phase = any((pb[2] - pb[1]) < 220 for pb in phase_boundaries)
+        for p_idx, (p_name, p_start, p_end) in enumerate(phase_boundaries):
+            clean_name = p_name.replace("_", " ").title().replace("Remesh Pass", "Re-construct")
+            if p_name in phase_delta_e:
+                de_val = phase_delta_e[p_name]
+                label_text = f"{clean_name}\n({de_val:+.2f})"
+            else:
+                label_text = clean_name
+
+            mid_x = 0.5 * (p_start + p_end)
+            y_pos = y_max + (y_range * 0.12 if (has_narrow_phase and p_idx % 2 == 1) else y_range * 0.04)
+            ax_energy.text(mid_x, y_pos, label_text, ha='center', va='bottom',
+                           fontsize=8.0, fontweight='bold', color='#495057', zorder=8)
 
     # Vertical event lines (clean dashed/dotted lines, no arrows)
     for i, ev in enumerate(event_type):
@@ -178,6 +180,44 @@ def plot_surgery(csv_path, output_png=None):
     if final_stress != 0.0:
         ax_stress.scatter([final_x], [final_stress], color='#d4ac0d', edgecolor='#7d6608', s=180, marker='*', zorder=10)
 
+    # Inset zoom for outlier initial relaxation (e.g. Load Step 0 where square->triangular drops from 1000->64)
+    if is_initial_outlier:
+        ax_ins = ax_energy.inset_axes([0.35, 0.22, 0.61, 0.68])
+        ax_ins.plot(x[1:], energy[1:], color=color_lbfgs, lw=1.8, marker='o', markersize=3, zorder=3)
+        ax_ins.set_title("Zoom: Micro-Surgery Remeshing Jumps ($\\Delta E_{\\mathrm{topo}}$)", fontsize=10, fontweight='bold', pad=4)
+        ax_ins.set_ylabel("$E$", fontsize=9, fontweight='bold')
+        ax_ins.grid(True, linestyle='--', alpha=0.5)
+        
+        y_min_ins, y_max_ins = np.min(energy[1:]), np.max(energy[1:])
+        y_range_ins = y_max_ins - y_min_ins
+        ax_ins.set_ylim(y_min_ins - y_range_ins * 0.06, y_max_ins + y_range_ins * 0.26)
+
+        for p_idx, (p_name, p_start, p_end) in enumerate(phase_boundaries):
+            if p_end >= x[1]:
+                bg_col = phase_colors[p_idx % len(phase_colors)]
+                ax_ins.axvspan(max(p_start, x[1]), p_end, facecolor=bg_col, alpha=0.5, zorder=0)
+                clean_name = p_name.replace("_", " ").title().replace("Remesh Pass", "Pass")
+                if p_name in phase_delta_e:
+                    de_val = phase_delta_e[p_name]
+                    label_text = f"{clean_name}\n({de_val:+.2f})"
+                else:
+                    label_text = clean_name
+                mid_x = 0.5 * (max(p_start, x[1]) + p_end)
+                ax_ins.text(mid_x, y_max_ins + y_range_ins * 0.03, label_text, ha='center', va='bottom',
+                            fontsize=7.0, fontweight='bold', color='#495057', zorder=8)
+
+        for i in range(1, len(event_type)):
+            step_val = x[i]
+            if event_type[i] == 'BEFORE_REMESH':
+                ax_ins.axvline(step_val, color=color_remesh_line, linestyle='--', alpha=0.75, lw=1.2, zorder=2)
+            elif event_type[i] == 'REMESH_ACCEPTED':
+                ax_ins.axvline(step_val, color=color_accept_line, linestyle=':', alpha=0.85, lw=1.4, zorder=2)
+            elif event_type[i] == 'REMESH_REJECTED':
+                ax_ins.scatter([step_val], [energy[i]], color='#dc3545', marker='X', s=70, zorder=9)
+        if final_accepted_idx > 0:
+            ax_ins.scatter([final_x], [final_E], color='#d4ac0d', edgecolor='#7d6608', s=160, marker='*', zorder=10)
+        ax_energy.indicate_inset_zoom(ax_ins, edgecolor="#555555", alpha=0.7)
+
     # Custom legend for events with exact values in the legend (saving plot space)
     custom_lines = [
         Line2D([0], [0], color=color_lbfgs, lw=2.2, label="L-BFGS Relaxation ($E$)"),
@@ -198,17 +238,35 @@ def plot_surgery(csv_path, output_png=None):
     else:
         output_png = Path(output_png)
 
+    output_png.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_png, dpi=200)
     plt.close()
     print(f"✓ Avalanche surgery plot saved to: {output_png}")
 
 def main():
     parser = argparse.ArgumentParser(description="Plot avalanche surgery micro-trace")
-    parser.add_argument("csv_file", help="Path to step_XXXXX_surgery.csv")
-    parser.add_argument("-o", "--output", help="Output PNG path", default=None)
+    parser.add_argument("path", nargs="?", default=".", help="Path to step_XXXXX_surgery.csv or directory containing avalanche traces")
+    parser.add_argument("-o", "--output", help="Output PNG path or output directory", default=None)
     args = parser.parse_args()
 
-    plot_surgery(args.csv_file, args.output)
+    target = Path(args.path)
+    if target.is_dir():
+        # Find csv traces
+        csv_files = sorted(target.glob("**/*step_*.csv"))
+        if not csv_files:
+            csv_files = sorted(target.glob("*.csv"))
+        if not csv_files:
+            print(f"No CSV trace files found in {target}")
+            sys.exit(1)
+        for csv_file in csv_files:
+            out_file = None
+            if args.output:
+                out_dir = Path(args.output)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_file = out_dir / (csv_file.stem + ".png")
+            plot_surgery(csv_file, out_file)
+    else:
+        plot_surgery(target, args.output)
 
 if __name__ == "__main__":
     main()
