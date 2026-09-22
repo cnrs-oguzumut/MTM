@@ -65,6 +65,8 @@ def main():
     parser.add_argument("--checkpoint-interval", "--chk-interval", dest="checkpoint_interval", type=int, default=None, help="Periodic elastic checkpoint interval in steps (0 = disabled, default: 500)")
     parser.add_argument("--stress-drop-threshold", "--stress-drop", dest="stress_drop_threshold", type=float, default=None, help="Fractional stress drop threshold to trigger avalanche save (default: 0.10)")
     parser.add_argument("--save-triangle-data", dest="save_triangle_data", action="store_true", default=False, help="Enable legacy triangle_data output (default: disabled)")
+    parser.add_argument("--no-perturbation", "--no-perturb", dest="no_perturbation", action="store_true", default=False, help="Disable triangulation perturbation for negative loading (keep same diagonal as positive)")
+    parser.add_argument("--perturbation", type=float, default=None, help="Custom triangulation perturbation value (default: -1e-7 for negative loading)")
 
     # Preconditioner
     parser.add_argument("--precond", choices=["stiffness", "laplacian", "diag", "none"], default=None, help="L-BFGS preconditioner")
@@ -166,6 +168,10 @@ def main():
         loading_flags_list.append(f"--stress-drop-threshold={args.stress_drop_threshold:g}")
     if args.save_triangle_data:
         loading_flags_list.append("--save-triangle-data")
+    if args.no_perturbation:
+        loading_flags_list.append("--no-perturbation")
+    elif args.perturbation is not None:
+        loading_flags_list.append(f"--perturbation={args.perturbation:g}")
     loading_flags = " ".join(loading_flags_list)
     loading_status = f"|alpha| = {alpha_start:g} -> {alpha_end:g} (step {step_size:g})"
     print(f"  -> Loading schedule: {loading_status}")
@@ -205,7 +211,7 @@ def main():
     print(f"  -> Preconditioner: {precond_status}")
 
     # Stability monitor: lowest stiffness eigenvalues during the run
-    eig_every = resolve_val(args.eig_every, "Stability monitor: eigenvalues every N load steps (0 = off)", "5", int, args.yes)
+    eig_every = resolve_val(args.eig_every, "Stability monitor: eigenvalues every N load steps (0 = off)", "0", int, args.yes)
     eig_flags = ""
     eig_status = "off"
     if eig_every > 0:
@@ -226,7 +232,9 @@ def main():
     current_cwd = os.getcwd()
     default_base = current_cwd if "MTM" in current_cwd else "/home/dist/umut.salman/latest_MTM"
     base_dir = resolve_val(args.base_dir, "Base directory for MTM", default_base, str, args.yes)
+    base_dir = os.path.abspath(os.path.expanduser(base_dir))
     exe_path = resolve_val(args.exe_path, "Executable path", f"{base_dir}/lattice_triangulation", str, args.yes)
+    exe_path = os.path.abspath(os.path.expanduser(exe_path))
     
     default_runs_dir = f"{base_dir}/runs_{nx}x{ny}{suffix}"
     runs_dir = resolve_val(args.runs_dir, "Runs output directory", default_runs_dir, str, args.yes)
