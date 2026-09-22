@@ -66,6 +66,7 @@ int main(int argc, char **argv) {
   double stress_drop_threshold = 0.10;
   bool save_triangle_data = false;
   int max_avalanches = 0;
+  double triangulation_perturbation = -1e-7; // default for negative loading
 
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
@@ -151,6 +152,10 @@ int main(int argc, char **argv) {
       max_avalanches = std::stoi(arg.substr(17));
     } else if (arg.rfind("--avalanches=", 0) == 0) {
       max_avalanches = std::stoi(arg.substr(13));
+    } else if (arg == "--no-perturbation" || arg == "--no-perturb") {
+      triangulation_perturbation = 0.0;
+    } else if (arg.rfind("--perturbation=", 0) == 0) {
+      triangulation_perturbation = std::stod(arg.substr(15));
     }
   }
   configure_relaxation_solver(relax_options, precond_from_step);
@@ -268,7 +273,7 @@ int main(int argc, char **argv) {
   if (mode == "positive") {
     example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
   } else {
-    example_1_conti_zanzotto_negative_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
+    example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):
