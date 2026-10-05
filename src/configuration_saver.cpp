@@ -683,6 +683,7 @@ void ConfigurationSaver::writeToVTKFile(
     
     // Initialize nodal value arrays
     std::vector<double> nodal_energy(extended_point_count, 0.0);
+    std::vector<double> atom_energy(original_points_count, 0.0);
     std::vector<double> nodal_projected_stress(extended_point_count, 0.0);
     std::vector<double> nodal_cauchy_xx(extended_point_count, 0.0);
     std::vector<double> nodal_cauchy_xy(extended_point_count, 0.0);
@@ -744,12 +745,24 @@ void ConfigurationSaver::writeToVTKFile(
             PairKey node_key(original_idx, translation);
             int extended_idx = node_map[node_key];
             
-            nodal_energy[extended_idx] += element_energy / 3.0;  // Divide by 3 nodes
+            if (original_idx >= 0 && original_idx < original_points_count) {
+                atom_energy[original_idx] += element_energy / 3.0;  // Divide by 3 nodes across the physical atom
+            }
             nodal_projected_stress[extended_idx] += stress_value;
             nodal_cauchy_xx[extended_idx] += cauchy_stress(0, 0);
             nodal_cauchy_xy[extended_idx] += cauchy_stress(0, 1);
             nodal_cauchy_yy[extended_idx] += cauchy_stress(1, 1);
             node_count[extended_idx]++;
+        }
+    }
+    
+    // Map accumulated atomic energy to all extended points (including periodic images at boundaries)
+    for (const auto& entry : node_map) {
+        int original_idx = entry.first.index;
+        int extended_idx = entry.second;
+        if (original_idx >= 0 && original_idx < original_points_count &&
+            extended_idx >= 0 && extended_idx < extended_point_count) {
+            nodal_energy[extended_idx] = atom_energy[original_idx];
         }
     }
     

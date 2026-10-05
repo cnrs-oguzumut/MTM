@@ -12,6 +12,8 @@
 #include "../include/experiments/stability_monitor.h"
 #include "../include/experiments/shifted_dislocation_study.h"
 #include "../include/output/AvalancheRecorder.h"
+#include "../include/lattice_energy/EnergyFunctions.h"
+#include "../include/experiments/acoustic_studies.h"
 
 int main(int argc, char **argv) {
   // Default system size and parameters
@@ -67,11 +69,52 @@ int main(int argc, char **argv) {
   bool save_triangle_data = false;
   int max_avalanches = 0;
   double triangulation_perturbation = -1e-7; // default for negative loading
+  double beta = -0.25;
+  double bulk_K = 5.0;
+  std::string lattice_type = "square";
+
+  // Acoustic study flags
+  bool run_acoustic_study = false;
+  int acoustic_potential_mode = 3; // 1: LJ v2, 2: LJ v3, 3: Zanzotto
+  double acoustic_t_max = 1.0;
+  double acoustic_dt = 0.02;
+  double acoustic_dp = 0.05;
+  double acoustic_alpha_min = -0.6;
+  double acoustic_alpha_max = 0.6;
+  double acoustic_dalpha = 0.005;
+  std::string acoustic_dat_output = "acoustic_study_results.dat";
+  std::string acoustic_json_output = "acoustic_study_results.json";
+  bool only_elastic_constants = false;
 
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    if (arg == "--no-remesh" || arg == "--noremesh" || arg == "--without-remesh" || arg == "-nr") {
+    if (arg == "--acoustic-study" || arg == "--acoustic" || arg == "--parametric-acoustic") {
+      run_acoustic_study = true;
+    } else if (arg.rfind("--potential-mode=", 0) == 0) {
+      acoustic_potential_mode = std::stoi(arg.substr(17));
+    } else if (arg.rfind("--acoustic-mode=", 0) == 0) {
+      acoustic_potential_mode = std::stoi(arg.substr(16));
+    } else if (arg.rfind("--t-max=", 0) == 0) {
+      acoustic_t_max = std::stod(arg.substr(8));
+    } else if (arg.rfind("--dt=", 0) == 0) {
+      acoustic_dt = std::stod(arg.substr(5));
+    } else if (arg.rfind("--dp=", 0) == 0) {
+      acoustic_dp = std::stod(arg.substr(5));
+    } else if (arg.rfind("--shear-alpha-min=", 0) == 0) {
+      acoustic_alpha_min = std::stod(arg.substr(18));
+    } else if (arg.rfind("--shear-alpha-max=", 0) == 0) {
+      acoustic_alpha_max = std::stod(arg.substr(18));
+    } else if (arg.rfind("--shear-dalpha=", 0) == 0) {
+      acoustic_dalpha = std::stod(arg.substr(15));
+    } else if (arg.rfind("--dat-output=", 0) == 0) {
+      acoustic_dat_output = arg.substr(13);
+    } else if (arg.rfind("--json-output=", 0) == 0) {
+      acoustic_json_output = arg.substr(14);
+    } else if (arg == "--print-elastic-constants" || arg == "--elastic-constants") {
+      run_acoustic_study = true;
+      only_elastic_constants = true;
+    } else if (arg == "--no-remesh" || arg == "--noremesh" || arg == "--without-remesh" || arg == "-nr") {
       enable_remeshing = false;
     } else if (arg == "--remesh" || arg == "-r") {
       enable_remeshing = true;
@@ -79,6 +122,20 @@ int main(int argc, char **argv) {
       restart_checkpoint = arg.substr(10);
     } else if (arg == "--restart" && i + 1 < argc) {
       restart_checkpoint = argv[++i];
+    } else if (arg.rfind("--beta=", 0) == 0) {
+      beta = std::stod(arg.substr(7));
+    } else if (arg.rfind("--K=", 0) == 0) {
+      bulk_K = std::stod(arg.substr(4));
+    } else if (arg.rfind("--bulk-K=", 0) == 0) {
+      bulk_K = std::stod(arg.substr(9));
+    } else if (arg.rfind("--lattice=", 0) == 0) {
+      lattice_type = arg.substr(10);
+    } else if (arg.rfind("--lattice-symmetry=", 0) == 0) {
+      lattice_type = arg.substr(19);
+    } else if (arg == "--triangular") {
+      lattice_type = "triangular";
+    } else if (arg == "--square") {
+      lattice_type = "square";
     } else if (arg.rfind("--precond=", 0) == 0) {
       relax_options.type = parse_lbfgs_preconditioner(arg.substr(10));
     } else if (arg.rfind("--precond-tol=", 0) == 0) {
@@ -158,11 +215,15 @@ int main(int argc, char **argv) {
       triangulation_perturbation = std::stod(arg.substr(15));
     }
   }
+
+  // Set Zanzotto potential parameters
+  energy_functions::set_parameters(beta, bulk_K);
+
   configure_relaxation_solver(relax_options, precond_from_step);
   configure_stability_monitor(stability_options);
 
   if (!restart_checkpoint.empty()) {
-    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
+    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type);
     return 0;
   }
 
@@ -190,6 +251,8 @@ int main(int argc, char **argv) {
   }
 
   std::cout << "System size: nx=" << nx << ", ny=" << ny
+            << " | lattice=" << lattice_type
+            << " | beta=" << beta << " | K=" << bulk_K
             << " | mode=" << mode << " | seed=" << seed
             << " | remeshing=" << (enable_remeshing ? "enabled" : "disabled")
             << " | alpha_start=" << alpha_start << " | alpha_end=" << alpha_end
@@ -257,6 +320,25 @@ int main(int argc, char **argv) {
 
   // 4. Acoustic Studies:
   //    Calculates and logs acoustic tensor properties / stability across states.
+  if (run_acoustic_study || mode == "acoustic" || mode == "acoustic_study" || mode == "parametric_acoustic") {
+    AcousticStudyConfig acoustic_cfg;
+    acoustic_cfg.mode = acoustic_potential_mode;
+    acoustic_cfg.lattice_type = lattice_type;
+    acoustic_cfg.beta = beta;
+    acoustic_cfg.K = bulk_K;
+    acoustic_cfg.t_max = acoustic_t_max;
+    acoustic_cfg.dt = acoustic_dt;
+    acoustic_cfg.dp = acoustic_dp;
+    acoustic_cfg.dat_output = acoustic_dat_output;
+    acoustic_cfg.json_output = acoustic_json_output;
+    acoustic_cfg.only_elastic_constants = only_elastic_constants;
+    acoustic_cfg.alpha_min = acoustic_alpha_min;
+    acoustic_cfg.alpha_max = acoustic_alpha_max;
+    acoustic_cfg.dalpha = acoustic_dalpha;
+
+    runParametricAcousticStudy(acoustic_cfg);
+    return 0;
+  }
   // parametricAcousticStudy();
   // parametricAcousticStudy_v2();
 
@@ -271,9 +353,9 @@ int main(int argc, char **argv) {
   // 7. Zanzotto Continuous Shear Loading:
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
-    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
+    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type);
   } else {
-    example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches);
+    example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

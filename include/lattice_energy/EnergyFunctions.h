@@ -221,11 +221,102 @@ inline auto create_d2phi_func(double beta, double K = 1.0, double burgers = 1.0)
     return tensor;
     };
 }
-inline auto phi_func = create_phi_func(-0.25,5.);
-inline auto dphi_func = create_dphi_func(-0.25,5.);
-inline auto ddphi_func = create_d2phi_func(-0.25,5.);
-inline auto ddphi_components_func = create_d2phi_components_func(-0.25,5.);
+inline double current_beta = -0.25;
+inline double current_K = 5.0;
+inline double current_burgers = 1.0;
 
+inline std::function<double(const Eigen::Matrix2d&)> phi_func = create_phi_func(-0.25, 5.0);
+inline std::function<Eigen::Matrix2d(const Eigen::Matrix2d&)> dphi_func = create_dphi_func(-0.25, 5.0);
+inline std::function<itensor::ITensor(const Eigen::Matrix2d&)> ddphi_func = create_d2phi_func(-0.25, 5.0);
+inline std::function<HessianComponents(const Eigen::Matrix2d&)> ddphi_components_func = create_d2phi_components_func(-0.25, 5.0);
+
+inline void set_parameters(double beta, double K = 5.0, double burgers = 1.0) {
+    current_beta = beta;
+    current_K = K;
+    current_burgers = burgers;
+    phi_func = create_phi_func(beta, K, burgers);
+    dphi_func = create_dphi_func(beta, K, burgers);
+    ddphi_func = create_d2phi_func(beta, K, burgers);
+    ddphi_components_func = create_d2phi_components_func(beta, K, burgers);
+}
+
+struct ElasticConstants {
+    double C11;
+    double C22;
+    double C12;
+    double C66;
+    double Zener_A;
+};
+
+inline ElasticConstants calculate_elastic_constants(double beta, double K, const std::string& lattice_type = "square") {
+    ElasticConstants ec{};
+    auto d2phi_comp = create_d2phi_components_func(beta, K, 1.0);
+    
+    if (lattice_type == "triangular") {
+        double a = std::pow(4.0 / 3.0, 0.25);
+        Eigen::Matrix2d F0;
+        F0 << a, 0.5 * a,
+              0.0, a * std::sqrt(3.0) / 2.0;
+        Eigen::Matrix2d C_tri = F0.transpose() * F0;
+        HessianComponents hess = d2phi_comp(C_tri);
+        
+        double d2E_dC2[2][2][2][2] = {0};
+        for (int M = 0; M < 2; ++M) {
+            for (int K_idx = 0; K_idx < 2; ++K_idx) {
+                for (int N = 0; N < 2; ++N) {
+                    for (int L = 0; L < 2; ++L) {
+                        double val = 0.0;
+                        int p1 = (M == K_idx) ? (M == 0 ? 1 : 2) : 3;
+                        int p2 = (N == L)     ? (N == 0 ? 1 : 2) : 3;
+                        if (p1 == 1 && p2 == 1) val = hess.c11_c11;
+                        else if (p1 == 2 && p2 == 2) val = hess.c22_c22;
+                        else if (p1 == 3 && p2 == 3) val = hess.c12_c12 * 0.25;
+                        else if ((p1 == 1 && p2 == 2) || (p1 == 2 && p2 == 1)) val = hess.c11_c22;
+                        else if ((p1 == 1 && p2 == 3) || (p1 == 3 && p2 == 1)) val = hess.c11_c12 * 0.5;
+                        else if ((p1 == 2 && p2 == 3) || (p1 == 3 && p2 == 2)) val = hess.c22_c12 * 0.5;
+                        d2E_dC2[M][K_idx][N][L] = val;
+                    }
+                }
+            }
+        }
+        
+        double c_spatial[2][2][2][2] = {0};
+        for (int i = 0; i < 2; ++i) {
+            for (int m = 0; m < 2; ++m) {
+                for (int j = 0; j < 2; ++j) {
+                    for (int n = 0; n < 2; ++n) {
+                        double sum = 0.0;
+                        for (int M = 0; M < 2; ++M) {
+                            for (int K_idx = 0; K_idx < 2; ++K_idx) {
+                                for (int N = 0; N < 2; ++N) {
+                                    for (int L = 0; L < 2; ++L) {
+                                        sum += F0(i, M) * F0(m, K_idx) * F0(j, N) * F0(n, L) * d2E_dC2[M][K_idx][N][L];
+                                    }
+                                }
+                            }
+                        }
+                        c_spatial[i][m][j][n] = 4.0 * sum;
+                    }
+                }
+            }
+        }
+        ec.C11 = c_spatial[0][0][0][0];
+        ec.C22 = c_spatial[1][1][1][1];
+        ec.C12 = c_spatial[0][0][1][1];
+        ec.C66 = c_spatial[0][1][0][1];
+    } else {
+        Eigen::Matrix2d C_sq = Eigen::Matrix2d::Identity();
+        HessianComponents hess = d2phi_comp(C_sq);
+        ec.C11 = 4.0 * hess.c11_c11;
+        ec.C22 = 4.0 * hess.c22_c22;
+        ec.C12 = 4.0 * hess.c11_c22;
+        ec.C66 = hess.c12_c12;
+    }
+    
+    double diff = ec.C11 - ec.C12;
+    ec.Zener_A = (std::abs(diff) > 1e-12) ? (2.0 * ec.C66 / diff) : 1.0;
+    return ec;
+}
 
 } // namespace energy_functions
 

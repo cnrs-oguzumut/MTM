@@ -922,3 +922,543 @@ void parametricAcousticStudy_v2() {
 //   std::cout << "\n=== STRESS-CONTROLLED SIMULATION COMPLETE ===" <<
 //   std::endl;
 // }
+
+AcousticElasticResults computeAcousticElasticConstants(const AcousticStudyConfig& config) {
+    AcousticElasticResults res;
+    
+    if (config.mode == 3) {
+        // Zanzotto Potential Mode 3
+        energy_functions::set_parameters(config.beta, config.K);
+        auto ec = energy_functions::calculate_elastic_constants(config.beta, config.K, config.lattice_type);
+        res.C11 = ec.C11;
+        res.C22 = ec.C22;
+        res.C12 = ec.C12;
+        res.C66 = ec.C66;
+        res.Zener_A = ec.Zener_A;
+    } else {
+        // Mode 1 (LJ v2) or Mode 2 (LJ v3)
+        double scale = 1.0;
+        double r_cutoff = 2.5;
+        std::function<double(double)> dpot;
+        std::function<double(double)> d2pot;
+        
+        if (config.mode == 1) {
+            scale = 0.6872044091828517;
+            r_cutoff = 2.5;
+            dpot = lennard_jones_energy_der_v2;
+            d2pot = lennard_jones_energy_sder_v2;
+        } else {
+            scale = 0.996407146941421;
+            r_cutoff = 1.86602540378444;
+            dpot = lennard_jones_energy_der_v3;
+            d2pot = lennard_jones_energy_sder_v3;
+        }
+        
+        Eigen::Matrix2d C_ref = Eigen::Matrix2d::Identity();
+        if (config.lattice_type == "triangular") {
+            TriangularLatticeCalculator calc(scale, r_cutoff);
+            double norm = calc.getUnitCellArea();
+            HessianComponents hess = calc.calculate_dseconderivative_components(C_ref, dpot, d2pot);
+            res.C11 = 4.0 * hess.c11_c11 / norm;
+            res.C22 = 4.0 * hess.c22_c22 / norm;
+            res.C12 = 4.0 * hess.c11_c22 / norm;
+            res.C66 = 1.0 * hess.c12_c12 / norm;
+        } else {
+            SquareLatticeCalculator calc(scale, r_cutoff);
+            double norm = calc.getUnitCellArea();
+            HessianComponents hess = calc.calculate_dseconderivative_components(C_ref, dpot, d2pot);
+            res.C11 = 4.0 * hess.c11_c11 / norm;
+            res.C22 = 4.0 * hess.c22_c22 / norm;
+            res.C12 = 4.0 * hess.c11_c22 / norm;
+            res.C66 = 1.0 * hess.c12_c12 / norm;
+        }
+        
+        double diff = res.C11 - res.C12;
+        res.Zener_A = (std::abs(diff) > 1e-12) ? (2.0 * res.C66 / diff) : 1.0;
+    }
+    
+    // 2D Bulk modulus K_2D = (C11 + C22 + 2*C12) / 4
+    res.bulk_K = 0.25 * (res.C11 + res.C22 + 2.0 * res.C12);
+    res.shear_mu = res.C66;
+    
+    // Born stability check in 2D: C11 > 0, C22 > 0, C11*C22 - C12^2 > 0, C66 > 0
+    res.born_stable = (res.C11 > 0.0) && (res.C22 > 0.0) && 
+                      (res.C11 * res.C22 - res.C12 * res.C12 > 0.0) && 
+                      (res.C66 > 0.0);
+                      
+    res.is_isotropic = (std::abs(res.Zener_A - 1.0) < 0.01) && (std::abs(res.C11 - res.C22) < 1e-4);
+    
+    // Build informative commentary
+    std::ostringstream comment;
+    if (res.is_isotropic) {
+        comment << "Elastically isotropic in the linear regime (Zener ratio A = " 
+                << std::fixed << std::setprecision(3) << res.Zener_A << " ≈ 1.000). "
+                << "Plane wave speeds and shear stiffness are isotropic in the plane. ";
+        if (config.lattice_type == "triangular") {
+            comment << "Triangular 2D lattices with central pair forces inherently satisfy hexagonal isotropy (C11 - C12 = 2*C66) and the Cauchy relation (C12 = C66).";
+        }
+    } else if (res.Zener_A > 1.0) {
+        comment << "Elastically anisotropic with Zener ratio A = " 
+                << std::fixed << std::setprecision(3) << res.Zener_A << " > 1. "
+                << "Shear resistance is softer along principal <10> axes and stiffer along diagonal <11> directions (C66 > (C11-C12)/2).";
+    } else {
+        comment << "Elastically anisotropic with Zener ratio A = " 
+                << std::fixed << std::setprecision(3) << res.Zener_A << " < 1. "
+                << "Shear resistance is softer along diagonal <11> directions than principal axes, typical for square lattices susceptible to diagonal shear instability.";
+    }
+    
+    if (res.born_stable) {
+        comment << " Born stability criteria satisfied: locally stable ground state.";
+    } else {
+        comment << " WARNING: Born stability criteria violated: reference lattice is unstable to affine perturbations.";
+    }
+    
+    res.anisotropy_comment = comment.str();
+    return res;
+}
+
+void printAcousticElasticConstantsJSON(const AcousticStudyConfig& config) {
+    AcousticElasticResults ec = computeAcousticElasticConstants(config);
+    std::cout << "{\n";
+    std::cout << "  \"mode\": " << config.mode << ",\n";
+    std::cout << "  \"lattice_type\": \"" << config.lattice_type << "\",\n";
+    std::cout << "  \"beta\": " << config.beta << ",\n";
+    std::cout << "  \"K\": " << config.K << ",\n";
+    std::cout << "  \"C11\": " << ec.C11 << ",\n";
+    std::cout << "  \"C22\": " << ec.C22 << ",\n";
+    std::cout << "  \"C12\": " << ec.C12 << ",\n";
+    std::cout << "  \"C66\": " << ec.C66 << ",\n";
+    std::cout << "  \"Zener_A\": " << ec.Zener_A << ",\n";
+    std::cout << "  \"bulk_modulus\": " << ec.bulk_K << ",\n";
+    std::cout << "  \"shear_modulus\": " << ec.shear_mu << ",\n";
+    std::cout << "  \"born_stable\": " << (ec.born_stable ? "true" : "false") << ",\n";
+    std::cout << "  \"is_isotropic\": " << (ec.is_isotropic ? "true" : "false") << ",\n";
+    std::cout << "  \"anisotropy_comment\": \"" << ec.anisotropy_comment << "\"\n";
+    std::cout << "}\n";
+}
+
+ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double alpha_min, double alpha_max, double dalpha) {
+    ShearPathResult res;
+    std::unique_ptr<BaseLatticeCalculator> calculator_ptr;
+    std::function<double(double)> potential_func;
+    std::function<double(double)> potential_func_der;
+    std::function<double(double)> potential_func_sder;
+    double normalisation = 1.0;
+
+    if (config.mode == 3) {
+        energy_functions::set_parameters(config.beta, config.K);
+        auto calc = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
+        normalisation = calc->getUnitCellArea();
+        calculator_ptr = std::move(calc);
+        potential_func = [](double r) { return 1.0; };
+        potential_func_der = [](double r) { return 1.0; };
+        potential_func_sder = [](double r) { return 1.0; };
+    } else {
+        double scale = (config.mode == 1) ? 0.6872044091828517 : 0.996407146941421;
+        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
+        potential_func = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
+        potential_func_der = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
+        potential_func_sder = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+
+        auto calc = std::make_unique<SquareLatticeCalculator>(scale, r_cutoff);
+        normalisation = calc->getUnitCellArea();
+        if (config.lattice_type == "triangular") {
+            normalisation *= std::sqrt(3.0) / 2.0;
+        }
+        calculator_ptr = std::move(calc);
+    }
+
+    Eigen::Matrix2d C_ref_energy = Eigen::Matrix2d::Identity();
+    if (config.lattice_type == "triangular" && config.mode != 3) {
+        double a2 = std::sqrt(4.0 / 3.0);
+        C_ref_energy << a2, 0.5 * a2, 0.5 * a2, a2;
+    }
+    double energy_ref = calculator_ptr->calculate_energy(C_ref_energy, potential_func, 0.0) / normalisation;
+
+    // Starting deformation gradient F0
+    Eigen::Matrix2d F0 = Eigen::Matrix2d::Identity();
+    if (config.lattice_type == "triangular") {
+        double a = std::pow(4.0 / 3.0, 0.25);
+        F0 << a, a * 0.5,
+              0.0, a * std::sqrt(3.0) / 2.0;
+    }
+
+    double prev_det = 0.0;
+    double prev_alpha = 0.0;
+    ShearPathPoint prev_pt;
+    bool has_prev = false;
+
+    if (dalpha <= 0.0) dalpha = 0.005;
+
+    for (double alpha = alpha_min; alpha <= alpha_max + 1e-9; alpha += dalpha) {
+        Eigen::Matrix2d F_shear;
+        F_shear << 1.0, alpha,
+                   0.0, 1.0;
+
+        Eigen::Matrix2d F_tot = F_shear * F0;
+        Eigen::Matrix2d C_orig = F_tot.transpose() * F_tot;
+
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> eigensolver(C_orig);
+        if (eigensolver.eigenvalues().minCoeff() <= 1e-10) continue;
+
+        lagrange::Result reduction = lagrange::reduce(C_orig);
+        Eigen::Matrix2d C_red = reduction.C_reduced;
+        Eigen::Matrix2d Z = reduction.m_matrix;
+
+        Eigen::Matrix2d S_sqrt = eigensolver.eigenvalues().cwiseSqrt().asDiagonal();
+        Eigen::Matrix2d F_eval = eigensolver.eigenvectors() * S_sqrt * eigensolver.eigenvectors().transpose();
+
+        AcousticTensor acoustic_tensor(F_eval, C_red, Z);
+        acoustic_tensor.computeEnergyDerivatives(*calculator_ptr, potential_func_der, potential_func_sder, normalisation);
+        AcousticAnalysis res_ac = acoustic_tensor.analyzeAcousticTensor(false);
+
+        double t_proj = 2.0 / (2.0 + C_orig(0, 0) + C_orig(1, 1));
+        double x = t_proj * (C_orig(0, 0) - C_orig(1, 1)) * 0.5;
+        double y = t_proj * C_orig(0, 1);
+
+        double t_proj_red = 2.0 / (2.0 + C_red(0, 0) + C_red(1, 1));
+        double x_red = t_proj_red * (C_red(0, 0) - C_red(1, 1)) * 0.5;
+        double y_red = t_proj_red * C_red(0, 1);
+
+        double raw_e = calculator_ptr->calculate_energy(C_red, potential_func, 0.0) / normalisation;
+        double strain_e = raw_e - energy_ref;
+
+        ShearPathPoint pt;
+        pt.alpha = alpha;
+        pt.c11 = C_orig(0, 0); pt.c22 = C_orig(1, 1); pt.c12 = C_orig(0, 1);
+        pt.c11_red = C_red(0, 0); pt.c22_red = C_red(1, 1); pt.c12_red = C_red(0, 1);
+        pt.x = x; pt.y = y;
+        pt.x_red = x_red; pt.y_red = y_red;
+        pt.min_detAc = res_ac.detAc;
+        pt.energy = strain_e;
+        pt.is_stable = (res_ac.detAc > 0.0);
+
+        if (has_prev) {
+            if ((prev_det > 0.0 && res_ac.detAc <= 0.0) || (prev_det < 0.0 && res_ac.detAc >= 0.0)) {
+                double frac = (0.0 - prev_det) / (res_ac.detAc - prev_det);
+                double alpha_c = prev_alpha + frac * (alpha - prev_alpha);
+                res.critical_alphas.push_back(alpha_c);
+
+                ShearPathPoint cp;
+                cp.alpha = alpha_c;
+                cp.x = prev_pt.x + frac * (pt.x - prev_pt.x);
+                cp.y = prev_pt.y + frac * (pt.y - prev_pt.y);
+                cp.x_red = prev_pt.x_red + frac * (pt.x_red - prev_pt.x_red);
+                cp.y_red = prev_pt.y_red + frac * (pt.y_red - prev_pt.y_red);
+                cp.c11 = prev_pt.c11 + frac * (pt.c11 - prev_pt.c11);
+                cp.c22 = prev_pt.c22 + frac * (pt.c22 - prev_pt.c22);
+                cp.c12 = prev_pt.c12 + frac * (pt.c12 - prev_pt.c12);
+                cp.min_detAc = 0.0;
+                cp.energy = prev_pt.energy + frac * (pt.energy - prev_pt.energy);
+                cp.is_stable = false;
+                res.critical_points.push_back(cp);
+            }
+        }
+
+        prev_det = res_ac.detAc;
+        prev_alpha = alpha;
+        prev_pt = pt;
+        has_prev = true;
+
+        res.path.push_back(pt);
+    }
+
+    return res;
+}
+
+void runParametricAcousticStudy(const AcousticStudyConfig& config) {
+    std::cout << "=========================================================\n";
+    std::cout << "Starting Parametric Acoustic Study\n";
+    std::cout << "  Mode: " << config.mode;
+    if (config.mode == 3) std::cout << " (Zanzotto Continuum, beta=" << config.beta << ", K=" << config.K << ")\n";
+    else if (config.mode == 1) std::cout << " (Lennard-Jones v2 V(r))\n";
+    else if (config.mode == 2) std::cout << " (Lennard-Jones v3 V(r))\n";
+    std::cout << "  Lattice Symmetry: " << config.lattice_type << "\n";
+    std::cout << "  Radius t_max: " << config.t_max << ", dt: " << config.dt << "\n";
+    std::cout << "  Angle dp: " << config.dp << " rad\n";
+    std::cout << "  Output files: " << config.dat_output << " | " << config.json_output << "\n";
+    std::cout << "=========================================================\n";
+
+    AcousticElasticResults ec = computeAcousticElasticConstants(config);
+    std::cout << "\n--- Ground State Elastic Constants (C = I) ---\n";
+    std::cout << "  C11: " << ec.C11 << " | C22: " << ec.C22 << "\n";
+    std::cout << "  C12: " << ec.C12 << " | C66: " << ec.C66 << "\n";
+    std::cout << "  Zener Anisotropy Ratio A = 2*C66/(C11-C12): " << ec.Zener_A << "\n";
+    std::cout << "  Bulk Modulus K_2D: " << ec.bulk_K << " | Shear Modulus: " << ec.shear_mu << "\n";
+    std::cout << "  Born Stability: " << (ec.born_stable ? "STABLE" : "UNSTABLE") << "\n";
+    std::cout << "  Analysis: " << ec.anisotropy_comment << "\n\n";
+
+    if (config.only_elastic_constants) {
+        printAcousticElasticConstantsJSON(config);
+        return;
+    }
+
+    std::unique_ptr<BaseLatticeCalculator> calculator_ptr;
+    std::function<double(double)> potential_func;
+    std::function<double(double)> potential_func_der;
+    std::function<double(double)> potential_func_sder;
+    double normalisation = 1.0;
+
+    if (config.mode == 3) {
+        energy_functions::set_parameters(config.beta, config.K);
+        auto calc = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
+        normalisation = calc->getUnitCellArea();
+        calculator_ptr = std::move(calc);
+        potential_func = [](double r) -> double { return 1.0; };
+        potential_func_der = [](double r) -> double { return 1.0; };
+        potential_func_sder = [](double r) -> double { return 1.0; };
+    } else {
+        double scale = (config.mode == 1) ? 0.6872044091828517 : 0.996407146941421;
+        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
+        potential_func = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
+        potential_func_der = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
+        potential_func_sder = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+
+        auto calc = std::make_unique<SquareLatticeCalculator>(scale, r_cutoff);
+        normalisation = calc->getUnitCellArea();
+        if (config.lattice_type == "triangular") {
+            normalisation *= std::sqrt(3.0) / 2.0;
+        }
+        calculator_ptr = std::move(calc);
+    }
+
+    Eigen::Matrix2d C_ref_energy = Eigen::Matrix2d::Identity();
+    if (config.lattice_type == "triangular" && config.mode != 3) {
+        double a2 = std::sqrt(4.0 / 3.0);
+        C_ref_energy << a2, 0.5 * a2, 0.5 * a2, a2;
+    }
+    double energy_ref = calculator_ptr->calculate_energy(C_ref_energy, potential_func, 0.0) / normalisation;
+
+    // Open .dat file
+    std::ofstream dat_file(config.dat_output);
+    dat_file << std::scientific << std::setprecision(8);
+    dat_file << "# t p c11 c22 c12 c11_red c22_red c12_red min_detAc angle_deg third_condition x y x_red y_red energy\n";
+
+    // Estimate total points
+    int t_steps = static_cast<int>(std::ceil(config.t_max / config.dt)) + 1;
+    int p_steps = static_cast<int>(std::ceil((2.0 * M_PI) / config.dp)) + 1;
+    int total_estimated = t_steps * p_steps;
+    std::cout << "Scanning grid: ~" << total_estimated << " points...\n";
+
+    struct OutputPoint {
+        double t, p;
+        double c11, c22, c12;
+        double c11_red, c22_red, c12_red;
+        double min_detAc, angle_deg;
+        bool third_condition;
+        double x, y;
+        double x_red, y_red;
+        bool is_stable;
+        double energy;
+    };
+
+    std::vector<OutputPoint> points;
+    points.reserve(total_estimated);
+
+    int count = 0;
+    int stable_count = 0;
+    int unstable_count = 0;
+    double min_det_min = 1e20;
+    double min_det_max = -1e20;
+    double energy_min = 1e20;
+    double energy_max = -1e20;
+
+    for (double t = 0.0; t <= config.t_max + 1e-9; t += config.dt) {
+        for (double p = -M_PI; p <= M_PI + 1e-9; p += config.dp) {
+            try {
+                double c11 = std::cosh(t) + std::sinh(t) * std::sin(p);
+                double c22 = std::cosh(t) - std::sinh(t) * std::sin(p);
+                double c12 = std::sinh(t) * std::cos(p);
+
+                Eigen::Matrix2d C_original;
+                C_original << c11, c12, c12, c22;
+
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> eigensolver(C_original);
+                if (eigensolver.eigenvalues().minCoeff() <= 1e-10) {
+                    continue;
+                }
+
+                lagrange::Result reduction_result = lagrange::reduce(C_original);
+                Eigen::Matrix2d C = reduction_result.C_reduced;
+                Eigen::Matrix2d Z = reduction_result.m_matrix;
+                bool third_condition = reduction_result.third_condition_satisfied;
+
+                Eigen::Matrix2d S_sqrt = eigensolver.eigenvalues().cwiseSqrt().asDiagonal();
+                Eigen::Matrix2d F = eigensolver.eigenvectors() * S_sqrt * eigensolver.eigenvectors().transpose();
+
+                AcousticTensor acoustic_tensor(F, C, Z);
+                acoustic_tensor.computeEnergyDerivatives(*calculator_ptr, potential_func_der, potential_func_sder, normalisation);
+
+                AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(false);
+
+                // User's Poincaré stereographic projection formula:
+                // t_proj = 2. / (2. + c11 + c22)
+                // x = t_proj * (c11 - c22) / 2.
+                // y = t_proj * c12
+                double t_proj = 2.0 / (2.0 + c11 + c22);
+                double x = t_proj * (c11 - c22) * 0.5;
+                double y = t_proj * c12;
+
+                double t_proj_red = 2.0 / (2.0 + C(0, 0) + C(1, 1));
+                double x_red = t_proj_red * (C(0, 0) - C(1, 1)) * 0.5;
+                double y_red = t_proj_red * C(0, 1);
+
+                double raw_energy = calculator_ptr->calculate_energy(C, potential_func, 0.0) / normalisation;
+                double strain_energy = raw_energy - energy_ref;
+
+                bool is_stable = (result.detAc > 0.0);
+                if (is_stable) stable_count++;
+                else unstable_count++;
+
+                min_det_min = std::min(min_det_min, result.detAc);
+                min_det_max = std::max(min_det_max, result.detAc);
+                energy_min = std::min(energy_min, strain_energy);
+                energy_max = std::max(energy_max, strain_energy);
+
+                // Write to dat file
+                dat_file << t << " " << p << " "
+                         << c11 << " " << c22 << " " << c12 << " "
+                         << C(0, 0) << " " << C(1, 1) << " " << C(0, 1) << " "
+                         << result.detAc << " " << result.xsi << " " << (third_condition ? 1 : 0) << " "
+                         << x << " " << y << " " << x_red << " " << y_red << " "
+                         << strain_energy << "\n";
+
+                OutputPoint pt;
+                pt.t = t; pt.p = p;
+                pt.c11 = c11; pt.c22 = c22; pt.c12 = c12;
+                pt.c11_red = C(0, 0); pt.c22_red = C(1, 1); pt.c12_red = C(0, 1);
+                pt.min_detAc = result.detAc;
+                pt.angle_deg = result.xsi;
+                pt.third_condition = third_condition;
+                pt.x = x; pt.y = y;
+                pt.x_red = x_red; pt.y_red = y_red;
+                pt.is_stable = is_stable;
+                pt.energy = strain_energy;
+                points.push_back(pt);
+
+                count++;
+                if (count % 250 == 0) {
+                    std::cout << "Computed " << count << " points (t=" 
+                              << std::fixed << std::setprecision(2) << t 
+                              << ", p=" << std::setprecision(2) << p << ")..." << std::endl;
+                }
+            } catch (const std::exception& e) {
+                continue;
+            }
+        }
+    }
+
+    dat_file.close();
+
+    // Write JSON file
+    std::ofstream json_file(config.json_output);
+    json_file << "{\n";
+    json_file << "  \"mode\": " << config.mode << ",\n";
+    json_file << "  \"mode_name\": \"" << (config.mode == 3 ? "Zanzotto Continuum" : (config.mode == 1 ? "Lennard-Jones v2 V(r)" : "Lennard-Jones v3 V(r)")) << "\",\n";
+    json_file << "  \"lattice_type\": \"" << config.lattice_type << "\",\n";
+    json_file << "  \"beta\": " << config.beta << ",\n";
+    json_file << "  \"K\": " << config.K << ",\n";
+    json_file << "  \"t_max\": " << config.t_max << ",\n";
+    json_file << "  \"dt\": " << config.dt << ",\n";
+    json_file << "  \"dp\": " << config.dp << ",\n";
+    json_file << "  \"elastic_constants\": {\n";
+    json_file << "    \"C11\": " << ec.C11 << ",\n";
+    json_file << "    \"C22\": " << ec.C22 << ",\n";
+    json_file << "    \"C12\": " << ec.C12 << ",\n";
+    json_file << "    \"C66\": " << ec.C66 << ",\n";
+    json_file << "    \"Zener_A\": " << ec.Zener_A << ",\n";
+    json_file << "    \"bulk_modulus\": " << ec.bulk_K << ",\n";
+    json_file << "    \"shear_modulus\": " << ec.shear_mu << ",\n";
+    json_file << "    \"born_stable\": " << (ec.born_stable ? "true" : "false") << ",\n";
+    json_file << "    \"is_isotropic\": " << (ec.is_isotropic ? "true" : "false") << ",\n";
+    json_file << "    \"anisotropy_comment\": \"" << ec.anisotropy_comment << "\"\n";
+    json_file << "  },\n";
+    json_file << "  \"summary\": {\n";
+    json_file << "    \"total_points\": " << count << ",\n";
+    json_file << "    \"stable_points\": " << stable_count << ",\n";
+    json_file << "    \"unstable_points\": " << unstable_count << ",\n";
+    json_file << "    \"min_detAc_min\": " << (count > 0 ? min_det_min : 0.0) << ",\n";
+    json_file << "    \"min_detAc_max\": " << (count > 0 ? min_det_max : 0.0) << ",\n";
+    json_file << "    \"energy_min\": " << (count > 0 ? energy_min : 0.0) << ",\n";
+    json_file << "    \"energy_max\": " << (count > 0 ? energy_max : 0.0) << "\n";
+    json_file << "  },\n";
+    json_file << "  \"points\": [\n";
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        const auto& pt = points[i];
+        json_file << "    {"
+                  << "\"t\":" << pt.t << ","
+                  << "\"p\":" << pt.p << ","
+                  << "\"c11\":" << pt.c11 << ","
+                  << "\"c22\":" << pt.c22 << ","
+                  << "\"c12\":" << pt.c12 << ","
+                  << "\"c11_red\":" << pt.c11_red << ","
+                  << "\"c22_red\":" << pt.c22_red << ","
+                  << "\"c12_red\":" << pt.c12_red << ","
+                  << "\"min_detAc\":" << pt.min_detAc << ","
+                  << "\"energy\":" << pt.energy << ","
+                  << "\"angle_deg\":" << pt.angle_deg << ","
+                  << "\"third_condition\":" << (pt.third_condition ? "true" : "false") << ","
+                  << "\"x\":" << pt.x << ","
+                  << "\"y\":" << pt.y << ","
+                  << "\"x_red\":" << pt.x_red << ","
+                  << "\"y_red\":" << pt.y_red << ","
+                  << "\"is_stable\":" << (pt.is_stable ? "true" : "false")
+                  << "}" << (i + 1 < points.size() ? ",\n" : "\n");
+    }
+
+    json_file << "  ],\n";
+
+    // Compute simple shear path on Poincaré space and find critical alpha values
+    ShearPathResult shear_res = computeSimpleShearPath(config, config.alpha_min, config.alpha_max, config.dalpha);
+    std::cout << "\n--- Simple Shear Path Analysis (" << config.lattice_type << " reference) ---\n";
+    std::cout << "  Alpha range: [" << config.alpha_min << ", " << config.alpha_max << "] step: " << config.dalpha << "\n";
+    std::cout << "  Total trajectory points: " << shear_res.path.size() << "\n";
+    if (shear_res.critical_alphas.empty()) {
+        std::cout << "  No acoustic tensor zero-crossings detected in range.\n";
+    } else {
+        std::cout << "  Found " << shear_res.critical_alphas.size() << " critical alpha transition(s) (Loss of Ellipticity):\n";
+        for (size_t i = 0; i < shear_res.critical_alphas.size(); ++i) {
+            std::cout << "    • α_c[" << (i + 1) << "] = " << std::fixed << std::setprecision(5) << shear_res.critical_alphas[i] << "\n";
+        }
+    }
+
+    json_file << "  \"shear_path\": {\n";
+    json_file << "    \"alpha_min\": " << config.alpha_min << ",\n";
+    json_file << "    \"alpha_max\": " << config.alpha_max << ",\n";
+    json_file << "    \"dalpha\": " << config.dalpha << ",\n";
+    json_file << "    \"critical_alphas\": [";
+    for (size_t i = 0; i < shear_res.critical_alphas.size(); ++i) {
+        json_file << shear_res.critical_alphas[i] << (i + 1 < shear_res.critical_alphas.size() ? ", " : "");
+    }
+    json_file << "],\n";
+    json_file << "    \"critical_points\": [\n";
+    for (size_t i = 0; i < shear_res.critical_points.size(); ++i) {
+        const auto& cp = shear_res.critical_points[i];
+        json_file << "      {\"alpha\":" << cp.alpha << ",\"x\":" << cp.x << ",\"y\":" << cp.y
+                  << ",\"x_red\":" << cp.x_red << ",\"y_red\":" << cp.y_red
+                  << ",\"c11\":" << cp.c11 << ",\"c22\":" << cp.c22 << ",\"c12\":" << cp.c12
+                  << ",\"energy\":" << cp.energy << "}" << (i + 1 < shear_res.critical_points.size() ? ",\n" : "\n");
+    }
+    json_file << "    ],\n";
+    json_file << "    \"points\": [\n";
+    for (size_t i = 0; i < shear_res.path.size(); ++i) {
+        const auto& pt = shear_res.path[i];
+        json_file << "      {\"alpha\":" << pt.alpha << ",\"x\":" << pt.x << ",\"y\":" << pt.y
+                  << ",\"x_red\":" << pt.x_red << ",\"y_red\":" << pt.y_red
+                  << ",\"c11\":" << pt.c11 << ",\"c22\":" << pt.c22 << ",\"c12\":" << pt.c12
+                  << ",\"min_detAc\":" << pt.min_detAc << ",\"energy\":" << pt.energy
+                  << ",\"is_stable\":" << (pt.is_stable ? "true" : "false") << "}"
+                  << (i + 1 < shear_res.path.size() ? ",\n" : "\n");
+    }
+    json_file << "    ]\n";
+    json_file << "  }\n";
+    json_file << "}\n";
+    json_file.close();
+
+    std::cout << "\n✓ Parametric Acoustic Study Complete!\n";
+    std::cout << "  Processed: " << count << " points (Stable: " << stable_count 
+              << ", Unstable: " << unstable_count << ")\n";
+    std::cout << "  Data saved to: " << config.dat_output << "\n";
+    std::cout << "  JSON saved to: " << config.json_output << "\n";
+}

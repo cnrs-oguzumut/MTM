@@ -98,7 +98,7 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
                                         offsets);
 
   auto [interior_mapping, full_mapping] =
-      create_dof_mapping_original(square_points, 0.5 * lattice_constant, pbc);
+      create_dof_mapping_original(square_points, 0.25 * lattice_constant, pbc);
 
   std::cout << "Interior nodes: " << interior_mapping.size() << std::endl;
   std::cout << "Total nodes: " << full_mapping.size() << std::endl;
@@ -457,20 +457,32 @@ void example_1_conti_zanzotto_loading(
     int checkpoint_interval,
     double stress_drop_threshold,
     bool save_triangle_data,
-    int max_avalanches) {
-
-  //     auto compute_even_ny = [](int nx) {
-  //     int ny = std::round(2.0 * nx / std::sqrt(3));
-  //     return (ny % 2 == 0) ? ny : ny + 1; // Ensure ny is even
-  // };
-
-  // ny = compute_even_ny(nx);
+    int max_avalanches,
+    const std::string& lattice_type) {
 
   // Parameters for lattice
   if (nx <= 0 || ny <= 0) {
     std::cerr << "Error: nx and ny must be positive integers." << std::endl;
     exit(EXIT_FAILURE);
   }
+
+  // Periodic triangular lattice requires an even number of rows (ny) so that
+  // row (ny - 1) (which has a 0.5*a stagger) alternates seamlessly with row 0 (0.0 stagger)
+  // across the vertical periodic boundary, preventing artificial boundary dislocations.
+  if (lattice_type == "triangular" && (ny % 2 != 0)) {
+    int old_ny = ny;
+    ny++;
+    std::cout << "[INFO] Enforcing even ny for periodic triangular lattice: adjusted ny from "
+              << old_ny << " to " << ny << std::endl;
+  }
+
+  // Print Zanzotto potential and calculated elastic constants
+  auto ec = energy_functions::calculate_elastic_constants(
+      energy_functions::current_beta, energy_functions::current_K, lattice_type);
+  std::cout << "Zanzotto Potential: beta = " << energy_functions::current_beta
+            << ", K = " << energy_functions::current_K << " | Lattice: " << lattice_type << std::endl;
+  std::cout << "Ground-state Elastic Constants: C11=" << ec.C11 << ", C12=" << ec.C12 
+            << ", C66=" << ec.C66 << ", Zener A=" << ec.Zener_A << std::endl;
 
   // ==================== SETUP REFERENCE GEOMETRY ====================
   // Save domain dimensions
@@ -480,8 +492,7 @@ void example_1_conti_zanzotto_loading(
             << (enable_remeshing ? "ENABLED (adaptive remeshing)" : "DISABLED (fixed mesh, no remeshing)")
             << std::endl;
 
-  // Define lattice type and reference element
-  std::string lattice_type = "square"; // Options: "square" or "triangular"
+  // Reference element is always kept SQUARE (reference state)
   double h = 1.0;                      // Reference element size
 
   // Reference triangle vertices (for shape function derivatives)
@@ -579,7 +590,7 @@ void example_1_conti_zanzotto_loading(
 
   // Boundary conditions
   auto [interior_mapping, full_mapping] =
-      create_dof_mapping_original(square_points, 0.5 * lattice_constant, pbc);
+      create_dof_mapping_original(square_points, 0.25 * lattice_constant, pbc);
   // auto [interior_mapping, full_mapping] =
   // create_dof_mapping_original(square_points, lattice_constant, pbc);
 
@@ -679,10 +690,16 @@ void example_1_conti_zanzotto_loading(
   // Setup energy calculation
   Strain_Energy_LatticeCalculator calculator(1.0);
 
-  Eigen::Matrix2d F_I = Eigen::Matrix2d::Identity();
-  Eigen::Matrix2d C_I = F_I.transpose() * F_I; // C = F^T * F
+  Eigen::Matrix2d C_ref;
+  if (lattice_type == "triangular") {
+    double a2 = std::sqrt(4.0 / 3.0);
+    C_ref << a2, 0.5 * a2,
+             0.5 * a2, a2;
+  } else {
+    C_ref = Eigen::Matrix2d::Identity();
+  }
 
-  double zero = calculator.calculate_energy(C_I, potential_func, 0);
+  double zero = calculator.calculate_energy(C_ref, potential_func, 0);
 
   std::cout << "debugging simple shear test" << std::endl;
   std::cout << "zero energy value: " << zero << std::endl;
@@ -1182,7 +1199,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                int checkpoint_interval,
                                                double stress_drop_threshold,
                                                bool save_triangle_data,
-                                               int max_avalanches) {
+                                               int max_avalanches,
+                                               const std::string& lattice_type) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1194,14 +1212,16 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    checkpoint_interval,
                                    stress_drop_threshold,
                                    save_triangle_data,
-                                   max_avalanches);
+                                   max_avalanches,
+                                   lattice_type);
 }
 
 void restart_zanzotto_simulation(const std::string& checkpoint_path,
                                  int checkpoint_interval,
                                  double stress_drop_threshold,
                                  bool save_triangle_data,
-                                 int max_avalanches) {
+                                 int max_avalanches,
+                                 const std::string& lattice_type) {
   std::string path = checkpoint_path;
   if (path == "latest" || path == "checkpoints/latest") {
     path = "checkpoints/latest.chk";
@@ -1233,13 +1253,15 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
         next_alpha, chk.alpha_end, chk.step_size,
         0.0, chk.seed, chk.enable_remeshing, &chk,
         checkpoint_interval, stress_drop_threshold, save_triangle_data,
-        max_avalanches);
+        max_avalanches,
+        lattice_type);
   } else {
     example_1_conti_zanzotto_negative_loading(
         0, chk.nx, chk.ny,
         next_alpha, chk.alpha_end, chk.step_size,
         chk.seed, chk.enable_remeshing, &chk,
         checkpoint_interval, stress_drop_threshold, save_triangle_data,
-        max_avalanches);
+        max_avalanches,
+        lattice_type);
   }
 }

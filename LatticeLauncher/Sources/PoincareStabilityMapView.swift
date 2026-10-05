@@ -1,0 +1,670 @@
+import SwiftUI
+import AppKit
+
+public struct PoincareStabilityMapView: View {
+    @ObservedObject var manager: AcousticStudyManager
+    
+    // Zoom and pan state
+    @State private var scale: CGFloat = 1.0
+    @State private var lastScale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    
+    // Hover inspection state
+    @State private var hoverLocation: CGPoint? = nil
+    @State private var hoveredPoint: AcousticPointModel? = nil
+    
+    // Color scaling
+    private var minDetVal: Double { manager.summary.min_detAc_min }
+    private var maxDetVal: Double { manager.summary.min_detAc_max }
+    private var minEnergyVal: Double { manager.summary.energy_min }
+    private var maxEnergyVal: Double { manager.summary.energy_max }
+    
+    public var body: some View {
+        VStack(spacing: 0) {
+            // =========================================================================
+            // 1. TOP DEDICATED TOOLBAR (Fixed height, completely ABOVE canvas)
+            // =========================================================================
+            HStack(spacing: 12) {
+                // Coordinate Mode Switcher
+                Picker("Metric Mode", selection: $manager.useReducedCoordinates) {
+                    Text("Original C").tag(false)
+                    Text("Reduced C").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 190)
+                
+                // Color Field Mode (Stability vs Energy)
+                Picker("Field", selection: $manager.colorField) {
+                    ForEach(ColorFieldMode.allCases) { mode in
+                        Text(mode.shortLabel).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                
+                // Render Style Mode (Smooth Surface vs Scatter)
+                Picker("Style", selection: $manager.renderStyle) {
+                    ForEach(RenderStyleMode.allCases) { style in
+                        Text(style.rawValue).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 210)
+                
+                // Zero Boundary Contour Toggle
+                Toggle(isOn: $manager.highlightZeroBoundary) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "circle.dotted")
+                            .foregroundColor(.white)
+                        Text("Zero Boundary")
+                            .font(.caption.bold())
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                
+                // Simple Shear Path Toggle
+                Toggle(isOn: $manager.showShearPath) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+                            .foregroundColor(.green)
+                        Text("Shear Path")
+                            .font(.caption.bold())
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                if manager.renderStyle == .scatterPoints {
+                    HStack(spacing: 4) {
+                        Text("Size:")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Slider(value: $manager.pointRadius, in: 1.5...8.0, step: 0.5)
+                            .frame(width: 60)
+                    }
+                }
+                
+                Spacer()
+                
+                // Reset View Button
+                Button(action: resetView) {
+                    Label("Reset View", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color(NSColor.controlBackgroundColor))
+            
+            Divider()
+            
+            // =========================================================================
+            // 2. CENTER: POINCARÉ DISK CANVAS (Clean, dedicated viewport)
+            // =========================================================================
+            GeometryReader { geo in
+                let center = CGPoint(x: geo.size.width / 2 + offset.width, y: geo.size.height / 2 + offset.height)
+                // Use 0.40 of the smaller dimension so the disk never touches the borders
+                let baseRadius = min(geo.size.width, geo.size.height) * 0.40 * scale
+                
+                ZStack {
+                    // Dark Canvas Backdrop
+                    Color(NSColor.underPageBackgroundColor)
+                        .edgesIgnoringSafeArea(.all)
+                    
+                    Canvas { context, size in
+                        drawBackgroundGrid(context: context, center: center, diskRadius: baseRadius)
+                        drawSurfaceOrPoints(context: context, center: center, diskRadius: baseRadius)
+                        drawZeroBoundaryContours(context: context, center: center, diskRadius: baseRadius)
+                        drawShearPath(context: context, center: center, diskRadius: baseRadius)
+                        drawHoverIndicator(context: context, center: center, diskRadius: baseRadius)
+                    }
+                    .gesture(
+                        DragGesture()
+                            .onChanged { val in
+                                offset = CGSize(
+                                    width: lastOffset.width + val.translation.width,
+                                    height: lastOffset.height + val.translation.height
+                                )
+                            }
+                            .onEnded { _ in
+                                lastOffset = offset
+                            }
+                    )
+                    .simultaneousGesture(
+                        MagnificationGesture()
+                            .onChanged { val in
+                                scale = max(0.5, min(10.0, lastScale * val))
+                            }
+                            .onEnded { _ in
+                                lastScale = scale
+                            }
+                    )
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let loc):
+                            hoverLocation = loc
+                            updateHoveredPoint(at: loc, center: center, diskRadius: baseRadius)
+                        case .ended:
+                            hoverLocation = nil
+                            hoveredPoint = nil
+                        }
+                    }
+                    
+                    // Critical shear strain readout overlay
+                    if manager.showShearPath, let sp = manager.shearPath {
+                        VStack {
+                            HStack {
+                                ShearCriticalOverlay(path: sp, lattice: manager.latticeSymmetry.rawValue)
+                                Spacer()
+                            }
+                            Spacer()
+                        }
+                        .padding(12)
+                        .allowsHitTesting(false)
+                    }
+                }
+            }
+            
+            Divider()
+            
+            // =========================================================================
+            // 3. BOTTOM DEDICATED FOOTER (Fixed height, completely BELOW canvas)
+            // =========================================================================
+            HStack(spacing: 16) {
+                // Colorbar Legend
+                ColorbarLegendView(
+                    colorField: manager.colorField,
+                    minDet: minDetVal,
+                    maxDet: maxDetVal,
+                    minEnergy: minEnergyVal,
+                    maxEnergy: maxEnergyVal
+                )
+                .frame(width: 290)
+                
+                Divider()
+                    .frame(height: 38)
+                
+                // Hover Inspector or Summary Info
+                if let pt = hoveredPoint {
+                    HoverInfoInlineView(point: pt, useReduced: manager.useReducedCoordinates)
+                } else {
+                    HStack(spacing: 12) {
+                        Image(systemName: "hand.point.up.left")
+                            .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(manager.points.count) data points plotted (\(manager.renderStyle == .smoothSurface ? "Smooth Mesh" : "Scatter Points"))")
+                                .font(.caption.bold())
+                            Text("Hover cursor over Poincaré disk to inspect local metric, energy & stability")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color(NSColor.controlBackgroundColor))
+        }
+    }
+    
+    private func resetView() {
+        withAnimation(.easeOut(duration: 0.25)) {
+            scale = 1.0
+            lastScale = 1.0
+            offset = .zero
+            lastOffset = .zero
+        }
+    }
+    
+    // MARK: - Drawing Routines
+    
+    private func drawBackgroundGrid(context: GraphicsContext, center: CGPoint, diskRadius: CGFloat) {
+        // Disk Interior
+        let diskRect = CGRect(x: center.x - diskRadius, y: center.y - diskRadius, width: diskRadius * 2, height: diskRadius * 2)
+        let diskPath = Path(ellipseIn: diskRect)
+        
+        context.fill(diskPath, with: .color(Color(NSColor.textBackgroundColor).opacity(0.85)))
+        
+        // Concentric Hyperbolic Circles: r = tanh(t/2) for t = 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5
+        let tValues = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4]
+        for t in tValues {
+            let r_hyp = CGFloat(tanh(t / 2.0)) * diskRadius
+            if r_hyp < diskRadius {
+                let rRect = CGRect(x: center.x - r_hyp, y: center.y - r_hyp, width: r_hyp * 2, height: r_hyp * 2)
+                context.stroke(Path(ellipseIn: rRect), with: .color(Color.gray.opacity(0.25)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                
+                // Label
+                let text = Text(String(format: "t=%.1f", t)).font(.system(size: 9)).foregroundColor(.gray.opacity(0.8))
+                context.draw(text, at: CGPoint(x: center.x + r_hyp - 14, y: center.y - 8))
+            }
+        }
+        
+        // Coordinate Axes: x (horizontal) and y (vertical)
+        var xAxes = Path()
+        xAxes.move(to: CGPoint(x: center.x - diskRadius, y: center.y))
+        xAxes.addLine(to: CGPoint(x: center.x + diskRadius, y: center.y))
+        context.stroke(xAxes, with: .color(Color.gray.opacity(0.35)), lineWidth: 1)
+        
+        var yAxes = Path()
+        yAxes.move(to: CGPoint(x: center.x, y: center.y - diskRadius))
+        yAxes.addLine(to: CGPoint(x: center.x, y: center.y + diskRadius))
+        context.stroke(yAxes, with: .color(Color.gray.opacity(0.35)), lineWidth: 1)
+        
+        // Axis Labels (properly positioned with clear margins)
+        let xLabel = Text("x = t·(c₁₁−c₂₂)/2").font(.system(size: 11, weight: .semibold)).foregroundColor(.secondary)
+        context.draw(xLabel, at: CGPoint(x: center.x + diskRadius - 55, y: center.y + 14))
+        
+        let yLabel = Text("y = t·c₁₂").font(.system(size: 11, weight: .semibold)).foregroundColor(.secondary)
+        context.draw(yLabel, at: CGPoint(x: center.x + 30, y: center.y - diskRadius + 14))
+        
+        // Unit Disk Boundary (r = 1.0)
+        context.stroke(diskPath, with: .color(Color.blue.opacity(0.9)), lineWidth: 2)
+    }
+    
+    private func drawSurfaceOrPoints(context: GraphicsContext, center: CGPoint, diskRadius: CGFloat) {
+        guard !manager.points.isEmpty else { return }
+        
+        let minZ = min(0.0, minDetVal)
+        let maxZ = max(1.0, maxDetVal)
+        let spanZ = max(1e-6, max(abs(minZ), abs(maxZ)))
+        
+        let minE = minEnergyVal
+        let maxE = max(minE + 1e-4, maxEnergyVal)
+        
+        if manager.renderStyle == .smoothSurface && !manager.surfaceCells.isEmpty {
+            // Draw filled quad surface mesh
+            for cell in manager.surfaceCells {
+                let pts = manager.useReducedCoordinates ? cell.ptsRed : cell.ptsOrig
+                guard pts.count >= 3 else { continue }
+                
+                var path = Path()
+                let p0 = CGPoint(x: center.x + pts[0].x * diskRadius, y: center.y - pts[0].y * diskRadius)
+                path.move(to: p0)
+                for k in 1..<pts.count {
+                    let pk = CGPoint(x: center.x + pts[k].x * diskRadius, y: center.y - pts[k].y * diskRadius)
+                    path.addLine(to: pk)
+                }
+                path.closeSubpath()
+                
+                let color: Color
+                if manager.colorField == .acousticStability {
+                    color = colorForDetAc(cell.avgDetAc, minVal: minZ, maxVal: maxZ, span: spanZ)
+                } else {
+                    color = colorForEnergy(cell.avgEnergy, minVal: minE, maxVal: maxE)
+                }
+                
+                context.fill(path, with: .color(color))
+            }
+        } else {
+            // Draw discrete point scatter
+            let ptRadius = CGFloat(manager.pointRadius)
+            
+            for pt in manager.points {
+                let px = manager.useReducedCoordinates ? pt.x_red : pt.x
+                let py = manager.useReducedCoordinates ? pt.y_red : pt.y
+                
+                let sx = center.x + CGFloat(px) * diskRadius
+                let sy = center.y - CGFloat(py) * diskRadius
+                
+                let color: Color
+                if manager.colorField == .acousticStability {
+                    color = colorForDetAc(pt.min_detAc, minVal: minZ, maxVal: maxZ, span: spanZ)
+                } else {
+                    color = colorForEnergy(pt.energy, minVal: minE, maxVal: maxE)
+                }
+                
+                let rect = CGRect(x: sx - ptRadius, y: sy - ptRadius, width: ptRadius * 2, height: ptRadius * 2)
+                context.fill(Path(ellipseIn: rect), with: .color(color))
+            }
+        }
+    }
+    
+    private func drawZeroBoundaryContours(context: GraphicsContext, center: CGPoint, diskRadius: CGFloat) {
+        guard manager.highlightZeroBoundary, !manager.zeroContourSegments.isEmpty else { return }
+        
+        var contourPath = Path()
+        for seg in manager.zeroContourSegments {
+            let sx = manager.useReducedCoordinates ? seg.startXRed : seg.startX
+            let sy = manager.useReducedCoordinates ? seg.startYRed : seg.startY
+            let ex = manager.useReducedCoordinates ? seg.endXRed : seg.endX
+            let ey = manager.useReducedCoordinates ? seg.endYRed : seg.endY
+            
+            let pA = CGPoint(x: center.x + sx * diskRadius, y: center.y - sy * diskRadius)
+            let pB = CGPoint(x: center.x + ex * diskRadius, y: center.y - ey * diskRadius)
+            
+            contourPath.move(to: pA)
+            contourPath.addLine(to: pB)
+        }
+        
+        // High contrast understroke (dark outline)
+        context.stroke(contourPath, with: .color(Color.black.opacity(0.85)), lineWidth: 3.5)
+        // Crisp bright white zero contour stroke
+        context.stroke(contourPath, with: .color(Color.white), lineWidth: 2.0)
+    }
+    
+    private func drawShearPath(context: GraphicsContext, center: CGPoint, diskRadius: CGFloat) {
+        guard manager.showShearPath, let sp = manager.shearPath, sp.points.count > 1 else { return }
+        let useRed = manager.useReducedCoordinates
+        
+        func screen(_ p: ShearPathPointModel) -> CGPoint {
+            let px = useRed ? p.x_red : p.x
+            let py = useRed ? p.y_red : p.y
+            return CGPoint(x: center.x + CGFloat(px) * diskRadius, y: center.y - CGFloat(py) * diskRadius)
+        }
+        
+        // Segment-by-segment so color follows local stability; in reduced coordinates the
+        // path folds back at fundamental-domain boundaries, so skip large jumps.
+        for i in 1..<sp.points.count {
+            let a = sp.points[i - 1]
+            let b = sp.points[i]
+            let dx = (useRed ? b.x_red - a.x_red : b.x - a.x)
+            let dy = (useRed ? b.y_red - a.y_red : b.y - a.y)
+            if dx * dx + dy * dy > 0.01 { continue }
+            var seg = Path()
+            seg.move(to: screen(a))
+            seg.addLine(to: screen(b))
+            let stable = (a.is_stable ?? true) && (b.is_stable ?? true)
+            context.stroke(seg, with: .color(.black.opacity(0.8)), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+            context.stroke(seg, with: .color(stable ? Color(red: 0.2, green: 0.95, blue: 0.4) : Color(red: 1.0, green: 0.2, blue: 0.85)),
+                           style: StrokeStyle(lineWidth: 2.8, lineCap: .round))
+        }
+        
+        // Reference state (α = 0)
+        if let ref = sp.points.min(by: { abs($0.alpha) < abs($1.alpha) }) {
+            let s = screen(ref)
+            let r: CGFloat = 5
+            context.fill(Path(ellipseIn: CGRect(x: s.x - r, y: s.y - r, width: 2 * r, height: 2 * r)), with: .color(.white))
+            context.stroke(Path(ellipseIn: CGRect(x: s.x - r, y: s.y - r, width: 2 * r, height: 2 * r)), with: .color(.black), lineWidth: 1.5)
+            context.draw(Text("α=0").font(.system(size: 10, weight: .bold)).foregroundColor(.white), at: CGPoint(x: s.x + 18, y: s.y - 10))
+        }
+        
+        // Critical points α_c (loss of ellipticity)
+        for cp in sp.critical_points {
+            let s = screen(cp)
+            let r: CGFloat = 7
+            let rect = CGRect(x: s.x - r, y: s.y - r, width: 2 * r, height: 2 * r)
+            context.fill(Path(ellipseIn: rect), with: .color(.yellow))
+            context.stroke(Path(ellipseIn: rect), with: .color(.black), lineWidth: 2)
+            let label = Text(String(format: "αc=%.4f", cp.alpha))
+                .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                .foregroundColor(.yellow)
+            context.draw(label, at: CGPoint(x: s.x + 46, y: s.y + (cp.alpha < 0 ? 14 : -14)))
+        }
+    }
+    
+    private func drawHoverIndicator(context: GraphicsContext, center: CGPoint, diskRadius: CGFloat) {
+        guard let pt = hoveredPoint else { return }
+        let px = manager.useReducedCoordinates ? pt.x_red : pt.x
+        let py = manager.useReducedCoordinates ? pt.y_red : pt.y
+        let sx = center.x + CGFloat(px) * diskRadius
+        let sy = center.y - CGFloat(py) * diskRadius
+        
+        let ringRect = CGRect(x: sx - 10, y: sy - 10, width: 20, height: 20)
+        context.stroke(Path(ellipseIn: ringRect), with: .color(Color.accentColor), lineWidth: 3.0)
+        
+        let dotRect = CGRect(x: sx - 3, y: sy - 3, width: 6, height: 6)
+        context.fill(Path(ellipseIn: dotRect), with: .color(.white))
+    }
+    
+    private func updateHoveredPoint(at screenPos: CGPoint, center: CGPoint, diskRadius: CGFloat) {
+        guard !manager.points.isEmpty else { return }
+        
+        var closestPt: AcousticPointModel? = nil
+        var minDist: CGFloat = 28.0
+        
+        for pt in manager.points {
+            let px = manager.useReducedCoordinates ? pt.x_red : pt.x
+            let py = manager.useReducedCoordinates ? pt.y_red : pt.y
+            let sx = center.x + CGFloat(px) * diskRadius
+            let sy = center.y - CGFloat(py) * diskRadius
+            
+            let dx = sx - screenPos.x
+            let dy = sy - screenPos.y
+            let dist = sqrt(dx * dx + dy * dy)
+            if dist < minDist {
+                minDist = dist
+                closestPt = pt
+            }
+        }
+        
+        self.hoveredPoint = closestPt
+    }
+    
+    // MARK: - Colormap Helpers
+    
+    private func colorForDetAc(_ val: Double, minVal: Double, maxVal: Double, span: Double) -> Color {
+        // Diverging colormap:
+        // val < 0: Red / Crimson (loss of ellipticity)
+        // val = 0: Yellow / Gold boundary
+        // val > 0: Cyan / Blue (stable)
+        if val < 0.0 {
+            let norm = min(1.0, abs(val) / span)
+            return Color(red: 0.95 + 0.05 * norm,
+                         green: max(0.08, 0.65 * (1.0 - norm)),
+                         blue: max(0.08, 0.2 * (1.0 - norm)),
+                         opacity: 0.90)
+        } else {
+            let norm = min(1.0, val / span)
+            return Color(red: max(0.05, 0.3 * (1.0 - norm)),
+                         green: 0.5 + 0.3 * (1.0 - norm),
+                         blue: 0.85 + 0.15 * norm,
+                         opacity: 0.90)
+        }
+    }
+    
+    private func colorForEnergy(_ val: Double, minVal: Double, maxVal: Double) -> Color {
+        // Continuous Inferno Colormap:
+        // 0.0: Deep Indigo/Black  (0.00, 0.00, 0.05)
+        // 0.25: Indigo/Purple     (0.32, 0.07, 0.48)
+        // 0.50: Crimson           (0.73, 0.22, 0.33)
+        // 0.75: Orange/Amber      (0.97, 0.58, 0.11)
+        // 1.0: Pale Yellow        (0.99, 0.99, 0.65)
+        let span = max(1e-6, maxVal - minVal)
+        let u = max(0.0, min(1.0, (val - minVal) / span))
+        
+        let stops: [(Double, Double, Double, Double)] = [
+            (0.00, 0.00, 0.00, 0.05),
+            (0.25, 0.32, 0.07, 0.48),
+            (0.50, 0.73, 0.22, 0.33),
+            (0.75, 0.97, 0.58, 0.11),
+            (1.00, 0.99, 0.99, 0.65)
+        ]
+        
+        // Find segment
+        for i in 0 ..< (stops.count - 1) {
+            let s0 = stops[i]
+            let s1 = stops[i + 1]
+            if u >= s0.0 && u <= s1.0 {
+                let f = (u - s0.0) / (s1.0 - s0.0)
+                let r = s0.1 + f * (s1.1 - s0.1)
+                let g = s0.2 + f * (s1.2 - s0.2)
+                let b = s0.3 + f * (s1.3 - s0.3)
+                return Color(red: r, green: g, blue: b, opacity: 0.92)
+            }
+        }
+        return Color(red: 0.99, green: 0.99, blue: 0.65, opacity: 0.92)
+    }
+}
+
+// MARK: - Colorbar Legend
+struct ColorbarLegendView: View {
+    let colorField: ColorFieldMode
+    let minDet: Double
+    let maxDet: Double
+    let minEnergy: Double
+    let maxEnergy: Double
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(colorField == .acousticStability ? "min det Q(n)" : "Strain Energy Density ΔΦ(C)")
+                    .font(.system(size: 10, weight: .bold))
+                Spacer()
+                Text(colorField == .acousticStability ? "Acoustic Stability" : "Inferno Scale")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
+            
+            // Gradient Strip
+            if colorField == .acousticStability {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.95, green: 0.1, blue: 0.1),  // Red (unstable)
+                        Color(red: 0.95, green: 0.7, blue: 0.2),  // Orange/Gold (near 0)
+                        Color(red: 0.2, green: 0.75, blue: 0.85), // Cyan
+                        Color(red: 0.05, green: 0.3, blue: 0.95)  // Deep Blue (stable)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(height: 10)
+                .cornerRadius(3)
+                
+                HStack {
+                    Text(String(format: "%.1f (Loss)", minDet))
+                        .font(.system(size: 8))
+                        .foregroundColor(.red)
+                    Spacer()
+                    Text("0 (Boundary)")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Text(String(format: "%.1f (Stable)", maxDet))
+                        .font(.system(size: 8))
+                        .foregroundColor(.blue)
+                }
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.00, green: 0.00, blue: 0.05), // Indigo Black
+                        Color(red: 0.32, green: 0.07, blue: 0.48), // Purple
+                        Color(red: 0.73, green: 0.22, blue: 0.33), // Crimson
+                        Color(red: 0.97, green: 0.58, blue: 0.11), // Amber
+                        Color(red: 0.99, green: 0.99, blue: 0.65)  // Pale Yellow
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(height: 10)
+                .cornerRadius(3)
+                
+                HStack {
+                    Text(String(format: "%.2f (Min)", minEnergy))
+                        .font(.system(size: 8))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(String(format: "%.2f", (minEnergy + maxEnergy) * 0.5))
+                        .font(.system(size: 8))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text(String(format: "%.2f (High)", maxEnergy))
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(.orange)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Hover Inspection Inline View (inside footer bar)
+struct HoverInfoInlineView: View {
+    let point: AcousticPointModel
+    let useReduced: Bool
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            // Status Tag
+            Text(point.is_stable ? "STABLE" : "UNSTABLE")
+                .font(.system(size: 10, weight: .bold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(point.is_stable ? Color.blue.opacity(0.2) : Color.red.opacity(0.2))
+                .foregroundColor(point.is_stable ? .blue : .red)
+                .cornerRadius(4)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text("min det Q:").font(.caption2).foregroundColor(.secondary)
+                    Text(String(format: "%.3f", point.min_detAc))
+                        .font(.caption.monospaced().bold())
+                        .foregroundColor(point.is_stable ? .primary : .red)
+                    
+                    Text("• Energy ΔΦ:").font(.caption2).foregroundColor(.secondary)
+                    Text(String(format: "%.4f", point.energy))
+                        .font(.caption.monospaced().bold())
+                        .foregroundColor(.orange)
+                    
+                    Text("• Angle:").font(.caption2).foregroundColor(.secondary)
+                    Text(String(format: "%.1f°", point.angle_deg)).font(.caption.monospaced())
+                }
+                
+                HStack(spacing: 8) {
+                    Text("Poincaré:").font(.caption2).foregroundColor(.secondary)
+                    Text(String(format: "(%.3f, %.3f)", useReduced ? point.x_red : point.x, useReduced ? point.y_red : point.y))
+                        .font(.caption.monospaced())
+                    
+                    Text("• C:").font(.caption2).foregroundColor(.secondary)
+                    Text(String(format: "[%.2f, %.2f; %.2f]",
+                                useReduced ? point.c11_red : point.c11,
+                                useReduced ? point.c22_red : point.c22,
+                                useReduced ? point.c12_red : point.c12))
+                        .font(.caption.monospaced())
+                }
+            }
+            
+            Spacer()
+        }
+    }
+}
+
+// MARK: - Simple Shear Critical Strain Overlay
+
+struct ShearCriticalOverlay: View {
+    let path: ShearPathModel
+    let lattice: String
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                    .foregroundColor(.green)
+                Text("Simple shear  F = [1 α; 0 1]·F₀")
+                    .font(.caption.bold())
+            }
+            Text("Reference: \(lattice) ground state  ·  α ∈ [\(String(format: "%.2f", path.alpha_min)), \(String(format: "%.2f", path.alpha_max))]")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Divider()
+            if path.critical_alphas.isEmpty {
+                Text("No sign change of min det Q(n) in range")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+            } else {
+                ForEach(Array(path.critical_alphas.enumerated()), id: \.offset) { idx, a in
+                    HStack(spacing: 6) {
+                        Circle().fill(Color.yellow).frame(width: 8, height: 8)
+                        Text(String(format: "α_c%d = %+.5f", idx + 1, a))
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    }
+                }
+            }
+            HStack(spacing: 10) {
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 1).fill(Color(red: 0.2, green: 0.95, blue: 0.4)).frame(width: 14, height: 3)
+                    Text("stable").font(.caption2)
+                }
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 1).fill(Color(red: 1.0, green: 0.2, blue: 0.85)).frame(width: 14, height: 3)
+                    Text("unstable").font(.caption2)
+                }
+            }
+            .foregroundColor(.secondary)
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.15)))
+    }
+}

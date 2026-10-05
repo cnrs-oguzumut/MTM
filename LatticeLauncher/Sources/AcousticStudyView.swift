@@ -1,0 +1,481 @@
+import SwiftUI
+import AppKit
+
+public struct AcousticStudyView: View {
+    @StateObject private var manager = AcousticStudyManager()
+    @State private var showLogs: Bool = false
+    
+    public init() {}
+    
+    public var body: some View {
+        HSplitView {
+            // LEFT SIDEBAR: Controls & Elastic Constants Card
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Header
+                    HStack {
+                        Image(systemName: "waveform.path.ecg")
+                            .font(.title2)
+                            .foregroundColor(.accentColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Parametric Acoustic Study")
+                                .font(.headline)
+                            Text("Acoustic tensor stability & Poincaré projection")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.bottom, 4)
+                    
+                    // 1. Potential Selection
+                    GroupBox(label: Label("Constitutive Potential", systemImage: "atom")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Potential", selection: $manager.potentialMode) {
+                                ForEach(AcousticPotentialMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.radioGroup)
+                            
+                            if manager.potentialMode == .zanzotto {
+                                Divider()
+                                
+                                // Beta input
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("β (shear coefficient):")
+                                            .font(.caption)
+                                        Spacer()
+                                        TextField("β", value: $manager.beta, format: .number.precision(.fractionLength(3)))
+                                            .textFieldStyle(.roundedBorder)
+                                            .frame(width: 80)
+                                            .multilineTextAlignment(.trailing)
+                                    }
+                                    Slider(value: $manager.beta, in: -1.0...1.0, step: 0.01)
+                                }
+                                
+                                // K input
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("K (bulk modulus):")
+                                            .font(.caption)
+                                        Spacer()
+                                        TextField("K", value: $manager.bulkK, format: .number.precision(.fractionLength(2)))
+                                            .textFieldStyle(.roundedBorder)
+                                            .frame(width: 80)
+                                            .multilineTextAlignment(.trailing)
+                                    }
+                                    Slider(value: $manager.bulkK, in: 0.5...20.0, step: 0.25)
+                                }
+                            } else {
+                                Text(manager.potentialMode == .ljV2 ? 
+                                     "Interatomic pair potential V(r) with cutoff r_cut = 2.5, σ = 2·sin(π/10)." : 
+                                     "Interatomic pair potential V(r) with cutoff r_cut = 1.866.")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .padding(.top, 4)
+                            }
+                        }
+                        .padding(6)
+                    }
+                    
+                    // 2. Lattice Symmetry
+                    GroupBox(label: Label("Lattice Symmetry", systemImage: "square.grid.3x3")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Picker("Symmetry", selection: $manager.latticeSymmetry) {
+                                ForEach(LatticeSymmetry.allCases) { sym in
+                                    Text(sym.displayName).tag(sym)
+                                }
+                            }
+                            .pickerStyle(.radioGroup)
+                        }
+                        .padding(6)
+                    }
+                    
+                    // Simple shear path: F = [1 α; 0 1]·F₀
+                    GroupBox(label: Label("Simple Shear Path", systemImage: "point.topleft.down.curvedto.point.bottomright.up")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Show shear path on Poincaré disk", isOn: $manager.showShearPath)
+                                .font(.caption)
+                            HStack {
+                                Text("α min:").font(.caption)
+                                Spacer()
+                                DoubleField(title: "-0.5", value: $manager.shearAlphaMin, width: 80)
+                            }
+                            HStack {
+                                Text("α max:").font(.caption)
+                                Spacer()
+                                DoubleField(title: "0.5", value: $manager.shearAlphaMax, width: 80)
+                            }
+                            HStack {
+                                Text("Step dα:").font(.caption)
+                                Spacer()
+                                DoubleField(title: "0.002", value: $manager.shearDAlpha, width: 80)
+                            }
+                            Text("Critical α_c are where min det Q(n) changes sign (loss of ellipticity).")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(6)
+                    }
+
+                    // 3. Elastic Constants & Anisotropy Card
+                    ElasticConstantsCard(constants: manager.elasticConstants, symmetry: manager.latticeSymmetry)
+                    
+                    // 4. Sweep Parameters & Refinement Settings
+                    GroupBox(label: Label("Parametric Sweep & Refinement", systemImage: "slider.horizontal.3")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Max Radius t_max:")
+                                    .font(.caption)
+                                Spacer()
+                                Text(String(format: "%.2f", manager.tMax))
+                                    .font(.caption.monospaced().bold())
+                            }
+                            Slider(value: $manager.tMax, in: 0.2...1.5, step: 0.05)
+                            
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Resolution Presets:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                
+                                HStack(spacing: 6) {
+                                    Button("Fast") {
+                                        manager.dt = 0.04
+                                        manager.dp = 0.08
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    
+                                    Button("Medium") {
+                                        manager.dt = 0.02
+                                        manager.dp = 0.05
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    
+                                    Button("Fine") {
+                                        manager.dt = 0.015
+                                        manager.dp = 0.03
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    
+                                    Button("Ultra-Fine") {
+                                        manager.dt = 0.01
+                                        manager.dp = 0.02
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.purple)
+                                    .controlSize(.small)
+                                }
+                            }
+                            
+                            Divider()
+                            
+                            // Fine Refinement Sliders
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text("Radial Step Δt:")
+                                        .font(.caption)
+                                    Spacer()
+                                    Text(String(format: "%.3f", manager.dt))
+                                        .font(.caption.monospaced())
+                                }
+                                Slider(value: $manager.dt, in: 0.005...0.05, step: 0.005)
+                                
+                                HStack {
+                                    Text("Angular Step Δp:")
+                                        .font(.caption)
+                                    Spacer()
+                                    Text(String(format: "%.3f", manager.dp))
+                                        .font(.caption.monospaced())
+                                }
+                                Slider(value: $manager.dp, in: 0.01...0.10, step: 0.005)
+                                
+                                HStack(spacing: 4) {
+                                    Image(systemName: "number")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    Text("Est. Points: ~\(manager.estimatedPoints) sample nodes")
+                                        .font(.caption2.monospaced())
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.top, 2)
+                            }
+                        }
+                        .padding(6)
+                    }
+                    
+                    // 5. Actions
+                    VStack(spacing: 8) {
+                        if manager.isRunning {
+                            VStack(spacing: 6) {
+                                ProgressView(value: manager.progress)
+                                    .progressViewStyle(.linear)
+                                HStack {
+                                    Text(manager.statusMessage)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Button("Cancel", role: .destructive, action: manager.stopStudy)
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(.red)
+                                        .controlSize(.small)
+                                }
+                            }
+                            .padding(8)
+                            .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                        } else {
+                            Button(action: manager.runParametricStudy) {
+                                HStack {
+                                    Image(systemName: "play.fill")
+                                    Text("Run Parametric Acoustic Study")
+                                        .fontWeight(.semibold)
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                        }
+                        
+                        HStack(spacing: 8) {
+                            Button(action: openDatFileDialog) {
+                                Label("Load .dat File...", systemImage: "folder")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            
+                            Button(action: { showLogs.toggle() }) {
+                                Label(showLogs ? "Hide Logs" : "Logs", systemImage: "terminal")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                        }
+                    }
+                }
+                .padding(14)
+            }
+            .frame(minWidth: 380, idealWidth: 420, maxWidth: 460)
+            
+            // RIGHT MAIN: Poincaré Stability Map & Console
+            VStack(spacing: 0) {
+                // Top status bar
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Poincaré Projection Stability Map")
+                            .font(.headline)
+                        Text(manager.lastLoadedFile.isEmpty ? 
+                             "Inverse stereographic coordinates x = t·(c₁₁−c₂₂)/2, y = t·c₁₂" : 
+                             "File: \(manager.lastLoadedFile)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    // Quick Stats Badges
+                    if !manager.points.isEmpty {
+                        HStack(spacing: 10) {
+                            BadgeItem(
+                                title: "Stable",
+                                value: "\(manager.summary.stable_points)",
+                                color: .blue
+                            )
+                            BadgeItem(
+                                title: "Unstable",
+                                value: "\(manager.summary.unstable_points)",
+                                color: .red
+                            )
+                            BadgeItem(
+                                title: "Stability %",
+                                value: String(format: "%.1f%%", manager.summary.total_points > 0 ? (Double(manager.summary.stable_points) / Double(manager.summary.total_points) * 100.0) : 0),
+                                color: .purple
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color(NSColor.controlBackgroundColor))
+                
+                Divider()
+                
+                // Map Canvas
+                PoincareStabilityMapView(manager: manager)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                
+                // Collapsible Log Drawer
+                if showLogs {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Execution Log")
+                                .font(.caption.bold())
+                            Spacer()
+                            Button("Clear") { manager.logLines.removeAll() }
+                                .font(.caption2)
+                                .buttonStyle(.borderless)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.top, 6)
+                        
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 2) {
+                                    ForEach(Array(manager.logLines.enumerated()), id: \.offset) { item in
+                                        Text(item.element)
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                            .id(item.offset)
+                                    }
+                                }
+                                .padding(8)
+                            }
+                            .onChange(of: manager.logLines.count) { count in
+                                if count > 0 {
+                                    proxy.scrollTo(count - 1, anchor: .bottom)
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 160)
+                    .background(Color(NSColor.textBackgroundColor))
+                }
+            }
+        }
+    }
+    
+    private func openDatFileDialog() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = []
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            if url.pathExtension.lowercased() == "json" {
+                manager.loadResultsFromJSON(path: url.path)
+            } else {
+                manager.loadDatFile(url: url)
+            }
+        }
+    }
+}
+
+// MARK: - Elastic Constants Card
+struct ElasticConstantsCard: View {
+    let constants: AcousticElasticConstantsModel
+    let symmetry: LatticeSymmetry
+    
+    var body: some View {
+        GroupBox(label: Label("Ground State Elastic Constants", systemImage: "sparkles")) {
+            VStack(alignment: .leading, spacing: 10) {
+                // Moduli Grid
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                    GridRow {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("C₁₁").font(.caption2).foregroundColor(.secondary)
+                            Text(String(format: "%.3f", constants.C11))
+                                .font(.caption.monospaced().bold())
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("C₂₂").font(.caption2).foregroundColor(.secondary)
+                            Text(String(format: "%.3f", constants.C22))
+                                .font(.caption.monospaced().bold())
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("C₁₂").font(.caption2).foregroundColor(.secondary)
+                            Text(String(format: "%.3f", constants.C12))
+                                .font(.caption.monospaced().bold())
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("C₆₆ (Shear)").font(.caption2).foregroundColor(.secondary)
+                            Text(String(format: "%.3f", constants.C66))
+                                .font(.caption.monospaced().bold())
+                        }
+                    }
+                    GridRow {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Bulk K_2D").font(.caption2).foregroundColor(.secondary)
+                            Text(String(format: "%.3f", constants.bulk_modulus))
+                                .font(.caption.monospaced())
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Shear μ").font(.caption2).foregroundColor(.secondary)
+                            Text(String(format: "%.3f", constants.shear_modulus))
+                                .font(.caption.monospaced())
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Born Stable").font(.caption2).foregroundColor(.secondary)
+                            Text(constants.born_stable ? "STABLE" : "UNSTABLE")
+                                .font(.caption2.bold())
+                                .foregroundColor(constants.born_stable ? .green : .red)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Zener Ratio A").font(.caption2).foregroundColor(.secondary)
+                            Text(String(format: "%.3f", constants.Zener_A))
+                                .font(.caption.monospaced().bold())
+                                .foregroundColor(constants.is_isotropic ? .blue : (constants.Zener_A > 1 ? .purple : .orange))
+                        }
+                    }
+                }
+                .padding(6)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                
+                // Anisotropy Badge
+                HStack(spacing: 8) {
+                    if constants.is_isotropic {
+                        Label("Isotropic (A ≈ 1.0)", systemImage: "circle")
+                            .font(.caption2.bold())
+                            .foregroundColor(.blue)
+                    } else if constants.Zener_A > 1.0 {
+                        Label("Anisotropic: <10> Shear Soft", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                            .font(.caption2.bold())
+                            .foregroundColor(.purple)
+                    } else {
+                        Label("Anisotropic: <11> Diagonal Soft", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left")
+                            .font(.caption2.bold())
+                            .foregroundColor(.orange)
+                    }
+                    
+                    Spacer()
+                    
+                    Image(systemName: constants.born_stable ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .foregroundColor(constants.born_stable ? .green : .red)
+                }
+                
+                // Commentary Box
+                Text(constants.anisotropy_comment)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(8)
+                    .background(Color(NSColor.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+            }
+            .padding(6)
+        }
+    }
+}
+
+struct BadgeItem: View {
+    let title: String
+    let value: String
+    let color: Color
+    
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title + ":")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.caption2.bold())
+                .foregroundColor(color)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.12), in: Capsule())
+    }
+}

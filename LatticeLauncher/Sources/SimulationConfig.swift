@@ -48,12 +48,30 @@ public enum EigenSolverType: String, CaseIterable, Identifiable {
     }
 }
 
+public enum LatticeSymmetry: String, CaseIterable, Identifiable {
+    case square = "square"
+    case triangular = "triangular"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .square: return "Square Lattice (a = 1.0)"
+        case .triangular: return "Triangular Lattice (a = (4/3)¹ᐟ⁴ ≈ 1.075)"
+        }
+    }
+}
+
 public class SimulationConfig: ObservableObject {
     // 1. System Size
     @Published public var nx: Int = 100
     @Published public var ny: Int = 100
     
-    // 2. Loading & Mode
+    // 2. Lattice & Zanzotto Potential
+    @Published public var latticeSymmetry: LatticeSymmetry = .square
+    @Published public var beta: Double = -0.25
+    @Published public var bulkK: Double = 5.0
+    
+    // 3. Loading & Mode
     @Published public var mode: LoadingMode = .positive
     @Published public var seed: Int = 42
     @Published public var enableRemeshing: Bool = true
@@ -139,7 +157,8 @@ public class SimulationConfig: ObservableObject {
     
     public var defaultRunDirName: String {
         let remeshTag = enableRemeshing ? "remesh" : "noremesh"
-        return "run_\(mode.rawValue)_\(nx)x\(ny)_seed\(seed)_\(remeshTag)"
+        let latTag = latticeSymmetry == .triangular ? "_tri" : ""
+        return "run_\(mode.rawValue)_\(nx)x\(ny)_seed\(seed)_\(remeshTag)\(latTag)"
     }
     
     public var targetDirectory: String {
@@ -164,10 +183,16 @@ public class SimulationConfig: ObservableObject {
         
         // Positional arguments: nx ny mode seed remesh
         args.append(String(nx))
-        args.append(String(ny))
+        let effectiveNy = (latticeSymmetry == .triangular && ny % 2 != 0) ? (ny + 1) : ny
+        args.append(String(effectiveNy))
         args.append(mode.rawValue)
         args.append(String(seed))
         args.append(enableRemeshing ? "1" : "0")
+        
+        // Lattice Symmetry & Zanzotto Potential Parameters
+        args.append("--lattice=\(latticeSymmetry.rawValue)")
+        args.append(String(format: "--beta=%.4f", beta))
+        args.append(String(format: "--K=%.4f", bulkK))
         
         // Preconditioner
         args.append("--precond=\(preconditioner.rawValue)")

@@ -1,6 +1,19 @@
 import SwiftUI
 import AppKit
 
+enum AppNavigationTab: String, CaseIterable, Identifiable {
+    case simulation = "Lattice Simulation"
+    case acousticStudy = "Parametric Acoustic Study"
+    
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .simulation: return "square.grid.3x3.fill"
+        case .acousticStudy: return "waveform.path.ecg"
+        }
+    }
+}
+
 enum MainDisplayTab: String, CaseIterable, Identifiable {
     case curve = "Stress–Strain Curve"
     case terminal = "Terminal Log"
@@ -17,17 +30,52 @@ enum MainDisplayTab: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @ObservedObject var config: SimulationConfig
     @EnvironmentObject var runner: ProcessRunner
+    @State private var appTab: AppNavigationTab = .simulation
     @State private var displayTab: MainDisplayTab = .curve
     @State private var filterText: String = ""
     @State private var autoScroll: Bool = true
     
     var body: some View {
-        HSplitView {
-            // LEFT: Configuration Sidebar (Width ~420px)
-            SidebarControlsView(config: config)
-                .frame(minWidth: 380, idealWidth: 420, maxWidth: 480)
+        VStack(spacing: 0) {
+            // Global App Top Bar
+            HStack(spacing: 16) {
+                Picker("Navigation Mode", selection: $appTab) {
+                    ForEach(AppNavigationTab.allCases) { tab in
+                        Label(tab.rawValue, systemImage: tab.icon).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 440)
+                
+                Spacer()
+                
+                // Active Lattice Badge
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(config.latticeSymmetry == .square ? Color.blue : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(config.latticeSymmetry == .square ? "Square" : "Triangular")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color(NSColor.controlBackgroundColor), in: Capsule())
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color(NSColor.windowBackgroundColor))
             
-            // RIGHT: Monitor & Live Terminal / Curve
+            Divider()
+            
+            // Tab Contents
+            if appTab == .simulation {
+                HSplitView {
+                    // LEFT: Configuration Sidebar (Width ~420px)
+                    SidebarControlsView(config: config)
+                        .frame(minWidth: 380, idealWidth: 420, maxWidth: 480)
+                    
+                    // RIGHT: Monitor & Live Terminal / Curve
             VStack(spacing: 0) {
                 // Top Header: Live Status & Metrics
                 LiveStatusHeaderView()
@@ -92,7 +140,11 @@ struct ContentView: View {
         .onAppear {
             runner.loadExistingIfAvailable(dir: config.targetDirectory)
         }
+    } else {
+        AcousticStudyView()
     }
+    }
+}
 }
 
 // MARK: - Sidebar Controls
@@ -110,15 +162,13 @@ struct SidebarControlsView: View {
                                 Text("NX (Cols)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                TextField("100", value: $config.nx, formatter: NumberFormatter())
-                                    .textFieldStyle(.roundedBorder)
+                                IntField(title: "100", value: $config.nx, width: 80)
                             }
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("NY (Rows)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                TextField("100", value: $config.ny, formatter: NumberFormatter())
-                                    .textFieldStyle(.roundedBorder)
+                                IntField(title: "100", value: $config.ny, width: 80)
                             }
                         }
                         
@@ -151,9 +201,7 @@ struct SidebarControlsView: View {
                         HStack {
                             Text("Random Seed:")
                                 .font(.subheadline)
-                            TextField("Seed", value: $config.seed, formatter: NumberFormatter())
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 90)
+                            IntField(title: "Seed", value: $config.seed, width: 90)
                             Button(action: { config.randomizeSeed() }) {
                                 Label("Random", systemImage: "dice")
                             }
@@ -167,7 +215,59 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
-                // 3. Preconditioning & Energy Relaxation
+                // 3. Lattice Symmetry & Zanzotto Potential
+                GroupBox(label: Label("Lattice & Zanzotto Potential", systemImage: "atom")) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("Symmetry", selection: $config.latticeSymmetry) {
+                            ForEach(LatticeSymmetry.allCases) { sym in
+                                Text(sym.displayName).tag(sym)
+                            }
+                        }
+                        
+                        HStack {
+                            Text("Potential β:")
+                                .font(.subheadline)
+                            Spacer()
+                            DoubleField(title: "β", value: $config.beta, width: 80)
+                        }
+                        
+                        HStack {
+                            Text("Bulk Modulus K:")
+                                .font(.subheadline)
+                            Spacer()
+                            DoubleField(title: "K", value: $config.bulkK, width: 80)
+                        }
+                        
+                        // Presets
+                        HStack(spacing: 6) {
+                            Text("Presets:")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Button("Square (β=-0.25)") {
+                                config.latticeSymmetry = .square
+                                config.beta = -0.25
+                                config.bulkK = 5.0
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            
+                            Button("Triangular (β=4.0)") {
+                                config.latticeSymmetry = .triangular
+                                config.beta = 4.0
+                                config.bulkK = 5.0
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                        
+                        Text("Reference element remains strictly square; deformation gradient F is measured relative to square reference.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(8)
+                }
+                
+                // 4. Preconditioning & Energy Relaxation
                 GroupBox(label: Label("L-BFGS Preconditioner", systemImage: "bolt.fill")) {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("Metric", selection: $config.preconditioner) {
@@ -181,55 +281,45 @@ struct SidebarControlsView: View {
                                 Text("Active from step:")
                                     .font(.subheadline)
                                 Spacer()
-                                TextField("1", value: $config.precondFromStep, formatter: NumberFormatter())
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 70)
+                                IntField(title: "1", value: $config.precondFromStep, width: 70)
                             }
                             HStack {
                                 Text("Refresh every N steps (0=adaptive):")
                                     .font(.subheadline)
                                 Spacer()
-                                TextField("0", value: $config.precondRefresh, formatter: NumberFormatter())
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 70)
+                                IntField(title: "0", value: $config.precondRefresh, width: 70)
                             }
                         }
                     }
                     .padding(8)
                 }
                 
-                // 4. Loading Schedule
+                // 5. Loading Schedule
                 GroupBox(label: Label("Loading Schedule (|α|)", systemImage: "chart.line.uptrend.xyaxis")) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Start strain |α_start|:")
                                 .font(.subheadline)
                             Spacer()
-                            TextField("0.14", value: $config.alphaStart, format: .number.precision(.fractionLength(4)))
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 80)
+                            DoubleField(title: "0.14", value: $config.alphaStart, width: 80)
                         }
                         HStack {
                             Text("End strain |α_end|:")
                                 .font(.subheadline)
                             Spacer()
-                            TextField("1.0", value: $config.alphaEnd, format: .number.precision(.fractionLength(2)))
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 80)
+                            DoubleField(title: "1.0", value: $config.alphaEnd, width: 80)
                         }
                         HStack {
                             Text("Step size |dα|:")
                                 .font(.subheadline)
                             Spacer()
-                            TextField("0.00006", value: $config.stepSize, format: .number.precision(.fractionLength(6)))
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 90)
+                            DoubleField(title: "0.00006", value: $config.stepSize, width: 90)
                         }
                     }
                     .padding(8)
                 }
                 
-                // 5. Stability Monitor & Eigenvalues
+                // 6. Stability Monitor & Eigenvalues
                 GroupBox(label: Label("Stability & Eigenvalues", systemImage: "waveform.path.ecg")) {
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle("Compute Lowest Stiffness Eigenvalues", isOn: $config.enableEigenvalues)
@@ -239,9 +329,7 @@ struct SidebarControlsView: View {
                             HStack {
                                 Text("Every N steps:")
                                 Spacer()
-                                TextField("5", value: $config.eigEvery, formatter: NumberFormatter())
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 60)
+                                IntField(title: "5", value: $config.eigEvery, width: 60)
                             }
                             Toggle("Compute at avalanches / stress jumps", isOn: $config.eigAtAvalanche)
                             HStack {
@@ -264,7 +352,7 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
-                // 6. Data Saving & Output Controls
+                // 7. Data Saving & Output Controls
                 GroupBox(label: Label("Output & Checkpoint Controls", systemImage: "externaldrive")) {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Inner iterations trace (--trace=1)", isOn: $config.traceInnerIterations)
@@ -274,16 +362,12 @@ struct SidebarControlsView: View {
                         HStack {
                             Text("Checkpoint every N steps:")
                             Spacer()
-                            TextField("500", value: $config.checkpointInterval, formatter: NumberFormatter())
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 70)
+                            IntField(title: "500", value: $config.checkpointInterval, width: 70)
                         }
                         HStack {
                             Text("Stress drop threshold Δσ/σ:")
                             Spacer()
-                            TextField("0.10", value: $config.stressDropThreshold, format: .number.precision(.fractionLength(2)))
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 70)
+                            DoubleField(title: "0.10", value: $config.stressDropThreshold, width: 70)
                         }
                     }
                     .padding(8)
@@ -544,5 +628,78 @@ struct BottomActionBar: View {
                 .controlSize(.large)
             }
         }
+    }
+}
+
+// MARK: - Reliable Numeric Input Helpers
+struct DoubleField: View {
+    let title: String
+    @Binding var value: Double
+    var width: CGFloat = 80
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+    
+    var body: some View {
+        TextField(title, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .frame(width: width)
+            .focused($isFocused)
+            .onAppear {
+                text = String(value)
+            }
+            .onChange(of: value) { newVal in
+                if !isFocused {
+                    text = String(newVal)
+                }
+            }
+            .onChange(of: text) { newText in
+                let clean = newText.replacingOccurrences(of: ",", with: ".")
+                if let parsed = Double(clean) {
+                    value = parsed
+                }
+            }
+            .onSubmit {
+                let clean = text.replacingOccurrences(of: ",", with: ".")
+                if let parsed = Double(clean) {
+                    value = parsed
+                } else {
+                    text = String(value)
+                }
+            }
+    }
+}
+
+struct IntField: View {
+    let title: String
+    @Binding var value: Int
+    var width: CGFloat = 70
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+    
+    var body: some View {
+        TextField(title, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .frame(width: width)
+            .focused($isFocused)
+            .onAppear {
+                text = String(value)
+            }
+            .onChange(of: value) { newVal in
+                if !isFocused {
+                    text = String(newVal)
+                }
+            }
+            .onChange(of: text) { newText in
+                if let parsed = Int(newText.trimmingCharacters(in: .whitespaces)) {
+                    value = parsed
+                }
+            }
+            .onSubmit {
+                if let parsed = Int(text.trimmingCharacters(in: .whitespaces)) {
+                    value = parsed
+                } else {
+                    text = String(value)
+                }
+            }
     }
 }
