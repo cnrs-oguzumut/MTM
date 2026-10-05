@@ -50,6 +50,7 @@ def main():
     # 1. Hardware & Cores
     parser.add_argument("--n-jobs", type=int, default=None, help="Number of parallel jobs to run simultaneously")
     parser.add_argument("--threads", "--threads-per-job", dest="threads_per_job", type=int, default=None, help="OpenMP threads per job")
+    parser.add_argument("--blas-threads", type=int, default=None, help="BLAS/CHOLMOD factorization threads per job (default: same as --threads)")
 
     # 2. Physics & System Parameters
     parser.add_argument("--nx", type=int, default=None, help="System size nx")
@@ -104,9 +105,11 @@ def main():
     print("  - 4 jobs x 16 threads = 64 cores")
     n_jobs = resolve_val(args.n_jobs, "Number of parallel jobs to run simultaneously", "2", int, args.yes)
     threads_per_job = resolve_val(args.threads_per_job, "OpenMP threads per job", "32", int, args.yes)
+    blas_threads = args.blas_threads if args.blas_threads is not None else threads_per_job
     total_cores = n_jobs * threads_per_job
 
     print(f"  -> Total cores allocated: {total_cores} ({n_jobs} jobs x {threads_per_job} threads)")
+    print(f"  -> Factorization (BLAS) threads: {blas_threads} (multithreaded CHOLMOD enabled)")
     print()
 
     # 2. Simulation Parameters
@@ -213,7 +216,7 @@ def main():
     print(f"  -> Preconditioner: {precond_status}")
 
     # Stability monitor: lowest stiffness eigenvalues during the run
-    eig_every = resolve_val(args.eig_every, "Stability monitor: eigenvalues every N load steps (0 = off)", "5", int, args.yes)
+    eig_every = resolve_val(args.eig_every, "Stability monitor: eigenvalues every N load steps (0 = off)", "0", int, args.yes)
     eig_flags = ""
     eig_status = "off"
     if eig_every > 0:
@@ -234,7 +237,9 @@ def main():
     current_cwd = os.getcwd()
     default_base = current_cwd if "MTM" in current_cwd else "/home/usalman/MTM"
     base_dir = resolve_val(args.base_dir, "Base directory for MTM", default_base, str, args.yes)
+    base_dir = os.path.abspath(os.path.expanduser(base_dir))
     exe_path = resolve_val(args.exe_path, "Executable path", f"{base_dir}/lattice_triangulation", str, args.yes)
+    exe_path = os.path.abspath(os.path.expanduser(exe_path))
     
     default_runs_dir = f"{base_dir}/runs_{nx}x{ny}{suffix}"
     runs_dir = resolve_val(args.runs_dir, "Runs output directory", default_runs_dir, str, args.yes)
@@ -325,11 +330,11 @@ fi
 mkdir -p "$RUN_DIR"
 cd "$RUN_DIR" || exit 1
 
-# OpenMP thread settings
+# OpenMP and BLAS thread settings (enabling multithreaded CHOLMOD factorization)
 export OMP_NUM_THREADS={threads_per_job}
-export OPENBLAS_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export VECLIB_MAXIMUM_THREADS=1
+export OPENBLAS_NUM_THREADS={blas_threads}
+export MKL_NUM_THREADS={blas_threads}
+export VECLIB_MAXIMUM_THREADS={blas_threads}
 export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 
@@ -340,6 +345,7 @@ echo "  Working directory: $RUN_DIR"
 echo "  Parameters:        size=${{NX}}x${{NY}}, mode=${{MODE}}, seed=${{SEED}}, remesh=${{REMESH}}"
 echo "  CPU affinity:      $(taskset -cp $$ 2>/dev/null || echo 'N/A')"
 echo "  OpenMP threads:    $OMP_NUM_THREADS"
+echo "  BLAS threads:      $MKL_NUM_THREADS (CHOLMOD factorization)"
 echo "  Executable:        $EXE"
 echo "  Preconditioner:    ${{PRECOND_FLAGS:-none (plain L-BFGS)}}"
 echo "  Stability monitor: ${{EIG_FLAGS:-off}}"
@@ -485,10 +491,10 @@ if [ -f "{base_dir}/load_modules_tchenla.sh" ]; then
     source "{base_dir}/load_modules_tchenla.sh"
 fi
 
-# 3. Global Thread Guard
-export OPENBLAS_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export VECLIB_MAXIMUM_THREADS=1
+# 3. Threading configuration (BLAS multithreading enabled for CHOLMOD)
+export OPENBLAS_NUM_THREADS={blas_threads}
+export MKL_NUM_THREADS={blas_threads}
+export VECLIB_MAXIMUM_THREADS={blas_threads}
 
 echo "=================================================================="
 echo "  Tchenla Parallel SLURM Job: {job_name}"
@@ -499,7 +505,8 @@ echo "  Node:              $(hostname)"
 echo "  Date:              $(date)"
 echo "  Allocated CPUs:    $(taskset -cp $$ 2>/dev/null || echo 'N/A')"
 echo "  Total Cores:       {total_cores}"
-echo "  Parallel Jobs:     {n_jobs} jobs x {threads_per_job} threads"
+echo "  Parallel Jobs:     {n_jobs} jobs x {threads_per_job} threads (OpenMP)"
+echo "  BLAS Threads:      {blas_threads} threads (CHOLMOD factorization)"
 echo "  System Size:       {nx}x{ny}"
 echo "  Loading Schedule:  {loading_status}"
 echo "  Remeshing:         {remesh_status}"

@@ -46,6 +46,7 @@ def main():
     # 1. Hardware & Cores
     parser.add_argument("--n-jobs", type=int, default=None, help="Number of parallel jobs to run simultaneously")
     parser.add_argument("--threads", "--threads-per-job", dest="threads_per_job", type=int, default=None, help="OpenMP threads per job")
+    parser.add_argument("--blas-threads", type=int, default=None, help="BLAS/CHOLMOD factorization threads per job (default: same as --threads)")
 
     # 2. Physics & System Parameters
     parser.add_argument("--nx", type=int, default=None, help="System size nx")
@@ -98,9 +99,11 @@ def main():
     print("--- 1. Hardware & Core Allocation ---")
     n_jobs = resolve_val(args.n_jobs, "Number of parallel jobs to run simultaneously", "4", int, args.yes)
     threads_per_job = resolve_val(args.threads_per_job, "OpenMP threads per job", "32", int, args.yes)
+    blas_threads = args.blas_threads if args.blas_threads is not None else threads_per_job
     total_cores = n_jobs * threads_per_job
 
     print(f"  -> Total cores allocated: {total_cores} ({n_jobs} jobs x {threads_per_job} threads)")
+    print(f"  -> Factorization (BLAS) threads: {blas_threads} (multithreaded CHOLMOD enabled)")
     print()
 
     # 2. Physics & Simulation Parameters
@@ -314,11 +317,11 @@ LOADING_FLAGS="{loading_flags}"
 mkdir -p "$RUN_DIR"
 cd "$RUN_DIR" || exit 1
 
-# OpenMP thread settings
+# OpenMP and BLAS thread settings (enabling multithreaded CHOLMOD factorization)
 export OMP_NUM_THREADS={threads_per_job}
-export OPENBLAS_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export VECLIB_MAXIMUM_THREADS=1
+export OPENBLAS_NUM_THREADS={blas_threads}
+export MKL_NUM_THREADS={blas_threads}
+export VECLIB_MAXIMUM_THREADS={blas_threads}
 
 # Log header
 echo "=========================================================="
@@ -327,6 +330,7 @@ echo "  Working directory: $RUN_DIR"
 echo "  Parameters:        size=${{NX}}x${{NY}}, mode=${{MODE}}, seed=${{SEED}}, remesh=${{REMESH}}"
 echo "  CPU affinity:      $(taskset -cp $$ 2>/dev/null || echo 'N/A')"
 echo "  OpenMP threads:    $OMP_NUM_THREADS"
+echo "  BLAS threads:      $MKL_NUM_THREADS (CHOLMOD factorization)"
 echo "  Executable:        $EXE"
 echo "  Preconditioner:    ${{PRECOND_FLAGS:-none (plain L-BFGS)}}"
 echo "  Stability monitor: ${{EIG_FLAGS:-off}}"
@@ -461,9 +465,10 @@ echo "=========================================================="
 #SBATCH --cpus-per-task={total_cores}
 #SBATCH --hint=nomultithread
 
-export OPENBLAS_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export VECLIB_MAXIMUM_THREADS=1
+# Threading configuration (BLAS multithreading enabled for CHOLMOD)
+export OPENBLAS_NUM_THREADS={blas_threads}
+export MKL_NUM_THREADS={blas_threads}
+export VECLIB_MAXIMUM_THREADS={blas_threads}
 
 echo "=========================================="
 echo "Job:            {job_name}"
@@ -474,7 +479,8 @@ echo "=========================================="
 echo ""
 echo "Configuration:"
 echo "  Parallel jobs:   {n_jobs}"
-echo "  Threads per job: {threads_per_job}"
+echo "  Threads per job: {threads_per_job} (OpenMP)"
+echo "  BLAS threads:    {blas_threads} (CHOLMOD factorization)"
 echo "  Total cores:     {total_cores}"
 echo "  System size:     {nx}x{ny}"
 echo "  Mode setting:    {mode_choice}"

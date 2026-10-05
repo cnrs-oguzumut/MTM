@@ -24,6 +24,8 @@ plt.rcParams['axes.linewidth'] = 1.0
 plt.rcParams['grid.color'] = '#e0e0e0'
 plt.rcParams['grid.linestyle'] = '--'
 plt.rcParams['grid.alpha'] = 0.6
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
 
 def read_vtk_data(path, N=90000):
     with open(path, 'rb') as f:
@@ -126,7 +128,8 @@ def compute_stress_profiles(tri_centers, areas, elem_stresses, xc, yc=149.5, x_s
     }
 
 def main():
-    base_dir = 'shifted_dislocation_study_300x300'
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.join(script_dir, 'shifted_dislocation_study_300x300')
     artifact_dir = '/Users/usalman/.gemini/antigravity-ide/brain/e0366a0b-42af-4a53-9525-edb8c926ac89'
     shifts = [0, 1, 2, 3, 4, 5]
     
@@ -165,14 +168,36 @@ def main():
         }
         print(f"Shift s={s}: centroid x_cm = {x_cm:.4f}, max energy = {np.max(e_slip):.5f}")
 
-    # Helper function to save figure both locally and to artifact dir
+    # Helper function to save figure both locally and to artifact dir (both PNG and vectorial PDF)
     def save_fig(fig, filename):
-        p1 = os.path.join(base_dir, filename)
-        p2 = os.path.join(artifact_dir, filename)
-        fig.savefig(p1)
-        fig.savefig(p2)
+        base_name, _ = os.path.splitext(filename)
+        pdf_name = f"{base_name}.pdf"
+        png_name = f"{base_name}.png"
+
+        # 1. Base directory (shifted_dislocation_study_300x300)
+        p1_png = os.path.join(base_dir, png_name)
+        p1_pdf = os.path.join(base_dir, pdf_name)
+        fig.savefig(p1_png, dpi=300)
+        fig.savefig(p1_pdf)
+        print(f"Saved: {p1_png} and {p1_pdf}")
+
+        # 2. Artifact dir if it exists
+        if os.path.exists(artifact_dir):
+            p2_png = os.path.join(artifact_dir, png_name)
+            p2_pdf = os.path.join(artifact_dir, pdf_name)
+            fig.savefig(p2_png, dpi=300)
+            fig.savefig(p2_pdf)
+
+        # 3. Paper figures dir if relevant
+        paper_fig_dir = '/Users/usalman/current_papers/Mesh_reconnection_MTM_ordered_submission/figures'
+        if os.path.exists(paper_fig_dir):
+            p3_png = os.path.join(paper_fig_dir, png_name)
+            if os.path.exists(p3_png):
+                p3_pdf = os.path.join(paper_fig_dir, pdf_name)
+                fig.savefig(p3_pdf)
+                print(f"Also saved to paper figures: {p3_pdf}")
+
         plt.close(fig)
-        print(f"Saved: {p1}")
 
     # ==============================================================================
     # FIGURE 1: Full Slip Plane Energy Profile (Across entire domain [-150, 150]h)

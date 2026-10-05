@@ -92,6 +92,15 @@ public:
       std::cout << "  - Fill-reducing ordering: " << ord_name << " (FORCED METIS)" << std::endl;
       std::cout << "  - Supernodes: " << factor_->nsuper << std::endl;
       std::cout << "  - Factor nonzeros (L_nz): " << static_cast<long long>(factor_->xsize) << std::endl;
+      const char *mkl_th = std::getenv("MKL_NUM_THREADS");
+      const char *openblas_th = std::getenv("OPENBLAS_NUM_THREADS");
+      const char *omp_th = std::getenv("OMP_NUM_THREADS");
+      std::cout << "  - Factorization threads: ";
+      if (mkl_th) std::cout << "MKL=" << mkl_th << " ";
+      if (openblas_th) std::cout << "OpenBLAS=" << openblas_th << " ";
+      if (omp_th) std::cout << "OMP=" << omp_th << " ";
+      if (!mkl_th && !openblas_th && !omp_th) std::cout << "default (auto)";
+      std::cout << std::endl;
       printed_ordering = true;
     }
   }

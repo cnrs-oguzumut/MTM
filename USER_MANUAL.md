@@ -82,6 +82,24 @@ make -f Makefile.cluster -j4
 
 > **METIS Support**: `Makefile.cluster` is configured to detect system `libsuitesparse-dev` at `/usr/include/suitesparse` and `/usr/lib/x86_64-linux-gnu`. When compiled this way, CHOLMOD automatically uses **METIS nested dissection** ordering, reducing Cholesky factorization non-zeros by 25–35% and accelerating L-BFGS back-solves by 25–35% on large systems ($600 \times 600$ to $1000 \times 1000$).
 
+### Native macOS Visual Interface (SwiftUI App)
+For local execution on Mac, a dedicated native SwiftUI visual launcher is available:
+```bash
+# Launch directly from terminal
+./run_gui.sh
+
+# Or open the packaged standalone app bundle in Finder
+open "LatticeLauncher/Lattice Launcher.app"
+```
+The interface allows you to:
+- Visually configure **System Sizes** ($nx, ny$) with quick presets ($50\times 50$, $100\times 100$, $300\times 300$).
+- Select **Loading Mode** (positive, negative, shift, volterra) and randomize seeds.
+- Toggle **Adaptive Remeshing** and configure **Preconditioners** (`stiffness`, `none`, etc.).
+- Enable/disable **Stability Monitoring** and lowest eigenvalues calculation.
+- Control **Output & Checkpoints** (inner iterations trace, surgery VTK snapshots, stress drop threshold).
+- Allocate **OpenMP & BLAS multithreading cores**.
+- Live stream output logs, monitor strain/stress/avalanches in real time, and reveal output folders with one click.
+
 ---
 
 ## 3. Command-Line Interface (CLI) Reference
