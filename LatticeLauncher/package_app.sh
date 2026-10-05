@@ -17,6 +17,11 @@ mkdir -p "$MACOS"
 mkdir -p "$RESOURCES"
 cp "$BIN_PATH" "$MACOS/LatticeLauncher"
 
+# Copy AppIcon if present
+if [ -f "${DIR}/AppIcon.icns" ]; then
+    cp "${DIR}/AppIcon.icns" "${RESOURCES}/AppIcon.icns"
+fi
+
 # Create Info.plist
 cat <<EOF > "${CONTENTS}/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -35,6 +40,8 @@ cat <<EOF > "${CONTENTS}/Info.plist"
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
