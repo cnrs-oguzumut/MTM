@@ -270,7 +270,26 @@ public class ProcessRunner: ObservableObject {
                     self.yieldStrain = last.alpha
                 }
             }
+            self.updateAvalancheStats()
         }
+    }
+    
+    /// Computes true physical energy drops (E_{i} < E_{i-1}) across the entire relaxed curve
+    private func updateAvalancheStats() {
+        guard curvePoints.count >= 2 else {
+            self.avalancheCount = 0
+            return
+        }
+        
+        var drops = 0
+        for i in 1..<curvePoints.count {
+            let prevE = curvePoints[i - 1].postEnergy
+            let currE = curvePoints[i].postEnergy
+            if (prevE - currE) > 1e-8 {
+                drops += 1
+            }
+        }
+        self.avalancheCount = drops
     }
     
     private func processIncomingOutput(_ text: String) {
@@ -297,9 +316,6 @@ public class ProcessRunner: ObservableObject {
                     self.currentStress = val
                 }
             }
-        }
-        if line.contains("Avalanche") || line.contains("avalanche") {
-            self.avalancheCount += 1
         }
     }
     
