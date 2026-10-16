@@ -44,8 +44,9 @@ struct ContentView: View {
                         Label(tab.rawValue, systemImage: tab.icon).tag(tab)
                     }
                 }
+                .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 440)
+                .frame(width: 400)
                 
                 Spacer()
                 
@@ -93,8 +94,9 @@ struct ContentView: View {
                             Label(tab.rawValue, systemImage: tab.icon).tag(tab)
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(width: 320)
+                    .frame(width: 300)
                     
                     Spacer()
                     
@@ -198,6 +200,24 @@ struct SidebarControlsView: View {
                             }
                         }
                         
+                        if config.mode == .volterra {
+                            Divider()
+                            HStack {
+                                Text("Free Core Radius R_free:")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "35.0", value: $config.rFree, width: 75)
+                            }
+                            Toggle("Export Full Mesh (Unclipped VTK)", isOn: $config.exportFullMesh)
+                                .font(.caption)
+                            
+                            Text(config.latticeSymmetry == .triangular ?
+                                 "Uses Isotropic 2D Volterra solution (Eq. 15) with ν = C₁₂/C₁₁ and equilibrium spacing a₀ computed from active potential." :
+                                 "Uses Anisotropic Stroh solution (Eqs. A5–A16) with (κ, ξ, ζ, g₁, g₂, g₃) and equilibrium spacing a₀ computed from active potential.")
+                                .font(.caption2)
+                                .foregroundColor(.accentColor)
+                        }
+                        
                         HStack {
                             Text("Random Seed:")
                                 .font(.subheadline)
@@ -215,8 +235,8 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
-                // 3. Lattice Symmetry & Zanzotto Potential
-                GroupBox(label: Label("Lattice & Zanzotto Potential", systemImage: "atom")) {
+                // 3. Lattice Symmetry & Interatomic / Continuum Potential
+                GroupBox(label: Label("Lattice & Potential", systemImage: "atom")) {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("Symmetry", selection: $config.latticeSymmetry) {
                             ForEach(LatticeSymmetry.allCases) { sym in
@@ -224,18 +244,27 @@ struct SidebarControlsView: View {
                             }
                         }
                         
-                        HStack {
-                            Text("Potential β:")
-                                .font(.subheadline)
-                            Spacer()
-                            DoubleField(title: "β", value: $config.beta, width: 80)
+                        Picker("Potential", selection: $config.potentialMode) {
+                            ForEach(AcousticPotentialMode.allCases) { mode in
+                                Text(mode.shortName).tag(mode)
+                            }
                         }
+                        .pickerStyle(.segmented)
                         
-                        HStack {
-                            Text("Bulk Modulus K:")
-                                .font(.subheadline)
-                            Spacer()
-                            DoubleField(title: "K", value: $config.bulkK, width: 80)
+                        if config.potentialMode == .zanzotto {
+                            HStack {
+                                Text("Potential β:")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "β", value: $config.beta, width: 80)
+                            }
+                            
+                            HStack {
+                                Text("Bulk Modulus K:")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "K", value: $config.bulkK, width: 80)
+                            }
                         }
                         
                         // Presets
@@ -245,6 +274,7 @@ struct SidebarControlsView: View {
                                 .foregroundColor(.secondary)
                             Button("Square (β=-0.25)") {
                                 config.latticeSymmetry = .square
+                                config.potentialMode = .zanzotto
                                 config.beta = -0.25
                                 config.bulkK = 5.0
                             }
@@ -253,6 +283,7 @@ struct SidebarControlsView: View {
                             
                             Button("Triangular (β=4.0)") {
                                 config.latticeSymmetry = .triangular
+                                config.potentialMode = .zanzotto
                                 config.beta = 4.0
                                 config.bulkK = 5.0
                             }
@@ -260,7 +291,7 @@ struct SidebarControlsView: View {
                             .controlSize(.mini)
                         }
                         
-                        Text("Reference element remains strictly square; deformation gradient F is measured relative to square reference.")
+                        Text("Equilibrium lattice parameter a₀ and elastic constants (C₁₁, C₁₂, C₆₆) are dynamically computed from the selected potential.")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }

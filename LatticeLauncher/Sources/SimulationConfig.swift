@@ -30,7 +30,7 @@ public enum LoadingMode: String, CaseIterable, Identifiable {
         case .positive: return "Positive Shear (+α)"
         case .negative: return "Negative Shear (-α)"
         case .shift: return "Shift / Staircase"
-        case .volterra: return "Volterra Dislocation"
+        case .volterra: return "Edge Dislocation (Volterra / Stroh)"
         }
     }
 }
@@ -55,8 +55,8 @@ public enum LatticeSymmetry: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
     public var displayName: String {
         switch self {
-        case .square: return "Square Lattice (a = 1.0)"
-        case .triangular: return "Triangular Lattice (a = (4/3)¹ᐟ⁴ ≈ 1.075)"
+        case .square: return "Square Lattice"
+        case .triangular: return "Triangular Lattice"
         }
     }
 }
@@ -66,7 +66,8 @@ public class SimulationConfig: ObservableObject {
     @Published public var nx: Int = 100
     @Published public var ny: Int = 100
     
-    // 2. Lattice & Zanzotto Potential
+    // 2. Lattice & Potential
+    @Published public var potentialMode: AcousticPotentialMode = .zanzotto
     @Published public var latticeSymmetry: LatticeSymmetry = .square
     @Published public var beta: Double = -0.25
     @Published public var bulkK: Double = 5.0
@@ -75,6 +76,8 @@ public class SimulationConfig: ObservableObject {
     @Published public var mode: LoadingMode = .positive
     @Published public var seed: Int = 42
     @Published public var enableRemeshing: Bool = true
+    @Published public var rFree: Double = 35.0
+    @Published public var exportFullMesh: Bool = true
     
     // 3. Loading Schedule
     @Published public var alphaStart: Double = 0.14
@@ -189,10 +192,16 @@ public class SimulationConfig: ObservableObject {
         args.append(String(seed))
         args.append(enableRemeshing ? "1" : "0")
         
-        // Lattice Symmetry & Zanzotto Potential Parameters
+        // Lattice Symmetry & Potential Parameters
         args.append("--lattice=\(latticeSymmetry.rawValue)")
+        args.append("--potential-mode=\(potentialMode.rawValue)")
         args.append(String(format: "--beta=%.4f", beta))
         args.append(String(format: "--K=%.4f", bulkK))
+        
+        if mode == .volterra {
+            args.append(String(format: "--r-free=%.2f", rFree))
+            args.append("--export-full-mesh=\(exportFullMesh ? 1 : 0)")
+        }
         
         // Preconditioner
         args.append("--precond=\(preconditioner.rawValue)")

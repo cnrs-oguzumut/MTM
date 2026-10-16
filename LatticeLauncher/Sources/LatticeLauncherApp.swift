@@ -18,7 +18,7 @@ struct LatticeLauncherApp: App {
         WindowGroup {
             ContentView(config: config)
                 .environmentObject(runner)
-                .frame(minWidth: 1000, idealWidth: 1100, minHeight: 700, idealHeight: 750)
+                .frame(minWidth: 1120, idealWidth: 1280, minHeight: 740, idealHeight: 840)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)

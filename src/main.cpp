@@ -301,9 +301,11 @@ int main(int argc, char **argv) {
   //    Simulates single dislocation in a cylinder / boundary-fixed crystal.
   if (mode == "volterra" || mode == "cylinder" || mode == "dislocation") {
     std::cout << "\n>>> Running single dislocation cylinder relaxation with nx=" << nx
-              << ", ny=" << ny << ", R_free=" << r_free
+              << ", ny=" << ny << ", lattice=" << lattice_type
+              << ", potential_mode=" << acoustic_potential_mode
+              << ", R_free=" << r_free
               << ", mesh=" << (export_full_mesh ? "full" : "circle") << " <<<\n" << std::endl;
-    single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh);
+    single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh, lattice_type, acoustic_potential_mode);
     return 0;
   }
 

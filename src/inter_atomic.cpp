@@ -396,5 +396,233 @@ double lennard_jones_energy_v3_second_derivative_stable(double r) {
     return second_derivative;
 }
 
+double square_energy_sder(double r) {
+    const double a = 1.0;
+    const double c1 = 2.0 * a;
+    const double c2 = 2.0 * a;
+    const double b1 = 8.0;
+    const double r1 = 1.0;
+    const double r2 = 1.425;
+
+    double repulsive_sder = 156.0 * a / std::pow(r, 14);
+    double dr1 = r - r1;
+    double dr2 = r - r2;
+    double attractive_sder1 = 2.0 * b1 * c1 * (1.0 - 2.0 * b1 * dr1 * dr1) * std::exp(-b1 * dr1 * dr1);
+    double attractive_sder2 = 2.0 * b1 * c2 * (1.0 - 2.0 * b1 * dr2 * dr2) * std::exp(-b1 * dr2 * dr2);
+
+    return repulsive_sder + attractive_sder1 + attractive_sder2;
+}
+
+#include <iostream>
+#include <iomanip>
+#include <vector>
+#include <limits>
+
+void EquilibriumLatticeResult::printSummary() const {
+    std::cout << "  --- Equilibrium Lattice Parameter (" << lattice_type << " lattice) ---\n";
+    std::cout << std::fixed << std::setprecision(15);
+    std::cout << "  Equilibrium spacing a_0 = " << lattice_parameter << "\n";
+    std::cout << std::fixed << std::setprecision(8);
+    std::cout << "  Cohesive energy E_coh   = " << cohesive_energy
+              << " | Energy density = " << energy_density << "\n";
+    std::cout << "  Unit cell area Omega_0  = " << unit_cell_area
+              << " | Curvature d^2E/da^2 = " << d2E_da2 << "\n";
+    std::cout << std::scientific << std::setprecision(3);
+    std::cout << "  Residual dE/da          = " << dE_da
+              << " (" << iterations << " iterations, "
+              << (converged ? "CONVERGED" : "NOT CONVERGED") << ")\n"
+              << std::defaultfloat;
+}
+
+EquilibriumLatticeResult compute_equilibrium_lattice_parameter(
+    const std::function<double(double)>& pot,
+    const std::function<double(double)>& dpot,
+    const std::function<double(double)>& d2pot,
+    const std::string& lattice_type,
+    double r_cutoff,
+    double a_min,
+    double a_max
+) {
+    EquilibriumLatticeResult result;
+    result.lattice_type = lattice_type;
+
+    // Fallback to central finite differences if analytical derivatives are not supplied
+    std::function<double(double)> dpot_fn = dpot;
+    if (!dpot_fn) {
+        dpot_fn = [&pot](double r) {
+            const double h = 1e-7;
+            return (pot(r + h) - pot(r - h)) / (2.0 * h);
+        };
+    }
+
+    std::function<double(double)> d2pot_fn = d2pot;
+    if (!d2pot_fn) {
+        d2pot_fn = [&pot, &dpot, &dpot_fn](double r) {
+            const double h = 1e-6;
+            if (dpot) {
+                return (dpot(r + h) - dpot(r - h)) / (2.0 * h);
+            }
+            return (pot(r + h) - 2.0 * pot(r) + pot(r - h)) / (h * h);
+        };
+    }
+
+    // Precompute dimensionless lattice neighbor distances d_{mn}
+    const int nb_atoms = 10;
+    std::vector<double> neighbor_dists;
+    neighbor_dists.reserve((2 * nb_atoms + 1) * (2 * nb_atoms + 1));
+
+    const bool is_triangular = (lattice_type == "triangular");
+    const double sqrt3_over_2 = std::sqrt(3.0) / 2.0;
+
+    for (int m = -nb_atoms; m <= nb_atoms; ++m) {
+        for (int n = -nb_atoms; n <= nb_atoms; ++n) {
+            if (m == 0 && n == 0) continue;
+            double px = is_triangular ? (static_cast<double>(m) + 0.5 * static_cast<double>(n))
+                                      : static_cast<double>(m);
+            double py = is_triangular ? (sqrt3_over_2 * static_cast<double>(n))
+                                      : static_cast<double>(n);
+            double d = std::sqrt(px * px + py * py);
+            neighbor_dists.push_back(d);
+        }
+    }
+
+    // Helper to evaluate E(a), dE/da(a), and d^2E/da^2(a)
+    auto eval_lattice_sum = [&](double a, double& E, double& dE, double& d2E) {
+        E = 0.0;
+        dE = 0.0;
+        d2E = 0.0;
+        for (double d : neighbor_dists) {
+            double r = a * d;
+            if (r <= r_cutoff) {
+                E   += 0.5 * pot(r);
+                dE  += 0.5 * d * dpot_fn(r);
+                d2E += 0.5 * d * d * d2pot_fn(r);
+            }
+        }
+    };
+
+    // Step 1: Scan [a_min, a_max] to bracket the equilibrium root where dE/da crosses from < 0 to > 0
+    const int n_scan = 250;
+    const double da = (a_max - a_min) / static_cast<double>(n_scan);
+
+    double best_aL = a_min;
+    double best_aR = a_max;
+    double best_E  = std::numeric_limits<double>::max();
+    bool found_bracket = false;
+
+    double prev_a = a_min;
+    double prev_E = 0.0, prev_dE = 0.0, prev_d2E = 0.0;
+    eval_lattice_sum(prev_a, prev_E, prev_dE, prev_d2E);
+
+    for (int i = 1; i <= n_scan; ++i) {
+        double cur_a = a_min + i * da;
+        double cur_E = 0.0, cur_dE = 0.0, cur_d2E = 0.0;
+        eval_lattice_sum(cur_a, cur_E, cur_dE, cur_d2E);
+
+        if (prev_dE <= 0.0 && cur_dE >= 0.0) {
+            double mid_E = 0.5 * (prev_E + cur_E);
+            if (!found_bracket || mid_E < best_E) {
+                best_aL = prev_a;
+                best_aR = cur_a;
+                best_E  = mid_E;
+                found_bracket = true;
+            }
+        }
+        prev_a  = cur_a;
+        prev_E  = cur_E;
+        prev_dE = cur_dE;
+    }
+
+    if (!found_bracket) {
+        // Fallback: pick the lowest-energy point in the scan
+        double min_E = std::numeric_limits<double>::max();
+        double min_a = 1.0;
+        for (int i = 0; i <= n_scan; ++i) {
+            double cur_a = a_min + i * da;
+            double cur_E = 0.0, cur_dE = 0.0, cur_d2E = 0.0;
+            eval_lattice_sum(cur_a, cur_E, cur_dE, cur_d2E);
+            if (cur_E < min_E) {
+                min_E = cur_E;
+                min_a = cur_a;
+            }
+        }
+        best_aL = std::max(a_min, min_a - da);
+        best_aR = std::min(a_max, min_a + da);
+    }
+
+    // Step 2: Safeguarded Newton-Raphson + bisection refinement to machine precision
+    double aL = best_aL;
+    double aR = best_aR;
+    double EL = 0.0, dEL = 0.0, d2EL = 0.0;
+    double ER = 0.0, dER = 0.0, d2ER = 0.0;
+    eval_lattice_sum(aL, EL, dEL, d2EL);
+    eval_lattice_sum(aR, ER, dER, d2ER);
+
+    double a = (std::abs(dER - dEL) > 1e-16)
+                   ? (aL - dEL * (aR - aL) / (dER - dEL))
+                   : 0.5 * (aL + aR);
+    if (a <= aL || a >= aR) {
+        a = 0.5 * (aL + aR);
+    }
+
+    double E = 0.0, dE = 0.0, d2E = 0.0;
+    const int max_iter = 100;
+    int iter = 0;
+
+    for (; iter < max_iter; ++iter) {
+        eval_lattice_sum(a, E, dE, d2E);
+
+        if (std::abs(dE) < 1e-14 || std::abs(aR - aL) < 1e-15) {
+            result.converged = (d2E > 0.0);
+            break;
+        }
+
+        if (dE < 0.0) {
+            aL = a;
+            dEL = dE;
+        } else {
+            aR = a;
+            dER = dE;
+        }
+
+        // Try Newton step; fall back to bisection if outside bracket or non-convex
+        double a_next = 0.5 * (aL + aR);
+        if (d2E > 1e-12) {
+            double a_newton = a - dE / d2E;
+            if (a_newton > aL && a_newton < aR) {
+                a_next = a_newton;
+            }
+        }
+
+        if (std::abs(a_next - a) < 1e-16) {
+            a = a_next;
+            eval_lattice_sum(a, E, dE, d2E);
+            result.converged = (d2E > 0.0);
+            break;
+        }
+        a = a_next;
+    }
+
+    result.lattice_parameter = a;
+    result.cohesive_energy   = E;
+    result.unit_cell_area    = is_triangular ? (sqrt3_over_2 * a * a) : (a * a);
+    result.energy_density    = E / result.unit_cell_area;
+    result.dE_da             = dE;
+    result.d2E_da2           = d2E;
+    result.iterations        = iter + 1;
+    return result;
+}
+
+double find_optimal_lattice_parameter(
+    const std::function<double(double)>& pot,
+    const std::string& lattice_type,
+    double r_cutoff,
+    const std::function<double(double)>& dpot,
+    const std::function<double(double)>& d2pot
+) {
+    return compute_equilibrium_lattice_parameter(
+        pot, dpot, d2pot, lattice_type, r_cutoff
+    ).lattice_parameter;
+}
 
 #endif // INTER_ATOMIC_H

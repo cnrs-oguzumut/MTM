@@ -203,7 +203,7 @@ FastStiffnessAssembler::assembleStiffness(const alglib::real_1d_array &x,
   double *values = K_.valuePtr();
   std::fill(values, values + K_.nonZeros(), 0.0);
 
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(guided, 256)
   for (size_t e = 0; e < active.size(); e++) {
     ElementTriangle2D &element = userData->elements[active[e]];
     element.calculate_deformation_gradient(x);
@@ -278,6 +278,7 @@ FastStiffnessAssembler::assembleLaplacian(UserData *userData) {
 struct PreconditionedLBFGS::Factor {
   LBFGSPreconditioner type = LBFGSPreconditioner::None;
   std::unique_ptr<SparseCholeskyBackend> cholesky;
+  std::unique_ptr<SparseCholeskyBackend> cholesky_block1;
   bool analyzed = false;
   std::uint64_t signature = 0;
   bool scalar_blocks = false; // Laplacian: the same n x n factor acts on u and on v
@@ -286,15 +287,23 @@ struct PreconditionedLBFGS::Factor {
   // dx = R^{-T} z  with  P = R R^T
   void apply_inverse_transpose(const double *z, double *dx, int n_total) {
     const int m = scalar_blocks ? n_total / 2 : n_total;
-    for (int block = 0; block < (scalar_blocks ? 2 : 1); block++)
-      cholesky->apply_inverse_transpose(z + block * m, dx + block * m);
+    const int n_blocks = scalar_blocks ? 2 : 1;
+#pragma omp parallel for num_threads(2) if(scalar_blocks && cholesky_block1) schedule(static)
+    for (int block = 0; block < n_blocks; block++) {
+      SparseCholeskyBackend *backend = (block == 1 && cholesky_block1) ? cholesky_block1.get() : cholesky.get();
+      backend->apply_inverse_transpose(z + block * m, dx + block * m);
+    }
   }
 
   // gz = R^{-1} g
   void apply_inverse(const double *g, double *gz, int n_total) {
     const int m = scalar_blocks ? n_total / 2 : n_total;
-    for (int block = 0; block < (scalar_blocks ? 2 : 1); block++)
-      cholesky->apply_inverse(g + block * m, gz + block * m);
+    const int n_blocks = scalar_blocks ? 2 : 1;
+#pragma omp parallel for num_threads(2) if(scalar_blocks && cholesky_block1) schedule(static)
+    for (int block = 0; block < n_blocks; block++) {
+      SparseCholeskyBackend *backend = (block == 1 && cholesky_block1) ? cholesky_block1.get() : cholesky.get();
+      backend->apply_inverse(g + block * m, gz + block * m);
+    }
   }
 
   bool uses_transform() const {
@@ -371,12 +380,22 @@ bool PreconditionedLBFGS::buildPreconditioner(const alglib::real_1d_array &x,
   if (!factor_->analyzed) {
     factor_->cholesky = make_sparse_cholesky();
     factor_->cholesky->analyze(M);
+    if (factor_->scalar_blocks) {
+      factor_->cholesky_block1 = make_sparse_cholesky();
+      factor_->cholesky_block1->analyze(M);
+    }
     factor_->analyzed = true;
+  } else if (factor_->scalar_blocks && !factor_->cholesky_block1) {
+    factor_->cholesky_block1 = make_sparse_cholesky();
+    factor_->cholesky_block1->analyze(M);
   }
 
   double shift = options_.shift_rel * M.diagonal().mean();
   for (int attempt = 0; attempt < 6; attempt++) {
     if (factor_->cholesky->factorize(M, shift)) {
+      if (factor_->scalar_blocks && factor_->cholesky_block1) {
+        factor_->cholesky_block1->factorize(M, shift);
+      }
       last_factorize_seconds_ = seconds_since(factorize_start);
       return true;
     }
@@ -399,6 +418,7 @@ static void transformed_energy(const alglib::real_1d_array &z, double &func,
 
   if (factor) {
     factor->apply_inverse_transpose(z.getcontent(), x, n);
+#pragma omp parallel for simd if(n >= 4096)
     for (int i = 0; i < n; i++) x[i] += ctx->x0[i];
   } else {
     std::copy(z.getcontent(), z.getcontent() + n, x);
@@ -416,6 +436,7 @@ static void transformed_energy(const alglib::real_1d_array &z, double &func,
 
   double gmax = 0.0;
   if (ctx->grad_tol > 0.0 || ctx->progress_callback) {
+#pragma omp parallel for reduction(max:gmax) if(n >= 4096)
     for (int i = 0; i < n; i++) gmax = std::max(gmax, std::abs(gx[i]));
   }
 

@@ -17,86 +17,201 @@ public struct PoincareStabilityMapView: View {
     // Color scaling
     private var minDetVal: Double { manager.summary.min_detAc_min }
     private var maxDetVal: Double { manager.summary.min_detAc_max }
-    private var minEnergyVal: Double { manager.summary.energy_min }
-    private var maxEnergyVal: Double { manager.summary.energy_max }
+    private var energyBounds: (min: Double, max: Double, keptCount: Int, totalCount: Int) {
+        manager.effectiveEnergyBounds
+    }
     
     public var body: some View {
         VStack(spacing: 0) {
             // =========================================================================
             // 1. TOP DEDICATED TOOLBAR (Fixed height, completely ABOVE canvas)
             // =========================================================================
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 // Coordinate Mode Switcher
-                Picker("Metric Mode", selection: $manager.useReducedCoordinates) {
+                Picker("", selection: $manager.useReducedCoordinates) {
                     Text("Original C").tag(false)
                     Text("Reduced C").tag(true)
                 }
+                .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 190)
+                .controlSize(.small)
+                .frame(width: 150)
                 
                 // Color Field Mode (Stability vs Energy)
-                Picker("Field", selection: $manager.colorField) {
+                Picker("", selection: $manager.colorField) {
                     ForEach(ColorFieldMode.allCases) { mode in
                         Text(mode.shortLabel).tag(mode)
                     }
                 }
+                .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 220)
+                .controlSize(.small)
+                .frame(width: 185)
                 
                 // Render Style Mode (Smooth Surface vs Scatter)
-                Picker("Style", selection: $manager.renderStyle) {
-                    ForEach(RenderStyleMode.allCases) { style in
-                        Text(style.rawValue).tag(style)
-                    }
+                Picker("", selection: $manager.renderStyle) {
+                    Text("Smooth").tag(RenderStyleMode.smoothSurface)
+                    Text("Scatter").tag(RenderStyleMode.scatterPoints)
                 }
+                .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 210)
+                .controlSize(.small)
+                .frame(width: 130)
                 
                 // Zero Boundary Contour Toggle
                 Toggle(isOn: $manager.highlightZeroBoundary) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "circle.dotted")
-                            .foregroundColor(.white)
-                        Text("Zero Boundary")
-                            .font(.caption.bold())
-                    }
+                    Text("Zero Contour")
+                        .font(.caption.bold())
                 }
                 .toggleStyle(.checkbox)
-                .font(.caption)
+                .controlSize(.small)
                 
                 // Simple Shear Path Toggle
                 Toggle(isOn: $manager.showShearPath) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
-                            .foregroundColor(.green)
-                        Text("Shear Path")
-                            .font(.caption.bold())
-                    }
+                    Text("Shear Path")
+                        .font(.caption.bold())
                 }
                 .toggleStyle(.checkbox)
-                .font(.caption)
+                .controlSize(.small)
+                
                 if manager.renderStyle == .scatterPoints {
                     HStack(spacing: 4) {
-                        Text("Size:")
+                        Text("Pt:")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         Slider(value: $manager.pointRadius, in: 1.5...8.0, step: 0.5)
-                            .frame(width: 60)
+                            .controlSize(.mini)
+                            .frame(width: 50)
                     }
                 }
                 
-                Spacer()
+                Spacer(minLength: 4)
                 
                 // Reset View Button
                 Button(action: resetView) {
-                    Label("Reset View", systemImage: "arrow.counterclockwise")
+                    Label("Reset", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
             .background(Color(NSColor.controlBackgroundColor))
+            
+            // =========================================================================
+            // 1B. ENERGY COLOR SCALE & PERCENTILE FILTER TOOLBAR (When Energy Φ(C) is active)
+            // =========================================================================
+            if manager.colorField == .strainEnergy {
+                Divider()
+                VStack(spacing: 5) {
+                    HStack(spacing: 8) {
+                        // Colormap Picker
+                        HStack(spacing: 4) {
+                            Image(systemName: "paintpalette.fill")
+                                .foregroundColor(.orange)
+                                .font(.caption)
+                            Picker("", selection: $manager.energyColormap) {
+                                ForEach(EnergyColormapPreset.allCases) { cmap in
+                                    Text(cmap.rawValue).tag(cmap)
+                                }
+                            }
+                            .labelsHidden()
+                            .controlSize(.small)
+                            .frame(width: 95)
+                            
+                            Toggle("Invert", isOn: $manager.invertEnergyColormap)
+                                .toggleStyle(.checkbox)
+                                .controlSize(.small)
+                                .font(.caption2)
+                        }
+                        
+                        Divider().frame(height: 16)
+                        
+                        // Percentile Cutoff Slider + Presets
+                        if !manager.useCustomEnergyRange {
+                            HStack(spacing: 5) {
+                                Text("P_max:")
+                                    .font(.caption.bold())
+                                Slider(value: $manager.energyUpperPercentile, in: 10.0...100.0, step: 0.5)
+                                    .controlSize(.small)
+                                    .frame(width: 100)
+                                Text(String(format: "%.1f%%", manager.energyUpperPercentile))
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.orange)
+                                    .frame(width: 44, alignment: .trailing)
+                                
+                                ForEach([100.0, 99.0, 95.0, 90.0, 80.0, 65.0], id: \.self) { pct in
+                                    Button(String(format: "%.0f%%", pct)) {
+                                        manager.energyUpperPercentile = pct
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.mini)
+                                }
+                            }
+                        } else {
+                            HStack(spacing: 6) {
+                                Text("Min:")
+                                    .font(.caption)
+                                DoubleField(title: "0.0", value: $manager.customEnergyMin, width: 60)
+                                Text("Max:")
+                                    .font(.caption)
+                                DoubleField(title: "10.0", value: $manager.customEnergyMax, width: 60)
+                            }
+                        }
+                        
+                        Toggle("Custom", isOn: $manager.useCustomEnergyRange)
+                            .toggleStyle(.checkbox)
+                            .controlSize(.small)
+                            .font(.caption2)
+                        
+                        Spacer(minLength: 4)
+                    }
+                    
+                    HStack(spacing: 8) {
+                        // Outlier Filtering Mode: Hide/Discard vs Clamp
+                        Picker("", selection: $manager.discardAbovePercentile) {
+                            Text("Hide > Cutoff").tag(true)
+                            Text("Clamp Color").tag(false)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
+                        .frame(width: 195)
+                        
+                        Divider().frame(height: 16)
+                        
+                        // Gamma / Contrast Slider
+                        HStack(spacing: 5) {
+                            Text("γ:")
+                                .font(.caption.bold())
+                            Slider(value: $manager.energyGamma, in: 0.15...2.50, step: 0.05)
+                                .controlSize(.small)
+                                .frame(width: 85)
+                            Text(String(format: "%.2f", manager.energyGamma))
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .frame(width: 34)
+                            Button("0.5") { manager.energyGamma = 0.50 }
+                                .buttonStyle(.bordered).controlSize(.mini)
+                            Button("0.7") { manager.energyGamma = 0.70 }
+                                .buttonStyle(.bordered).controlSize(.mini)
+                            Button("1.0") { manager.energyGamma = 1.00 }
+                                .buttonStyle(.bordered).controlSize(.mini)
+                        }
+                        
+                        Spacer(minLength: 4)
+                        
+                        // Live Cutoff Readout Badge
+                        let b = energyBounds
+                        Text(String(format: "ΔΦ ∈ [%.2f, %.2f] (%d/%d)", b.min, b.max, b.keptCount, b.totalCount))
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color(NSColor.controlBackgroundColor).opacity(0.95))
+            }
             
             Divider()
             
@@ -173,15 +288,20 @@ public struct PoincareStabilityMapView: View {
             // 3. BOTTOM DEDICATED FOOTER (Fixed height, completely BELOW canvas)
             // =========================================================================
             HStack(spacing: 16) {
+                let b = energyBounds
                 // Colorbar Legend
                 ColorbarLegendView(
                     colorField: manager.colorField,
                     minDet: minDetVal,
                     maxDet: maxDetVal,
-                    minEnergy: minEnergyVal,
-                    maxEnergy: maxEnergyVal
+                    minEnergy: b.min,
+                    maxEnergy: b.max,
+                    colormap: manager.energyColormap,
+                    invertColormap: manager.invertEnergyColormap,
+                    gamma: manager.energyGamma,
+                    upperPercentile: manager.useCustomEnergyRange ? nil : manager.energyUpperPercentile
                 )
-                .frame(width: 290)
+                .frame(width: 310)
                 
                 Divider()
                     .frame(height: 38)
@@ -228,17 +348,26 @@ public struct PoincareStabilityMapView: View {
         
         context.fill(diskPath, with: .color(Color(NSColor.textBackgroundColor).opacity(0.85)))
         
-        // Concentric Hyperbolic Circles: r = tanh(t/2) for t = 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5
-        let tValues = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4]
-        for t in tValues {
-            let r_hyp = CGFloat(tanh(t / 2.0)) * diskRadius
+        // Concentric Hyperbolic Circles: r = tanh(t/2) for t = 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4
+        let tValues: [(t: Double, showLabel: Bool)] = [
+            (0.2, false), (0.4, true), (0.6, false), (0.8, true), (1.0, false), (1.2, true), (1.4, false)
+        ]
+        let diag = CGFloat(0.70710678)
+        for item in tValues {
+            let r_hyp = CGFloat(tanh(item.t / 2.0)) * diskRadius
             if r_hyp < diskRadius {
                 let rRect = CGRect(x: center.x - r_hyp, y: center.y - r_hyp, width: r_hyp * 2, height: r_hyp * 2)
-                context.stroke(Path(ellipseIn: rRect), with: .color(Color.gray.opacity(0.25)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                context.stroke(Path(ellipseIn: rRect), with: .color(Color.gray.opacity(0.22)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                 
-                // Label
-                let text = Text(String(format: "t=%.1f", t)).font(.system(size: 9)).foregroundColor(.gray.opacity(0.8))
-                context.draw(text, at: CGPoint(x: center.x + r_hyp - 14, y: center.y - 8))
+                // Label only alternate circles along the 45° diagonal so they never overlap
+                if item.showLabel && diskRadius > 110 {
+                    let text = Text(String(format: "t=%.1f", item.t))
+                        .font(.system(size: 9, weight: .regular, design: .monospaced))
+                        .foregroundColor(.gray.opacity(0.75))
+                    let lx = center.x - r_hyp * diag
+                    let ly = center.y - r_hyp * diag
+                    context.draw(text, at: CGPoint(x: lx, y: ly))
+                }
             }
         }
         
@@ -271,12 +400,17 @@ public struct PoincareStabilityMapView: View {
         let maxZ = max(1.0, maxDetVal)
         let spanZ = max(1e-6, max(abs(minZ), abs(maxZ)))
         
-        let minE = minEnergyVal
-        let maxE = max(minE + 1e-4, maxEnergyVal)
+        let eBounds = energyBounds
+        let minE = eBounds.min
+        let maxE = max(minE + 1e-6, eBounds.max)
+        let shouldFilterHighEnergy = (manager.colorField == .strainEnergy) && manager.discardAbovePercentile && (manager.useCustomEnergyRange || manager.energyUpperPercentile < 99.99)
         
         if manager.renderStyle == .smoothSurface && !manager.surfaceCells.isEmpty {
             // Draw filled quad surface mesh
             for cell in manager.surfaceCells {
+                if shouldFilterHighEnergy && cell.avgEnergy > maxE {
+                    continue
+                }
                 let pts = manager.useReducedCoordinates ? cell.ptsRed : cell.ptsOrig
                 guard pts.count >= 3 else { continue }
                 
@@ -303,6 +437,9 @@ public struct PoincareStabilityMapView: View {
             let ptRadius = CGFloat(manager.pointRadius)
             
             for pt in manager.points {
+                if shouldFilterHighEnergy && pt.energy > maxE {
+                    continue
+                }
                 let px = manager.useReducedCoordinates ? pt.x_red : pt.x
                 let py = manager.useReducedCoordinates ? pt.y_red : pt.y
                 
@@ -456,36 +593,98 @@ public struct PoincareStabilityMapView: View {
     }
     
     private func colorForEnergy(_ val: Double, minVal: Double, maxVal: Double) -> Color {
-        // Continuous Inferno Colormap:
-        // 0.0: Deep Indigo/Black  (0.00, 0.00, 0.05)
-        // 0.25: Indigo/Purple     (0.32, 0.07, 0.48)
-        // 0.50: Crimson           (0.73, 0.22, 0.33)
-        // 0.75: Orange/Amber      (0.97, 0.58, 0.11)
-        // 1.0: Pale Yellow        (0.99, 0.99, 0.65)
-        let span = max(1e-6, maxVal - minVal)
-        let u = max(0.0, min(1.0, (val - minVal) / span))
+        return Self.evaluateEnergyColormap(
+            val: val,
+            minVal: minVal,
+            maxVal: maxVal,
+            preset: manager.energyColormap,
+            invert: manager.invertEnergyColormap,
+            gamma: manager.energyGamma
+        )
+    }
+    
+    public static func evaluateEnergyColormap(
+        val: Double,
+        minVal: Double,
+        maxVal: Double,
+        preset: EnergyColormapPreset,
+        invert: Bool,
+        gamma: Double
+    ) -> Color {
+        let span = max(1e-9, maxVal - minVal)
+        let rawU = max(0.0, min(1.0, (val - minVal) / span))
+        let gammaSafe = max(0.1, min(5.0, gamma))
+        var u = pow(rawU, gammaSafe)
+        if invert {
+            u = 1.0 - u
+        }
         
-        let stops: [(Double, Double, Double, Double)] = [
-            (0.00, 0.00, 0.00, 0.05),
-            (0.25, 0.32, 0.07, 0.48),
-            (0.50, 0.73, 0.22, 0.33),
-            (0.75, 0.97, 0.58, 0.11),
-            (1.00, 0.99, 0.99, 0.65)
-        ]
+        let stops: [(Double, Double, Double, Double)]
+        switch preset {
+        case .inferno:
+            stops = [
+                (0.00, 0.00, 0.00, 0.05),
+                (0.25, 0.32, 0.07, 0.48),
+                (0.50, 0.73, 0.22, 0.33),
+                (0.75, 0.97, 0.58, 0.11),
+                (1.00, 0.99, 0.99, 0.65)
+            ]
+        case .viridis:
+            stops = [
+                (0.00, 0.267, 0.005, 0.329),
+                (0.25, 0.230, 0.322, 0.546),
+                (0.50, 0.128, 0.567, 0.551),
+                (0.75, 0.369, 0.788, 0.383),
+                (1.00, 0.993, 0.906, 0.144)
+            ]
+        case .plasma:
+            stops = [
+                (0.00, 0.050, 0.030, 0.528),
+                (0.25, 0.494, 0.012, 0.658),
+                (0.50, 0.798, 0.280, 0.470),
+                (0.75, 0.973, 0.580, 0.254),
+                (1.00, 0.940, 0.975, 0.131)
+            ]
+        case .turbo:
+            stops = [
+                (0.00, 0.190, 0.072, 0.232),
+                (0.20, 0.157, 0.565, 0.933),
+                (0.40, 0.180, 0.925, 0.600),
+                (0.60, 0.733, 0.949, 0.204),
+                (0.80, 0.984, 0.502, 0.133),
+                (1.00, 0.478, 0.016, 0.012)
+            ]
+        case .spectral:
+            stops = [
+                (0.00, 0.196, 0.533, 0.741),
+                (0.25, 0.400, 0.761, 0.647),
+                (0.50, 0.902, 0.961, 0.596),
+                (0.75, 0.992, 0.682, 0.380),
+                (1.00, 0.835, 0.243, 0.310)
+            ]
+        case .coolwarm:
+            stops = [
+                (0.00, 0.230, 0.299, 0.754),
+                (0.25, 0.553, 0.690, 0.996),
+                (0.50, 0.865, 0.865, 0.865),
+                (0.75, 0.957, 0.604, 0.482),
+                (1.00, 0.706, 0.016, 0.150)
+            ]
+        }
         
-        // Find segment
         for i in 0 ..< (stops.count - 1) {
             let s0 = stops[i]
             let s1 = stops[i + 1]
             if u >= s0.0 && u <= s1.0 {
-                let f = (u - s0.0) / (s1.0 - s0.0)
+                let f = (u - s0.0) / max(1e-9, s1.0 - s0.0)
                 let r = s0.1 + f * (s1.1 - s0.1)
                 let g = s0.2 + f * (s1.2 - s0.2)
                 let b = s0.3 + f * (s1.3 - s0.3)
                 return Color(red: r, green: g, blue: b, opacity: 0.92)
             }
         }
-        return Color(red: 0.99, green: 0.99, blue: 0.65, opacity: 0.92)
+        let last = stops.last!
+        return Color(red: last.1, green: last.2, blue: last.3, opacity: 0.92)
     }
 }
 
@@ -496,6 +695,10 @@ struct ColorbarLegendView: View {
     let maxDet: Double
     let minEnergy: Double
     let maxEnergy: Double
+    var colormap: EnergyColormapPreset = .inferno
+    var invertColormap: Bool = false
+    var gamma: Double = 1.0
+    var upperPercentile: Double? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -503,9 +706,16 @@ struct ColorbarLegendView: View {
                 Text(colorField == .acousticStability ? "min det Q(n)" : "Strain Energy Density ΔΦ(C)")
                     .font(.system(size: 10, weight: .bold))
                 Spacer()
-                Text(colorField == .acousticStability ? "Acoustic Stability" : "Inferno Scale")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
+                if colorField == .acousticStability {
+                    Text("Acoustic Stability")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                } else {
+                    let pctText = upperPercentile != nil ? String(format: "P%.0f", upperPercentile!) : "Custom"
+                    Text("\(colormap.rawValue) (\(pctText), γ=\(String(format: "%.2f", gamma)))")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
             }
             
             // Gradient Strip
@@ -537,14 +747,20 @@ struct ColorbarLegendView: View {
                         .foregroundColor(.blue)
                 }
             } else {
+                let sampledColors = (0...16).map { i -> Color in
+                    let frac = Double(i) / 16.0
+                    let v = minEnergy + frac * (maxEnergy - minEnergy)
+                    return PoincareStabilityMapView.evaluateEnergyColormap(
+                        val: v,
+                        minVal: minEnergy,
+                        maxVal: maxEnergy,
+                        preset: colormap,
+                        invert: invertColormap,
+                        gamma: gamma
+                    )
+                }
                 LinearGradient(
-                    colors: [
-                        Color(red: 0.00, green: 0.00, blue: 0.05), // Indigo Black
-                        Color(red: 0.32, green: 0.07, blue: 0.48), // Purple
-                        Color(red: 0.73, green: 0.22, blue: 0.33), // Crimson
-                        Color(red: 0.97, green: 0.58, blue: 0.11), // Amber
-                        Color(red: 0.99, green: 0.99, blue: 0.65)  // Pale Yellow
-                    ],
+                    colors: sampledColors,
                     startPoint: .leading,
                     endPoint: .trailing
                 )
@@ -552,15 +768,15 @@ struct ColorbarLegendView: View {
                 .cornerRadius(3)
                 
                 HStack {
-                    Text(String(format: "%.2f (Min)", minEnergy))
+                    Text(String(format: "%.3f (Min)", minEnergy))
                         .font(.system(size: 8))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(String(format: "%.2f", (minEnergy + maxEnergy) * 0.5))
+                    Text(String(format: "%.3f", (minEnergy + maxEnergy) * 0.5))
                         .font(.system(size: 8))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text(String(format: "%.2f (High)", maxEnergy))
+                    Text(String(format: "%.3f (Cutoff)", maxEnergy))
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundColor(.orange)
                 }

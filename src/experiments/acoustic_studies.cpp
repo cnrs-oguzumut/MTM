@@ -937,22 +937,11 @@ AcousticElasticResults computeAcousticElasticConstants(const AcousticStudyConfig
         res.Zener_A = ec.Zener_A;
     } else {
         // Mode 1 (LJ v2) or Mode 2 (LJ v3)
-        double scale = 1.0;
-        double r_cutoff = 2.5;
-        std::function<double(double)> dpot;
-        std::function<double(double)> d2pot;
-        
-        if (config.mode == 1) {
-            scale = 0.6872044091828517;
-            r_cutoff = 2.5;
-            dpot = lennard_jones_energy_der_v2;
-            d2pot = lennard_jones_energy_sder_v2;
-        } else {
-            scale = 0.996407146941421;
-            r_cutoff = 1.86602540378444;
-            dpot = lennard_jones_energy_der_v3;
-            d2pot = lennard_jones_energy_sder_v3;
-        }
+        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
+        std::function<double(double)> pot = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
+        std::function<double(double)> dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
+        std::function<double(double)> d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        double scale = find_optimal_lattice_parameter(pot, config.lattice_type, r_cutoff, dpot, d2pot);
         
         Eigen::Matrix2d C_ref = Eigen::Matrix2d::Identity();
         if (config.lattice_type == "triangular") {
@@ -1019,11 +1008,25 @@ AcousticElasticResults computeAcousticElasticConstants(const AcousticStudyConfig
 
 void printAcousticElasticConstantsJSON(const AcousticStudyConfig& config) {
     AcousticElasticResults ec = computeAcousticElasticConstants(config);
+    DislocationSolutionParams dp = DislocationSolutionParams::fromElasticConstants(
+        ec.C11, ec.C12, ec.C66, config.lattice_type
+    );
+    double eq_a0 = 1.0;
+    if (config.mode == 3) {
+        eq_a0 = (config.lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
+    } else {
+        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
+        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
+        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
+        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        eq_a0 = find_optimal_lattice_parameter(pot, config.lattice_type, r_cutoff, dpot, d2pot);
+    }
     std::cout << "{\n";
     std::cout << "  \"mode\": " << config.mode << ",\n";
     std::cout << "  \"lattice_type\": \"" << config.lattice_type << "\",\n";
     std::cout << "  \"beta\": " << config.beta << ",\n";
     std::cout << "  \"K\": " << config.K << ",\n";
+    std::cout << "  \"equilibrium_lattice_parameter\": " << std::setprecision(15) << eq_a0 << std::setprecision(6) << ",\n";
     std::cout << "  \"C11\": " << ec.C11 << ",\n";
     std::cout << "  \"C22\": " << ec.C22 << ",\n";
     std::cout << "  \"C12\": " << ec.C12 << ",\n";
@@ -1031,6 +1034,14 @@ void printAcousticElasticConstantsJSON(const AcousticStudyConfig& config) {
     std::cout << "  \"Zener_A\": " << ec.Zener_A << ",\n";
     std::cout << "  \"bulk_modulus\": " << ec.bulk_K << ",\n";
     std::cout << "  \"shear_modulus\": " << ec.shear_mu << ",\n";
+    std::cout << "  \"poisson_ratio\": " << dp.poisson_ratio << ",\n";
+    std::cout << "  \"stroh_kappa\": " << dp.kappa << ",\n";
+    std::cout << "  \"stroh_xi\": " << dp.xi << ",\n";
+    std::cout << "  \"stroh_zeta\": " << dp.zeta << ",\n";
+    std::cout << "  \"stroh_g1\": " << dp.g1 << ",\n";
+    std::cout << "  \"stroh_g2\": " << dp.g2 << ",\n";
+    std::cout << "  \"stroh_g3\": " << dp.g3 << ",\n";
+    std::cout << "  \"foreman_K\": " << dp.K_foreman << ",\n";
     std::cout << "  \"born_stable\": " << (ec.born_stable ? "true" : "false") << ",\n";
     std::cout << "  \"is_isotropic\": " << (ec.is_isotropic ? "true" : "false") << ",\n";
     std::cout << "  \"anisotropy_comment\": \"" << ec.anisotropy_comment << "\"\n";
@@ -1054,11 +1065,11 @@ ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double
         potential_func_der = [](double r) { return 1.0; };
         potential_func_sder = [](double r) { return 1.0; };
     } else {
-        double scale = (config.mode == 1) ? 0.6872044091828517 : 0.996407146941421;
         double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
         potential_func = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
         potential_func_der = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
         potential_func_sder = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        double scale = find_optimal_lattice_parameter(potential_func, "triangular", r_cutoff, potential_func_der, potential_func_sder);
 
         auto calc = std::make_unique<SquareLatticeCalculator>(scale, r_cutoff);
         normalisation = calc->getUnitCellArea();
@@ -1188,6 +1199,28 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     std::cout << "  Born Stability: " << (ec.born_stable ? "STABLE" : "UNSTABLE") << "\n";
     std::cout << "  Analysis: " << ec.anisotropy_comment << "\n\n";
 
+    double burgers_mag = 1.0;
+    if (config.mode == 3) {
+        burgers_mag = (config.lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
+    } else {
+        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
+        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
+        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
+        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        EquilibriumLatticeResult eq_lat = compute_equilibrium_lattice_parameter(
+            pot, dpot, d2pot, config.lattice_type, r_cutoff
+        );
+        eq_lat.printSummary();
+        std::cout << "\n";
+        burgers_mag = eq_lat.lattice_parameter;
+    }
+
+    DislocationSolutionParams dp = DislocationSolutionParams::fromElasticConstants(
+        ec.C11, ec.C12, ec.C66, config.lattice_type
+    );
+    dp.printSummary(burgers_mag);
+    std::cout << "\n";
+
     if (config.only_elastic_constants) {
         printAcousticElasticConstantsJSON(config);
         return;
@@ -1208,11 +1241,11 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
         potential_func_der = [](double r) -> double { return 1.0; };
         potential_func_sder = [](double r) -> double { return 1.0; };
     } else {
-        double scale = (config.mode == 1) ? 0.6872044091828517 : 0.996407146941421;
         double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
         potential_func = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
         potential_func_der = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
         potential_func_sder = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        double scale = find_optimal_lattice_parameter(potential_func, "triangular", r_cutoff, potential_func_der, potential_func_sder);
 
         auto calc = std::make_unique<SquareLatticeCalculator>(scale, r_cutoff);
         normalisation = calc->getUnitCellArea();
@@ -1361,7 +1394,22 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     json_file << "  \"t_max\": " << config.t_max << ",\n";
     json_file << "  \"dt\": " << config.dt << ",\n";
     json_file << "  \"dp\": " << config.dp << ",\n";
+    DislocationSolutionParams dp_sol = DislocationSolutionParams::fromElasticConstants(
+        ec.C11, ec.C12, ec.C66, config.lattice_type
+    );
+    double eq_a0_json = 1.0;
+    if (config.mode == 3) {
+        eq_a0_json = (config.lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
+    } else {
+        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
+        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
+        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
+        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        eq_a0_json = find_optimal_lattice_parameter(pot, config.lattice_type, r_cutoff, dpot, d2pot);
+    }
+
     json_file << "  \"elastic_constants\": {\n";
+    json_file << "    \"equilibrium_lattice_parameter\": " << std::setprecision(15) << eq_a0_json << std::setprecision(6) << ",\n";
     json_file << "    \"C11\": " << ec.C11 << ",\n";
     json_file << "    \"C22\": " << ec.C22 << ",\n";
     json_file << "    \"C12\": " << ec.C12 << ",\n";
@@ -1369,6 +1417,14 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     json_file << "    \"Zener_A\": " << ec.Zener_A << ",\n";
     json_file << "    \"bulk_modulus\": " << ec.bulk_K << ",\n";
     json_file << "    \"shear_modulus\": " << ec.shear_mu << ",\n";
+    json_file << "    \"poisson_ratio\": " << dp_sol.poisson_ratio << ",\n";
+    json_file << "    \"stroh_kappa\": " << dp_sol.kappa << ",\n";
+    json_file << "    \"stroh_xi\": " << dp_sol.xi << ",\n";
+    json_file << "    \"stroh_zeta\": " << dp_sol.zeta << ",\n";
+    json_file << "    \"stroh_g1\": " << dp_sol.g1 << ",\n";
+    json_file << "    \"stroh_g2\": " << dp_sol.g2 << ",\n";
+    json_file << "    \"stroh_g3\": " << dp_sol.g3 << ",\n";
+    json_file << "    \"foreman_K\": " << dp_sol.K_foreman << ",\n";
     json_file << "    \"born_stable\": " << (ec.born_stable ? "true" : "false") << ",\n";
     json_file << "    \"is_isotropic\": " << (ec.is_isotropic ? "true" : "false") << ",\n";
     json_file << "    \"anisotropy_comment\": \"" << ec.anisotropy_comment << "\"\n";

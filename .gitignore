@@ -27,6 +27,8 @@ triangle_data/
 vtk_defects/
 vtk_output/
 .build/
-*.app/
 LatticeLauncher/.build/
 LatticeLauncher/*.app/
+*.csv
+*.dat
+dislocation_log.txt

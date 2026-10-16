@@ -15,7 +15,9 @@
 // Conti-Zanzotto experiment, and writes the resulting state to VTK together
 // with a defect analysis.
 // ============================================================================
-void single_dislocation_study(int caller_id, int nx, int ny) {
+void single_dislocation_study(int caller_id, int nx, int ny,
+                              const std::string &lattice_type,
+                              int potential_mode) {
 
   // Toggle for the remesh/minimize loop after the initial relaxation.
   const bool remeshing = true;
@@ -29,8 +31,7 @@ void single_dislocation_study(int caller_id, int nx, int ny) {
   // ==================== SETUP REFERENCE GEOMETRY ====================
   writeSizesToFile(nx, ny);
 
-  std::string lattice_type = "square"; // Options: "square" or "triangular"
-  double h = 1.0;                      // Reference element size
+  double h = 1.0; // Reference element size
 
   // Reference triangle vertices (for shape function derivatives)
   Eigen::Vector2d p1(0.0, 0.0);
@@ -125,16 +126,19 @@ void single_dislocation_study(int caller_id, int nx, int ny) {
             << std::endl;
 
   // ==================== INSTALL A SINGLE DISLOCATION ====================
-  // Applied after meshing: displaces the (already meshed) atoms by the
-  // Volterra edge-dislocation field.
+  // Dynamically compute elastic constants and dislocation solution parameters
+  // from the active potential (Volterra for triangular, Stroh for square).
+  DislocationSolutionParams disloc_params =
+      DislocationSolutionParams::fromPotentialMode(potential_mode, lattice_type);
+  disloc_params.printSummary(lattice_constant);
+
   Eigen::Vector2d burgers_vector(lattice_constant, 0.0); // unit Burgers, x-dir
   double core_radius = 6.0;                              // core regularization
-  double poisson_ratio = 1.0 / 3.0;                      // material Poisson
   size_t middle_atom_index = findMiddleAtom(square_points, true);
 
   std::vector<Point2D> dislocated_points =
       createSingleDislocation(square_points_ref, burgers_vector,
-                              middle_atom_index, core_radius, poisson_ratio);
+                              middle_atom_index, core_radius, disloc_params);
 
   // Use the dislocated configuration as the current state.
   square_points = dislocated_points;
@@ -144,9 +148,12 @@ void single_dislocation_study(int caller_id, int nx, int ny) {
   // ==================== SETUP ENERGY CALCULATION ====================
   Strain_Energy_LatticeCalculator calculator(1.0);
 
-  Eigen::Matrix2d F_I = Eigen::Matrix2d::Identity();
-  Eigen::Matrix2d C_I = F_I.transpose() * F_I; // C = F^T * F
-  double zero = calculator.calculate_energy(C_I, potential_func, 0);
+  Eigen::Matrix2d C_ref = Eigen::Matrix2d::Identity();
+  if (lattice_type == "triangular") {
+    double a2 = std::sqrt(4.0 / 3.0);
+    C_ref << a2, 0.5 * a2, 0.5 * a2, a2;
+  }
+  double zero = calculator.calculate_energy(C_ref, potential_func, 0);
   std::cout << "zero energy value: " << zero << std::endl;
 
   // ==================== CREATE USER DATA (no external load) ============
@@ -303,8 +310,11 @@ void single_dislocation_study(int caller_id, int nx, int ny) {
 // ============================================================================
 // single_dislocation_cylinder_relaxation
 //
-// Installs an analytical Volterra edge dislocation on an nx x ny lattice:
-// - All atoms are initially given the analytical Volterra displacement field.
+// Installs an analytical edge dislocation on an nx x ny lattice:
+// - Triangular lattice: isotropic Volterra solution (Eqs. A18, A23)
+// - Square lattice: anisotropic Stroh / Eshelby-Read-Shockley solution (Eqs. A5-A16)
+// Elastic moduli and dislocation parameters are computed dynamically from the
+// chosen potential (Zanzotto continuum or atomistic pair potential).
 // - Atoms outside radius R_free from the core are FROZEN (Dirichlet boundary).
 // - Atoms inside radius R_free are FREE to relax by energy minimization.
 // - Supports L-BFGS preconditioning (--precond=stiffness/laplacian/diag/none).
@@ -312,7 +322,9 @@ void single_dislocation_study(int caller_id, int nx, int ny) {
 void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                                            double R_free,
                                            bool enable_remeshing,
-                                           bool export_full_mesh) {
+                                           bool export_full_mesh,
+                                           const std::string &lattice_type,
+                                           int potential_mode) {
   if (nx <= 0 || ny <= 0) {
     std::cerr << "Error: nx and ny must be positive integers." << std::endl;
     exit(EXIT_FAILURE);
@@ -320,21 +332,60 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
 
   writeSizesToFile(nx, ny);
 
-  std::string lattice_type = "square";
   double h = 1.0;
+
+  // Determine lattice parameter and setup potential / calculator based on potential_mode
+  double optimal_lattice_parameter = 1.0;
+  std::function<double(double)> potential_func;
+  std::function<double(double)> potential_func_der;
+  std::function<double(double)> potential_func_sder;
+  std::unique_ptr<BaseLatticeCalculator> calculator_ptr;
+
+  if (potential_mode == 3) {
+    // Zanzotto continuum potential
+    double symmetry_constantx =
+        (lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
+    optimal_lattice_parameter = symmetry_constantx;
+    potential_func = square_energy;
+    potential_func_der = square_energy_der;
+    potential_func_sder = square_energy_der;
+    calculator_ptr = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
+  } else {
+    // Atomistic pair potential: mode 1 = LJ v2, mode 2 = LJ v3
+    double r_cutoff = (potential_mode == 1) ? 2.5 : 1.86602540378444;
+    potential_func = (potential_mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
+    potential_func_der = (potential_mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
+    potential_func_sder = (potential_mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+
+    EquilibriumLatticeResult eq_lat = compute_equilibrium_lattice_parameter(
+        potential_func, potential_func_der, potential_func_sder, lattice_type, r_cutoff);
+    eq_lat.printSummary();
+    optimal_lattice_parameter = eq_lat.lattice_parameter;
+
+    if (lattice_type == "triangular") {
+      calculator_ptr = std::make_unique<TriangularLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
+    } else {
+      calculator_ptr = std::make_unique<SquareLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
+    }
+  }
+  double lattice_constant = optimal_lattice_parameter;
+  BaseLatticeCalculator &calculator = *calculator_ptr;
 
   // Reference triangle shape derivatives
   Eigen::Vector2d p1(0.0, 0.0);
   Eigen::Vector2d p2(h, 0.0);
   Eigen::Vector2d p3(0.0, h);
+  if (potential_mode != 3) {
+    if (lattice_type == "triangular") {
+      p2 = Eigen::Vector2d(h * lattice_constant, 0.0);
+      p3 = Eigen::Vector2d(h * 0.5 * lattice_constant,
+                           h * (std::sqrt(3.0) / 2.0) * lattice_constant);
+    } else {
+      p2 = Eigen::Vector2d(h * lattice_constant, 0.0);
+      p3 = Eigen::Vector2d(0.0, h * lattice_constant);
+    }
+  }
   Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
-
-  // Energy potential
-  std::function<double(double)> potential_func = square_energy;
-  std::function<double(double)> potential_func_der = square_energy_der;
-
-  double optimal_lattice_parameter = 1.0;
-  double lattice_constant = optimal_lattice_parameter;
 
   // Generate pristine reference lattice
   std::vector<Point2D> square_points_ref =
@@ -343,7 +394,11 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   int n_points = square_points.size();
 
   DomainInfo domain_size = compute_domain_size(square_points_ref);
-  const std::array<double, 2> offsets = {lattice_constant, lattice_constant};
+  const std::array<double, 2> offsets =
+      (lattice_type == "square")
+          ? std::array<double, 2>{lattice_constant, lattice_constant}
+          : std::array<double, 2>{lattice_constant / 2.0,
+                                  (std::sqrt(3.0) / 2.0) * lattice_constant};
   DomainDimensions domain_dims(domain_size.get_width(), domain_size.get_height());
   Point2D domain_dims_point(domain_dims.size_x, domain_dims.size_y);
   bool pbc = false;
@@ -366,18 +421,31 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   double core_y = 0.5 * (y_min + y_max);
   Eigen::Vector2d dislocation_core(core_x, core_y);
 
-  std::cout << "\n=== VOLTERRA DISLOCATION CYLINDER RELAXATION ===" << std::endl;
-  std::cout << "Lattice: " << nx << " x " << ny << " (" << n_points << " atoms)" << std::endl;
+  // Dynamically compute elastic moduli and dislocation field parameters from the potential
+  DislocationSolutionParams disloc_params =
+      (potential_mode == 3)
+          ? DislocationSolutionParams::fromCurrentZanzottoPotential(lattice_type)
+          : DislocationSolutionParams::fromAtomisticPotential(
+                calculator, potential_func_der, potential_func_sder, lattice_type);
+
+  std::cout << "\n=== DISLOCATION CYLINDER RELAXATION ("
+            << (lattice_type == "triangular" ? "VOLTERRA / TRIANGULAR" : "STROH / SQUARE")
+            << ") ===" << std::endl;
+  std::cout << "Lattice: " << nx << " x " << ny << " (" << n_points << " atoms, a = "
+            << lattice_constant << ")" << std::endl;
   std::cout << "Dislocation core at: (" << core_x << ", " << core_y << ")" << std::endl;
   std::cout << "Relaxation radius R_free: " << R_free << " h" << std::endl;
+  disloc_params.printSummary(lattice_constant);
 
-  // Apply analytical anisotropic Stroh / Eshelby-Read-Shockley displacement to all atoms
+  // Apply analytical displacement field to all atoms:
+  // - Volterra (Eq. A23) for triangular lattice
+  // - Stroh (Eqs. A14-A15) for square lattice
   Eigen::Vector2d burgers_vector(lattice_constant, 0.0);
 
   for (size_t i = 0; i < square_points.size(); ++i) {
     Eigen::Vector2d rel_pos = square_points_ref[i].coord - dislocation_core;
-    Eigen::Vector2d u_dislocation = VolterraDisplacement::calculateAnisotropicEdgeDisplacement(
-        rel_pos, burgers_vector);
+    Eigen::Vector2d u_dislocation = VolterraDisplacement::calculateDisplacement(
+        rel_pos, burgers_vector, disloc_params);
     square_points[i].coord = square_points_ref[i].coord + u_dislocation;
   }
 
@@ -404,7 +472,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   int n_free_nodes = interior_mapping.size();
   int n_fixed_nodes = fixed_nodes.size();
   std::cout << "Partition: " << n_free_nodes << " free (relaxed) nodes, "
-            << n_fixed_nodes << " frozen (Volterra Dirichlet) nodes." << std::endl;
+            << n_fixed_nodes << " frozen (Dirichlet) nodes." << std::endl;
 
   // Build mesh with full DOF mapping
   AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
@@ -437,16 +505,19 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
             << (enable_remeshing ? "reconnected Delaunay" : "fixed pristine lattice") << ")." << std::endl;
 
   // Setup energy calculation
-  Strain_Energy_LatticeCalculator calculator(1.0);
-  Eigen::Matrix2d F_I = Eigen::Matrix2d::Identity();
-  Eigen::Matrix2d C_I = F_I.transpose() * F_I;
-  double zero = calculator.calculate_energy(C_I, potential_func, 0);
+  Eigen::Matrix2d C_ref = Eigen::Matrix2d::Identity();
+  if (lattice_type == "triangular" && potential_mode == 3) {
+    double a2 = std::sqrt(4.0 / 3.0);
+    C_ref << a2, 0.5 * a2, 0.5 * a2, a2;
+  }
+  double zero = calculator.calculate_energy(C_ref, potential_func, 0);
 
   Eigen::Matrix2d F_ext = Eigen::Matrix2d::Identity();
   bool plasticity = false;
   UserData userData(square_points, elements, calculator, potential_func,
                     potential_func_der, zero, optimal_lattice_parameter, F_ext,
                     interior_mapping, full_mapping, active_elements, plasticity);
+  userData.second_derivative_function = &potential_func_sder;
 
   // Compute pre-relaxation energy and stress
   double pre_energy = 0.0;

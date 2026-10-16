@@ -87,6 +87,11 @@ void run_shifted_dislocation_study(int caller_id, int nx, int ny,
   std::ofstream summary_csv(base_dir + "shifted_dislocation_summary.csv");
   summary_csv << "shift,shift_amount,unrelaxed_energy,unrelaxed_stress,relaxed_energy,relaxed_stress,energy_drop\n";
 
+  // Dynamically compute elastic moduli and Stroh/Volterra parameters from the active potential
+  DislocationSolutionParams disloc_params =
+      DislocationSolutionParams::fromCurrentZanzottoPotential(lattice_type);
+  disloc_params.printSummary(lattice_constant);
+
   // Loop over each shift count s
   for (int shift_s : shift_counts) {
     double shift_amount = shift_s * lattice_constant;
@@ -111,15 +116,15 @@ void run_shifted_dislocation_study(int caller_id, int nx, int ny,
     std::cout << "Shifted upper half (" << shifted_count << " atoms above y = "
               << y_mid << ") by " << shift_amount << " h" << std::endl;
 
-    // 2. Install exact anisotropic Stroh edge dislocation field centered at dislocation_core
+    // 2. Install exact edge dislocation field (Stroh for square, Volterra for triangular)
     Eigen::Vector2d burgers_vector(lattice_constant, 0.0);
     for (size_t i = 0; i < current_points.size(); ++i) {
       Eigen::Vector2d rel_pos = pristine_points[i].coord - dislocation_core;
-      Eigen::Vector2d u_aniso = VolterraDisplacement::calculateAnisotropicEdgeDisplacement(
-          rel_pos, burgers_vector);
-      current_points[i].coord += u_aniso;
+      Eigen::Vector2d u_disloc = VolterraDisplacement::calculateDisplacement(
+          rel_pos, burgers_vector, disloc_params);
+      current_points[i].coord += u_disloc;
     }
-    std::cout << "Installed Anisotropic Stroh edge dislocation at (" << core_x << ", " << core_y << ")" << std::endl;
+    std::cout << "Installed edge dislocation at (" << core_x << ", " << core_y << ")" << std::endl;
 
     // 3. Setup boundary conditions (DOF mapping)
     std::vector<std::pair<int, int>> interior_mapping;

@@ -142,15 +142,18 @@ void shifted_upper_crystal_study(int caller_id, int nx, int ny) {
             << " in x" << std::endl;
 
   // ==================== INSTALL A SINGLE DISLOCATION ====================
-  // Seeded ON TOP OF the shifted crystal.
+  // Seeded ON TOP OF the shifted crystal using dynamically computed parameters
+  DislocationSolutionParams disloc_params =
+      DislocationSolutionParams::fromCurrentZanzottoPotential(lattice_type);
+  disloc_params.printSummary(lattice_constant);
+
   Eigen::Vector2d burgers_vector(lattice_constant, 0.0); // unit Burgers, x-dir
   double core_radius = 6.0;
-  double poisson_ratio = 0.3;
   size_t middle_atom_index = findMiddleAtom(square_points, true);
 
   square_points =
       createSingleDislocation(square_points, burgers_vector, middle_atom_index,
-                              core_radius, poisson_ratio);
+                              core_radius, disloc_params);
   std::cout << "Installed single edge dislocation at atom " << middle_atom_index
             << " (|b| = " << burgers_vector.norm() << ") on the shifted crystal"
             << std::endl;

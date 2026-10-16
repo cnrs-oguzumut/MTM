@@ -499,13 +499,15 @@ void minimize_energy_with_triangles(
     auto* userData = reinterpret_cast<UserData*>(ptr);
     std::vector<ElementTriangle2D>& elements = userData->elements;
     const auto& interior_mapping = userData->interior_mapping;
-    const int n_vars = interior_mapping.size();
-    const int n_points = userData->points.size();
+    const int n_vars = static_cast<int>(interior_mapping.size());
+    const int n_points = static_cast<int>(userData->points.size());
     const double a = userData->ideal_lattice_parameter;
     const double normalisation = a * a;
 
     // FLAT storage: [thread0: point0,point1,...] [thread1: point0,point1,...] ...
     static std::vector<Eigen::Vector2d> all_forces_flat;
+    static std::vector<int> min_node;
+    static std::vector<int> max_node;
     
     const int max_threads = omp_get_max_threads();
     const size_t total_size = static_cast<size_t>(max_threads) * n_points;
@@ -514,21 +516,46 @@ void minimize_energy_with_triangles(
     if (all_forces_flat.size() != total_size) {
         all_forces_flat.resize(total_size);
     }
+    if (static_cast<int>(min_node.size()) < max_threads) {
+        min_node.resize(max_threads, n_points);
+        max_node.resize(max_threads, -1);
+    }
 
     double total_energy = 0.0;
+    const size_t n_elem = userData->active_elements.size();
 
-    // Parallel element assembly with thread-local parallel zeroing
+    // Single parallel region: parallel element assembly + bounded zeroing + parallel reduction
     #pragma omp parallel reduction(+:total_energy)
     {
         const int tid = omp_get_thread_num();
-        const size_t my_offset = tid * n_points;
+        const int num_threads = omp_get_num_threads();
+        const size_t my_offset = static_cast<size_t>(tid) * n_points;
 
-        // 1. Each thread clears its own slice in parallel (NUMA and cache friendly)
-        std::memset(all_forces_flat.data() + my_offset, 0, n_points * sizeof(Eigen::Vector2d));
+        const size_t e_begin = (static_cast<size_t>(tid) * n_elem) / num_threads;
+        const size_t e_end = (static_cast<size_t>(tid + 1) * n_elem) / num_threads;
 
-        // 2. Element assembly with static schedule (zero dynamic scheduling lock contention)
-        #pragma omp for schedule(static)
-        for (size_t idx = 0; idx < userData->active_elements.size(); idx++) {
+        // 1. Scan element slice to find thread-local node bounds [my_min, my_max]
+        int my_min = n_points;
+        int my_max = -1;
+        for (size_t idx = e_begin; idx < e_end; ++idx) {
+            const ElementTriangle2D& el = elements[userData->active_elements[idx]];
+            for (int v = 0; v < 3; ++v) {
+                const int node = el.getNodeIndex(v);
+                if (node < my_min) my_min = node;
+                if (node > my_max) my_max = node;
+            }
+        }
+        min_node[tid] = my_min;
+        max_node[tid] = my_max;
+
+        // 2. Clear ONLY the bounding slice of nodes touched by this thread
+        if (my_min <= my_max) {
+            std::memset(all_forces_flat.data() + my_offset + my_min, 0,
+                        static_cast<size_t>(my_max - my_min + 1) * sizeof(Eigen::Vector2d));
+        }
+
+        // 3. Element energy & force assembly
+        for (size_t idx = e_begin; idx < e_end; ++idx) {
             ElementTriangle2D& element = elements[userData->active_elements[idx]];
             
             element.calculate_deformation_gradient(x);
@@ -554,20 +581,25 @@ void minimize_energy_with_triangles(
             // Pass pointer to this thread's section of flat array
             element.assemble_forces_flat(P, all_forces_flat.data() + my_offset);
         }
-    }
 
-    // 3. Parallel reduction with vectorized accumulation
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < n_vars; i++) {
-        const auto& [point_idx, dof_idx] = interior_mapping[i];
-        
-        Eigen::Vector2d f_sum = Eigen::Vector2d::Zero();
-        for (int t = 0; t < max_threads; t++) {
-            f_sum += all_forces_flat[t * n_points + point_idx];
+        // Synchronize so all threads have assembled forces and published min_node/max_node
+        #pragma omp barrier
+
+        // 4. Parallel reduction: only accumulate from threads whose active range covers point_idx
+        #pragma omp for schedule(static)
+        for (int i = 0; i < n_vars; i++) {
+            const auto& [point_idx, dof_idx] = interior_mapping[i];
+            
+            Eigen::Vector2d f_sum = Eigen::Vector2d::Zero();
+            for (int t = 0; t < num_threads; t++) {
+                if (point_idx >= min_node[t] && point_idx <= max_node[t]) {
+                    f_sum += all_forces_flat[t * n_points + point_idx];
+                }
+            }
+            
+            grad[dof_idx] = f_sum.x();
+            grad[n_vars + dof_idx] = f_sum.y();
         }
-        
-        grad[dof_idx] = f_sum.x();
-        grad[n_vars + dof_idx] = f_sum.y();
     }
 
     func = total_energy;

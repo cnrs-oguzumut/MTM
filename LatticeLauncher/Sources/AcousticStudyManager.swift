@@ -45,6 +45,17 @@ public enum RenderStyleMode: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
+public enum EnergyColormapPreset: String, CaseIterable, Identifiable {
+    case inferno = "Inferno"
+    case viridis = "Viridis"
+    case plasma = "Plasma"
+    case turbo = "Turbo"
+    case spectral = "Spectral"
+    case coolwarm = "CoolWarm"
+    
+    public var id: String { rawValue }
+}
+
 public struct ContourSegment: Identifiable {
     public let id = UUID()
     public let startX: CGFloat
@@ -63,6 +74,7 @@ public struct SurfaceCell: Identifiable {
     public let ptsRed: [CGPoint]
     public let avgDetAc: Double
     public let avgEnergy: Double
+    public let maxEnergy: Double
 }
 
 public struct AcousticPointModel: Identifiable, Codable {
@@ -138,6 +150,7 @@ public struct AcousticPointModel: Identifiable, Codable {
 }
 
 public struct AcousticElasticConstantsModel: Codable {
+    public var equilibrium_lattice_parameter: Double = 1.0
     public var C11: Double = 0.0
     public var C22: Double = 0.0
     public var C12: Double = 0.0
@@ -145,11 +158,88 @@ public struct AcousticElasticConstantsModel: Codable {
     public var Zener_A: Double = 1.0
     public var bulk_modulus: Double = 0.0
     public var shear_modulus: Double = 0.0
+    public var poisson_ratio: Double = 0.0
+    public var stroh_kappa: Double = 1.0
+    public var stroh_xi: Double = 0.0
+    public var stroh_zeta: Double = 0.0
+    public var stroh_g1: Double = 0.0
+    public var stroh_g2: Double = 0.0
+    public var stroh_g3: Double = 0.0
+    public var foreman_K: Double = 0.0
     public var born_stable: Bool = true
     public var is_isotropic: Bool = true
     public var anisotropy_comment: String = ""
     
+    enum CodingKeys: String, CodingKey {
+        case equilibrium_lattice_parameter
+        case C11, C22, C12, C66, Zener_A
+        case bulk_modulus, shear_modulus
+        case poisson_ratio, stroh_kappa, stroh_xi, stroh_zeta
+        case stroh_g1, stroh_g2, stroh_g3, foreman_K
+        case born_stable, is_isotropic, anisotropy_comment
+    }
+    
     public init() {}
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.equilibrium_lattice_parameter = try container.decodeIfPresent(Double.self, forKey: .equilibrium_lattice_parameter) ?? 1.0
+        self.C11 = try container.decodeIfPresent(Double.self, forKey: .C11) ?? 0.0
+        self.C22 = try container.decodeIfPresent(Double.self, forKey: .C22) ?? 0.0
+        self.C12 = try container.decodeIfPresent(Double.self, forKey: .C12) ?? 0.0
+        self.C66 = try container.decodeIfPresent(Double.self, forKey: .C66) ?? 0.0
+        self.Zener_A = try container.decodeIfPresent(Double.self, forKey: .Zener_A) ?? 1.0
+        self.bulk_modulus = try container.decodeIfPresent(Double.self, forKey: .bulk_modulus) ?? 0.0
+        self.shear_modulus = try container.decodeIfPresent(Double.self, forKey: .shear_modulus) ?? 0.0
+        self.born_stable = try container.decodeIfPresent(Bool.self, forKey: .born_stable) ?? true
+        self.is_isotropic = try container.decodeIfPresent(Bool.self, forKey: .is_isotropic) ?? true
+        self.anisotropy_comment = try container.decodeIfPresent(String.self, forKey: .anisotropy_comment) ?? ""
+        
+        if let nu = try container.decodeIfPresent(Double.self, forKey: .poisson_ratio) {
+            self.poisson_ratio = nu
+            self.stroh_kappa = try container.decodeIfPresent(Double.self, forKey: .stroh_kappa) ?? 1.0
+            self.stroh_xi = try container.decodeIfPresent(Double.self, forKey: .stroh_xi) ?? 0.0
+            self.stroh_zeta = try container.decodeIfPresent(Double.self, forKey: .stroh_zeta) ?? 0.0
+            self.stroh_g1 = try container.decodeIfPresent(Double.self, forKey: .stroh_g1) ?? 0.0
+            self.stroh_g2 = try container.decodeIfPresent(Double.self, forKey: .stroh_g2) ?? 0.0
+            self.stroh_g3 = try container.decodeIfPresent(Double.self, forKey: .stroh_g3) ?? 0.0
+            self.foreman_K = try container.decodeIfPresent(Double.self, forKey: .foreman_K) ?? 0.0
+        } else {
+            self.populateDislocationParamsFallback()
+        }
+    }
+    
+    public mutating func populateDislocationParamsFallback() {
+        let c11Safe = abs(C11) > 1e-12 ? C11 : 1.0
+        let c66Safe = abs(C66) > 1e-12 ? abs(C66) : 1.0
+        self.poisson_ratio = C12 / c11Safe
+        let num = C11 * C11 - C12 * C12 - 2.0 * C12 * C66
+        let den = 2.0 * abs(C11) * c66Safe
+        self.stroh_kappa = den > 1e-12 ? (num / den) : 1.0
+        if stroh_kappa > 1.0 + 1e-7 {
+            let s = sqrt(max(0.0, stroh_kappa * stroh_kappa - 1.0))
+            self.stroh_xi = sqrt(max(0.0, stroh_kappa + s))
+            self.stroh_zeta = sqrt(max(0.0, stroh_kappa - s))
+        } else if stroh_kappa < 1.0 - 1e-7 {
+            self.stroh_xi = sqrt(max(0.0, 0.5 * (1.0 + stroh_kappa)))
+            self.stroh_zeta = sqrt(max(0.0, 0.5 * (1.0 - stroh_kappa)))
+        } else {
+            self.stroh_xi = 1.0
+            self.stroh_zeta = 0.0
+        }
+        let d = C12 + C66
+        if abs(d) > 1e-12 {
+            self.stroh_g1 = (C11 - C66 * stroh_kappa) / d
+            self.stroh_g2 = C11 / d
+            self.stroh_g3 = (C11 + C12) * C66 / (C11 * d)
+        }
+        let twoPlus2k = max(0.0, 2.0 + 2.0 * stroh_kappa)
+        if abs(C11) > 1e-12 && twoPlus2k > 1e-12 {
+            self.foreman_K = (C11 * C11 - C12 * C12) * sqrt(C66 / (C11 * twoPlus2k))
+        } else {
+            self.foreman_K = C66 * (1.0 + poisson_ratio)
+        }
+    }
 }
 
 public struct AcousticStudySummary: Codable {
@@ -233,6 +323,39 @@ public class AcousticStudyManager: ObservableObject {
     @Published public var highlightZeroBoundary: Bool = true
     @Published public var pointRadius: Double = 3.5
     @Published public var colormapPreset: String = "RdYlBu"
+    
+    // Poincaré Energy Color Scale & Percentile Filtering
+    @Published public var energyColormap: EnergyColormapPreset = .inferno
+    @Published public var invertEnergyColormap: Bool = false
+    @Published public var energyUpperPercentile: Double = 95.0
+    @Published public var energyLowerPercentile: Double = 0.0
+    @Published public var discardAbovePercentile: Bool = true
+    @Published public var energyGamma: Double = 0.65
+    @Published public var useCustomEnergyRange: Bool = false
+    @Published public var customEnergyMin: Double = 0.0
+    @Published public var customEnergyMax: Double = 10.0
+    @Published public private(set) var sortedEnergies: [Double] = []
+    
+    public var effectiveEnergyBounds: (min: Double, max: Double, keptCount: Int, totalCount: Int) {
+        let total = sortedEnergies.count
+        guard total > 0 else {
+            return (min: summary.energy_min, max: max(summary.energy_max, summary.energy_min + 1e-6), keptCount: 0, totalCount: 0)
+        }
+        if useCustomEnergyRange {
+            let lo = customEnergyMin
+            let hi = max(customEnergyMax, lo + 1e-9)
+            // Binary search or filter count
+            let kept = sortedEnergies.filter { $0 <= hi }.count
+            return (min: lo, max: hi, keptCount: kept, totalCount: total)
+        }
+        let loPct = max(0.0, min(99.0, energyLowerPercentile)) / 100.0
+        let hiPct = max(loPct + 0.001, min(100.0, energyUpperPercentile)) / 100.0
+        let loIdx = min(total - 1, max(0, Int(Double(total - 1) * loPct)))
+        let hiIdx = min(total - 1, max(loIdx, Int(Double(total - 1) * hiPct)))
+        let loVal = sortedEnergies[loIdx]
+        let hiVal = max(sortedEnergies[hiIdx], loVal + 1e-9)
+        return (min: loVal, max: hiVal, keptCount: hiIdx + 1, totalCount: total)
+    }
     
     // Results
     @Published public var elasticConstants: AcousticElasticConstantsModel = AcousticElasticConstantsModel()
@@ -339,6 +462,7 @@ public class AcousticStudyManager: ObservableObject {
         var ec = AcousticElasticConstantsModel()
         
         if potentialMode == .zanzotto {
+            ec.equilibrium_lattice_parameter = (latticeSymmetry == .triangular) ? pow(4.0 / 3.0, 0.25) : 1.0
             // Zanzotto square ground state
             if latticeSymmetry == .square {
                 let C11 = 4.0 * (1.0 + 3.0 * beta + 0.25 * bulkK)
@@ -361,12 +485,14 @@ public class AcousticStudyManager: ObservableObject {
             }
         } else if potentialMode == .ljV2 {
             if latticeSymmetry == .triangular {
+                ec.equilibrium_lattice_parameter = 0.687204426704008
                 ec.C11 = 110.936
                 ec.C22 = 110.936
                 ec.C12 = 36.9788
                 ec.C66 = 36.9788
                 ec.Zener_A = 1.0
             } else {
+                ec.equilibrium_lattice_parameter = 0.692978556224715
                 ec.C11 = 83.1502
                 ec.C22 = 83.1502
                 ec.C12 = -5.8797
@@ -375,6 +501,7 @@ public class AcousticStudyManager: ObservableObject {
             }
         } else {
             // Mode 2 LJ v3
+            ec.equilibrium_lattice_parameter = (latticeSymmetry == .triangular) ? 0.996407177045697 : 0.985415026120263
             ec.C11 = 42.0
             ec.C22 = 42.0
             ec.C12 = 14.0
@@ -386,6 +513,7 @@ public class AcousticStudyManager: ObservableObject {
         ec.shear_modulus = ec.C66
         ec.born_stable = (ec.C11 > 0) && (ec.C22 > 0) && (ec.C11 * ec.C22 - ec.C12 * ec.C12 > 0) && (ec.C66 > 0)
         ec.is_isotropic = (abs(ec.Zener_A - 1.0) < 0.01)
+        ec.populateDislocationParamsFallback()
         
         if ec.is_isotropic {
             ec.anisotropy_comment = "Elastically isotropic in linear regime (Zener ratio A ≈ 1.000). Wave speeds are invariant to planar propagation angle."
@@ -629,6 +757,13 @@ public class AcousticStudyManager: ObservableObject {
     
     // MARK: - Smooth Surface Mesh & Marching Squares Zero-Boundary Extraction
     public func generateMeshAndContours() {
+        self.sortedEnergies = points.map { $0.energy }.filter { $0.isFinite }.sorted()
+        if !sortedEnergies.isEmpty {
+            self.customEnergyMin = sortedEnergies.first ?? 0.0
+            let idx95 = min(sortedEnergies.count - 1, Int(Double(sortedEnergies.count - 1) * 0.95))
+            self.customEnergyMax = sortedEnergies[idx95]
+        }
+        
         guard !points.isEmpty else {
             self.zeroContourSegments = []
             self.surfaceCells = []
@@ -688,6 +823,7 @@ public class AcousticStudyManager: ObservableObject {
                     
                     let avgDet = (centerPt.min_detAc + p1.min_detAc + p2.min_detAc) / 3.0
                     let avgE = (centerPt.energy + p1.energy + p2.energy) / 3.0
+                    let maxE = max(centerPt.energy, max(p1.energy, p2.energy))
                     
                     newCells.append(SurfaceCell(
                         ptsOrig: [CGPoint(x: centerPt.x, y: centerPt.y),
@@ -697,7 +833,8 @@ public class AcousticStudyManager: ObservableObject {
                                  CGPoint(x: p1.x_red, y: p1.y_red),
                                  CGPoint(x: p2.x_red, y: p2.y_red)],
                         avgDetAc: avgDet,
-                        avgEnergy: avgE
+                        avgEnergy: avgE,
+                        maxEnergy: maxE
                     ))
                     
                     let z0 = centerPt.min_detAc
@@ -735,6 +872,7 @@ public class AcousticStudyManager: ObservableObject {
                     
                     let avgDet = (p0.min_detAc + p1.min_detAc + p2.min_detAc + p3.min_detAc) * 0.25
                     let avgE = (p0.energy + p1.energy + p2.energy + p3.energy) * 0.25
+                    let maxE = max(max(p0.energy, p1.energy), max(p2.energy, p3.energy))
                     
                     newCells.append(SurfaceCell(
                         ptsOrig: [CGPoint(x: p0.x, y: p0.y),
@@ -746,7 +884,8 @@ public class AcousticStudyManager: ObservableObject {
                                  CGPoint(x: p2.x_red, y: p2.y_red),
                                  CGPoint(x: p3.x_red, y: p3.y_red)],
                         avgDetAc: avgDet,
-                        avgEnergy: avgE
+                        avgEnergy: avgE,
+                        maxEnergy: maxE
                     ))
                     
                     // Marching Squares on the 4 corners:
