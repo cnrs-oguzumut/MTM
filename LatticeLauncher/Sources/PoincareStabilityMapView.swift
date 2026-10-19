@@ -26,16 +26,16 @@ public struct PoincareStabilityMapView: View {
             // =========================================================================
             // 1. TOP DEDICATED TOOLBAR (Fixed height, completely ABOVE canvas)
             // =========================================================================
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 // Coordinate Mode Switcher
                 Picker("", selection: $manager.useReducedCoordinates) {
-                    Text("Original C").tag(false)
-                    Text("Reduced C").tag(true)
+                    Text("Original").tag(false)
+                    Text("Reduced").tag(true)
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .controlSize(.small)
-                .frame(width: 150)
+                .frame(width: 130)
                 
                 // Color Field Mode (Stability vs Energy)
                 Picker("", selection: $manager.colorField) {
@@ -46,56 +46,45 @@ public struct PoincareStabilityMapView: View {
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .controlSize(.small)
-                .frame(width: 185)
+                .frame(width: 125)
                 
                 // Render Style Mode (Smooth Surface vs Scatter)
                 Picker("", selection: $manager.renderStyle) {
-                    Text("Smooth").tag(RenderStyleMode.smoothSurface)
+                    Text("Surface").tag(RenderStyleMode.smoothSurface)
                     Text("Scatter").tag(RenderStyleMode.scatterPoints)
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .controlSize(.small)
-                .frame(width: 130)
-                
-                // Zero Boundary Contour Toggle
-                Toggle(isOn: $manager.highlightZeroBoundary) {
-                    Text("Zero Contour")
-                        .font(.caption.bold())
-                }
-                .toggleStyle(.checkbox)
-                .controlSize(.small)
-                
-                // Simple Shear Path Toggle
-                Toggle(isOn: $manager.showShearPath) {
-                    Text("Shear Path")
-                        .font(.caption.bold())
-                }
-                .toggleStyle(.checkbox)
-                .controlSize(.small)
-                
-                if manager.renderStyle == .scatterPoints {
-                    HStack(spacing: 4) {
-                        Text("Pt:")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Slider(value: $manager.pointRadius, in: 1.5...8.0, step: 0.5)
-                            .controlSize(.mini)
-                            .frame(width: 50)
-                    }
-                }
+                .frame(width: 115)
                 
                 Spacer(minLength: 4)
                 
+                // Display Options Menu
+                Menu {
+                    Toggle("Zero Boundary Contour", isOn: $manager.highlightZeroBoundary)
+                    Toggle("Deformation Path", isOn: $manager.showShearPath)
+                    if manager.renderStyle == .scatterPoints {
+                        Divider()
+                        Text("Point Radius: \(manager.pointRadius, specifier: "%.1f")")
+                    }
+                } label: {
+                    Image(systemName: "slider.horizontal.2.square")
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 26)
+                .help("Display options (Zero contour, Deformation path)")
+                
                 // Reset View Button
                 Button(action: resetView) {
-                    Label("Reset", systemImage: "arrow.counterclockwise")
+                    Image(systemName: "arrow.counterclockwise")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Reset Zoom & Pan")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .background(Color(NSColor.controlBackgroundColor))
             
             // =========================================================================
@@ -267,18 +256,6 @@ public struct PoincareStabilityMapView: View {
                         }
                     }
                     
-                    // Critical shear strain readout overlay
-                    if manager.showShearPath, let sp = manager.shearPath {
-                        VStack {
-                            HStack {
-                                ShearCriticalOverlay(path: sp, lattice: manager.latticeSymmetry.rawValue)
-                                Spacer()
-                            }
-                            Spacer()
-                        }
-                        .padding(12)
-                        .allowsHitTesting(false)
-                    }
                 }
             }
             
@@ -529,6 +506,20 @@ public struct PoincareStabilityMapView: View {
                 .font(.system(size: 11, weight: .heavy, design: .monospaced))
                 .foregroundColor(.yellow)
             context.draw(label, at: CGPoint(x: s.x + 46, y: s.y + (cp.alpha < 0 ? 14 : -14)))
+        }
+        
+        // Synchronized hover cursor from 1D energy chart
+        if let hAlpha = manager.hoveredAlpha, let pt = sp.points.min(by: { abs($0.alpha - hAlpha) < abs($1.alpha - hAlpha) }) {
+            let s = screen(pt)
+            let r: CGFloat = 8
+            let haloRect = CGRect(x: s.x - r - 4, y: s.y - r - 4, width: 2 * (r + 4), height: 2 * (r + 4))
+            context.fill(Path(ellipseIn: haloRect), with: .color(Color.cyan.opacity(0.35)))
+            context.fill(Path(ellipseIn: CGRect(x: s.x - r, y: s.y - r, width: 2 * r, height: 2 * r)), with: .color(.cyan))
+            context.stroke(Path(ellipseIn: CGRect(x: s.x - r, y: s.y - r, width: 2 * r, height: 2 * r)), with: .color(.black), lineWidth: 2)
+            let tag = Text(String(format: "α=%.3f (E=%.3f)", pt.alpha, pt.energy))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(.cyan)
+            context.draw(tag, at: CGPoint(x: s.x + 55, y: s.y - 14))
         }
     }
     

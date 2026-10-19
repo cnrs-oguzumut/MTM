@@ -4,12 +4,14 @@ import AppKit
 enum AppNavigationTab: String, CaseIterable, Identifiable {
     case simulation = "Lattice Simulation"
     case acousticStudy = "Parametric Acoustic Study"
+    case stiffnessStudy = "Stiffness Spectrum K(α)"
     
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .simulation: return "square.grid.3x3.fill"
         case .acousticStudy: return "waveform.path.ecg"
+        case .stiffnessStudy: return "point.3.filled.connected.trianglepath.dotted"
         }
     }
 }
@@ -46,7 +48,7 @@ struct ContentView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 400)
+                .frame(width: 600)
                 
                 Spacer()
                 
@@ -142,11 +144,13 @@ struct ContentView: View {
         .onAppear {
             runner.loadExistingIfAvailable(dir: config.targetDirectory)
         }
-    } else {
-        AcousticStudyView()
+            } else if appTab == .acousticStudy {
+                AcousticStudyView()
+            } else if appTab == .stiffnessStudy {
+                StiffnessStudyView()
+            }
+        }
     }
-    }
-}
 }
 
 // MARK: - Sidebar Controls
@@ -659,78 +663,5 @@ struct BottomActionBar: View {
                 .controlSize(.large)
             }
         }
-    }
-}
-
-// MARK: - Reliable Numeric Input Helpers
-struct DoubleField: View {
-    let title: String
-    @Binding var value: Double
-    var width: CGFloat = 80
-    @State private var text: String = ""
-    @FocusState private var isFocused: Bool
-    
-    var body: some View {
-        TextField(title, text: $text)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: width)
-            .focused($isFocused)
-            .onAppear {
-                text = String(value)
-            }
-            .onChange(of: value) { newVal in
-                if !isFocused {
-                    text = String(newVal)
-                }
-            }
-            .onChange(of: text) { newText in
-                let clean = newText.replacingOccurrences(of: ",", with: ".")
-                if let parsed = Double(clean) {
-                    value = parsed
-                }
-            }
-            .onSubmit {
-                let clean = text.replacingOccurrences(of: ",", with: ".")
-                if let parsed = Double(clean) {
-                    value = parsed
-                } else {
-                    text = String(value)
-                }
-            }
-    }
-}
-
-struct IntField: View {
-    let title: String
-    @Binding var value: Int
-    var width: CGFloat = 70
-    @State private var text: String = ""
-    @FocusState private var isFocused: Bool
-    
-    var body: some View {
-        TextField(title, text: $text)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: width)
-            .focused($isFocused)
-            .onAppear {
-                text = String(value)
-            }
-            .onChange(of: value) { newVal in
-                if !isFocused {
-                    text = String(newVal)
-                }
-            }
-            .onChange(of: text) { newText in
-                if let parsed = Int(newText.trimmingCharacters(in: .whitespaces)) {
-                    value = parsed
-                }
-            }
-            .onSubmit {
-                if let parsed = Int(text.trimmingCharacters(in: .whitespaces)) {
-                    value = parsed
-                } else {
-                    text = String(value)
-                }
-            }
     }
 }

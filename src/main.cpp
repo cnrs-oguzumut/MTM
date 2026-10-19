@@ -14,6 +14,7 @@
 #include "../include/output/AvalancheRecorder.h"
 #include "../include/lattice_energy/EnergyFunctions.h"
 #include "../include/experiments/acoustic_studies.h"
+#include "../include/experiments/stiffness_shear_study.h"
 
 int main(int argc, char **argv) {
   // Default system size and parameters
@@ -75,24 +76,52 @@ int main(int argc, char **argv) {
 
   // Acoustic study flags
   bool run_acoustic_study = false;
-  int acoustic_potential_mode = 3; // 1: LJ v2, 2: LJ v3, 3: Zanzotto
+  int acoustic_potential_mode = 3; // 1: LJ v2, 2: LJ v3, 3: Zanzotto, 4: Square Gaussian
   double acoustic_t_max = 1.0;
   double acoustic_dt = 0.02;
   double acoustic_dp = 0.05;
-  double acoustic_alpha_min = -0.6;
-  double acoustic_alpha_max = 0.6;
+  double acoustic_alpha_min = -1.5;
+  double acoustic_alpha_max = 1.5;
   double acoustic_dalpha = 0.005;
+  std::string acoustic_path_type = "simple_shear";
+  double acoustic_shear_theta = 0.0;
   std::string acoustic_dat_output = "acoustic_study_results.dat";
   std::string acoustic_json_output = "acoustic_study_results.json";
+  std::string acoustic_csv_output = "energy_path.csv";
   bool only_elastic_constants = false;
+
+  // Stiffness study flags
+  bool run_stiffness_study = false;
+  std::string stiffness_bc = "periodic";
+  std::string stiffness_csv_output = "stiffness_shear_study.csv";
+  std::string stiffness_json_output = "stiffness_shear_study.json";
+  double stiffness_alpha_min = -0.3;
+  double stiffness_alpha_max = 0.3;
+  double stiffness_dalpha = 0.005;
 
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--acoustic-study" || arg == "--acoustic" || arg == "--parametric-acoustic") {
       run_acoustic_study = true;
+    } else if (arg == "--stiffness-study" || arg == "--stiffness-shear" || arg == "--stiffness") {
+      run_stiffness_study = true;
+    } else if (arg.rfind("--bc=", 0) == 0) {
+      stiffness_bc = arg.substr(5);
+    } else if (arg.rfind("--boundary=", 0) == 0) {
+      stiffness_bc = arg.substr(11);
+    } else if (arg.rfind("--stiffness-csv=", 0) == 0) {
+      stiffness_csv_output = arg.substr(16);
+    } else if (arg.rfind("--stiffness-json=", 0) == 0) {
+      stiffness_json_output = arg.substr(17);
+    } else if (arg.rfind("--nx=", 0) == 0) {
+      nx = std::stoi(arg.substr(5));
+    } else if (arg.rfind("--ny=", 0) == 0) {
+      ny = std::stoi(arg.substr(5));
     } else if (arg.rfind("--potential-mode=", 0) == 0) {
       acoustic_potential_mode = std::stoi(arg.substr(17));
+    } else if (arg.rfind("--potential=", 0) == 0) {
+      acoustic_potential_mode = std::stoi(arg.substr(12));
     } else if (arg.rfind("--acoustic-mode=", 0) == 0) {
       acoustic_potential_mode = std::stoi(arg.substr(16));
     } else if (arg.rfind("--t-max=", 0) == 0) {
@@ -103,10 +132,34 @@ int main(int argc, char **argv) {
       acoustic_dp = std::stod(arg.substr(5));
     } else if (arg.rfind("--shear-alpha-min=", 0) == 0) {
       acoustic_alpha_min = std::stod(arg.substr(18));
+      stiffness_alpha_min = acoustic_alpha_min;
     } else if (arg.rfind("--shear-alpha-max=", 0) == 0) {
       acoustic_alpha_max = std::stod(arg.substr(18));
+      stiffness_alpha_max = acoustic_alpha_max;
     } else if (arg.rfind("--shear-dalpha=", 0) == 0) {
       acoustic_dalpha = std::stod(arg.substr(15));
+      stiffness_dalpha = acoustic_dalpha;
+    } else if (arg.rfind("--alpha-min=", 0) == 0) {
+      acoustic_alpha_min = std::stod(arg.substr(12));
+      stiffness_alpha_min = acoustic_alpha_min;
+    } else if (arg.rfind("--alpha-max=", 0) == 0) {
+      acoustic_alpha_max = std::stod(arg.substr(12));
+      stiffness_alpha_max = acoustic_alpha_max;
+    } else if (arg.rfind("--dalpha=", 0) == 0) {
+      acoustic_dalpha = std::stod(arg.substr(9));
+      stiffness_dalpha = acoustic_dalpha;
+    } else if (arg.rfind("--shear-path-type=", 0) == 0) {
+      acoustic_path_type = arg.substr(18);
+    } else if (arg.rfind("--shear-path=", 0) == 0) {
+      acoustic_path_type = arg.substr(13);
+    } else if (arg.rfind("--path-type=", 0) == 0) {
+      acoustic_path_type = arg.substr(12);
+    } else if (arg.rfind("--shear-theta=", 0) == 0) {
+      acoustic_shear_theta = std::stod(arg.substr(14));
+    } else if (arg.rfind("--shear-angle=", 0) == 0) {
+      acoustic_shear_theta = std::stod(arg.substr(14));
+    } else if (arg.rfind("--csv-output=", 0) == 0) {
+      acoustic_csv_output = arg.substr(13);
     } else if (arg.rfind("--dat-output=", 0) == 0) {
       acoustic_dat_output = arg.substr(13);
     } else if (arg.rfind("--json-output=", 0) == 0) {
@@ -130,6 +183,8 @@ int main(int argc, char **argv) {
       bulk_K = std::stod(arg.substr(9));
     } else if (arg.rfind("--lattice=", 0) == 0) {
       lattice_type = arg.substr(10);
+    } else if (arg.rfind("--symmetry=", 0) == 0) {
+      lattice_type = arg.substr(11);
     } else if (arg.rfind("--lattice-symmetry=", 0) == 0) {
       lattice_type = arg.substr(19);
     } else if (arg == "--triangular") {
@@ -227,14 +282,14 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (argc >= 3) {
+  if (argc >= 3 && argv[1][0] != '-') {
     nx = std::atoi(argv[1]);
     ny = std::atoi(argv[2]);
   }
-  if (argc >= 4) {
+  if (argc >= 4 && argv[3][0] != '-') {
     mode = argv[3];
   }
-  if (argc >= 5) {
+  if (argc >= 5 && argv[4][0] != '-') {
     seed = static_cast<unsigned int>(std::atoi(argv[4]));
   }
   if (argc >= 6) {
@@ -334,6 +389,9 @@ int main(int argc, char **argv) {
     acoustic_cfg.dat_output = acoustic_dat_output;
     acoustic_cfg.json_output = acoustic_json_output;
     acoustic_cfg.only_elastic_constants = only_elastic_constants;
+    acoustic_cfg.path_type = acoustic_path_type;
+    acoustic_cfg.shear_theta_deg = acoustic_shear_theta;
+    acoustic_cfg.csv_output = acoustic_csv_output;
     acoustic_cfg.alpha_min = acoustic_alpha_min;
     acoustic_cfg.alpha_max = acoustic_alpha_max;
     acoustic_cfg.dalpha = acoustic_dalpha;
@@ -343,6 +401,27 @@ int main(int argc, char **argv) {
   }
   // parametricAcousticStudy();
   // parametricAcousticStudy_v2();
+
+  // 4b. Stiffness Matrix K(α) Shear Study:
+  //     Calculates minimum eigenvalues of global stiffness matrix K as a function of alpha.
+  if (run_stiffness_study || mode == "stiffness" || mode == "stiffness_study" || mode == "stiffness_shear") {
+    StiffnessShearConfig stiff_cfg;
+    stiff_cfg.nx = nx;
+    stiff_cfg.ny = ny;
+    stiff_cfg.lattice_type = lattice_type;
+    stiff_cfg.potential_mode = acoustic_potential_mode;
+    stiff_cfg.bc = stiffness_bc;
+    stiff_cfg.alpha_min = stiffness_alpha_min;
+    stiff_cfg.alpha_max = stiffness_alpha_max;
+    stiff_cfg.dalpha = stiffness_dalpha;
+    stiff_cfg.beta = beta;
+    stiff_cfg.K = bulk_K;
+    stiff_cfg.csv_output = stiffness_csv_output;
+    stiff_cfg.json_output = stiffness_json_output;
+
+    runStiffnessShearStudy(stiff_cfg);
+    return 0;
+  }
 
   // 5. Nano-Indentation:
   //    Simulates circular nano-indenter pushing into crystal lattice.

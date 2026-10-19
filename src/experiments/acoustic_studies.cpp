@@ -936,11 +936,27 @@ AcousticElasticResults computeAcousticElasticConstants(const AcousticStudyConfig
         res.C66 = ec.C66;
         res.Zener_A = ec.Zener_A;
     } else {
-        // Mode 1 (LJ v2) or Mode 2 (LJ v3)
-        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
-        std::function<double(double)> pot = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
-        std::function<double(double)> dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
-        std::function<double(double)> d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        // Mode 1 (LJ v2), Mode 2 (LJ v3), or Mode 4 (Square Gaussian)
+        double r_cutoff = 2.5;
+        std::function<double(double)> pot;
+        std::function<double(double)> dpot;
+        std::function<double(double)> d2pot;
+        if (config.mode == 1) {
+            pot = lennard_jones_energy_v2;
+            dpot = lennard_jones_energy_der_v2;
+            d2pot = lennard_jones_energy_sder_v2;
+            r_cutoff = 2.5;
+        } else if (config.mode == 2) {
+            pot = lennard_jones_energy_v3;
+            dpot = lennard_jones_energy_der_v3;
+            d2pot = lennard_jones_energy_sder_v3;
+            r_cutoff = 1.86602540378444;
+        } else if (config.mode == 4) {
+            pot = square_energy;
+            dpot = square_energy_der;
+            d2pot = square_energy_sder;
+            r_cutoff = 2.5;
+        }
         double scale = find_optimal_lattice_parameter(pot, config.lattice_type, r_cutoff, dpot, d2pot);
         
         Eigen::Matrix2d C_ref = Eigen::Matrix2d::Identity();
@@ -1015,10 +1031,10 @@ void printAcousticElasticConstantsJSON(const AcousticStudyConfig& config) {
     if (config.mode == 3) {
         eq_a0 = (config.lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
     } else {
-        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
-        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
-        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
-        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        double r_cutoff = (config.mode == 2) ? 1.86602540378444 : 2.5;
+        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : ((config.mode == 4) ? square_energy : lennard_jones_energy_v3);
+        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : ((config.mode == 4) ? square_energy_der : lennard_jones_energy_der_v3);
+        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : ((config.mode == 4) ? square_energy_sder : lennard_jones_energy_sder_v3);
         eq_a0 = find_optimal_lattice_parameter(pot, config.lattice_type, r_cutoff, dpot, d2pot);
     }
     std::cout << "{\n";
@@ -1050,11 +1066,16 @@ void printAcousticElasticConstantsJSON(const AcousticStudyConfig& config) {
 
 ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double alpha_min, double alpha_max, double dalpha) {
     ShearPathResult res;
+    res.path_type = config.path_type;
+    res.theta_deg = config.shear_theta_deg;
+    res.period_alpha = (config.lattice_type == "triangular") ? std::sqrt(4.0 / 3.0) : 1.0;
+
     std::unique_ptr<BaseLatticeCalculator> calculator_ptr;
     std::function<double(double)> potential_func;
     std::function<double(double)> potential_func_der;
     std::function<double(double)> potential_func_sder;
     double normalisation = 1.0;
+    double scale = 1.0;
 
     if (config.mode == 3) {
         energy_functions::set_parameters(config.beta, config.K);
@@ -1064,14 +1085,29 @@ ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double
         potential_func = [](double r) { return 1.0; };
         potential_func_der = [](double r) { return 1.0; };
         potential_func_sder = [](double r) { return 1.0; };
+        scale = (config.lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
     } else {
-        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
-        potential_func = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
-        potential_func_der = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
-        potential_func_sder = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
-        double scale = find_optimal_lattice_parameter(potential_func, "triangular", r_cutoff, potential_func_der, potential_func_sder);
+        double r_cutoff = 2.5;
+        if (config.mode == 1) {
+            potential_func = lennard_jones_energy_v2;
+            potential_func_der = lennard_jones_energy_der_v2;
+            potential_func_sder = lennard_jones_energy_sder_v2;
+            r_cutoff = 2.5;
+        } else if (config.mode == 2) {
+            potential_func = lennard_jones_energy_v3;
+            potential_func_der = lennard_jones_energy_der_v3;
+            potential_func_sder = lennard_jones_energy_sder_v3;
+            r_cutoff = 1.86602540378444;
+        } else if (config.mode == 4) {
+            potential_func = square_energy;
+            potential_func_der = square_energy_der;
+            potential_func_sder = square_energy_sder;
+            r_cutoff = 2.5;
+        }
+        scale = find_optimal_lattice_parameter(potential_func, config.lattice_type, r_cutoff, potential_func_der, potential_func_sder);
+        double calc_scale = (config.lattice_type == "triangular") ? (scale / std::pow(4.0 / 3.0, 0.25)) : scale;
 
-        auto calc = std::make_unique<SquareLatticeCalculator>(scale, r_cutoff);
+        auto calc = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
         normalisation = calc->getUnitCellArea();
         if (config.lattice_type == "triangular") {
             normalisation *= std::sqrt(3.0) / 2.0;
@@ -1079,20 +1115,22 @@ ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double
         calculator_ptr = std::move(calc);
     }
 
-    Eigen::Matrix2d C_ref_energy = Eigen::Matrix2d::Identity();
-    if (config.lattice_type == "triangular" && config.mode != 3) {
-        double a2 = std::sqrt(4.0 / 3.0);
-        C_ref_energy << a2, 0.5 * a2, 0.5 * a2, a2;
-    }
-    double energy_ref = calculator_ptr->calculate_energy(C_ref_energy, potential_func, 0.0) / normalisation;
-
-    // Starting deformation gradient F0
+    // Reference lattice matrix F0 (basis H)
     Eigen::Matrix2d F0 = Eigen::Matrix2d::Identity();
+    double a0 = 1.0;
     if (config.lattice_type == "triangular") {
         double a = std::pow(4.0 / 3.0, 0.25);
         F0 << a, a * 0.5,
               0.0, a * std::sqrt(3.0) / 2.0;
+        a0 = a;
+    } else {
+        F0.setIdentity();
+        a0 = 1.0;
     }
+    const double a0_sq = a0 * a0;
+
+    Eigen::Matrix2d C_ref_energy = F0.transpose() * F0;
+    double energy_ref = calculator_ptr->calculate_energy(C_ref_energy, potential_func, 0.0) / normalisation;
 
     double prev_det = 0.0;
     double prev_alpha = 0.0;
@@ -1102,11 +1140,29 @@ ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double
     if (dalpha <= 0.0) dalpha = 0.005;
 
     for (double alpha = alpha_min; alpha <= alpha_max + 1e-9; alpha += dalpha) {
-        Eigen::Matrix2d F_shear;
-        F_shear << 1.0, alpha,
-                   0.0, 1.0;
+        Eigen::Matrix2d F_path = Eigen::Matrix2d::Identity();
+        if (config.path_type == "pure_shear") {
+            double lam = std::exp(0.5 * alpha);
+            F_path << 1.0 / lam, 0.0,
+                      0.0, lam;
+        } else if (config.path_type == "diagonal_shear") {
+            double ch = std::cosh(alpha);
+            double sh = std::sinh(alpha);
+            F_path << ch, sh,
+                      0.0, 1.0;
+            F_path /= std::sqrt(ch);
+        } else {
+            // Simple shear along angle theta: F(alpha, theta) = I + alpha * R(theta) e1 (x) R(theta) e2
+            double th = config.shear_theta_deg * (M_PI / 180.0);
+            double c = std::cos(th);
+            double s = std::sin(th);
+            Eigen::Matrix2d S;
+            S << c * s,  c * c,
+                -s * s, -c * s;
+            F_path += alpha * S;
+        }
 
-        Eigen::Matrix2d F_tot = F_shear * F0;
+        Eigen::Matrix2d F_tot = F_path * F0;
         Eigen::Matrix2d C_orig = F_tot.transpose() * F_tot;
 
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> eigensolver(C_orig);
@@ -1121,15 +1177,22 @@ ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double
 
         AcousticTensor acoustic_tensor(F_eval, C_red, Z);
         acoustic_tensor.computeEnergyDerivatives(*calculator_ptr, potential_func_der, potential_func_sder, normalisation);
-        AcousticAnalysis res_ac = acoustic_tensor.analyzeAcousticTensor(false);
+        AcousticAnalysis res_ac = acoustic_tensor.analyzeAcousticTensor(true);
 
-        double t_proj = 2.0 / (2.0 + C_orig(0, 0) + C_orig(1, 1));
-        double x = t_proj * (C_orig(0, 0) - C_orig(1, 1)) * 0.5;
-        double y = t_proj * C_orig(0, 1);
+        // Poincaré projection normalized by reference lattice constant squared
+        double c11_s = C_orig(0, 0) / a0_sq;
+        double c22_s = C_orig(1, 1) / a0_sq;
+        double c12_s = C_orig(0, 1) / a0_sq;
+        double t_proj = 2.0 / (2.0 + c11_s + c22_s);
+        double x = t_proj * (c11_s - c22_s) * 0.5;
+        double y = t_proj * c12_s;
 
-        double t_proj_red = 2.0 / (2.0 + C_red(0, 0) + C_red(1, 1));
-        double x_red = t_proj_red * (C_red(0, 0) - C_red(1, 1)) * 0.5;
-        double y_red = t_proj_red * C_red(0, 1);
+        double c11_red_s = C_red(0, 0) / a0_sq;
+        double c22_red_s = C_red(1, 1) / a0_sq;
+        double c12_red_s = C_red(0, 1) / a0_sq;
+        double t_proj_red = 2.0 / (2.0 + c11_red_s + c22_red_s);
+        double x_red = t_proj_red * (c11_red_s - c22_red_s) * 0.5;
+        double y_red = t_proj_red * c12_red_s;
 
         double raw_e = calculator_ptr->calculate_energy(C_red, potential_func, 0.0) / normalisation;
         double strain_e = raw_e - energy_ref;
@@ -1184,6 +1247,7 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     if (config.mode == 3) std::cout << " (Zanzotto Continuum, beta=" << config.beta << ", K=" << config.K << ")\n";
     else if (config.mode == 1) std::cout << " (Lennard-Jones v2 V(r))\n";
     else if (config.mode == 2) std::cout << " (Lennard-Jones v3 V(r))\n";
+    else if (config.mode == 4) std::cout << " (Square Gaussian Potential V(r))\n";
     std::cout << "  Lattice Symmetry: " << config.lattice_type << "\n";
     std::cout << "  Radius t_max: " << config.t_max << ", dt: " << config.dt << "\n";
     std::cout << "  Angle dp: " << config.dp << " rad\n";
@@ -1203,10 +1267,10 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     if (config.mode == 3) {
         burgers_mag = (config.lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
     } else {
-        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
-        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
-        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
-        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        double r_cutoff = (config.mode == 2) ? 1.86602540378444 : 2.5;
+        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : ((config.mode == 4) ? square_energy : lennard_jones_energy_v3);
+        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : ((config.mode == 4) ? square_energy_der : lennard_jones_energy_der_v3);
+        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : ((config.mode == 4) ? square_energy_sder : lennard_jones_energy_sder_v3);
         EquilibriumLatticeResult eq_lat = compute_equilibrium_lattice_parameter(
             pot, dpot, d2pot, config.lattice_type, r_cutoff
         );
@@ -1241,13 +1305,14 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
         potential_func_der = [](double r) -> double { return 1.0; };
         potential_func_sder = [](double r) -> double { return 1.0; };
     } else {
-        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
-        potential_func = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
-        potential_func_der = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
-        potential_func_sder = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
-        double scale = find_optimal_lattice_parameter(potential_func, "triangular", r_cutoff, potential_func_der, potential_func_sder);
+        double r_cutoff = (config.mode == 2) ? 1.86602540378444 : 2.5;
+        potential_func = (config.mode == 1) ? lennard_jones_energy_v2 : ((config.mode == 4) ? square_energy : lennard_jones_energy_v3);
+        potential_func_der = (config.mode == 1) ? lennard_jones_energy_der_v2 : ((config.mode == 4) ? square_energy_der : lennard_jones_energy_der_v3);
+        potential_func_sder = (config.mode == 1) ? lennard_jones_energy_sder_v2 : ((config.mode == 4) ? square_energy_sder : lennard_jones_energy_sder_v3);
+        double scale = find_optimal_lattice_parameter(potential_func, config.lattice_type, r_cutoff, potential_func_der, potential_func_sder);
+        double calc_scale = (config.lattice_type == "triangular") ? (scale / std::pow(4.0 / 3.0, 0.25)) : scale;
 
-        auto calc = std::make_unique<SquareLatticeCalculator>(scale, r_cutoff);
+        auto calc = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
         normalisation = calc->getUnitCellArea();
         if (config.lattice_type == "triangular") {
             normalisation *= std::sqrt(3.0) / 2.0;
@@ -1322,7 +1387,7 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
                 AcousticTensor acoustic_tensor(F, C, Z);
                 acoustic_tensor.computeEnergyDerivatives(*calculator_ptr, potential_func_der, potential_func_sder, normalisation);
 
-                AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(false);
+                AcousticAnalysis result = acoustic_tensor.analyzeAcousticTensor(true);
 
                 // User's Poincaré stereographic projection formula:
                 // t_proj = 2. / (2. + c11 + c22)
@@ -1387,7 +1452,7 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     std::ofstream json_file(config.json_output);
     json_file << "{\n";
     json_file << "  \"mode\": " << config.mode << ",\n";
-    json_file << "  \"mode_name\": \"" << (config.mode == 3 ? "Zanzotto Continuum" : (config.mode == 1 ? "Lennard-Jones v2 V(r)" : "Lennard-Jones v3 V(r)")) << "\",\n";
+    json_file << "  \"mode_name\": \"" << (config.mode == 3 ? "Zanzotto Continuum" : (config.mode == 1 ? "Lennard-Jones v2 V(r)" : (config.mode == 4 ? "Square Gaussian Potential V(r)" : "Lennard-Jones v3 V(r)"))) << "\",\n";
     json_file << "  \"lattice_type\": \"" << config.lattice_type << "\",\n";
     json_file << "  \"beta\": " << config.beta << ",\n";
     json_file << "  \"K\": " << config.K << ",\n";
@@ -1401,10 +1466,10 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     if (config.mode == 3) {
         eq_a0_json = (config.lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
     } else {
-        double r_cutoff = (config.mode == 1) ? 2.5 : 1.86602540378444;
-        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
-        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
-        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+        double r_cutoff = (config.mode == 2) ? 1.86602540378444 : 2.5;
+        auto pot = (config.mode == 1) ? lennard_jones_energy_v2 : ((config.mode == 4) ? square_energy : lennard_jones_energy_v3);
+        auto dpot = (config.mode == 1) ? lennard_jones_energy_der_v2 : ((config.mode == 4) ? square_energy_der : lennard_jones_energy_der_v3);
+        auto d2pot = (config.mode == 1) ? lennard_jones_energy_sder_v2 : ((config.mode == 4) ? square_energy_sder : lennard_jones_energy_sder_v3);
         eq_a0_json = find_optimal_lattice_parameter(pot, config.lattice_type, r_cutoff, dpot, d2pot);
     }
 
@@ -1480,6 +1545,9 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     }
 
     json_file << "  \"shear_path\": {\n";
+    json_file << "    \"path_type\": \"" << shear_res.path_type << "\",\n";
+    json_file << "    \"theta_deg\": " << shear_res.theta_deg << ",\n";
+    json_file << "    \"period_alpha\": " << shear_res.period_alpha << ",\n";
     json_file << "    \"alpha_min\": " << config.alpha_min << ",\n";
     json_file << "    \"alpha_max\": " << config.alpha_max << ",\n";
     json_file << "    \"dalpha\": " << config.dalpha << ",\n";
@@ -1511,6 +1579,24 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
     json_file << "  }\n";
     json_file << "}\n";
     json_file.close();
+
+    // Write CSV file for energy path
+    std::ofstream csv_file(config.csv_output);
+    if (csv_file.is_open()) {
+        csv_file << std::scientific << std::setprecision(8);
+        csv_file << "# alpha,energy,min_detAc,is_stable,x,y,x_red,y_red,c11,c22,c12\n";
+        for (const auto& pt : shear_res.path) {
+            csv_file << pt.alpha << ","
+                     << pt.energy << ","
+                     << pt.min_detAc << ","
+                     << (pt.is_stable ? 1 : 0) << ","
+                     << pt.x << "," << pt.y << ","
+                     << pt.x_red << "," << pt.y_red << ","
+                     << pt.c11 << "," << pt.c22 << "," << pt.c12 << "\n";
+        }
+        csv_file.close();
+        std::cout << "  Energy path CSV saved to: " << config.csv_output << "\n";
+    }
 
     std::cout << "\n✓ Parametric Acoustic Study Complete!\n";
     std::cout << "  Processed: " << count << " points (Stable: " << stable_count 

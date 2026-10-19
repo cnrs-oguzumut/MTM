@@ -7,6 +7,7 @@ public enum AcousticPotentialMode: Int, CaseIterable, Identifiable {
     case zanzotto = 3
     case ljV2 = 1
     case ljV3 = 2
+    case square = 4
     
     public var id: Int { rawValue }
     public var displayName: String {
@@ -14,6 +15,7 @@ public enum AcousticPotentialMode: Int, CaseIterable, Identifiable {
         case .zanzotto: return "Mode 3: Zanzotto Continuum Φ(C)"
         case .ljV2: return "Mode 1: Lennard-Jones v2 V(r)"
         case .ljV3: return "Mode 2: Lennard-Jones v3 V(r)"
+        case .square: return "Mode 4: Square Gaussian Potential V(r)"
         }
     }
     public var shortName: String {
@@ -21,6 +23,7 @@ public enum AcousticPotentialMode: Int, CaseIterable, Identifiable {
         case .zanzotto: return "Zanzotto Φ(C)"
         case .ljV2: return "LJ v2"
         case .ljV3: return "LJ v3"
+        case .square: return "Square V(r)"
         }
     }
 }
@@ -32,8 +35,8 @@ public enum ColorFieldMode: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
     public var shortLabel: String {
         switch self {
-        case .acousticStability: return "min det Q(n)"
-        case .strainEnergy: return "Energy Φ(C)"
+        case .acousticStability: return "Stability"
+        case .strainEnergy: return "Energy"
         }
     }
 }
@@ -283,8 +286,11 @@ public struct ShearPathPointModel: Codable, Identifiable {
 }
 
 public struct ShearPathModel: Codable {
-    public var alpha_min: Double = -0.6
-    public var alpha_max: Double = 0.6
+    public var path_type: String? = "simple_shear"
+    public var theta_deg: Double? = 0.0
+    public var period_alpha: Double? = 1.0
+    public var alpha_min: Double = -1.5
+    public var alpha_max: Double = 1.5
     public var dalpha: Double = 0.005
     public var critical_alphas: [Double] = []
     public var critical_points: [ShearPathPointModel] = []
@@ -303,12 +309,19 @@ public class AcousticStudyManager: ObservableObject {
     @Published public var dt: Double = 0.02
     @Published public var dp: Double = 0.05
     
-    // Simple shear path settings: F = [[1, α],[0, 1]] · F0 (F0 = reference lattice basis)
+    // Deformation path settings
     @Published public var showShearPath: Bool = true
-    @Published public var shearAlphaMin: Double = -0.5
-    @Published public var shearAlphaMax: Double = 0.5
-    @Published public var shearDAlpha: Double = 0.002
+    @Published public var pathType: String = "simple_shear" // "simple_shear", "pure_shear", "diagonal_shear"
+    @Published public var shearTheta: Double = 0.0 // Angle in degrees
+    @Published public var shearAlphaMin: Double = -1.5
+    @Published public var shearAlphaMax: Double = 1.5
+    @Published public var shearDAlpha: Double = 0.005
     @Published public var shearPath: ShearPathModel? = nil
+    
+    // Bidirectional Cursor Synchronization
+    @Published public var hoveredAlpha: Double? = nil
+    @Published public var hoveredPathPoint: ShearPathPointModel? = nil
+    @Published public var selectedCriticalAlpha: Double? = nil
     
     public var estimatedPoints: Int {
         let tSteps = (tMax / max(0.001, dt)) + 1.0
@@ -499,6 +512,14 @@ public class AcousticStudyManager: ObservableObject {
                 ec.C66 = -5.8797
                 ec.Zener_A = -0.132
             }
+        } else if potentialMode == .square {
+            // Mode 4 Square Gaussian
+            ec.equilibrium_lattice_parameter = (latticeSymmetry == .triangular) ? 1.0 : 1.065846222482338
+            ec.C11 = 79.875
+            ec.C22 = 79.875
+            ec.C12 = 10.874
+            ec.C66 = 10.874
+            ec.Zener_A = 0.315
         } else {
             // Mode 2 LJ v3
             ec.equilibrium_lattice_parameter = (latticeSymmetry == .triangular) ? 0.996407177045697 : 0.985415026120263
@@ -538,6 +559,7 @@ public class AcousticStudyManager: ObservableObject {
         
         let datOut = "\(root)/scratch/acoustic_study_gui.dat"
         let jsonOut = "\(root)/scratch/acoustic_study_gui.json"
+        let csvOut = "\(root)/scratch/energy_path_gui.csv"
         
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
@@ -551,11 +573,14 @@ public class AcousticStudyManager: ObservableObject {
             "--t-max=\(tMax)",
             "--dt=\(dt)",
             "--dp=\(dp)",
+            "--shear-path-type=\(pathType)",
+            "--shear-theta=\(shearTheta)",
             "--shear-alpha-min=\(shearAlphaMin)",
             "--shear-alpha-max=\(shearAlphaMax)",
             "--shear-dalpha=\(shearDAlpha)",
             "--dat-output=\(datOut)",
-            "--json-output=\(jsonOut)"
+            "--json-output=\(jsonOut)",
+            "--csv-output=\(csvOut)"
         ]
         
         let pipe = Pipe()

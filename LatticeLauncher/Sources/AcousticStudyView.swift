@@ -1,8 +1,24 @@
 import SwiftUI
 import AppKit
 
+public enum AcousticViewMode: String, CaseIterable, Identifiable {
+    case split = "Split View"
+    case poincare = "Poincaré Disk"
+    case energyPath = "Deformation Energy E(α)"
+    
+    public var id: String { rawValue }
+    public var iconName: String {
+        switch self {
+        case .split: return "rectangle.split.2x1"
+        case .poincare: return "circle"
+        case .energyPath: return "chart.xyaxis.line"
+        }
+    }
+}
+
 public struct AcousticStudyView: View {
     @StateObject private var manager = AcousticStudyManager()
+    @State private var viewMode: AcousticViewMode = .split
     @State private var showLogs: Bool = false
     
     public init() {}
@@ -48,10 +64,7 @@ public struct AcousticStudyView: View {
                                             Text("β (shear coefficient):")
                                                 .font(.caption)
                                             Spacer()
-                                            TextField("β", value: $manager.beta, format: .number.precision(.fractionLength(3)))
-                                                .textFieldStyle(.roundedBorder)
-                                                .frame(width: 80)
-                                                .multilineTextAlignment(.trailing)
+                                            DoubleField(title: "β", value: $manager.beta, width: 80)
                                         }
                                         Slider(value: $manager.beta, in: -1.0...1.0, step: 0.01)
                                     }
@@ -62,13 +75,15 @@ public struct AcousticStudyView: View {
                                             Text("K (bulk modulus):")
                                                 .font(.caption)
                                             Spacer()
-                                            TextField("K", value: $manager.bulkK, format: .number.precision(.fractionLength(2)))
-                                                .textFieldStyle(.roundedBorder)
-                                                .frame(width: 80)
-                                                .multilineTextAlignment(.trailing)
+                                            DoubleField(title: "K", value: $manager.bulkK, width: 80)
                                         }
                                         Slider(value: $manager.bulkK, in: 0.5...20.0, step: 0.25)
                                     }
+                                } else if manager.potentialMode == .square {
+                                    Text("Mode 4: 2-well Gaussian potential V(r) designed to stabilize square crystal lattice against close-packed collapse.")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .padding(.top, 4)
                                 } else {
                                     Text(manager.potentialMode == .ljV2 ? 
                                          "Interatomic pair potential V(r) with cutoff r_cut = 2.5, σ = 2·sin(π/10)." : 
@@ -95,29 +110,77 @@ public struct AcousticStudyView: View {
                             .padding(6)
                         }
                         
-                        // Simple shear path: F = [1 α; 0 1]·F₀
-                        GroupBox(label: Label("Simple Shear Path", systemImage: "point.topleft.down.curvedto.point.bottomright.up")) {
+                        // Deformation Path & Stability Limits
+                        GroupBox(label: Label("Deformation Path & Stability Limits", systemImage: "point.topleft.down.curvedto.point.bottomright.up")) {
                             VStack(alignment: .leading, spacing: 8) {
-                                Toggle("Show shear path on Poincaré disk", isOn: $manager.showShearPath)
+                                Toggle("Show deformation path on Poincaré disk", isOn: $manager.showShearPath)
                                     .font(.caption)
+                                
+                                Picker("Path Family:", selection: $manager.pathType) {
+                                    Text("Simple Shear F(α, θ)").tag("simple_shear")
+                                    Text("Pure Shear F□(α)").tag("pure_shear")
+                                    Text("Diagonal Shear F◇(α)").tag("diagonal_shear")
+                                }
+                                .pickerStyle(.menu)
+                                .font(.caption)
+                                
+                                if manager.pathType == "simple_shear" {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack {
+                                            Text("Slip Angle θ:")
+                                                .font(.caption)
+                                            Spacer()
+                                            Text(String(format: "%.1f°", manager.shearTheta))
+                                                .font(.caption.monospaced().bold())
+                                        }
+                                        Slider(value: $manager.shearTheta, in: 0.0...180.0, step: 1.0)
+                                    }
+                                }
+                                
                                 HStack {
                                     Text("α min:").font(.caption)
                                     Spacer()
-                                    DoubleField(title: "-0.5", value: $manager.shearAlphaMin, width: 80)
+                                    DoubleField(title: "-1.5", value: $manager.shearAlphaMin, width: 80)
                                 }
                                 HStack {
                                     Text("α max:").font(.caption)
                                     Spacer()
-                                    DoubleField(title: "0.5", value: $manager.shearAlphaMax, width: 80)
+                                    DoubleField(title: "1.5", value: $manager.shearAlphaMax, width: 80)
                                 }
                                 HStack {
                                     Text("Step dα:").font(.caption)
                                     Spacer()
-                                    DoubleField(title: "0.002", value: $manager.shearDAlpha, width: 80)
+                                    DoubleField(title: "0.005", value: $manager.shearDAlpha, width: 80)
                                 }
-                                Text("Critical α_c are where min det Q(n) changes sign (loss of ellipticity).")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
+                                
+                                if let sp = manager.shearPath, !sp.critical_alphas.isEmpty {
+                                    Divider()
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        HStack {
+                                            Text("Stability Limits (α_c):")
+                                                .font(.caption.bold())
+                                            Spacer()
+                                            Text("\(sp.critical_alphas.count) critical")
+                                                .font(.system(size: 10, design: .monospaced))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        ForEach(sp.critical_alphas, id: \.self) { ac in
+                                            HStack {
+                                                Circle().fill(Color.yellow).frame(width: 5, height: 5)
+                                                Text(String(format: "α_c = %+.4f", ac))
+                                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                                Spacer()
+                                                Button("Inspect") {
+                                                    manager.hoveredAlpha = ac
+                                                    manager.selectedCriticalAlpha = ac
+                                                }
+                                                .buttonStyle(.borderless)
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.accentColor)
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             .padding(6)
                         }
@@ -365,9 +428,9 @@ public struct AcousticStudyView: View {
             // RIGHT MAIN: Poincaré Stability Map & Console
             VStack(spacing: 0) {
                 // Top status bar
-                HStack(spacing: 16) {
+                HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Poincaré Projection Stability Map")
+                        Text(viewMode == .energyPath ? "Deformation Path Energy E(α)" : "Poincaré Projection Stability Map")
                             .font(.headline)
                         Text(manager.lastLoadedFile.isEmpty ? 
                              "Inverse stereographic coordinates x = t·(c₁₁−c₂₂)/2, y = t·c₁₂" : 
@@ -376,38 +439,65 @@ public struct AcousticStudyView: View {
                             .foregroundColor(.secondary)
                     }
                     
-                    Spacer()
+                    Spacer(minLength: 8)
                     
-                    // Quick Stats Badges
+                    // View Mode Switcher
+                    Picker("", selection: $viewMode) {
+                        Label("Poincaré", systemImage: "circle").tag(AcousticViewMode.poincare)
+                        Label("Split", systemImage: "rectangle.split.2x1").tag(AcousticViewMode.split)
+                        Label("Energy E(α)", systemImage: "chart.xyaxis.line").tag(AcousticViewMode.energyPath)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .frame(width: 250)
+                    
+                    // Clean Compact Stats Pill
                     if !manager.points.isEmpty {
-                        HStack(spacing: 10) {
-                            BadgeItem(
-                                title: "Stable",
-                                value: "\(manager.summary.stable_points)",
-                                color: .blue
-                            )
-                            BadgeItem(
-                                title: "Unstable",
-                                value: "\(manager.summary.unstable_points)",
-                                color: .red
-                            )
-                            BadgeItem(
-                                title: "Stability %",
-                                value: String(format: "%.1f%%", manager.summary.total_points > 0 ? (Double(manager.summary.stable_points) / Double(manager.summary.total_points) * 100.0) : 0),
-                                color: .purple
-                            )
+                        HStack(spacing: 5) {
+                            Circle().fill(Color.blue).frame(width: 7, height: 7)
+                            Text("\(manager.summary.stable_points)")
+                                .font(.caption.monospaced().bold())
+                            Text("/")
+                                .foregroundColor(.secondary)
+                                .font(.caption2)
+                            Circle().fill(Color.red).frame(width: 7, height: 7)
+                            Text("\(manager.summary.unstable_points)")
+                                .font(.caption.monospaced().bold())
+                            
+                            let pct = manager.summary.total_points > 0 ? (Double(manager.summary.stable_points) / Double(manager.summary.total_points) * 100.0) : 0
+                            Text(String(format: "(%.0f%%)", pct))
+                                .font(.caption2.monospaced())
+                                .foregroundColor(.secondary)
                         }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.12), in: Capsule())
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
                 .background(Color(NSColor.controlBackgroundColor))
                 
                 Divider()
                 
-                // Map Canvas
-                PoincareStabilityMapView(manager: manager)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Main Content Canvas based on viewMode
+                Group {
+                    switch viewMode {
+                    case .poincare:
+                        PoincareStabilityMapView(manager: manager)
+                    case .energyPath:
+                        PathEnergyChartView(manager: manager)
+                    case .split:
+                        HSplitView {
+                            PoincareStabilityMapView(manager: manager)
+                                .frame(minWidth: 340)
+                            PathEnergyChartView(manager: manager)
+                                .frame(minWidth: 340)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 
                 // Collapsible Log Drawer
                 if showLogs {

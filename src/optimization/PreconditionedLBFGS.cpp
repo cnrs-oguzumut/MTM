@@ -188,8 +188,7 @@ FastStiffnessAssembler::assembleStiffness(const alglib::real_1d_array &x,
   ensurePattern(userData);
 
   const auto &active = userData->active_elements;
-  const double a0 = userData->ideal_lattice_parameter;
-  const double normalisation = a0 * a0;
+  const double normalisation = userData->calculator.getUnitCellArea();
 
   const std::function<double(double)> *d2pot = userData->second_derivative_function;
   if (d2pot == nullptr) {

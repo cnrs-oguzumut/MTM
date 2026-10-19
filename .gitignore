@@ -30,5 +30,6 @@ vtk_output/
 LatticeLauncher/.build/
 LatticeLauncher/*.app/
 *.csv
+*.json
 *.dat
 dislocation_log.txt

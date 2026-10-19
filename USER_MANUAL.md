@@ -616,3 +616,12 @@ When repeating or benchmarking this study with seed 42, verify that your extract
 | **$|\Delta \sigma_{xy, a}^{(k)}|$ Mean** | $2.87 \times 10^{-3}$ | $8.70 \times 10^{-3}$ |
 | **$|\Delta \sigma_{xy, a}^{(k)}|$ Maximum** | $0.495$ | $0.691$ |
 
+---
+
+### Best Practices: Lattice Energy Calculators
+
+| Calculator | Primary Domain | Appropriate Use Cases |
+| :--- | :--- | :--- |
+| **`SquareLatticeCalculator`** | Integer reference grid $\mathbb{Z}^2$ | **Default for all metric-based studies** (stiffness spectrum, acoustic tensor, shear studies, continuum comparisons). For triangular lattices, evaluate on $\mathbb{Z}^2$ with $C_{\text{ref}} = F_0^T F_0$ and $\text{calc\_scale} = a_0 / (4/3)^{1/4}$. Compatible with Lagrange reduction $GL(2, \mathbb{Z})$. |
+| **`Strain_Energy_LatticeCalculator`** | Metric tensor $C$ | Continuum phenomenological models (Mode 3 Zanzotto). |
+| **`TriangularLatticeCalculator`** | Physical triangular coordinates $(m + \frac{1}{2}n, \frac{\sqrt{3}}{2}n)$ | **Avoid for metric / shear / Lagrange reduction studies** (internal triangular basis causes double-distortion if metric $C = F_0^T F_0$ is also applied). **Reserved strictly for direct-coordinate experiments** such as **nanoindentation** or discrete dislocation core energy calculations where atomic coordinates are placed directly in Euclidean space. |

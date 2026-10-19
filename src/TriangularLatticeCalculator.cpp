@@ -198,6 +198,8 @@ itensor::ITensor TriangularLatticeCalculator::hessianComponentsToITensor(const H
     tensor.set(i=2, j=2, k=2, l=2, hess.c22_c22);  // ∂²E/∂c₂₂²
     tensor.set(i=1, j=2, k=1, l=2, hess.c12_c12);  // ∂²E/∂c₁₂²
     tensor.set(i=2, j=1, k=2, l=1, hess.c12_c12);  // ∂²E/∂c₂₁² (symmetry)
+    tensor.set(i=1, j=2, k=2, l=1, hess.c12_c12);  // ∂²E/∂c₁₂∂c₂₁ (symmetry)
+    tensor.set(i=2, j=1, k=1, l=2, hess.c12_c12);  // ∂²E/∂c₂₁∂c₁₂ (symmetry)
     
     // Mixed derivatives
     tensor.set(i=1, j=1, k=2, l=2, hess.c11_c22);  // ∂²E/∂c₁₁∂c₂₂
