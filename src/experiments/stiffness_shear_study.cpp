@@ -349,7 +349,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         pt.continuum_energy = continuum_energy;
         results.points.push_back(pt);
 
-        // Print log every few steps or near transition
+        // Print log every few steps or near transition, and flush progress for GUI
         if (step % 5 == 0 || !is_stable || (has_last && last_lambda * lambda_min <= 0.0)) {
             std::cout << std::fixed << std::setprecision(4) << std::setw(10) << alpha
                       << std::scientific << std::setprecision(5)
@@ -357,8 +357,15 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                       << std::setw(16) << lambda_2
                       << std::setw(16) << lambda_3
                       << std::setw(14) << total_energy
-                      << std::setw(10) << (is_stable ? "STABLE" : "UNSTABLE") << "\n";
+                      << std::setw(10) << (is_stable ? "STABLE" : "UNSTABLE") << std::endl;
         }
+        std::cout << "[PROGRESS] " << (step + 1) << "/" << num_steps
+                  << " alpha=" << std::fixed << std::setprecision(4) << alpha
+                  << " elapsed=" << std::fixed << std::setprecision(2) << seconds_since(t_start)
+                  << " pt=" << std::scientific << std::setprecision(8)
+                  << alpha << "," << lambda_min << "," << lambda_2 << "," << lambda_3 << ","
+                  << (is_stable ? 1 : 0) << "," << total_energy << "," << energy_density << "," << continuum_energy
+                  << std::endl;
     }
 
     results.summary.alpha_c_neg = alpha_c_neg;

@@ -89,6 +89,11 @@ public class StiffnessStudyManager: ObservableObject {
     
     // Process State
     @Published public var isRunning: Bool = false
+    @Published public var progress: Double = 0.0
+    @Published public var completedSteps: Int = 0
+    @Published public var totalSteps: Int = 0
+    @Published public var elapsedSeconds: Double = 0.0
+    @Published public var etaSeconds: Double? = nil
     @Published public var statusMessage: String = "Ready"
     @Published public var logLines: [String] = []
     
@@ -152,8 +157,14 @@ public class StiffnessStudyManager: ObservableObject {
         p.standardOutput = pipe
         p.standardError = pipe
         
+        let estSteps = max(1, Int(round((alphaMax - alphaMin) / dalpha))) + 1
         self.isRunning = true
-        self.statusMessage = "Computing stiffness matrix spectrum K(α)..."
+        self.progress = 0.0
+        self.completedSteps = 0
+        self.totalSteps = estSteps
+        self.elapsedSeconds = 0.0
+        self.etaSeconds = nil
+        self.statusMessage = "Step 0 / \(estSteps) (assembling stiffness matrix)..."
         self.logLines.removeAll()
         self.points.removeAll()
         self.summary = StiffnessStudySummaryModel()
@@ -161,7 +172,7 @@ public class StiffnessStudyManager: ObservableObject {
         self.appendLog("🚀 Starting Stiffness Matrix K(α) Shear Study...")
         self.appendLog("Grid: \(nx)x\(ny), Symmetry: \(latticeSymmetry.displayName), BC: \(boundaryCondition.displayName)")
         self.appendLog("Potential: \(potentialMode.displayName)")
-        self.appendLog("Shear sweep: [\(alphaMin), \(alphaMax)], step \(dalpha)")
+        self.appendLog("Shear sweep: [\(alphaMin), \(alphaMax)], step \(dalpha) (\(estSteps) steps)")
         
         self.process = p
         
@@ -171,7 +182,7 @@ public class StiffnessStudyManager: ObservableObject {
             DispatchQueue.main.async {
                 let lines = str.components(separatedBy: .newlines)
                 for line in lines where !line.trimmingCharacters(in: .whitespaces).isEmpty {
-                    self?.appendLog(line)
+                    self?.handleOutputLine(line)
                 }
             }
         }
@@ -182,6 +193,8 @@ public class StiffnessStudyManager: ObservableObject {
                 pipe.fileHandleForReading.readabilityHandler = nil
                 
                 if proc.terminationStatus == 0 {
+                    self?.progress = 1.0
+                    self?.etaSeconds = 0.0
                     self?.statusMessage = "Complete! Data parsed successfully."
                     self?.loadResultsJSON(jsonPath: jsonOut)
                 } else {
@@ -203,6 +216,64 @@ public class StiffnessStudyManager: ObservableObject {
         process = nil
         isRunning = false
         statusMessage = "Cancelled by user"
+    }
+    
+    private func handleOutputLine(_ line: String) {
+        if line.hasPrefix("[PROGRESS]") {
+            // Format: "[PROGRESS] 12/121 alpha=-0.2400 elapsed=1.42"
+            let parts = line.split(separator: " ")
+            if parts.count >= 2 {
+                let stepParts = parts[1].split(separator: "/")
+                if stepParts.count == 2,
+                   let cur = Int(stepParts[0]),
+                   let tot = Int(stepParts[1]), tot > 0 {
+                    self.completedSteps = cur
+                    self.totalSteps = tot
+                    self.progress = min(0.99, Double(cur) / Double(tot))
+                }
+            }
+            for p in parts {
+                if p.hasPrefix("elapsed="), let el = Double(p.dropFirst("elapsed=".count)) {
+                    self.elapsedSeconds = el
+                    if self.completedSteps > 0 && self.totalSteps > self.completedSteps {
+                        let rem = el * Double(self.totalSteps - self.completedSteps) / Double(self.completedSteps)
+                        self.etaSeconds = rem
+                    } else {
+                        self.etaSeconds = 0.0
+                    }
+                } else if p.hasPrefix("pt=") {
+                    let vals = p.dropFirst("pt=".count).split(separator: ",")
+                    if vals.count >= 8,
+                       let a = Double(vals[0]),
+                       let l1 = Double(vals[1]),
+                       let l2 = Double(vals[2]),
+                       let l3 = Double(vals[3]),
+                       let st = Int(vals[4]),
+                       let en = Double(vals[5]),
+                       let ed = Double(vals[6]),
+                       let ce = Double(vals[7]) {
+                        var pt = StiffnessPointModel()
+                        pt.alpha = a
+                        pt.lambda_min = l1
+                        pt.lambda_2 = l2
+                        pt.lambda_3 = l3
+                        pt.is_stable = st != 0
+                        pt.energy = en
+                        pt.energy_density = ed
+                        pt.continuum_energy = ce
+                        self.points.append(pt)
+                    }
+                }
+            }
+            let pct = Int(round(self.progress * 100.0))
+            if let eta = self.etaSeconds, eta > 0.2 {
+                self.statusMessage = String(format: "Step %d/%d (%d%%) • %.1fs elapsed • ~%.1fs left", self.completedSteps, self.totalSteps, pct, self.elapsedSeconds, eta)
+            } else {
+                self.statusMessage = String(format: "Step %d/%d (%d%%) • %.1fs elapsed", self.completedSteps, self.totalSteps, pct, self.elapsedSeconds)
+            }
+            return
+        }
+        appendLog(line)
     }
     
     private func appendLog(_ line: String) {

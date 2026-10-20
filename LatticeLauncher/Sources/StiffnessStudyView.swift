@@ -235,17 +235,26 @@ public struct StiffnessStudyView: View {
                 
                 Divider()
                 
-                // Bottom Run Button
-                HStack(spacing: 12) {
+                // Bottom Action Footer
+                VStack(spacing: 8) {
                     if manager.isRunning {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Button(action: { manager.stopStudy() }) {
-                            Label("Stop", systemImage: "stop.fill")
-                                .frame(maxWidth: .infinity)
+                        VStack(spacing: 6) {
+                            ProgressView(value: manager.progress)
+                                .progressViewStyle(.linear)
+                            HStack {
+                                Text(manager.statusMessage)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Button("Cancel", role: .destructive, action: { manager.stopStudy() })
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.red)
+                                    .controlSize(.small)
+                            }
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
+                        .padding(8)
+                        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                     } else {
                         Button(action: { manager.runStudy() }) {
                             Label("Run Stiffness Study", systemImage: "play.fill")
@@ -254,6 +263,19 @@ public struct StiffnessStudyView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
+                        
+                        if !manager.statusMessage.isEmpty && manager.statusMessage != "Ready" {
+                            HStack(spacing: 4) {
+                                Image(systemName: manager.statusMessage.contains("failed") || manager.statusMessage.contains("Error") ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                                    .foregroundColor(manager.statusMessage.contains("failed") || manager.statusMessage.contains("Error") ? .orange : .green)
+                                    .font(.caption2)
+                                Text(manager.statusMessage)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                        }
                     }
                 }
                 .padding(12)
