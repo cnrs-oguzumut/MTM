@@ -80,6 +80,8 @@ public class ProcessRunner: ObservableObject {
         let csvPath = "\(dir)/energy_stress_log.csv"
         guard FileManager.default.fileExists(atPath: csvPath) else { return }
         self.outputDirectory = dir
+        self.lastReadCSVLineCount = 0
+        self.curvePoints.removeAll()
         self.pollCSV()
     }
     
@@ -115,6 +117,7 @@ public class ProcessRunner: ObservableObject {
         
         // 3. Clear stats and set running state
         self.activeConfig = config
+        self.lastReadCSVLineCount = 0
         self.curvePoints.removeAll()
         self.eigenPoints.removeAll()
         self.currentLambdaMin = nil
@@ -245,7 +248,7 @@ public class ProcessRunner: ObservableObject {
                 lines.removeLast()
             }
             
-            let startIdx = max(0, min(self.lastReadCSVLineCount, lines.count))
+            let startIdx = (self.curvePoints.isEmpty || lines.count < self.lastReadCSVLineCount) ? 0 : max(0, min(self.lastReadCSVLineCount, lines.count))
             var newPoints: [StressStrainPoint] = []
             let currentLastIter = self.curvePoints.last?.iteration ?? -1
             
