@@ -439,8 +439,17 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     Eigen::Vector2d p1(0.0, 0.0);
     Eigen::Vector2d p2(h, 0.0);
     Eigen::Vector2d p3(0.0, h);
+    if (config.use_rotation && std::abs(actual_theta_deg) > 1e-6) {
+        Eigen::Matrix2d R;
+        double rad = actual_theta_deg * M_PI / 180.0;
+        R << std::cos(rad), -std::sin(rad),
+             std::sin(rad),  std::cos(rad);
+        p1 = R * p1;
+        p2 = R * p2;
+        p3 = R * p3;
+    }
     Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
-    const Eigen::Matrix<double, 3, 2>* manual_dndx = config.use_rotation ? nullptr : &dndx;
+    const Eigen::Matrix<double, 3, 2>* manual_dndx = &dndx;
 
     auto [elements, active_elements] =
         mesher.createMesh(points_ref, x0, Eigen::Matrix2d::Identity(), manual_dndx);
@@ -659,13 +668,22 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         double energy_density = total_energy / num_active;
 
         // Continuum strain energy density
+        Eigen::Matrix2d R_cont = Eigen::Matrix2d::Identity();
+        if (config.use_rotation && std::abs(actual_theta_deg) > 1e-6) {
+            double rad = actual_theta_deg * M_PI / 180.0;
+            R_cont << std::cos(rad), -std::sin(rad),
+                      std::sin(rad),  std::cos(rad);
+        }
         Eigen::Matrix2d C_cont = F_shear.transpose() * F_shear;
         if (config.lattice_type == "triangular") {
             Eigen::Matrix2d F0;
             double a = std::pow(4.0 / 3.0, 0.25);
             F0 << a, a * 0.5,
                   0.0, a * std::sqrt(3.0) / 2.0;
-            Eigen::Matrix2d F_tot = F_shear * F0;
+            Eigen::Matrix2d F_tot = F_shear * R_cont * F0;
+            C_cont = F_tot.transpose() * F_tot;
+        } else {
+            Eigen::Matrix2d F_tot = F_shear * R_cont;
             C_cont = F_tot.transpose() * F_tot;
         }
         const auto red_cont = lagrange::reduce(C_cont);
