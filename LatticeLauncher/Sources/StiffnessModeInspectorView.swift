@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import AppKit
+import UniformTypeIdentifiers
 
 public enum StiffnessEigenmodeChoice: Int, CaseIterable, Identifiable {
     case mode1 = 1
@@ -25,12 +26,24 @@ public enum StiffnessColorField: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
+public enum StiffnessColorPalette: String, CaseIterable, Identifiable {
+    case coolwarm = "Cool-Warm"
+    case viridis = "Viridis"
+    case plasma = "Plasma"
+    case grayscale = "Grayscale"
+    
+    public var id: String { rawValue }
+}
+
 public struct StiffnessModeInspectorView: View {
     @ObservedObject var manager: StiffnessStudyManager
     
     @State private var selectedMode: StiffnessEigenmodeChoice = .mode1
     @State private var frameMode: AcousticFrameMode = .eulerian
     @State private var colorField: StiffnessColorField = .magnitude
+    @State private var colorPalette: StiffnessColorPalette = .coolwarm
+    @State private var nodeScale: Double = 1.0
+    @State private var toastMessage: String? = nil
     @State private var modeAmplitude: Double = 0.35
     @State private var showQuiver: Bool = true
     @State private var showMeshEdges: Bool = true
@@ -214,6 +227,58 @@ public struct StiffnessModeInspectorView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .fixedSize()
+                    
+                    Divider().frame(height: 16)
+                    
+                    // F. Publication Color Palette Picker
+                    Picker("", selection: $colorPalette) {
+                        ForEach(StiffnessColorPalette.allCases) { cp in
+                            Text(cp.rawValue).tag(cp)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .fixedSize()
+                    
+                    Divider().frame(height: 16)
+                    
+                    // G. Publication Export Menu
+                    Menu {
+                        Section("Publication High-Res (300 DPI PNG)") {
+                            Button(action: { exportFigure(target: .lattice, bg: .white) }) {
+                                Label("Save Lattice Figure (White PNG)...", systemImage: "photo")
+                            }
+                            Button(action: { exportFigure(target: .rosette, bg: .white) }) {
+                                Label("Save Polar Rosette (White PNG)...", systemImage: "scope")
+                            }
+                            Button(action: { exportFigure(target: .combined, bg: .white) }) {
+                                Label("Save Dual Publication Figure (White PNG)...", systemImage: "rectangle.split.2x1")
+                            }
+                        }
+                        Section("Screen Theme (Dark PNG)") {
+                            Button(action: { exportFigure(target: .lattice, bg: .dark) }) {
+                                Label("Save Lattice (Dark PNG)...", systemImage: "moon.fill")
+                            }
+                            Button(action: { exportFigure(target: .combined, bg: .dark) }) {
+                                Label("Save Dual Figure (Dark PNG)...", systemImage: "moon.stars.fill")
+                            }
+                        }
+                        Section("Clipboard (Direct Paste into Overleaf / Keynote)") {
+                            Button(action: { copyFigureToClipboard(target: .lattice) }) {
+                                Label("Copy Lattice Figure (White)", systemImage: "doc.on.clipboard")
+                            }
+                            Button(action: { copyFigureToClipboard(target: .combined) }) {
+                                Label("Copy Dual Figure (White)", systemImage: "doc.on.clipboard.fill")
+                            }
+                        }
+                    } label: {
+                        Label("Export Figure", systemImage: "square.and.arrow.up")
+                            .font(.caption.bold())
+                    }
+                    .menuStyle(.borderedButton)
                     .controlSize(.small)
                     .fixedSize()
                 }
@@ -407,29 +472,61 @@ public struct StiffnessModeInspectorView: View {
                                         .controlSize(.mini)
                                 }
                                 .fixedSize()
+                                
+                                HStack(spacing: 4) {
+                                    Text("Nodes:")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                    Slider(value: $nodeScale, in: 0.0...3.0)
+                                        .frame(width: 55)
+                                        .controlSize(.mini)
+                                    Text(nodeScale < 0.05 ? "Off" : String(format: "%.1f×", nodeScale))
+                                        .font(.caption2.monospaced())
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                }
+                                .fixedSize()
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
                         .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
                         
-                        GeometryReader { _ in
-                            Canvas { ctx, size in
-                                drawDiscreteLatticeCanvas(ctx: &ctx, size: size, resolved: resolved)
+                        ZStack(alignment: .top) {
+                            GeometryReader { _ in
+                                Canvas { ctx, size in
+                                    drawDiscreteLatticeCanvas(ctx: &ctx, size: size, resolved: resolved)
+                                }
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture()
+                                        .onChanged { val in
+                                            panOffset = CGSize(
+                                                width: dragStartOffset.width + val.translation.width,
+                                                height: dragStartOffset.height + val.translation.height
+                                            )
+                                        }
+                                        .onEnded { _ in
+                                            dragStartOffset = panOffset
+                                        }
+                                )
                             }
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture()
-                                    .onChanged { val in
-                                        panOffset = CGSize(
-                                            width: dragStartOffset.width + val.translation.width,
-                                            height: dragStartOffset.height + val.translation.height
-                                        )
-                                    }
-                                    .onEnded { _ in
-                                        dragStartOffset = panOffset
-                                    }
-                            )
+                            
+                            if let msg = toastMessage {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                                    Text(msg).font(.caption.bold())
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                                .shadow(color: .black.opacity(0.3), radius: 6)
+                                .padding(.top, 12)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
                         }
                         
                         // Footer Bar for Left Lattice Canvas
@@ -584,8 +681,11 @@ public struct StiffnessModeInspectorView: View {
     }
     
     // MARK: - Resolved Discrete Lattice & Mode Data
-    private struct ResolvedLatticeMode {
+    fileprivate struct ResolvedLatticeMode {
         var alpha: Double
+        var lambdaMin: Double
+        var lambda2: Double
+        var lambda3: Double
         var isExactFEM: Bool
         var gridNx: Int
         var gridNy: Int
@@ -880,6 +980,9 @@ public struct StiffnessModeInspectorView: View {
         
         return ResolvedLatticeMode(
             alpha: pt.alpha,
+            lambdaMin: pt.lambda_min,
+            lambda2: pt.lambda_2,
+            lambda3: pt.lambda_3,
             isExactFEM: isExact,
             gridNx: gridNx,
             gridNy: gridNy,
@@ -911,8 +1014,59 @@ public struct StiffnessModeInspectorView: View {
         )
     }
     
+    // MARK: - Publication Colormap Interpolation
+    private func samplePalette(t: Double, palette: StiffnessColorPalette) -> Color {
+        let u = max(0.0, min(1.0, t))
+        switch palette {
+        case .coolwarm:
+            if u < 0.25 {
+                let f = u / 0.25
+                return Color(red: 0.05 + 0.05 * f, green: 0.25 + 0.60 * f, blue: 0.85 + 0.10 * f)
+            } else if u < 0.5 {
+                let f = (u - 0.25) / 0.25
+                return Color(red: 0.10 + 0.10 * f, green: 0.85 + 0.00 * f, blue: 0.95 - 0.65 * f)
+            } else if u < 0.75 {
+                let f = (u - 0.5) / 0.25
+                return Color(red: 0.20 + 0.75 * f, green: 0.85 + 0.05 * f, blue: 0.30 - 0.20 * f)
+            } else {
+                let f = (u - 0.75) / 0.25
+                return Color(red: 0.95 + 0.00 * f, green: 0.90 - 0.75 * f, blue: 0.10 - 0.00 * f)
+            }
+        case .viridis:
+            if u < 0.333 {
+                let f = u / 0.333
+                return Color(red: 0.267 - 0.076 * f, green: 0.004 + 0.403 * f, blue: 0.329 + 0.227 * f)
+            } else if u < 0.666 {
+                let f = (u - 0.333) / 0.333
+                return Color(red: 0.191 - 0.063 * f, green: 0.407 + 0.226 * f, blue: 0.556 - 0.028 * f)
+            } else {
+                let f = (u - 0.666) / 0.334
+                return Color(red: 0.128 + 0.865 * f, green: 0.633 + 0.273 * f, blue: 0.528 - 0.384 * f)
+            }
+        case .plasma:
+            if u < 0.333 {
+                let f = u / 0.333
+                return Color(red: 0.050 + 0.565 * f, green: 0.029 + 0.061 * f, blue: 0.529 + 0.055 * f)
+            } else if u < 0.666 {
+                let f = (u - 0.333) / 0.333
+                return Color(red: 0.615 + 0.275 * f, green: 0.090 + 0.302 * f, blue: 0.584 - 0.306 * f)
+            } else {
+                let f = (u - 0.666) / 0.334
+                return Color(red: 0.890 + 0.051 * f, green: 0.392 + 0.584 * f, blue: 0.278 - 0.149 * f)
+            }
+        case .grayscale:
+            let g = 0.12 + 0.85 * u
+            return Color(red: g, green: g, blue: g)
+        }
+    }
+    
     // MARK: - Left Canvas: Discrete N×N Lattice & Eigenvector Field
-    private func drawDiscreteLatticeCanvas(ctx: inout GraphicsContext, size: CGSize, resolved: ResolvedLatticeMode) {
+    fileprivate func drawDiscreteLatticeCanvas(
+        ctx: inout GraphicsContext,
+        size: CGSize,
+        resolved: ResolvedLatticeMode,
+        isPublicationWhite: Bool = false
+    ) {
         let nNodes = resolved.nodesRefX.count
         guard nNodes > 0 else { return }
         
@@ -981,23 +1135,26 @@ public struct StiffnessModeInspectorView: View {
                     let fillCol: Color
                     switch colorField {
                     case .magnitude:
-                        fillCol = Color.cyan.opacity(0.05 + 0.30 * min(1.0, avgMag))
+                        fillCol = samplePalette(t: min(1.0, avgMag), palette: colorPalette).opacity(0.24)
                     case .elementShear:
                         let du1 = hypot(dispUx[i1] - dispUx[i0], dispUy[i1] - dispUy[i0])
                         let du2 = hypot(dispUx[i2] - dispUx[i0], dispUy[i2] - dispUy[i0])
                         let shearInt = min(1.0, 0.8 * (du1 + du2))
-                        fillCol = Color.orange.opacity(0.05 + 0.35 * shearInt)
+                        fillCol = samplePalette(t: shearInt, palette: colorPalette).opacity(0.28)
                     case .direction:
                         let uxAvg = (dispUx[i0] + dispUx[i1] + dispUx[i2]) / 3.0
                         let uyAvg = (dispUy[i0] + dispUy[i1] + dispUy[i2]) / 3.0
-                        let hue = fmod((atan2(uyAvg, uxAvg) / (2.0 * .pi)) + 1.0, 1.0)
-                        fillCol = Color(hue: hue, saturation: 0.75, brightness: 0.9).opacity(0.22 * min(1.0, avgMag + 0.15))
+                        let angleNorm = fmod((atan2(uyAvg, uxAvg) / (2.0 * .pi)) + 1.0, 1.0)
+                        fillCol = samplePalette(t: angleNorm, palette: colorPalette).opacity(0.26)
                     }
                     ctx.fill(path, with: .color(fillCol))
                 }
                 
                 if showMeshEdges {
-                    ctx.stroke(path, with: .color(Color.primary.opacity(effZoom > 2.0 ? 0.35 : 0.14)), lineWidth: effZoom > 3.0 ? 1.0 : 0.65)
+                    let edgeCol = isPublicationWhite
+                        ? Color.black.opacity(effZoom > 2.0 ? 0.40 : 0.20)
+                        : Color.primary.opacity(effZoom > 2.0 ? 0.35 : 0.14)
+                    ctx.stroke(path, with: .color(edgeCol), lineWidth: effZoom > 3.0 ? 1.0 : 0.65)
                 }
             }
         }
@@ -1012,49 +1169,51 @@ public struct StiffnessModeInspectorView: View {
             refBox.addLine(to: toScreen(rMaxX, rMaxY))
             refBox.addLine(to: toScreen(rMinX, rMaxY))
             refBox.closeSubpath()
-            ctx.stroke(refBox, with: .color(Color.purple.opacity(0.55)),
+            ctx.stroke(refBox, with: .color(Color.purple.opacity(isPublicationWhite ? 0.75 : 0.55)),
                        style: StrokeStyle(lineWidth: 1.4, dash: [5, 4]))
         }
         
-        // 3. Draw Displaced Lattice Nodes & Decimated Quiver Arrows (handles up to 40,000+ nodes in Full-Scale Static)
+        // 3. Draw Displaced Lattice Nodes & Decimated Quiver Arrows
         let cellPix = max(1.3, min(7.0, scale * 0.48))
-        let nodeR: CGFloat = nNodes > 900 ? cellPix : (nNodes > 400 ? 2.4 : (nNodes > 150 ? 3.2 : 4.2))
+        let baseNodeR: CGFloat = nNodes > 900 ? cellPix : (nNodes > 400 ? 2.4 : (nNodes > 150 ? 3.2 : 4.2))
+        let nodeR: CGFloat = baseNodeR * CGFloat(nodeScale)
         let quiverStepX = max(1, resolved.gridNx / 16)
         let quiverStepY = max(1, resolved.gridNy / 16)
         let arrowScale = max(1.0, Double(quiverStepX) * 0.65)
         
-        for i in 0..<nNodes {
-            let pDef = toScreen(defX[i], defY[i])
-            // Viewport culling for zoomed full-scale mode
-            if pDef.x < -12 || pDef.x > size.width + 12 || pDef.y < -12 || pDef.y > size.height + 12 {
-                continue
-            }
-            let mag = hypot(dispUx[i], dispUy[i])
-            
-            let dotColor: Color
-            if !resolved.isFree[i] {
-                dotColor = .gray.opacity(0.6)
-            } else {
-                switch colorField {
-                case .magnitude, .elementShear:
-                    // Smooth DIC heatmap from deep blue/cyan (0) -> yellow -> bright orange/red (1)
-                    let t = min(1.0, max(0.0, mag))
-                    let hue = 0.55 * (1.0 - t) // 0.55 (cyan/blue) down to 0.0 (red/orange)
-                    dotColor = Color(hue: hue, saturation: 0.85, brightness: 0.35 + 0.65 * t)
-                case .direction:
-                    let hue = fmod((atan2(dispUy[i], dispUx[i]) / (2.0 * .pi)) + 1.0, 1.0)
-                    dotColor = Color(hue: hue, saturation: 0.8, brightness: 0.3 + 0.7 * min(1.0, mag))
+        if nodeScale > 0.01 {
+            for i in 0..<nNodes {
+                let pDef = toScreen(defX[i], defY[i])
+                // Viewport culling for zoomed full-scale mode
+                if pDef.x < -12 || pDef.x > size.width + 12 || pDef.y < -12 || pDef.y > size.height + 12 {
+                    continue
                 }
-            }
-            let rect = CGRect(x: pDef.x - nodeR, y: pDef.y - nodeR, width: 2 * nodeR, height: 2 * nodeR)
-            if nNodes > 2500 && effZoom < 2.5 {
-                ctx.fill(Path(rect), with: .color(dotColor))
-            } else {
-                ctx.fill(Path(ellipseIn: rect), with: .color(dotColor))
+                let mag = hypot(dispUx[i], dispUy[i])
+                
+                let dotColor: Color
+                if !resolved.isFree[i] {
+                    dotColor = .gray.opacity(0.6)
+                } else {
+                    switch colorField {
+                    case .magnitude, .elementShear:
+                        let t = min(1.0, max(0.0, mag))
+                        dotColor = samplePalette(t: t, palette: colorPalette)
+                    case .direction:
+                        let angleNorm = fmod((atan2(dispUy[i], dispUx[i]) / (2.0 * .pi)) + 1.0, 1.0)
+                        dotColor = samplePalette(t: angleNorm, palette: colorPalette)
+                    }
+                }
+                let rect = CGRect(x: pDef.x - nodeR, y: pDef.y - nodeR, width: 2 * nodeR, height: 2 * nodeR)
+                if nNodes > 2500 && effZoom < 2.5 && nodeScale <= 1.0 {
+                    ctx.fill(Path(rect), with: .color(dotColor))
+                } else {
+                    ctx.fill(Path(ellipseIn: rect), with: .color(dotColor))
+                }
             }
         }
         
         if showQuiver {
+            let arrowColor = isPublicationWhite ? Color.black.opacity(0.85) : Color.white.opacity(0.85)
             for i in 0..<nNodes {
                 if nNodes > 900 {
                     let ix = i % max(1, resolved.gridNx)
@@ -1071,8 +1230,8 @@ public struct StiffnessModeInspectorView: View {
                 var qLine = Path()
                 qLine.move(to: pBase)
                 qLine.addLine(to: pTip)
-                ctx.stroke(qLine, with: .color(Color.white.opacity(0.82)), lineWidth: 1.15)
-                drawArrowHead(ctx: &ctx, from: pBase, to: pTip, color: Color.white.opacity(0.90), size: 4.5)
+                ctx.stroke(qLine, with: .color(arrowColor), lineWidth: 1.15)
+                drawArrowHead(ctx: &ctx, from: pBase, to: pTip, color: arrowColor, size: 4.5)
             }
         }
         
@@ -1108,23 +1267,32 @@ public struct StiffnessModeInspectorView: View {
             let mTip = toScreen(vecR * resolved.eulerMx, vecR * resolved.eulerMy)
             var mPath = Path()
             mPath.move(to: center); mPath.addLine(to: mTip)
-            ctx.stroke(mPath, with: .color(.yellow), lineWidth: 2.5)
-            drawArrowHead(ctx: &ctx, from: center, to: mTip, color: .yellow, size: 8)
+            let mColor = isPublicationWhite ? Color(red: 0.85, green: 0.72, blue: 0.0) : Color.yellow
+            ctx.stroke(mPath, with: .color(mColor), lineWidth: 2.5)
+            drawArrowHead(ctx: &ctx, from: center, to: mTip, color: mColor, size: 8)
         }
     }
     
     // MARK: - Right Canvas: Directional Wave-Normal Spectrum Rosette |v̂(ξ)|²
-    private func drawDirectionalSpectrumRosette(ctx: inout GraphicsContext, size: CGSize, resolved: ResolvedLatticeMode) {
+    fileprivate func drawDirectionalSpectrumRosette(
+        ctx: inout GraphicsContext,
+        size: CGSize,
+        resolved: ResolvedLatticeMode,
+        isPublicationWhite: Bool = false
+    ) {
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
         let maxR = max(40.0, min(size.width, size.height) * 0.39)
-        
         let maxVal = max(1e-9, (resolved.eulerSpectrum + resolved.lagrSpectrum).max() ?? 1.0)
+        
+        let ringColor = isPublicationWhite ? Color.black.opacity(0.15) : Color.primary.opacity(0.10)
+        let spokeColor = isPublicationWhite ? Color.black.opacity(0.12) : Color.primary.opacity(0.10)
+        let labelColor = isPublicationWhite ? Color(white: 0.30) : Color.secondary
         
         // 1. Polar Grid Circles & Spokes
         for frac in [0.25, 0.5, 0.75, 1.0] {
             let r = maxR * CGFloat(frac)
             let rect = CGRect(x: center.x - r, y: center.y - r, width: 2 * r, height: 2 * r)
-            ctx.stroke(Path(ellipseIn: rect), with: .color(Color.primary.opacity(0.10)), lineWidth: 0.8)
+            ctx.stroke(Path(ellipseIn: rect), with: .color(ringColor), lineWidth: 0.8)
         }
         
         for deg in stride(from: 0, to: 360, by: 30) {
@@ -1133,12 +1301,12 @@ public struct StiffnessModeInspectorView: View {
                                y: center.y - maxR * CGFloat(sin(rad)))
             var spoke = Path()
             spoke.move(to: center); spoke.addLine(to: pEnd)
-            ctx.stroke(spoke, with: .color(Color.primary.opacity(deg % 90 == 0 ? 0.22 : 0.10)), lineWidth: 0.8)
+            ctx.stroke(spoke, with: .color(spokeColor), lineWidth: 0.8)
             
             let lblR = maxR + 15
             let pLbl = CGPoint(x: center.x + lblR * CGFloat(cos(rad)),
                                y: center.y - lblR * CGFloat(sin(rad)))
-            ctx.draw(Text("\(deg)°").font(.system(size: 9, design: .monospaced)).foregroundColor(.secondary),
+            ctx.draw(Text("\(deg)°").font(.system(size: 9, design: .monospaced)).foregroundColor(labelColor),
                      at: pLbl, anchor: .center)
         }
         
@@ -1155,7 +1323,7 @@ public struct StiffnessModeInspectorView: View {
             }
             path.closeSubpath()
             if !isDashed {
-                ctx.fill(path, with: .color(color.opacity(0.12)))
+                ctx.fill(path, with: .color(color.opacity(isPublicationWhite ? 0.18 : 0.12)))
             }
             ctx.stroke(path, with: .color(color),
                        style: StrokeStyle(lineWidth: isDashed ? 1.8 : 2.2, dash: isDashed ? [5, 4] : []))
@@ -1165,7 +1333,8 @@ public struct StiffnessModeInspectorView: View {
             drawLobe(spec: resolved.lagrSpectrum, color: .purple, isDashed: frameMode == .both)
         }
         if frameMode != .lagrangian {
-            drawLobe(spec: resolved.eulerSpectrum, color: .cyan, isDashed: false)
+            let eulerCol = isPublicationWhite ? Color(red: 0.05, green: 0.45, blue: 0.85) : Color.cyan
+            drawLobe(spec: resolved.eulerSpectrum, color: eulerCol, isDashed: false)
         }
         
         // 3. Draw Slip Plane & Dominant (n*, m*) / (N*, M*) Rays
@@ -1194,7 +1363,8 @@ public struct StiffnessModeInspectorView: View {
                                       y: center.y + maxR * CGFloat(sin(slipRad))))
             slipLine.addLine(to: CGPoint(x: center.x + maxR * CGFloat(cos(slipRad)),
                                          y: center.y - maxR * CGFloat(sin(slipRad))))
-            ctx.stroke(slipLine, with: .color(Color.cyan.opacity(0.85)),
+            let slipCol = isPublicationWhite ? Color(red: 0.0, green: 0.60, blue: 0.70) : Color.cyan
+            ctx.stroke(slipLine, with: .color(slipCol.opacity(0.85)),
                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
             
             let nx = cos(eRad), ny = sin(eRad)
@@ -1206,8 +1376,9 @@ public struct StiffnessModeInspectorView: View {
             let mTip = CGPoint(x: center.x + maxR * 0.85 * CGFloat(resolved.eulerMx),
                                y: center.y - maxR * 0.85 * CGFloat(resolved.eulerMy))
             var mLine = Path(); mLine.move(to: center); mLine.addLine(to: mTip)
-            ctx.stroke(mLine, with: .color(.yellow), lineWidth: 2.4)
-            drawArrowHead(ctx: &ctx, from: center, to: mTip, color: .yellow, size: 8)
+            let mColor = isPublicationWhite ? Color(red: 0.85, green: 0.72, blue: 0.0) : Color.yellow
+            ctx.stroke(mLine, with: .color(mColor), lineWidth: 2.4)
+            drawArrowHead(ctx: &ctx, from: center, to: mTip, color: mColor, size: 8)
         }
     }
     
@@ -1227,5 +1398,196 @@ public struct StiffnessModeInspectorView: View {
         head.addLine(to: right)
         head.closeSubpath()
         ctx.fill(head, with: .color(color))
+    }
+    
+    // MARK: - Publication Export Actions
+    fileprivate enum ExportTarget {
+        case lattice
+        case rosette
+        case combined
+    }
+    
+    fileprivate enum ExportBackground {
+        case white
+        case dark
+    }
+    
+    @MainActor
+    private func exportFigure(target: ExportTarget, bg: ExportBackground) {
+        guard let pt = currentPoint else { return }
+        let resolved = resolveLatticeMode(for: pt)
+        
+        let panel = NSSavePanel()
+        panel.title = "Save Publication Figure (300 DPI PNG)"
+        panel.allowedContentTypes = [UTType.png]
+        
+        let bgTag = (bg == .white) ? "white" : "dark"
+        let tgtTag: String
+        switch target {
+        case .lattice: tgtTag = "lattice"
+        case .rosette: tgtTag = "rosette"
+        case .combined: tgtTag = "dual_figure"
+        }
+        panel.nameFieldStringValue = String(format: "%@_mode%d_alpha_%+.4f_%@.png",
+                                            tgtTag, selectedMode.rawValue, pt.alpha, bgTag)
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            let width: CGFloat = (target == .combined) ? 1400 : 800
+            let height: CGFloat = (target == .combined) ? 700 : 750
+            
+            let exportView = PublicationFigureView(
+                target: target,
+                bg: bg,
+                resolved: resolved,
+                selectedMode: selectedMode,
+                frameMode: frameMode,
+                colorField: colorField,
+                colorPalette: colorPalette,
+                showQuiver: showQuiver,
+                showMeshEdges: showMeshEdges,
+                modeAmplitude: modeAmplitude,
+                zoomScale: zoomScale,
+                panOffset: panOffset,
+                nodeScale: nodeScale,
+                inspector: self
+            )
+            .frame(width: width, height: height)
+            
+            let renderer = ImageRenderer(content: exportView)
+            renderer.scale = 2.5
+            if let nsImage = renderer.nsImage,
+               let tiff = nsImage.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: url)
+                showToast("Saved 300 DPI figure to \(url.lastPathComponent)")
+            }
+        }
+    }
+    
+    @MainActor
+    private func copyFigureToClipboard(target: ExportTarget) {
+        guard let pt = currentPoint else { return }
+        let resolved = resolveLatticeMode(for: pt)
+        let width: CGFloat = (target == .combined) ? 1400 : 800
+        let height: CGFloat = (target == .combined) ? 700 : 750
+        
+        let exportView = PublicationFigureView(
+            target: target,
+            bg: .white,
+            resolved: resolved,
+            selectedMode: selectedMode,
+            frameMode: frameMode,
+            colorField: colorField,
+            colorPalette: colorPalette,
+            showQuiver: showQuiver,
+            showMeshEdges: showMeshEdges,
+            modeAmplitude: modeAmplitude,
+            zoomScale: zoomScale,
+            panOffset: panOffset,
+            nodeScale: nodeScale,
+            inspector: self
+        )
+        .frame(width: width, height: height)
+        
+        let renderer = ImageRenderer(content: exportView)
+        renderer.scale = 2.5
+        if let nsImage = renderer.nsImage {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([nsImage])
+            showToast("Copied 300 DPI figure to clipboard! (Ready to paste)")
+        }
+    }
+    
+    private func showToast(_ msg: String) {
+        withAnimation { toastMessage = msg }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            withAnimation {
+                if toastMessage == msg { toastMessage = nil }
+            }
+        }
+    }
+}
+
+// MARK: - Dedicated Publication Figure View (Supports High-Res 300 DPI White/Dark)
+fileprivate struct PublicationFigureView: View {
+    let target: StiffnessModeInspectorView.ExportTarget
+    let bg: StiffnessModeInspectorView.ExportBackground
+    let resolved: StiffnessModeInspectorView.ResolvedLatticeMode
+    let selectedMode: StiffnessEigenmodeChoice
+    let frameMode: AcousticFrameMode
+    let colorField: StiffnessColorField
+    let colorPalette: StiffnessColorPalette
+    let showQuiver: Bool
+    let showMeshEdges: Bool
+    let modeAmplitude: Double
+    let zoomScale: Double
+    let panOffset: CGSize
+    let nodeScale: Double
+    let inspector: StiffnessModeInspectorView
+    
+    var isWhite: Bool { bg == .white }
+    var bgColor: Color { isWhite ? .white : Color(red: 0.11, green: 0.11, blue: 0.12) }
+    var fgColor: Color { isWhite ? .black : .white }
+    var subColor: Color { isWhite ? Color(white: 0.35) : Color(white: 0.70) }
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // Header Title
+            HStack {
+                let curLambda = (selectedMode == .mode1 ? resolved.lambdaMin : (selectedMode == .mode2 ? resolved.lambda2 : resolved.lambda3))
+                Text(String(format: "Discrete Stiffness Eigenmode %@   (α = %+.4f,  λ = %+.3e)",
+                            selectedMode.label, resolved.alpha, curLambda))
+                    .font(.system(size: 15, weight: .bold, design: .serif))
+                    .foregroundColor(fgColor)
+                Spacer()
+                Text(String(format: "Lattice %d×%d (%d nodes)", resolved.gridNx, resolved.gridNy, resolved.nodesRefX.count))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(subColor)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            
+            Divider()
+            
+            // Canvas View(s)
+            HStack(spacing: 12) {
+                if target == .lattice || target == .combined {
+                    Canvas { ctx, size in
+                        inspector.drawDiscreteLatticeCanvas(ctx: &ctx, size: size, resolved: resolved, isPublicationWhite: isWhite)
+                    }
+                }
+                if target == .rosette || target == .combined {
+                    Canvas { ctx, size in
+                        inspector.drawDirectionalSpectrumRosette(ctx: &ctx, size: size, resolved: resolved, isPublicationWhite: isWhite)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            
+            Divider()
+            
+            // Footer Caption
+            HStack(spacing: 16) {
+                Text(String(format: "Eulerian: n* = %.1f°  m* = (%+.2f, %+.2f) [%.1f°]",
+                            resolved.eulerNormalDeg, resolved.eulerMx, resolved.eulerMy, resolved.eulerPolDeg))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(isWhite ? Color(red: 0.8, green: 0.4, blue: 0.0) : .orange)
+                
+                Text(String(format: "Lagrangian: N* = %.1f°  M* = (%+.2f, %+.2f) [%.1f°]",
+                            resolved.lagrNormalDeg, resolved.lagrMx, resolved.lagrMy, resolved.lagrPolDeg))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(isWhite ? Color(red: 0.5, green: 0.1, blue: 0.6) : .purple)
+                
+                Spacer()
+                
+                Text(String(format: "Slip t* = %.1f°  •  Shear = %.1f%%", resolved.eulerSlipDeg, resolved.shearPercent))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(subColor)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 12)
+        }
+        .background(bgColor)
     }
 }
