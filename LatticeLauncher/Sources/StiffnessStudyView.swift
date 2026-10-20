@@ -403,16 +403,20 @@ public struct StiffnessStudyView: View {
 }
 
 // MARK: - Interactive Canvas Chart for λ_min(α)
-// MARK: - Interactive Canvas Chart for λ_min(α)
 struct StiffnessChartView: View {
     let points: [StiffnessPointModel]
     let summary: StiffnessStudySummaryModel
     let showHigherModes: Bool
     @Binding var hoveredPoint: StiffnessPointModel?
     
-    private let padLeft: CGFloat = 70
+    // 0: Normalized (±1 split scale so positive & negative branches each use full half-height)
+    // 1: Zoom Stable (uniform scale normalized by max positive λ, negative clamped near -1.2)
+    // 2: Raw (unscaled eigenvalues)
+    @State private var scaleMode: Int = 0
+    
+    private let padLeft: CGFloat = 78
     private let padRight: CGFloat = 30
-    private let padTop: CGFloat = 30
+    private let padTop: CGFloat = 40
     private let padBottom: CGFloat = 50
     
     private var minAlpha: Double {
@@ -425,16 +429,112 @@ struct StiffnessChartView: View {
         max(1e-6, maxAlpha - minAlpha)
     }
     
+    // Reference positive scale Λ_+ (largest positive eigenvalue among displayed modes)
+    private var posScale: Double {
+        var vals: [Double] = points.map(\.lambda_min).filter { $0 > 0 }
+        if showHigherModes {
+            vals.append(contentsOf: points.map(\.lambda_2).filter { $0 > 0 })
+            vals.append(contentsOf: points.map(\.lambda_3).filter { $0 > 0 })
+        }
+        return max(1e-12, vals.max() ?? 1.0)
+    }
+    
+    // Reference negative scale |Λ_-| (largest negative magnitude among displayed modes)
+    private var negScale: Double {
+        var vals: [Double] = points.map { -$0.lambda_min }.filter { $0 > 0 }
+        if showHigherModes {
+            vals.append(contentsOf: points.map { -$0.lambda_2 }.filter { $0 > 0 })
+            vals.append(contentsOf: points.map { -$0.lambda_3 }.filter { $0 > 0 })
+        }
+        return max(posScale, vals.max() ?? posScale)
+    }
+    
+    private func transformLambda(_ raw: Double) -> Double {
+        switch scaleMode {
+        case 0: // Normalized split scale: positive -> [0, 1], negative -> [-1, 0]
+            if raw >= 0 {
+                return raw / posScale
+            } else {
+                return raw / negScale
+            }
+        case 1: // Zoom Stable: uniform scale raw / posScale, clamped at -1.25 below zero
+            return max(-1.25, raw / posScale)
+        default: // Raw
+            return raw
+        }
+    }
+    
     private var minL: Double {
-        let raw = points.map(\.lambda_min).min() ?? -1.0
-        return min(raw * 1.1, -0.1)
+        switch scaleMode {
+        case 0:
+            let hasNeg = points.contains { $0.lambda_min < 0 }
+            return hasNeg ? -1.12 : -0.15
+        case 1:
+            let rawMin = points.map { transformLambda($0.lambda_min) }.min() ?? -0.2
+            return min(rawMin * 1.08, -0.15)
+        default:
+            var allVals = points.map(\.lambda_min)
+            if showHigherModes {
+                allVals.append(contentsOf: points.map(\.lambda_2))
+                allVals.append(contentsOf: points.map(\.lambda_3))
+            }
+            let raw = allVals.min() ?? -1.0
+            return min(raw * 1.1, -0.05)
+        }
     }
+    
     private var maxL: Double {
-        let raw = points.map(\.lambda_min).max() ?? 1.0
-        return max(raw * 1.1, 0.1)
+        switch scaleMode {
+        case 0, 1:
+            return 1.15
+        default:
+            var allVals = points.map(\.lambda_min)
+            if showHigherModes {
+                allVals.append(contentsOf: points.map(\.lambda_2))
+                allVals.append(contentsOf: points.map(\.lambda_3))
+            }
+            let raw = allVals.max() ?? 1.0
+            return max(raw * 1.15, 1e-4)
+        }
     }
+    
     private var rangeL: Double {
-        max(1e-6, maxL - minL)
+        max(1e-9, maxL - minL)
+    }
+    
+    // Effective critical alpha (from summary or live points fallback)
+    private var effectiveAlphaCNeg: Double {
+        if summary.alpha_c_neg != 0.0 { return summary.alpha_c_neg }
+        for i in 1..<points.count {
+            let p0 = points[i - 1], p1 = points[i]
+            if (p0.lambda_min <= 0 && p1.lambda_min > 0) || (p0.lambda_min > 0 && p1.lambda_min <= 0) {
+                let frac = abs(p0.lambda_min) / max(1e-15, abs(p0.lambda_min) + abs(p1.lambda_min))
+                let cross = p0.alpha + frac * (p1.alpha - p0.alpha)
+                if cross < 0 { return cross }
+            }
+        }
+        return 0.0
+    }
+    
+    private var effectiveAlphaCPos: Double {
+        if summary.alpha_c_pos != 0.0 { return summary.alpha_c_pos }
+        for i in 1..<points.count {
+            let p0 = points[i - 1], p1 = points[i]
+            if (p0.lambda_min <= 0 && p1.lambda_min > 0) || (p0.lambda_min > 0 && p1.lambda_min <= 0) {
+                let frac = abs(p0.lambda_min) / max(1e-15, abs(p0.lambda_min) + abs(p1.lambda_min))
+                let cross = p0.alpha + frac * (p1.alpha - p0.alpha)
+                if cross > 0 { return cross }
+            }
+        }
+        return 0.0
+    }
+    
+    // Check if λ_2 is degenerate with λ_min in the stable region (typical for PBC Bloch pairs)
+    private var isLambda2DegenerateWithMin: Bool {
+        let stablePts = points.filter(\.is_stable)
+        guard !stablePts.isEmpty else { return false }
+        let maxDiff = stablePts.map { abs($0.lambda_2 - $0.lambda_min) }.max() ?? 0.0
+        return maxDiff < 1e-5 * posScale
     }
     
     private func plotWidth(for size: CGSize) -> CGFloat {
@@ -445,11 +545,12 @@ struct StiffnessChartView: View {
         max(50, size.height - padTop - padBottom)
     }
     
-    private func toScreen(alpha: Double, lambda: Double, size: CGSize) -> CGPoint {
+    private func toScreen(alpha: Double, rawLambda: Double, size: CGSize) -> CGPoint {
         let pw = plotWidth(for: size)
         let ph = plotHeight(for: size)
         let normX = (alpha - minAlpha) / rangeAlpha
-        let normY = (lambda - minL) / rangeL
+        let tLambda = transformLambda(rawLambda)
+        let normY = (tLambda - minL) / rangeL
         let x = padLeft + CGFloat(normX) * pw
         let y = padTop + CGFloat(1.0 - normY) * ph
         return CGPoint(x: x, y: y)
@@ -484,68 +585,115 @@ struct StiffnessChartView: View {
     @ViewBuilder
     private func chartContainer(size: CGSize) -> some View {
         let pw = plotWidth(for: size)
+        let acPos = effectiveAlphaCPos
+        let acNeg = effectiveAlphaCNeg
         
         ZStack(alignment: .topLeading) {
             Canvas { ctx, cSize in
                 drawChart(ctx: &ctx, size: cSize)
             }
             
-            // Top Legend Labels
+            // Top Controls & Mode Legend Bar
             VStack {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
-                        Text("λ_min > 0 : ELASTICALLY STABLE")
-                            .font(.caption2.bold())
-                            .foregroundColor(.green)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
-                            .fixedSize()
+                        Picker("", selection: $scaleMode) {
+                            Text("Normalized (±1)").tag(0)
+                            Text("Zoom Stable").tag(1)
+                            Text("Raw λ").tag(2)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
+                        .fixedSize()
                         
-                        Text("λ_min < 0 : UNSTABLE / DISLOCATION NUCLEATION")
-                            .font(.caption2.bold())
-                            .foregroundColor(.red)
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.green).frame(width: 7, height: 7)
+                            Text("λ_min > 0 (Stable)")
+                                .font(.caption2.bold())
+                                .foregroundColor(.green)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                        .fixedSize()
+                        
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.red).frame(width: 7, height: 7)
+                            Text("λ_min < 0 (Unstable)")
+                                .font(.caption2.bold())
+                                .foregroundColor(.red)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                        .fixedSize()
+                        
+                        if showHigherModes {
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .stroke(Color.orange, lineWidth: 2)
+                                    .frame(width: 8, height: 8)
+                                Text(isLambda2DegenerateWithMin ? "λ₂ (= λ_min doublet)" : "λ₂ (2nd mode)")
+                                    .font(.caption2.bold())
+                                    .foregroundColor(.orange)
+                            }
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                            .background(Color.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
                             .fixedSize()
+                            
+                            HStack(spacing: 5) {
+                                Rectangle()
+                                    .fill(Color.cyan)
+                                    .frame(width: 7, height: 7)
+                                    .rotationEffect(.degrees(45))
+                                Text("λ₃ (3rd mode)")
+                                    .font(.caption2.bold())
+                                    .foregroundColor(.cyan)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.cyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
+                        }
                     }
                 }
-                .padding(.leading, padLeft + 8)
-                .padding(.trailing, padRight + 8)
-                .padding(.top, padTop + 6)
+                .padding(.leading, padLeft + 4)
+                .padding(.trailing, padRight + 4)
+                .padding(.top, 4)
                 Spacer()
             }
             
             // Critical Alpha Labels
-            if summary.alpha_c_pos != 0.0 {
-                let ptPos = toScreen(alpha: summary.alpha_c_pos, lambda: 0, size: size)
-                Text(String(format: "+α_c = %.3f", summary.alpha_c_pos))
+            if acPos != 0.0 {
+                let ptPos = toScreen(alpha: acPos, rawLambda: 0, size: size)
+                Text(String(format: "+α_c = %.3f", acPos))
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .background(Color(NSColor.windowBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
-                    .position(x: ptPos.x + 35, y: ptPos.y - 12)
+                    .position(x: min(padLeft + pw - 35, ptPos.x + 36), y: max(padTop + 14, ptPos.y - 12))
             }
-            if summary.alpha_c_neg != 0.0 {
-                let ptNeg = toScreen(alpha: summary.alpha_c_neg, lambda: 0, size: size)
-                Text(String(format: "-α_c = %.3f", summary.alpha_c_neg))
+            if acNeg != 0.0 {
+                let ptNeg = toScreen(alpha: acNeg, rawLambda: 0, size: size)
+                Text(String(format: "-α_c = %.3f", acNeg))
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .background(Color(NSColor.windowBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
-                    .position(x: ptNeg.x - 35, y: ptNeg.y - 12)
+                    .position(x: max(padLeft + 35, ptNeg.x - 36), y: max(padTop + 14, ptNeg.y - 12))
             }
             
             // Hover Tooltip Overlay
             if let hovered = hoveredPoint {
-                let scr = toScreen(alpha: hovered.alpha, lambda: hovered.lambda_min, size: size)
+                let scr = toScreen(alpha: hovered.alpha, rawLambda: hovered.lambda_min, size: size)
                 tooltipView(for: hovered)
                     .position(
-                        x: min(max(scr.x, padLeft + 60), padLeft + pw - 60),
-                        y: max(scr.y - 50, padTop + 30)
+                        x: min(max(scr.x, padLeft + 80), padLeft + pw - 80),
+                        y: max(min(scr.y - 55, size.height - padBottom - 45), padTop + 45)
                     )
             }
         }
@@ -571,20 +719,28 @@ struct StiffnessChartView: View {
     @ViewBuilder
     private func tooltipView(for hovered: StiffnessPointModel) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(String(format: "α = %.4f", hovered.alpha))
-                .font(.caption.bold())
+            HStack(spacing: 6) {
+                Text(String(format: "α = %.4f", hovered.alpha))
+                    .font(.caption.bold())
+                Text(hovered.is_stable ? "STABLE" : "UNSTABLE")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background((hovered.is_stable ? Color.green : Color.red).opacity(0.2), in: RoundedRectangle(cornerRadius: 3))
+                    .foregroundColor(hovered.is_stable ? .green : .red)
+            }
             Text(String(format: "λ_min = %.4e", hovered.lambda_min))
                 .font(.caption2.monospaced())
                 .foregroundColor(hovered.is_stable ? .green : .red)
             if showHigherModes {
-                Text(String(format: "λ_2 = %.4e", hovered.lambda_2))
+                Text(String(format: "λ_2   = %.4e", hovered.lambda_2))
                     .font(.caption2.monospaced())
                     .foregroundColor(.orange)
-                Text(String(format: "λ_3 = %.4e", hovered.lambda_3))
+                Text(String(format: "λ_3   = %.4e", hovered.lambda_3))
                     .font(.caption2.monospaced())
-                    .foregroundColor(.purple)
+                    .foregroundColor(.cyan)
             }
-            Text(String(format: "Energy = %.4e", hovered.energy))
+            Text(String(format: "E_FEM = %.4e", hovered.energy_density))
                 .font(.caption2.monospaced())
                 .foregroundColor(.secondary)
         }
@@ -593,58 +749,171 @@ struct StiffnessChartView: View {
         .shadow(radius: 3)
     }
     
+    private func formatLambdaLabel(_ rawVal: Double) -> String {
+        if abs(rawVal) < 1e-14 { return "0" }
+        if abs(rawVal) >= 0.1 && abs(rawVal) < 1000 {
+            return String(format: "%.2f", rawVal)
+        }
+        return String(format: "%.2e", rawVal)
+    }
+    
     private func drawChart(ctx: inout GraphicsContext, size: CGSize) {
         let pw = plotWidth(for: size)
         let ph = plotHeight(for: size)
-        let zeroY = toScreen(alpha: 0, lambda: 0, size: size).y
+        let zeroY = toScreen(alpha: 0, rawLambda: 0, size: size).y
+        let acNeg = effectiveAlphaCNeg
+        let acPos = effectiveAlphaCPos
         
-        // Unstable Region Fill (below zero line)
-        if zeroY < padTop + ph {
-            let rectUnstable = CGRect(x: padLeft, y: zeroY, width: pw, height: padTop + ph - zeroY)
-            ctx.fill(Path(rectUnstable), with: .color(Color.red.opacity(0.08)))
+        // 1. Shaded Stability Background Regions
+        // Horizontal split at λ = 0 AND vertical interval shading between [-α_c, +α_c]
+        if acNeg < 0 && acPos > 0 {
+            let xNeg = toScreen(alpha: acNeg, rawLambda: 0, size: size).x
+            let xPos = toScreen(alpha: acPos, rawLambda: 0, size: size).x
+            
+            // Left Unstable Band (α < -α_c)
+            if xNeg > padLeft {
+                let rectLeft = CGRect(x: padLeft, y: padTop, width: xNeg - padLeft, height: ph)
+                ctx.fill(Path(rectLeft), with: .color(Color.red.opacity(0.08)))
+            }
+            // Center Stable Band (-α_c <= α <= +α_c)
+            if xPos > xNeg {
+                let rectCenter = CGRect(x: max(padLeft, xNeg), y: padTop, width: min(padLeft + pw, xPos) - max(padLeft, xNeg), height: ph)
+                ctx.fill(Path(rectCenter), with: .color(Color.green.opacity(0.07)))
+            }
+            // Right Unstable Band (α > +α_c)
+            if xPos < padLeft + pw {
+                let rectRight = CGRect(x: xPos, y: padTop, width: padLeft + pw - xPos, height: ph)
+                ctx.fill(Path(rectRight), with: .color(Color.red.opacity(0.08)))
+            }
+        } else {
+            if zeroY < padTop + ph {
+                let rectUnstable = CGRect(x: padLeft, y: max(padTop, zeroY), width: pw, height: padTop + ph - max(padTop, zeroY))
+                ctx.fill(Path(rectUnstable), with: .color(Color.red.opacity(0.08)))
+            }
+            if zeroY > padTop {
+                let rectStable = CGRect(x: padLeft, y: padTop, width: pw, height: min(padTop + ph, zeroY) - padTop)
+                ctx.fill(Path(rectStable), with: .color(Color.green.opacity(0.06)))
+            }
         }
-        // Stable Region Fill (above zero line)
-        if zeroY > padTop {
-            let rectStable = CGRect(x: padLeft, y: padTop, width: pw, height: zeroY - padTop)
-            ctx.fill(Path(rectStable), with: .color(Color.green.opacity(0.06)))
+        
+        // 2. Y-Axis Gridlines & Labels
+        if scaleMode == 0 {
+            // Normalized split scale ticks: +1.0 (posScale), +0.5, 0, -0.5, -1.0 (-negScale)
+            let ticks: [(normYVal: Double, rawEquiv: Double, label: String)] = [
+                (1.0, posScale, "+\(formatLambdaLabel(posScale))"),
+                (0.5, 0.5 * posScale, "+\(formatLambdaLabel(0.5 * posScale))"),
+                (0.0, 0.0, "0 (Threshold)"),
+                (-0.5, -0.5 * negScale, "-\(formatLambdaLabel(0.5 * negScale))"),
+                (-1.0, -negScale, "-\(formatLambdaLabel(negScale))")
+            ]
+            for tick in ticks where tick.normYVal >= minL && tick.normYVal <= maxL {
+                let y = padTop + CGFloat(1.0 - (tick.normYVal - minL) / rangeL) * ph
+                var gPath = Path()
+                gPath.move(to: CGPoint(x: padLeft, y: y))
+                gPath.addLine(to: CGPoint(x: padLeft + pw, y: y))
+                ctx.stroke(gPath, with: .color(Color.primary.opacity(tick.normYVal == 0 ? 0.55 : 0.12)),
+                           style: StrokeStyle(lineWidth: tick.normYVal == 0 ? 1.5 : 0.8, dash: tick.normYVal == 0 ? [5, 3] : [2, 3]))
+                
+                let txt = Text(tick.label)
+                    .font(.system(size: 9, weight: tick.normYVal == 0 ? .bold : .regular, design: .monospaced))
+                    .foregroundColor(tick.normYVal > 0 ? .green : (tick.normYVal < 0 ? .red : .primary))
+                ctx.draw(txt, at: CGPoint(x: padLeft - 6, y: y), anchor: .trailing)
+            }
+        } else {
+            let nTicks = 5
+            for i in 0...nTicks {
+                let frac = Double(i) / Double(nTicks)
+                let tVal = minL + frac * rangeL
+                let rawVal = (scaleMode == 1) ? (tVal * posScale) : tVal
+                let y = padTop + CGFloat(1.0 - frac) * ph
+                var gPath = Path()
+                gPath.move(to: CGPoint(x: padLeft, y: y))
+                gPath.addLine(to: CGPoint(x: padLeft + pw, y: y))
+                ctx.stroke(gPath, with: .color(Color.primary.opacity(0.12)), style: StrokeStyle(lineWidth: 0.8, dash: [2, 3]))
+                
+                let txt = Text(formatLambdaLabel(rawVal))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary)
+                ctx.draw(txt, at: CGPoint(x: padLeft - 6, y: y), anchor: .trailing)
+            }
+            if zeroY >= padTop && zeroY <= padTop + ph {
+                var zeroPath = Path()
+                zeroPath.move(to: CGPoint(x: padLeft, y: zeroY))
+                zeroPath.addLine(to: CGPoint(x: padLeft + pw, y: zeroY))
+                ctx.stroke(zeroPath, with: .color(Color.primary.opacity(0.6)), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+            }
         }
         
-        // Zero Axis Y = 0
-        var zeroPath = Path()
-        zeroPath.move(to: CGPoint(x: padLeft, y: zeroY))
-        zeroPath.addLine(to: CGPoint(x: padLeft + pw, y: zeroY))
-        ctx.stroke(zeroPath, with: .color(Color.primary.opacity(0.6)), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+        // 3. X-Axis Ticks & Vertical Reference Lines
+        let xTicks = 6
+        for i in 0...xTicks {
+            let frac = Double(i) / Double(xTicks)
+            let aVal = minAlpha + frac * rangeAlpha
+            let x = padLeft + CGFloat(frac) * pw
+            let txt = Text(String(format: "%.2f", aVal))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(.secondary)
+            ctx.draw(txt, at: CGPoint(x: x, y: padTop + ph + 14), anchor: .center)
+        }
+        let xAxisTitle = Text("Simple Shear Amplitude α")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundColor(.secondary)
+        ctx.draw(xAxisTitle, at: CGPoint(x: padLeft + pw / 2, y: padTop + ph + 32), anchor: .center)
         
-        // Vertical Axis at α = 0
-        let zeroX = toScreen(alpha: 0, lambda: 0, size: size).x
-        var zeroXAxis = Path()
-        zeroXAxis.move(to: CGPoint(x: zeroX, y: padTop))
-        zeroXAxis.addLine(to: CGPoint(x: zeroX, y: padTop + ph))
-        ctx.stroke(zeroXAxis, with: .color(Color.primary.opacity(0.3)), style: StrokeStyle(lineWidth: 1.0, dash: [2, 2]))
+        let zeroX = toScreen(alpha: 0, rawLambda: 0, size: size).x
+        if zeroX >= padLeft && zeroX <= padLeft + pw {
+            var zeroXAxis = Path()
+            zeroXAxis.move(to: CGPoint(x: zeroX, y: padTop))
+            zeroXAxis.addLine(to: CGPoint(x: zeroX, y: padTop + ph))
+            ctx.stroke(zeroXAxis, with: .color(Color.primary.opacity(0.28)), style: StrokeStyle(lineWidth: 1.0, dash: [2, 2]))
+        }
         
         // Critical Alpha Marker Lines
-        if summary.alpha_c_neg != 0.0 {
-            let ptNeg = toScreen(alpha: summary.alpha_c_neg, lambda: 0, size: size)
+        if acNeg != 0.0 {
+            let ptNeg = toScreen(alpha: acNeg, rawLambda: 0, size: size)
             var pLine = Path()
             pLine.move(to: CGPoint(x: ptNeg.x, y: padTop))
             pLine.addLine(to: CGPoint(x: ptNeg.x, y: padTop + ph))
-            ctx.stroke(pLine, with: .color(Color.red.opacity(0.7)), style: StrokeStyle(lineWidth: 1.0, dash: [4, 4]))
+            ctx.stroke(pLine, with: .color(Color.red.opacity(0.75)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
         }
-        if summary.alpha_c_pos != 0.0 {
-            let ptPos = toScreen(alpha: summary.alpha_c_pos, lambda: 0, size: size)
+        if acPos != 0.0 {
+            let ptPos = toScreen(alpha: acPos, rawLambda: 0, size: size)
             var pLine = Path()
             pLine.move(to: CGPoint(x: ptPos.x, y: padTop))
             pLine.addLine(to: CGPoint(x: ptPos.x, y: padTop + ph))
-            ctx.stroke(pLine, with: .color(Color.red.opacity(0.7)), style: StrokeStyle(lineWidth: 1.0, dash: [4, 4]))
+            ctx.stroke(pLine, with: .color(Color.red.opacity(0.75)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
         }
         
-        // Higher modes λ_2, λ_3 (if enabled)
+        // 4. Main Curve: λ_min(α) colored by stability segment
+        if points.count > 1 {
+            for i in 1..<points.count {
+                let p0 = points[i - 1]
+                let p1 = points[i]
+                let s0 = toScreen(alpha: p0.alpha, rawLambda: p0.lambda_min, size: size)
+                let s1 = toScreen(alpha: p1.alpha, rawLambda: p1.lambda_min, size: size)
+                var seg = Path()
+                seg.move(to: s0)
+                seg.addLine(to: s1)
+                let segStable = p0.is_stable && p1.is_stable
+                ctx.stroke(seg, with: .color(segStable ? Color.green : Color.red), lineWidth: 2.4)
+            }
+        }
+        
+        // Plot Points for λ_min(α)
+        for pt in points {
+            let scr = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_min, size: size)
+            let ptColor = pt.is_stable ? Color.green : Color.red
+            let circleRect = CGRect(x: scr.x - 3.2, y: scr.y - 3.2, width: 6.4, height: 6.4)
+            ctx.fill(Path(ellipseIn: circleRect), with: .color(ptColor))
+        }
+        
+        // 5. Higher modes λ_2, λ_3 drawn ON TOP with distinct dashes and markers so they are always visible
         if showHigherModes {
-            var p2Path = Path()
             var p3Path = Path()
+            var p2Path = Path()
             for (idx, pt) in points.enumerated() {
-                let scr2 = toScreen(alpha: pt.alpha, lambda: pt.lambda_2, size: size)
-                let scr3 = toScreen(alpha: pt.alpha, lambda: pt.lambda_3, size: size)
+                let scr2 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_2, size: size)
+                let scr3 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_3, size: size)
                 if idx == 0 {
                     p2Path.move(to: scr2)
                     p3Path.move(to: scr3)
@@ -653,28 +922,27 @@ struct StiffnessChartView: View {
                     p3Path.addLine(to: scr3)
                 }
             }
-            ctx.stroke(p2Path, with: .color(Color.orange.opacity(0.6)), lineWidth: 1.2)
-            ctx.stroke(p3Path, with: .color(Color.purple.opacity(0.6)), lineWidth: 1.2)
-        }
-        
-        // Main Curve: λ_min(α)
-        var linePath = Path()
-        for (idx, pt) in points.enumerated() {
-            let scr = toScreen(alpha: pt.alpha, lambda: pt.lambda_min, size: size)
-            if idx == 0 {
-                linePath.move(to: scr)
-            } else {
-                linePath.addLine(to: scr)
+            // Draw λ_3 in bright cyan with diamond markers
+            ctx.stroke(p3Path, with: .color(Color.cyan), style: StrokeStyle(lineWidth: 2.0))
+            for (idx, pt) in points.enumerated() where idx % 2 == 0 || pt.is_stable {
+                let scr3 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_3, size: size)
+                var diamond = Path()
+                let r: CGFloat = 3.6
+                diamond.move(to: CGPoint(x: scr3.x, y: scr3.y - r))
+                diamond.addLine(to: CGPoint(x: scr3.x + r, y: scr3.y))
+                diamond.addLine(to: CGPoint(x: scr3.x, y: scr3.y + r))
+                diamond.addLine(to: CGPoint(x: scr3.x - r, y: scr3.y))
+                diamond.closeSubpath()
+                ctx.fill(diamond, with: .color(Color.cyan))
             }
-        }
-        ctx.stroke(linePath, with: .color(Color.blue), lineWidth: 2.5)
-        
-        // Plot Points
-        for pt in points {
-            let scr = toScreen(alpha: pt.alpha, lambda: pt.lambda_min, size: size)
-            let ptColor = pt.is_stable ? Color.green : Color.red
-            let circleRect = CGRect(x: scr.x - 3.5, y: scr.y - 3.5, width: 7, height: 7)
-            ctx.fill(Path(ellipseIn: circleRect), with: .color(ptColor))
+            
+            // Draw λ_2 in dashed orange with hollow ring markers (visible even when degenerate with λ_min!)
+            ctx.stroke(p2Path, with: .color(Color.orange), style: StrokeStyle(lineWidth: 2.0, dash: [5, 4]))
+            for (idx, pt) in points.enumerated() where idx % 2 == 0 {
+                let scr2 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_2, size: size)
+                let ringRect = CGRect(x: scr2.x - 4.2, y: scr2.y - 4.2, width: 8.4, height: 8.4)
+                ctx.stroke(Path(ellipseIn: ringRect), with: .color(Color.orange), lineWidth: 1.5)
+            }
         }
     }
 }
@@ -686,9 +954,9 @@ struct StiffnessEnergyChartView: View {
     @Binding var hoveredPoint: StiffnessPointModel?
     @State private var energyMode: Int = 0 // 0: Density (per unit area), 1: Total Integrated
     
-    private let padLeft: CGFloat = 70
+    private let padLeft: CGFloat = 78
     private let padRight: CGFloat = 30
-    private let padTop: CGFloat = 35
+    private let padTop: CGFloat = 40
     private let padBottom: CGFloat = 50
     
     private var minAlpha: Double {
@@ -728,6 +996,32 @@ struct StiffnessEnergyChartView: View {
     
     private var rangeE: Double {
         max(1e-6, maxE - minE)
+    }
+    
+    private var effectiveAlphaCNeg: Double {
+        if summary.alpha_c_neg != 0.0 { return summary.alpha_c_neg }
+        for i in 1..<points.count {
+            let p0 = points[i - 1], p1 = points[i]
+            if (p0.lambda_min <= 0 && p1.lambda_min > 0) || (p0.lambda_min > 0 && p1.lambda_min <= 0) {
+                let frac = abs(p0.lambda_min) / max(1e-15, abs(p0.lambda_min) + abs(p1.lambda_min))
+                let cross = p0.alpha + frac * (p1.alpha - p0.alpha)
+                if cross < 0 { return cross }
+            }
+        }
+        return 0.0
+    }
+    
+    private var effectiveAlphaCPos: Double {
+        if summary.alpha_c_pos != 0.0 { return summary.alpha_c_pos }
+        for i in 1..<points.count {
+            let p0 = points[i - 1], p1 = points[i]
+            if (p0.lambda_min <= 0 && p1.lambda_min > 0) || (p0.lambda_min > 0 && p1.lambda_min <= 0) {
+                let frac = abs(p0.lambda_min) / max(1e-15, abs(p0.lambda_min) + abs(p1.lambda_min))
+                let cross = p0.alpha + frac * (p1.alpha - p0.alpha)
+                if cross > 0 { return cross }
+            }
+        }
+        return 0.0
     }
     
     private func plotWidth(for size: CGSize) -> CGFloat {
@@ -777,6 +1071,8 @@ struct StiffnessEnergyChartView: View {
     @ViewBuilder
     private func chartContainer(size: CGSize) -> some View {
         let pw = plotWidth(for: size)
+        let acPos = effectiveAlphaCPos
+        let acNeg = effectiveAlphaCNeg
         
         ZStack(alignment: .topLeading) {
             Canvas { ctx, cSize in
@@ -786,7 +1082,7 @@ struct StiffnessEnergyChartView: View {
             // Top Legend & Energy Mode Picker
             VStack {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 10) {
                         Picker("", selection: $energyMode) {
                             Text("Per Triangle").tag(0)
                             Text("Total Integrated").tag(1)
@@ -796,50 +1092,67 @@ struct StiffnessEnergyChartView: View {
                         .controlSize(.small)
                         .fixedSize()
                         
-                        HStack(spacing: 5) {
-                            Circle().fill(Color.blue).frame(width: 8, height: 8)
-                            Text("Lattice FEM")
-                                .font(.caption.bold())
-                                .foregroundColor(.blue)
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.green).frame(width: 8, height: 8)
+                            Text("Stable FEM (λ_min > 0)")
+                                .font(.caption2.bold())
+                                .foregroundColor(.green)
                         }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                        .fixedSize()
+                        
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.red).frame(width: 8, height: 8)
+                            Text("Unstable FEM (λ_min < 0)")
+                                .font(.caption2.bold())
+                                .foregroundColor(.red)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
                         .fixedSize()
                         
                         HStack(spacing: 5) {
                             Rectangle().fill(Color.orange).frame(width: 14, height: 2)
                             Text("Continuum W(C)")
-                                .font(.caption.bold())
+                                .font(.caption2.bold())
                                 .foregroundColor(.orange)
                         }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
                         .fixedSize()
                     }
                 }
-                .padding(.leading, padLeft + 8)
-                .padding(.trailing, padRight + 8)
-                .padding(.top, padTop - 26)
+                .padding(.leading, padLeft + 4)
+                .padding(.trailing, padRight + 4)
+                .padding(.top, 4)
                 
                 Spacer()
             }
             
             // Critical Alpha Labels
-            if summary.alpha_c_pos != 0.0 {
-                let ptPos = toScreen(alpha: summary.alpha_c_pos, energy: minE, size: size)
-                Text(String(format: "+α_c = %.3f", summary.alpha_c_pos))
+            if acPos != 0.0 {
+                let ptPos = toScreen(alpha: acPos, energy: minE, size: size)
+                Text(String(format: "+α_c = %.3f", acPos))
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .background(Color(NSColor.windowBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
-                    .position(x: ptPos.x + 35, y: padTop + 20)
+                    .position(x: min(padLeft + pw - 35, ptPos.x + 36), y: padTop + 18)
             }
-            if summary.alpha_c_neg != 0.0 {
-                let ptNeg = toScreen(alpha: summary.alpha_c_neg, energy: minE, size: size)
-                Text(String(format: "-α_c = %.3f", summary.alpha_c_neg))
+            if acNeg != 0.0 {
+                let ptNeg = toScreen(alpha: acNeg, energy: minE, size: size)
+                Text(String(format: "-α_c = %.3f", acNeg))
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
                     .background(Color(NSColor.windowBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
-                    .position(x: ptNeg.x - 35, y: padTop + 20)
+                    .position(x: max(padLeft + 35, ptNeg.x - 36), y: padTop + 18)
             }
             
             // Hover Tooltip Overlay
@@ -878,11 +1191,19 @@ struct StiffnessEnergyChartView: View {
         let diff = abs(eFem - eCont)
         
         VStack(alignment: .leading, spacing: 3) {
-            Text(String(format: "α = %.4f", hovered.alpha))
-                .font(.caption.bold())
+            HStack(spacing: 6) {
+                Text(String(format: "α = %.4f", hovered.alpha))
+                    .font(.caption.bold())
+                Text(hovered.is_stable ? "STABLE" : "UNSTABLE")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background((hovered.is_stable ? Color.green : Color.red).opacity(0.2), in: RoundedRectangle(cornerRadius: 3))
+                    .foregroundColor(hovered.is_stable ? .green : .red)
+            }
             Text(String(format: "E_FEM  = %.5e", eFem))
                 .font(.caption2.monospaced())
-                .foregroundColor(.blue)
+                .foregroundColor(hovered.is_stable ? .green : .red)
             Text(String(format: "W_cont = %.5e", eCont))
                 .font(.caption2.monospaced())
                 .foregroundColor(.orange)
@@ -902,6 +1223,48 @@ struct StiffnessEnergyChartView: View {
         let pw = plotWidth(for: size)
         let ph = plotHeight(for: size)
         let zeroY = toScreen(alpha: 0, energy: 0, size: size).y
+        let acNeg = effectiveAlphaCNeg
+        let acPos = effectiveAlphaCPos
+        
+        // 1. Shaded Stability Intervals along α
+        if acNeg < 0 && acPos > 0 {
+            let xNeg = toScreen(alpha: acNeg, energy: 0, size: size).x
+            let xPos = toScreen(alpha: acPos, energy: 0, size: size).x
+            
+            // Left Unstable Band (α < -α_c)
+            if xNeg > padLeft {
+                let rectLeft = CGRect(x: padLeft, y: padTop, width: xNeg - padLeft, height: ph)
+                ctx.fill(Path(rectLeft), with: .color(Color.red.opacity(0.09)))
+            }
+            // Center Stable Band (-α_c <= α <= +α_c)
+            if xPos > xNeg {
+                let rectCenter = CGRect(x: max(padLeft, xNeg), y: padTop, width: min(padLeft + pw, xPos) - max(padLeft, xNeg), height: ph)
+                ctx.fill(Path(rectCenter), with: .color(Color.green.opacity(0.08)))
+            }
+            // Right Unstable Band (α > +α_c)
+            if xPos < padLeft + pw {
+                let rectRight = CGRect(x: xPos, y: padTop, width: padLeft + pw - xPos, height: ph)
+                ctx.fill(Path(rectRight), with: .color(Color.red.opacity(0.09)))
+            }
+        }
+        
+        // 2. Y-Axis Gridlines & Labels
+        let nTicks = 5
+        for i in 0...nTicks {
+            let frac = Double(i) / Double(nTicks)
+            let eVal = minE + frac * rangeE
+            let y = padTop + CGFloat(1.0 - frac) * ph
+            var gPath = Path()
+            gPath.move(to: CGPoint(x: padLeft, y: y))
+            gPath.addLine(to: CGPoint(x: padLeft + pw, y: y))
+            ctx.stroke(gPath, with: .color(Color.primary.opacity(0.12)), style: StrokeStyle(lineWidth: 0.8, dash: [2, 3]))
+            
+            let labelStr = (maxE >= 100.0) ? String(format: "%.1e", eVal) : String(format: "%.3f", eVal)
+            let txt = Text(labelStr)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(.secondary)
+            ctx.draw(txt, at: CGPoint(x: padLeft - 6, y: y), anchor: .trailing)
+        }
         
         // Zero Axis Line
         if zeroY >= padTop && zeroY <= padTop + ph {
@@ -910,6 +1273,22 @@ struct StiffnessEnergyChartView: View {
             zeroPath.addLine(to: CGPoint(x: padLeft + pw, y: zeroY))
             ctx.stroke(zeroPath, with: .color(Color.primary.opacity(0.4)), style: StrokeStyle(lineWidth: 1.0, dash: [4, 4]))
         }
+        
+        // X-Axis Ticks
+        let xTicks = 6
+        for i in 0...xTicks {
+            let frac = Double(i) / Double(xTicks)
+            let aVal = minAlpha + frac * rangeAlpha
+            let x = padLeft + CGFloat(frac) * pw
+            let txt = Text(String(format: "%.2f", aVal))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(.secondary)
+            ctx.draw(txt, at: CGPoint(x: x, y: padTop + ph + 14), anchor: .center)
+        }
+        let xAxisTitle = Text("Simple Shear Amplitude α")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundColor(.secondary)
+        ctx.draw(xAxisTitle, at: CGPoint(x: padLeft + pw / 2, y: padTop + ph + 32), anchor: .center)
         
         // Vertical Axis at α = 0
         let zeroX = toScreen(alpha: 0, energy: 0, size: size).x
@@ -921,22 +1300,22 @@ struct StiffnessEnergyChartView: View {
         }
         
         // Critical Alpha Marker Lines
-        if summary.alpha_c_neg != 0.0 {
-            let ptNeg = toScreen(alpha: summary.alpha_c_neg, energy: 0, size: size)
+        if acNeg != 0.0 {
+            let ptNeg = toScreen(alpha: acNeg, energy: 0, size: size)
             var pLine = Path()
             pLine.move(to: CGPoint(x: ptNeg.x, y: padTop))
             pLine.addLine(to: CGPoint(x: ptNeg.x, y: padTop + ph))
-            ctx.stroke(pLine, with: .color(Color.red.opacity(0.7)), style: StrokeStyle(lineWidth: 1.0, dash: [4, 4]))
+            ctx.stroke(pLine, with: .color(Color.red.opacity(0.75)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
         }
-        if summary.alpha_c_pos != 0.0 {
-            let ptPos = toScreen(alpha: summary.alpha_c_pos, energy: 0, size: size)
+        if acPos != 0.0 {
+            let ptPos = toScreen(alpha: acPos, energy: 0, size: size)
             var pLine = Path()
             pLine.move(to: CGPoint(x: ptPos.x, y: padTop))
             pLine.addLine(to: CGPoint(x: ptPos.x, y: padTop + ph))
-            ctx.stroke(pLine, with: .color(Color.red.opacity(0.7)), style: StrokeStyle(lineWidth: 1.0, dash: [4, 4]))
+            ctx.stroke(pLine, with: .color(Color.red.opacity(0.75)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
         }
         
-        // 1. Analytical Continuum Energy Curve (dashed orange)
+        // 3. Analytical Continuum Energy Curve (dashed orange)
         var contPath = Path()
         for (idx, pt) in points.enumerated() {
             let scr = toScreen(alpha: pt.alpha, energy: getContEnergy(pt), size: size)
@@ -946,25 +1325,28 @@ struct StiffnessEnergyChartView: View {
                 contPath.addLine(to: scr)
             }
         }
-        ctx.stroke(contPath, with: .color(Color.orange), style: StrokeStyle(lineWidth: 2.2, dash: [5, 3]))
+        ctx.stroke(contPath, with: .color(Color.orange.opacity(0.9)), style: StrokeStyle(lineWidth: 2.0, dash: [6, 4]))
         
-        // 2. Simulated Lattice Energy Curve (solid blue)
-        var simPath = Path()
-        for (idx, pt) in points.enumerated() {
-            let scr = toScreen(alpha: pt.alpha, energy: getFEMEnergy(pt), size: size)
-            if idx == 0 {
-                simPath.move(to: scr)
-            } else {
-                simPath.addLine(to: scr)
+        // 4. Simulated Lattice Energy Curve colored by stability (Green = Stable, Red = Unstable)
+        if points.count > 1 {
+            for i in 1..<points.count {
+                let p0 = points[i - 1]
+                let p1 = points[i]
+                let s0 = toScreen(alpha: p0.alpha, energy: getFEMEnergy(p0), size: size)
+                let s1 = toScreen(alpha: p1.alpha, energy: getFEMEnergy(p1), size: size)
+                var seg = Path()
+                seg.move(to: s0)
+                seg.addLine(to: s1)
+                let segStable = p0.is_stable && p1.is_stable
+                ctx.stroke(seg, with: .color(segStable ? Color.green : Color.red), lineWidth: 2.5)
             }
         }
-        ctx.stroke(simPath, with: .color(Color.blue), lineWidth: 2.5)
         
-        // 3. Points on Simulated Curve
+        // 5. Points on Simulated Curve colored by stability
         for pt in points {
             let scr = toScreen(alpha: pt.alpha, energy: getFEMEnergy(pt), size: size)
-            let circleRect = CGRect(x: scr.x - 3.0, y: scr.y - 3.0, width: 6, height: 6)
-            ctx.fill(Path(ellipseIn: circleRect), with: .color(Color.blue))
+            let circleRect = CGRect(x: scr.x - 3.2, y: scr.y - 3.2, width: 6.4, height: 6.4)
+            ctx.fill(Path(ellipseIn: circleRect), with: .color(pt.is_stable ? Color.green : Color.red))
         }
     }
 }

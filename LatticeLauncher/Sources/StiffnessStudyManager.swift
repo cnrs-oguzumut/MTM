@@ -65,7 +65,21 @@ public struct StiffnessStudySummaryModel: Codable {
     public var execution_seconds: Double = 0.0
 }
 
+public struct StiffnessStudyConfigModel: Codable {
+    public var nx: Int?
+    public var ny: Int?
+    public var lattice_type: String?
+    public var potential_mode: Int?
+    public var bc: String?
+    public var alpha_min: Double?
+    public var alpha_max: Double?
+    public var dalpha: Double?
+    public var beta: Double?
+    public var K: Double?
+}
+
 public struct StiffnessStudyJSONWrapper: Codable {
+    public var config: StiffnessStudyConfigModel?
     public var summary: StiffnessStudySummaryModel
     public var points: [StiffnessPointModel]
 }
@@ -103,7 +117,13 @@ public class StiffnessStudyManager: ObservableObject {
     
     private var process: Process?
     
-    public init() {}
+    public init() {
+        let root = SimulationConfig.detectProjectRoot()
+        let jsonOut = "\(root)/scratch/stiffness_shear_study.json"
+        if FileManager.default.fileExists(atPath: jsonOut) {
+            loadResultsJSON(jsonPath: jsonOut, restoreConfig: true)
+        }
+    }
     
     public func runStudy() {
         guard !isRunning else { return }
@@ -283,7 +303,7 @@ public class StiffnessStudyManager: ObservableObject {
         }
     }
     
-    private func loadResultsJSON(jsonPath: String) {
+    private func loadResultsJSON(jsonPath: String, restoreConfig: Bool = false) {
         guard FileManager.default.fileExists(atPath: jsonPath),
               let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)) else {
             statusMessage = "Could not read output JSON at \(jsonPath)"
@@ -295,7 +315,33 @@ public class StiffnessStudyManager: ObservableObject {
             let res = try decoder.decode(StiffnessStudyJSONWrapper.self, from: data)
             self.points = res.points
             self.summary = res.summary
-            self.appendLog("✅ Loaded \(res.points.count) shear steps. Critical α_c: [\(String(format: "%.4f", res.summary.alpha_c_neg)), \(String(format: "%.4f", res.summary.alpha_c_pos))]")
+            
+            // If high-precision CSV is alongside JSON, prefer its 10-digit precision points
+            let csvPath = jsonPath.replacingOccurrences(of: ".json", with: ".csv")
+            if FileManager.default.fileExists(atPath: csvPath) {
+                loadResultsCSV(csvPath: csvPath)
+            }
+            
+            if restoreConfig, let cfg = res.config {
+                if let nxVal = cfg.nx { self.nx = nxVal }
+                if let nyVal = cfg.ny { self.ny = nyVal }
+                if let lat = cfg.lattice_type, let sym = LatticeSymmetry(rawValue: lat) {
+                    self.latticeSymmetry = sym
+                }
+                if let pm = cfg.potential_mode, let mode = AcousticPotentialMode(rawValue: pm) {
+                    self.potentialMode = mode
+                }
+                if let bcStr = cfg.bc, let bcMode = BoundaryConditionMode(rawValue: bcStr) {
+                    self.boundaryCondition = bcMode
+                }
+                if let aMin = cfg.alpha_min { self.alphaMin = aMin }
+                if let aMax = cfg.alpha_max { self.alphaMax = aMax }
+                if let da = cfg.dalpha { self.dalpha = da }
+                if let b = cfg.beta { self.beta = b }
+                if let k = cfg.K { self.bulkK = k }
+                self.statusMessage = "Loaded previous study (\(self.nx)×\(self.ny), \(self.points.count) steps)"
+            }
+            self.appendLog("✅ Loaded \(self.points.count) shear steps. Critical α_c: [\(String(format: "%.4f", res.summary.alpha_c_neg)), \(String(format: "%.4f", res.summary.alpha_c_pos))]")
         } catch {
             self.appendLog("⚠️ JSON decode error: \(error.localizedDescription). Parsing CSV fallback...")
             loadResultsCSV(csvPath: jsonPath.replacingOccurrences(of: ".json", with: ".csv"))
