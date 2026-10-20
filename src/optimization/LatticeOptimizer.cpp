@@ -502,7 +502,7 @@ void minimize_energy_with_triangles(
     const int n_vars = static_cast<int>(interior_mapping.size());
     const int n_points = static_cast<int>(userData->points.size());
     const double a = userData->ideal_lattice_parameter;
-    const double normalisation = a * a;
+    const double normalisation = userData->calculator.getUnitCellArea();
 
     // FLAT storage: [thread0: point0,point1,...] [thread1: point0,point1,...] ...
     static std::vector<Eigen::Vector2d> all_forces_flat;
