@@ -38,6 +38,8 @@ public struct StiffnessPointModel: Identifiable, Codable {
     public var lambda_min: Double = 0.0
     public var lambda_2: Double = 0.0
     public var lambda_3: Double = 0.0
+    public var lambda_4: Double = 0.0
+    public var lambda_5: Double = 0.0
     public var is_stable: Bool = true
     public var energy: Double = 0.0
     public var energy_density: Double = 0.0
@@ -48,10 +50,14 @@ public struct StiffnessPointModel: Identifiable, Codable {
     public var mode2_uy: [Double]? = nil
     public var mode3_ux: [Double]? = nil
     public var mode3_uy: [Double]? = nil
+    public var mode4_ux: [Double]? = nil
+    public var mode4_uy: [Double]? = nil
+    public var mode5_ux: [Double]? = nil
+    public var mode5_uy: [Double]? = nil
     
     enum CodingKeys: String, CodingKey {
-        case alpha, lambda_min, lambda_2, lambda_3, is_stable, energy, energy_density, continuum_energy
-        case mode1_ux, mode1_uy, mode2_ux, mode2_uy, mode3_ux, mode3_uy
+        case alpha, lambda_min, lambda_2, lambda_3, lambda_4, lambda_5, is_stable, energy, energy_density, continuum_energy
+        case mode1_ux, mode1_uy, mode2_ux, mode2_uy, mode3_ux, mode3_uy, mode4_ux, mode4_uy, mode5_ux, mode5_uy
     }
     
     public init() {}
@@ -61,8 +67,10 @@ public struct StiffnessPointModel: Identifiable, Codable {
         self.id = UUID()
         self.alpha = try container.decode(Double.self, forKey: .alpha)
         self.lambda_min = try container.decode(Double.self, forKey: .lambda_min)
-        self.lambda_2 = try container.decode(Double.self, forKey: .lambda_2)
-        self.lambda_3 = try container.decode(Double.self, forKey: .lambda_3)
+        self.lambda_2 = try container.decodeIfPresent(Double.self, forKey: .lambda_2) ?? lambda_min
+        self.lambda_3 = try container.decodeIfPresent(Double.self, forKey: .lambda_3) ?? lambda_2
+        self.lambda_4 = try container.decodeIfPresent(Double.self, forKey: .lambda_4) ?? lambda_3
+        self.lambda_5 = try container.decodeIfPresent(Double.self, forKey: .lambda_5) ?? lambda_4
         self.is_stable = try container.decode(Bool.self, forKey: .is_stable)
         self.energy = try container.decode(Double.self, forKey: .energy)
         self.energy_density = try container.decodeIfPresent(Double.self, forKey: .energy_density) ?? energy
@@ -73,6 +81,10 @@ public struct StiffnessPointModel: Identifiable, Codable {
         self.mode2_uy = try container.decodeIfPresent([Double].self, forKey: .mode2_uy)
         self.mode3_ux = try container.decodeIfPresent([Double].self, forKey: .mode3_ux)
         self.mode3_uy = try container.decodeIfPresent([Double].self, forKey: .mode3_uy)
+        self.mode4_ux = try container.decodeIfPresent([Double].self, forKey: .mode4_ux)
+        self.mode4_uy = try container.decodeIfPresent([Double].self, forKey: .mode4_uy)
+        self.mode5_ux = try container.decodeIfPresent([Double].self, forKey: .mode5_ux)
+        self.mode5_uy = try container.decodeIfPresent([Double].self, forKey: .mode5_uy)
     }
 }
 
@@ -106,6 +118,8 @@ public struct StiffnessFullScaleSnapshot: Codable {
     public var lambda_min: Double = 0.0
     public var lambda_2: Double = 0.0
     public var lambda_3: Double = 0.0
+    public var lambda_4: Double = 0.0
+    public var lambda_5: Double = 0.0
     public var is_stable: Bool = true
     public var mode1_ux: [Double]? = nil
     public var mode1_uy: [Double]? = nil
@@ -113,6 +127,38 @@ public struct StiffnessFullScaleSnapshot: Codable {
     public var mode2_uy: [Double]? = nil
     public var mode3_ux: [Double]? = nil
     public var mode3_uy: [Double]? = nil
+    public var mode4_ux: [Double]? = nil
+    public var mode4_uy: [Double]? = nil
+    public var mode5_ux: [Double]? = nil
+    public var mode5_uy: [Double]? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case alpha, lambda_min, lambda_2, lambda_3, lambda_4, lambda_5, is_stable
+        case mode1_ux, mode1_uy, mode2_ux, mode2_uy, mode3_ux, mode3_uy, mode4_ux, mode4_uy, mode5_ux, mode5_uy
+    }
+    
+    public init() {}
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.alpha = try container.decode(Double.self, forKey: .alpha)
+        self.lambda_min = try container.decode(Double.self, forKey: .lambda_min)
+        self.lambda_2 = try container.decodeIfPresent(Double.self, forKey: .lambda_2) ?? lambda_min
+        self.lambda_3 = try container.decodeIfPresent(Double.self, forKey: .lambda_3) ?? lambda_2
+        self.lambda_4 = try container.decodeIfPresent(Double.self, forKey: .lambda_4) ?? lambda_3
+        self.lambda_5 = try container.decodeIfPresent(Double.self, forKey: .lambda_5) ?? lambda_4
+        self.is_stable = try container.decodeIfPresent(Bool.self, forKey: .is_stable) ?? true
+        self.mode1_ux = try container.decodeIfPresent([Double].self, forKey: .mode1_ux)
+        self.mode1_uy = try container.decodeIfPresent([Double].self, forKey: .mode1_uy)
+        self.mode2_ux = try container.decodeIfPresent([Double].self, forKey: .mode2_ux)
+        self.mode2_uy = try container.decodeIfPresent([Double].self, forKey: .mode2_uy)
+        self.mode3_ux = try container.decodeIfPresent([Double].self, forKey: .mode3_ux)
+        self.mode3_uy = try container.decodeIfPresent([Double].self, forKey: .mode3_uy)
+        self.mode4_ux = try container.decodeIfPresent([Double].self, forKey: .mode4_ux)
+        self.mode4_uy = try container.decodeIfPresent([Double].self, forKey: .mode4_uy)
+        self.mode5_ux = try container.decodeIfPresent([Double].self, forKey: .mode5_ux)
+        self.mode5_uy = try container.decodeIfPresent([Double].self, forKey: .mode5_uy)
+    }
 }
 
 public struct StiffnessFullScaleWrapper: Codable {
@@ -322,7 +368,30 @@ public class StiffnessStudyManager: ObservableObject {
                     }
                 } else if p.hasPrefix("pt=") {
                     let vals = p.dropFirst("pt=".count).split(separator: ",")
-                    if vals.count >= 8,
+                    if vals.count >= 10,
+                       let a = Double(vals[0]),
+                       let l1 = Double(vals[1]),
+                       let l2 = Double(vals[2]),
+                       let l3 = Double(vals[3]),
+                       let l4 = Double(vals[4]),
+                       let l5 = Double(vals[5]),
+                       let st = Int(vals[6]),
+                       let en = Double(vals[7]),
+                       let ed = Double(vals[8]),
+                       let ce = Double(vals[9]) {
+                        var pt = StiffnessPointModel()
+                        pt.alpha = a
+                        pt.lambda_min = l1
+                        pt.lambda_2 = l2
+                        pt.lambda_3 = l3
+                        pt.lambda_4 = l4
+                        pt.lambda_5 = l5
+                        pt.is_stable = st != 0
+                        pt.energy = en
+                        pt.energy_density = ed
+                        pt.continuum_energy = ce
+                        self.points.append(pt)
+                    } else if vals.count >= 8,
                        let a = Double(vals[0]),
                        let l1 = Double(vals[1]),
                        let l2 = Double(vals[2]),
@@ -421,23 +490,45 @@ public class StiffnessStudyManager: ObservableObject {
         let lines = content.components(separatedBy: .newlines)
         for line in lines.dropFirst() {
             let parts = line.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count >= 6,
-                  let a = Double(parts[0]),
-                  let lmin = Double(parts[1]),
-                  let l2 = Double(parts[2]),
-                  let l3 = Double(parts[3]),
-                  let st = Int(parts[4]),
-                  let en = Double(parts[5]) else { continue }
-            var pt = StiffnessPointModel()
-            pt.alpha = a
-            pt.lambda_min = lmin
-            pt.lambda_2 = l2
-            pt.lambda_3 = l3
-            pt.is_stable = (st == 1)
-            pt.energy = en
-            pt.energy_density = (parts.count >= 7) ? (Double(parts[6]) ?? en) : en
-            pt.continuum_energy = (parts.count >= 8) ? (Double(parts[7]) ?? pt.energy_density) : pt.energy_density
-            parsed.append(pt)
+            if parts.count >= 10,
+               let a = Double(parts[0]),
+               let lmin = Double(parts[1]),
+               let l2 = Double(parts[2]),
+               let l3 = Double(parts[3]),
+               let l4 = Double(parts[4]),
+               let l5 = Double(parts[5]),
+               let st = Int(parts[6]),
+               let en = Double(parts[7]) {
+                var pt = StiffnessPointModel()
+                pt.alpha = a
+                pt.lambda_min = lmin
+                pt.lambda_2 = l2
+                pt.lambda_3 = l3
+                pt.lambda_4 = l4
+                pt.lambda_5 = l5
+                pt.is_stable = (st == 1)
+                pt.energy = en
+                pt.energy_density = Double(parts[8]) ?? en
+                pt.continuum_energy = Double(parts[9]) ?? pt.energy_density
+                parsed.append(pt)
+            } else if parts.count >= 6,
+               let a = Double(parts[0]),
+               let lmin = Double(parts[1]),
+               let l2 = Double(parts[2]),
+               let l3 = Double(parts[3]),
+               let st = Int(parts[4]),
+               let en = Double(parts[5]) {
+                var pt = StiffnessPointModel()
+                pt.alpha = a
+                pt.lambda_min = lmin
+                pt.lambda_2 = l2
+                pt.lambda_3 = l3
+                pt.is_stable = (st == 1)
+                pt.energy = en
+                pt.energy_density = (parts.count >= 7) ? (Double(parts[6]) ?? en) : en
+                pt.continuum_energy = (parts.count >= 8) ? (Double(parts[7]) ?? pt.energy_density) : pt.energy_density
+                parsed.append(pt)
+            }
         }
         if self.points.count == parsed.count {
             for i in 0..<parsed.count {
@@ -447,6 +538,10 @@ public class StiffnessStudyManager: ObservableObject {
                 parsed[i].mode2_uy = self.points[i].mode2_uy
                 parsed[i].mode3_ux = self.points[i].mode3_ux
                 parsed[i].mode3_uy = self.points[i].mode3_uy
+                parsed[i].mode4_ux = self.points[i].mode4_ux
+                parsed[i].mode4_uy = self.points[i].mode4_uy
+                parsed[i].mode5_ux = self.points[i].mode5_ux
+                parsed[i].mode5_uy = self.points[i].mode5_uy
             }
         }
         self.points = parsed

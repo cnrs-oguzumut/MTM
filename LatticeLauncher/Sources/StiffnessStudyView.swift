@@ -396,9 +396,9 @@ public struct StiffnessStudyView: View {
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = "stiffness_shear_spectrum.csv"
         if panel.runModal() == .OK, let url = panel.url {
-            var csv = "alpha,lambda_min,lambda_2,lambda_3,is_stable,energy,energy_density,continuum_energy\n"
+            var csv = "alpha,lambda_min,lambda_2,lambda_3,lambda_4,lambda_5,is_stable,energy,energy_density,continuum_energy\n"
             for pt in manager.points {
-                csv += "\(pt.alpha),\(pt.lambda_min),\(pt.lambda_2),\(pt.lambda_3),\(pt.is_stable ? 1 : 0),\(pt.energy),\(pt.energy_density),\(pt.continuum_energy)\n"
+                csv += "\(pt.alpha),\(pt.lambda_min),\(pt.lambda_2),\(pt.lambda_3),\(pt.lambda_4),\(pt.lambda_5),\(pt.is_stable ? 1 : 0),\(pt.energy),\(pt.energy_density),\(pt.continuum_energy)\n"
             }
             try? csv.write(to: url, atomically: true, encoding: .utf8)
         }
@@ -438,6 +438,8 @@ struct StiffnessChartView: View {
         if showHigherModes {
             vals.append(contentsOf: points.map(\.lambda_2).filter { $0 > 0 })
             vals.append(contentsOf: points.map(\.lambda_3).filter { $0 > 0 })
+            vals.append(contentsOf: points.map(\.lambda_4).filter { $0 > 0 })
+            vals.append(contentsOf: points.map(\.lambda_5).filter { $0 > 0 })
         }
         return max(1e-12, vals.max() ?? 1.0)
     }
@@ -448,6 +450,8 @@ struct StiffnessChartView: View {
         if showHigherModes {
             vals.append(contentsOf: points.map { -$0.lambda_2 }.filter { $0 > 0 })
             vals.append(contentsOf: points.map { -$0.lambda_3 }.filter { $0 > 0 })
+            vals.append(contentsOf: points.map { -$0.lambda_4 }.filter { $0 > 0 })
+            vals.append(contentsOf: points.map { -$0.lambda_5 }.filter { $0 > 0 })
         }
         return max(posScale, vals.max() ?? posScale)
     }
@@ -480,6 +484,8 @@ struct StiffnessChartView: View {
             if showHigherModes {
                 allVals.append(contentsOf: points.map(\.lambda_2))
                 allVals.append(contentsOf: points.map(\.lambda_3))
+                allVals.append(contentsOf: points.map(\.lambda_4))
+                allVals.append(contentsOf: points.map(\.lambda_5))
             }
             let raw = allVals.min() ?? -1.0
             return min(raw * 1.1, -0.05)
@@ -495,6 +501,8 @@ struct StiffnessChartView: View {
             if showHigherModes {
                 allVals.append(contentsOf: points.map(\.lambda_2))
                 allVals.append(contentsOf: points.map(\.lambda_3))
+                allVals.append(contentsOf: points.map(\.lambda_4))
+                allVals.append(contentsOf: points.map(\.lambda_5))
             }
             let raw = allVals.max() ?? 1.0
             return max(raw * 1.15, 1e-4)
@@ -537,6 +545,14 @@ struct StiffnessChartView: View {
         let stablePts = points.filter(\.is_stable)
         guard !stablePts.isEmpty else { return false }
         let maxDiff = stablePts.map { abs($0.lambda_2 - $0.lambda_min) }.max() ?? 0.0
+        return maxDiff < 1e-5 * posScale
+    }
+    
+    // Check if λ_4 is degenerate with λ_3 in the stable region (second PBC Bloch doublet)
+    private var isLambda4DegenerateWith3: Bool {
+        let stablePts = points.filter(\.is_stable)
+        guard !stablePts.isEmpty else { return false }
+        let maxDiff = stablePts.map { abs($0.lambda_4 - $0.lambda_3) }.max() ?? 0.0
         return maxDiff < 1e-5 * posScale
     }
     
@@ -659,6 +675,32 @@ struct StiffnessChartView: View {
                             .padding(.vertical, 2)
                             .background(Color.cyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
                             .fixedSize()
+                            
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .stroke(Color.purple, lineWidth: 2)
+                                    .frame(width: 8, height: 8)
+                                Text(isLambda4DegenerateWith3 ? "λ₄ (= λ₃ doublet)" : "λ₄ (4th mode)")
+                                    .font(.caption2.bold())
+                                    .foregroundColor(.purple)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
+                            
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(Color.mint)
+                                    .frame(width: 7, height: 7)
+                                Text("λ₅ (5th mode)")
+                                    .font(.caption2.bold())
+                                    .foregroundColor(.mint)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.mint.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
                         }
                     }
                 }
@@ -742,6 +784,12 @@ struct StiffnessChartView: View {
                 Text(String(format: "λ_3   = %.4e", hovered.lambda_3))
                     .font(.caption2.monospaced())
                     .foregroundColor(.cyan)
+                Text(String(format: "λ_4   = %.4e", hovered.lambda_4))
+                    .font(.caption2.monospaced())
+                    .foregroundColor(.purple)
+                Text(String(format: "λ_5   = %.4e", hovered.lambda_5))
+                    .font(.caption2.monospaced())
+                    .foregroundColor(.mint)
             }
             Text(String(format: "E_FEM = %.4e", hovered.energy_density))
                 .font(.caption2.monospaced())
@@ -910,21 +958,45 @@ struct StiffnessChartView: View {
             ctx.fill(Path(ellipseIn: circleRect), with: .color(ptColor))
         }
         
-        // 5. Higher modes λ_2, λ_3 drawn ON TOP with distinct dashes and markers so they are always visible
+        // 5. Higher modes λ_2 ... λ_5 drawn ON TOP with distinct styles and markers
         if showHigherModes {
+            var p5Path = Path()
+            var p4Path = Path()
             var p3Path = Path()
             var p2Path = Path()
             for (idx, pt) in points.enumerated() {
                 let scr2 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_2, size: size)
                 let scr3 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_3, size: size)
+                let scr4 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_4, size: size)
+                let scr5 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_5, size: size)
                 if idx == 0 {
                     p2Path.move(to: scr2)
                     p3Path.move(to: scr3)
+                    p4Path.move(to: scr4)
+                    p5Path.move(to: scr5)
                 } else {
                     p2Path.addLine(to: scr2)
                     p3Path.addLine(to: scr3)
+                    p4Path.addLine(to: scr4)
+                    p5Path.addLine(to: scr5)
                 }
             }
+            // Draw λ_5 in mint with round dot markers
+            ctx.stroke(p5Path, with: .color(Color.mint), style: StrokeStyle(lineWidth: 1.8, dash: [4, 3]))
+            for (idx, pt) in points.enumerated() where idx % 2 == 0 {
+                let scr5 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_5, size: size)
+                let r: CGFloat = 2.8
+                ctx.fill(Path(ellipseIn: CGRect(x: scr5.x - r, y: scr5.y - r, width: 2 * r, height: 2 * r)), with: .color(Color.mint))
+            }
+
+            // Draw λ_4 in purple with square markers
+            ctx.stroke(p4Path, with: .color(Color.purple), style: StrokeStyle(lineWidth: 1.8, dash: [6, 3]))
+            for (idx, pt) in points.enumerated() where idx % 2 == 0 {
+                let scr4 = toScreen(alpha: pt.alpha, rawLambda: pt.lambda_4, size: size)
+                let r: CGFloat = 2.8
+                ctx.stroke(Path(roundedRect: CGRect(x: scr4.x - r, y: scr4.y - r, width: 2 * r, height: 2 * r), cornerRadius: 1), with: .color(Color.purple), lineWidth: 1.5)
+            }
+
             // Draw λ_3 in bright cyan with diamond markers
             ctx.stroke(p3Path, with: .color(Color.cyan), style: StrokeStyle(lineWidth: 2.0))
             for (idx, pt) in points.enumerated() where idx % 2 == 0 || pt.is_stable {

@@ -255,6 +255,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         double lambda_min = 0.0;
         double lambda_2 = 0.0;
         double lambda_3 = 0.0;
+        double lambda_4 = 0.0;
+        double lambda_5 = 0.0;
         std::vector<Eigen::VectorXd> mode_vecs;
 
         if (total_dofs <= 1200) {
@@ -281,7 +283,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                     vec.tail(m).array() -= mv;
                 }
                 non_rigid_evals.push_back(evals(k));
-                if (mode_vecs.size() < 3) {
+                if (mode_vecs.size() < 5) {
                     mode_vecs.push_back(vec);
                 }
             }
@@ -290,10 +292,12 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                 lambda_min = non_rigid_evals[0];
                 lambda_2 = (non_rigid_evals.size() > 1) ? non_rigid_evals[1] : lambda_min;
                 lambda_3 = (non_rigid_evals.size() > 2) ? non_rigid_evals[2] : lambda_2;
+                lambda_4 = (non_rigid_evals.size() > 3) ? non_rigid_evals[3] : lambda_3;
+                lambda_5 = (non_rigid_evals.size() > 4) ? non_rigid_evals[4] : lambda_4;
             }
         } else {
             StiffnessSpectrumOptions opt;
-            opt.n_modes = 5;
+            opt.n_modes = 6;
             opt.deflate_translations = pbc ? 1 : 0;
             opt.compute_vectors = true;
             StiffnessSpectrum spec = lowest_stiffness_modes(K, opt);
@@ -301,7 +305,9 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                 lambda_min = spec.eigenvalues(0);
                 lambda_2 = (spec.num_computed > 1) ? spec.eigenvalues(1) : lambda_min;
                 lambda_3 = (spec.num_computed > 2) ? spec.eigenvalues(2) : lambda_2;
-                for (int k = 0; k < std::min(3, spec.num_computed); ++k) {
+                lambda_4 = (spec.num_computed > 3) ? spec.eigenvalues(3) : lambda_3;
+                lambda_5 = (spec.num_computed > 4) ? spec.eigenvalues(4) : lambda_4;
+                for (int k = 0; k < std::min(5, spec.num_computed); ++k) {
                     if (k < spec.eigenvectors.cols()) {
                         mode_vecs.push_back(spec.eigenvectors.col(k));
                     }
@@ -394,6 +400,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         pt.lambda_min = lambda_min;
         pt.lambda_2 = lambda_2;
         pt.lambda_3 = lambda_3;
+        pt.lambda_4 = lambda_4;
+        pt.lambda_5 = lambda_5;
         pt.is_stable = is_stable;
         pt.energy = total_energy;
         pt.energy_density = energy_density;
@@ -401,15 +409,19 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         if (mode_vecs.size() > 0) extractFullNodeMode(mode_vecs[0], pt.mode1_ux, pt.mode1_uy);
         if (mode_vecs.size() > 1) extractFullNodeMode(mode_vecs[1], pt.mode2_ux, pt.mode2_uy);
         if (mode_vecs.size() > 2) extractFullNodeMode(mode_vecs[2], pt.mode3_ux, pt.mode3_uy);
+        if (mode_vecs.size() > 3) extractFullNodeMode(mode_vecs[3], pt.mode4_ux, pt.mode4_uy);
+        if (mode_vecs.size() > 4) extractFullNodeMode(mode_vecs[4], pt.mode5_ux, pt.mode5_uy);
         results.points.push_back(pt);
 
         // Print log every few steps or near transition, and flush progress for GUI
         if (step % 5 == 0 || !is_stable || (has_last && last_lambda * lambda_min <= 0.0)) {
             std::cout << std::fixed << std::setprecision(4) << std::setw(10) << alpha
                       << std::scientific << std::setprecision(5)
-                      << std::setw(16) << lambda_min
-                      << std::setw(16) << lambda_2
-                      << std::setw(16) << lambda_3
+                      << std::setw(15) << lambda_min
+                      << std::setw(15) << lambda_2
+                      << std::setw(15) << lambda_3
+                      << std::setw(15) << lambda_4
+                      << std::setw(15) << lambda_5
                       << std::setw(14) << total_energy
                       << std::setw(10) << (is_stable ? "STABLE" : "UNSTABLE") << std::endl;
         }
@@ -418,6 +430,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                   << " elapsed=" << std::fixed << std::setprecision(2) << seconds_since(t_start)
                   << " pt=" << std::scientific << std::setprecision(8)
                   << alpha << "," << lambda_min << "," << lambda_2 << "," << lambda_3 << ","
+                  << lambda_4 << "," << lambda_5 << ","
                   << (is_stable ? 1 : 0) << "," << total_energy << "," << energy_density << "," << continuum_energy
                   << std::endl;
     }
@@ -440,13 +453,15 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     if (!config.single_alpha_only && !config.csv_output.empty()) {
         std::ofstream csv(config.csv_output);
         if (csv.is_open()) {
-            csv << "alpha,lambda_min,lambda_2,lambda_3,is_stable,energy,energy_density,continuum_energy\n";
+            csv << "alpha,lambda_min,lambda_2,lambda_3,lambda_4,lambda_5,is_stable,energy,energy_density,continuum_energy\n";
             csv << std::scientific << std::setprecision(10);
             for (const auto &p : results.points) {
                 csv << p.alpha << ","
                     << p.lambda_min << ","
                     << p.lambda_2 << ","
                     << p.lambda_3 << ","
+                    << p.lambda_4 << ","
+                    << p.lambda_5 << ","
                     << (p.is_stable ? 1 : 0) << ","
                     << p.energy << ","
                     << p.energy_density << ","
@@ -580,6 +595,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                      << ", \"lambda_min\": " << p.lambda_min
                      << ", \"lambda_2\": " << p.lambda_2
                      << ", \"lambda_3\": " << p.lambda_3
+                     << ", \"lambda_4\": " << p.lambda_4
+                     << ", \"lambda_5\": " << p.lambda_5
                      << ", \"is_stable\": " << (p.is_stable ? "true" : "false")
                      << ", \"energy\": " << p.energy
                      << ", \"energy_density\": " << p.energy_density
@@ -590,6 +607,10 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                 writeVecCompact("mode2_uy", p.mode2_uy);
                 writeVecCompact("mode3_ux", p.mode3_ux);
                 writeVecCompact("mode3_uy", p.mode3_uy);
+                writeVecCompact("mode4_ux", p.mode4_ux);
+                writeVecCompact("mode4_uy", p.mode4_uy);
+                writeVecCompact("mode5_ux", p.mode5_ux);
+                writeVecCompact("mode5_uy", p.mode5_uy);
                 json << "}";
                 if (i + 1 < results.points.size()) json << ",";
                 json << "\n";
@@ -696,6 +717,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                         << ", \"lambda_min\": " << p.lambda_min
                         << ", \"lambda_2\": " << p.lambda_2
                         << ", \"lambda_3\": " << p.lambda_3
+                        << ", \"lambda_4\": " << p.lambda_4
+                        << ", \"lambda_5\": " << p.lambda_5
                         << ", \"is_stable\": " << (p.is_stable ? "true" : "false");
                 writeFullVec("mode1_ux", p.mode1_ux);
                 writeFullVec("mode1_uy", p.mode1_uy);
@@ -703,6 +726,10 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                 writeFullVec("mode2_uy", p.mode2_uy);
                 writeFullVec("mode3_ux", p.mode3_ux);
                 writeFullVec("mode3_uy", p.mode3_uy);
+                writeFullVec("mode4_ux", p.mode4_ux);
+                writeFullVec("mode4_uy", p.mode4_uy);
+                writeFullVec("mode5_ux", p.mode5_ux);
+                writeFullVec("mode5_uy", p.mode5_uy);
                 fs_json << "}" << (s + 1 < snap_indices.size() ? ",\n" : "\n");
             }
             fs_json << "  ]\n";

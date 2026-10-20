@@ -31,17 +31,23 @@ struct StiffnessShearPoint {
     double lambda_min = 0.0;
     double lambda_2 = 0.0;
     double lambda_3 = 0.0;
+    double lambda_4 = 0.0;
+    double lambda_5 = 0.0;
     bool is_stable = true;
     double energy = 0.0;           // Total integrated energy over all elements
     double energy_density = 0.0;   // Energy per unit area: total_energy / total_area
     double continuum_energy = 0.0; // Homogeneous continuum strain energy density W_cont(alpha)
-    // Normalized nodal eigenvectors v_1, v_2, v_3 on the full N_nodes lattice (max |du_i| = 1)
+    // Normalized nodal eigenvectors v_1 ... v_5 on the full N_nodes lattice (max |du_i| = 1)
     std::vector<double> mode1_ux;
     std::vector<double> mode1_uy;
     std::vector<double> mode2_ux;
     std::vector<double> mode2_uy;
     std::vector<double> mode3_ux;
     std::vector<double> mode3_uy;
+    std::vector<double> mode4_ux;
+    std::vector<double> mode4_uy;
+    std::vector<double> mode5_ux;
+    std::vector<double> mode5_uy;
 };
 
 struct StiffnessShearSummary {

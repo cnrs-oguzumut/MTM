@@ -7,6 +7,8 @@ public enum StiffnessEigenmodeChoice: Int, CaseIterable, Identifiable {
     case mode1 = 1
     case mode2 = 2
     case mode3 = 3
+    case mode4 = 4
+    case mode5 = 5
     
     public var id: Int { rawValue }
     public var label: String {
@@ -14,6 +16,8 @@ public enum StiffnessEigenmodeChoice: Int, CaseIterable, Identifiable {
         case .mode1: return "Mode 1 (λ₁)"
         case .mode2: return "Mode 2 (λ₂)"
         case .mode3: return "Mode 3 (λ₃)"
+        case .mode4: return "Mode 4 (λ₄)"
+        case .mode5: return "Mode 5 (λ₅)"
         }
     }
 }
@@ -325,6 +329,12 @@ public struct StiffnessModeInspectorView: View {
                             Text("λ₃:").foregroundColor(.secondary)
                             Text(String(format: "%+.2e", pt.lambda_3))
                                 .foregroundColor(.cyan)
+                            Text("λ₄:").foregroundColor(.secondary)
+                            Text(String(format: "%+.2e", pt.lambda_4))
+                                .foregroundColor(.purple)
+                            Text("λ₅:").foregroundColor(.secondary)
+                            Text(String(format: "%+.2e", pt.lambda_5))
+                                .foregroundColor(.mint)
                         }
                         .font(.system(size: 10, design: .monospaced))
                         .fixedSize()
@@ -686,6 +696,8 @@ public struct StiffnessModeInspectorView: View {
         var lambdaMin: Double
         var lambda2: Double
         var lambda3: Double
+        var lambda4: Double
+        var lambda5: Double
         var isExactFEM: Bool
         var gridNx: Int
         var gridNy: Int
@@ -804,6 +816,10 @@ public struct StiffnessModeInspectorView: View {
                 chosenUx = snap.mode2_ux ?? snap.mode1_ux; chosenUy = snap.mode2_uy ?? snap.mode1_uy
             case .mode3:
                 chosenUx = snap.mode3_ux ?? snap.mode1_ux; chosenUy = snap.mode3_uy ?? snap.mode1_uy
+            case .mode4:
+                chosenUx = snap.mode4_ux ?? snap.mode1_ux; chosenUy = snap.mode4_uy ?? snap.mode1_uy
+            case .mode5:
+                chosenUx = snap.mode5_ux ?? snap.mode1_ux; chosenUy = snap.mode5_uy ?? snap.mode1_uy
             }
         } else {
             switch selectedMode {
@@ -813,6 +829,10 @@ public struct StiffnessModeInspectorView: View {
                 chosenUx = pt.mode2_ux ?? pt.mode1_ux; chosenUy = pt.mode2_uy ?? pt.mode1_uy
             case .mode3:
                 chosenUx = pt.mode3_ux ?? pt.mode1_ux; chosenUy = pt.mode3_uy ?? pt.mode1_uy
+            case .mode4:
+                chosenUx = pt.mode4_ux ?? pt.mode1_ux; chosenUy = pt.mode4_uy ?? pt.mode1_uy
+            case .mode5:
+                chosenUx = pt.mode5_ux ?? pt.mode1_ux; chosenUy = pt.mode5_uy ?? pt.mode1_uy
             }
         }
         
@@ -843,6 +863,14 @@ public struct StiffnessModeInspectorView: View {
                     phase = 2.0 * .pi * (cRefX[i] / spanX + cRefY[i] / spanY)
                     ux.append(0.707 * sin(phase))
                     uy.append(-0.707 * sin(phase))
+                case .mode4:
+                    phase = 2.0 * .pi * (cRefX[i] / spanX - cRefY[i] / spanY)
+                    ux.append(0.707 * sin(phase))
+                    uy.append(0.707 * sin(phase))
+                case .mode5:
+                    phase = 4.0 * .pi * cRefY[i] / spanY
+                    ux.append(sin(phase))
+                    uy.append(0.0)
                 }
             }
         }
@@ -983,6 +1011,8 @@ public struct StiffnessModeInspectorView: View {
             lambdaMin: pt.lambda_min,
             lambda2: pt.lambda_2,
             lambda3: pt.lambda_3,
+            lambda4: pt.lambda_4,
+            lambda5: pt.lambda_5,
             isExactFEM: isExact,
             gridNx: gridNx,
             gridNy: gridNy,
@@ -1535,7 +1565,15 @@ fileprivate struct PublicationFigureView: View {
         VStack(spacing: 8) {
             // Header Title
             HStack {
-                let curLambda = (selectedMode == .mode1 ? resolved.lambdaMin : (selectedMode == .mode2 ? resolved.lambda2 : resolved.lambda3))
+                let curLambda: Double = {
+                    switch selectedMode {
+                    case .mode1: return resolved.lambdaMin
+                    case .mode2: return resolved.lambda2
+                    case .mode3: return resolved.lambda3
+                    case .mode4: return resolved.lambda4
+                    case .mode5: return resolved.lambda5
+                    }
+                }()
                 Text(String(format: "Discrete Stiffness Eigenmode %@   (α = %+.4f,  λ = %+.3e)",
                             selectedMode.label, resolved.alpha, curLambda))
                     .font(.system(size: 15, weight: .bold, design: .serif))
