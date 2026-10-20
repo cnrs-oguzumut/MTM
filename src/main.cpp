@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
   double alpha_start = 0.14;
   double alpha_end = 1.0;
   double step_size = 6e-5;
+  double noise_level = 0.04;
 
   // Energy relaxation solver (default: plain L-BFGS, unchanged behaviour).
   //   --precond=stiffness|laplacian|diag|none   L-BFGS preconditioner
@@ -268,6 +269,10 @@ int main(int argc, char **argv) {
       triangulation_perturbation = 0.0;
     } else if (arg.rfind("--perturbation=", 0) == 0) {
       triangulation_perturbation = std::stod(arg.substr(15));
+    } else if (arg.rfind("--noise-level=", 0) == 0) {
+      noise_level = std::stod(arg.substr(14));
+    } else if (arg.rfind("--noise=", 0) == 0) {
+      noise_level = std::stod(arg.substr(8));
     }
   }
 
@@ -309,6 +314,7 @@ int main(int argc, char **argv) {
             << " | lattice=" << lattice_type
             << " | beta=" << beta << " | K=" << bulk_K
             << " | mode=" << mode << " | seed=" << seed
+            << " | noise=" << noise_level
             << " | remeshing=" << (enable_remeshing ? "enabled" : "disabled")
             << " | alpha_start=" << alpha_start << " | alpha_end=" << alpha_end
             << " | step_size=" << step_size
@@ -434,9 +440,9 @@ int main(int argc, char **argv) {
   // 7. Zanzotto Continuous Shear Loading:
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
-    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type);
+    example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level);
   } else {
-    example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type);
+    example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

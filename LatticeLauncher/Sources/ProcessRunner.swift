@@ -48,8 +48,10 @@ public class ProcessRunner: ObservableObject {
     @Published public var avalancheCount: Int = 0
     @Published public var elapsedTime: TimeInterval = 0
     
-    // Live Stress-Strain Curve points
+    // Live Stress-Strain & Eigenvalue Curve points
     @Published public var curvePoints: [StressStrainPoint] = []
+    @Published public var eigenPoints: [EigenPoint] = []
+    @Published public var currentLambdaMin: Double? = nil
     @Published public var peakStress: Double = 0.0
     @Published public var yieldStrain: Double = 0.0
     @Published public var activeConfig: SimulationConfig?
@@ -67,6 +69,8 @@ public class ProcessRunner: ObservableObject {
     public func clearLogs() {
         logLines.removeAll()
         curvePoints.removeAll()
+        eigenPoints.removeAll()
+        currentLambdaMin = nil
         peakStress = 0.0
         yieldStrain = 0.0
     }
@@ -100,6 +104,9 @@ public class ProcessRunner: ObservableObject {
         self.outputDirectory = runDir
         do {
             try fm.createDirectory(atPath: runDir, withIntermediateDirectories: true, attributes: nil)
+            // Remove stale CSV logs before fresh start so live chart starts clean
+            try? fm.removeItem(atPath: "\(runDir)/energy_stress_log.csv")
+            try? fm.removeItem(atPath: "\(runDir)/eigen_log.csv")
         } catch {
             self.status = .failed(error: "Cannot create output directory: \(error.localizedDescription)")
             return
@@ -107,6 +114,11 @@ public class ProcessRunner: ObservableObject {
         
         // 3. Clear stats and set running state
         self.activeConfig = config
+        self.curvePoints.removeAll()
+        self.eigenPoints.removeAll()
+        self.currentLambdaMin = nil
+        self.peakStress = 0.0
+        self.yieldStrain = 0.0
         self.currentStep = 0
         self.currentAlpha = config.alphaStart
         self.currentStress = 0.0
@@ -213,6 +225,8 @@ public class ProcessRunner: ObservableObject {
     }
     
     public func pollCSV() {
+        self.pollEigenCSV()
+        
         let csvPath = "\(outputDirectory)/energy_stress_log.csv"
         guard FileManager.default.fileExists(atPath: csvPath) else { return }
         guard let content = try? String(contentsOfFile: csvPath, encoding: .utf8) else { return }
@@ -265,12 +279,62 @@ public class ProcessRunner: ObservableObject {
                 self.currentAlpha = last.alpha
                 self.currentStress = last.postStress
                 self.currentEnergy = last.postEnergy
-                if last.postStress > self.peakStress {
-                    self.peakStress = last.postStress
+                if abs(last.postStress) > self.peakStress {
+                    self.peakStress = abs(last.postStress)
                     self.yieldStrain = last.alpha
                 }
             }
             self.updateAvalancheStats()
+        }
+        
+        self.pollEigenCSV()
+    }
+    
+    public func pollEigenCSV() {
+        let eigPath = "\(outputDirectory)/eigen_log.csv"
+        guard FileManager.default.fileExists(atPath: eigPath) else { return }
+        guard let content = try? String(contentsOfFile: eigPath, encoding: .utf8) else { return }
+        
+        var lines = content.components(separatedBy: "\n")
+        if !content.hasSuffix("\n") && !lines.isEmpty {
+            lines.removeLast()
+        }
+        
+        var parsed: [EigenPoint] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed.hasPrefix("Iteration") { continue }
+            
+            let parts = trimmed.components(separatedBy: ",")
+            guard parts.count >= 6 else { continue }
+            
+            guard let iter = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+                  let alpha = Double(parts[1].trimmingCharacters(in: .whitespaces)),
+                  let failedShifts = Int(parts[3].trimmingCharacters(in: .whitespaces)),
+                  let lambda1 = Double(parts[5].trimmingCharacters(in: .whitespaces)),
+                  lambda1.isFinite else {
+                continue
+            }
+            
+            let trigger = parts[2].trimmingCharacters(in: .whitespaces)
+            var lambda2: Double? = nil
+            if parts.count >= 7, let l2 = Double(parts[6].trimmingCharacters(in: .whitespaces)), l2.isFinite {
+                lambda2 = l2
+            }
+            
+            parsed.append(EigenPoint(
+                iteration: iter,
+                alpha: alpha,
+                trigger: trigger,
+                lambdaMin: lambda1,
+                lambda2: lambda2,
+                failedShifts: failedShifts
+            ))
+        }
+        
+        if parsed.count != self.eigenPoints.count {
+            self.eigenPoints = parsed
+            self.currentLambdaMin = parsed.last?.lambdaMin
         }
     }
     
@@ -314,6 +378,15 @@ public class ProcessRunner: ObservableObject {
                 if (p.lowercased().contains("sigma") || p.lowercased().contains("stress")) && idx + 1 < parts.count,
                    let val = Double(parts[idx + 1].replacingOccurrences(of: "=", with: "")) {
                     self.currentStress = val
+                }
+            }
+        }
+        if line.contains("lambda_min") {
+            if let range = line.range(of: "lambda_min = ") {
+                let substr = line[range.upperBound...]
+                let token = substr.prefix(while: { !$0.isWhitespace && $0 != "," && $0 != "|" })
+                if let val = Double(token), val.isFinite {
+                    self.currentLambdaMin = val
                 }
             }
         }

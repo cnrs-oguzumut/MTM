@@ -129,7 +129,7 @@ public class StiffnessStudyManager: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.currentDirectoryURL = URL(fileURLWithPath: root)
-        p.arguments = [
+        var args = [
             "--stiffness-study",
             "--nx=\(nx)",
             "--ny=\(ny)",
@@ -139,11 +139,14 @@ public class StiffnessStudyManager: ObservableObject {
             "--alpha-min=\(alphaMin)",
             "--alpha-max=\(alphaMax)",
             "--dalpha=\(dalpha)",
-            "--beta=\(beta)",
-            "--K=\(bulkK)",
             "--stiffness-csv=\(csvOut)",
             "--stiffness-json=\(jsonOut)"
         ]
+        if potentialMode == .zanzotto {
+            args.append("--beta=\(beta)")
+            args.append("--K=\(bulkK)")
+        }
+        p.arguments = args
         
         let pipe = Pipe()
         p.standardOutput = pipe

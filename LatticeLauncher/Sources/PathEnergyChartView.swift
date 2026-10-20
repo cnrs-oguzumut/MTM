@@ -30,113 +30,122 @@ public struct PathEnergyChartView: View {
     public var body: some View {
         VStack(spacing: 0) {
             // =========================================================================
-            // 1. TOP RESPONSIVE TOOLBAR
+            // 1. TOP RESPONSIVE TOOLBAR (Horizontally scrollable so it never clips in Split View)
             // =========================================================================
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "chart.xyaxis.line")
-                            .foregroundColor(.accentColor)
-                            .font(.system(size: 13, weight: .bold))
-                        Text("Path Energy E(α)")
-                            .font(.system(size: 13, weight: .bold))
-                    }
-                    Text(pathSubtitle)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-                
-                Spacer(minLength: 6)
-                
-                // Dropdown menu for selecting alpha / critical alpha / wells
-                if !criticalAlphas.isEmpty || periodAlpha > 0 {
-                    Menu {
-                        if !criticalAlphas.isEmpty {
-                            Section("Critical Stability Limits (α_c)") {
-                                ForEach(criticalAlphas, id: \.self) { aC in
-                                    Button(action: {
-                                        manager.hoveredAlpha = aC
-                                        manager.selectedCriticalAlpha = aC
-                                    }) {
-                                        Text(String(format: "α_c = %+.4f (Loss of Ellipticity)", aC))
-                                    }
-                                }
-                            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chart.xyaxis.line")
+                                .foregroundColor(.accentColor)
+                                .font(.system(size: 13, weight: .bold))
+                            Text("Path Energy E(α)")
+                                .font(.system(size: 13, weight: .bold))
                         }
-                        
-                        Section("Symmetry Wells") {
-                            Button(action: { manager.hoveredAlpha = 0.0 }) {
-                                Text("α = 0.0000 (Reference State)")
-                            }
-                            let p = periodAlpha
-                            let minK = Int(floor(alphaBounds.min / p))
-                            let maxK = Int(ceil(alphaBounds.max / p))
-                            ForEach(minK...maxK, id: \.self) { k in
-                                if k != 0 {
-                                    let wellA = Double(k) * p
-                                    if wellA >= alphaBounds.min && wellA <= alphaBounds.max {
-                                        Button(action: { manager.hoveredAlpha = wellA }) {
-                                            Text(String(format: "α = %+.4f (%dΔα Well)", wellA, k))
+                        Text(pathSubtitle)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    .fixedSize()
+                    
+                    Divider().frame(height: 16)
+                    
+                    // Dropdown menu for selecting alpha / critical alpha / wells
+                    if !criticalAlphas.isEmpty || periodAlpha > 0 {
+                        Menu {
+                            if !criticalAlphas.isEmpty {
+                                Section("Critical Stability Limits (α_c)") {
+                                    ForEach(criticalAlphas, id: \.self) { aC in
+                                        Button(action: {
+                                            manager.hoveredAlpha = aC
+                                            manager.selectedCriticalAlpha = aC
+                                        }) {
+                                            Text(String(format: "α_c = %+.4f (Loss of Ellipticity)", aC))
                                         }
                                     }
                                 }
                             }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "list.bullet")
-                            if let hA = manager.hoveredAlpha {
-                                Text(String(format: "α = %+.3f", hA))
-                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            } else {
-                                Text("Jump to α")
-                                    .font(.system(size: 11, weight: .medium))
+                            
+                            Section("Symmetry Wells") {
+                                Button(action: { manager.hoveredAlpha = 0.0 }) {
+                                    Text("α = 0.0000 (Reference State)")
+                                }
+                                let p = periodAlpha
+                                let minK = Int(floor(alphaBounds.min / p))
+                                let maxK = Int(ceil(alphaBounds.max / p))
+                                ForEach(minK...maxK, id: \.self) { k in
+                                    if k != 0 {
+                                        let wellA = Double(k) * p
+                                        if wellA >= alphaBounds.min && wellA <= alphaBounds.max {
+                                            Button(action: { manager.hoveredAlpha = wellA }) {
+                                                Text(String(format: "α = %+.4f (%dΔα Well)", wellA, k))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "list.bullet")
+                                if let hA = manager.hoveredAlpha {
+                                    Text(String(format: "α = %+.3f", hA))
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                } else {
+                                    Text("Jump to α")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
                             }
                         }
+                        .menuStyle(.borderedButton)
+                        .controlSize(.small)
+                        .fixedSize()
+                        .help("Jump directly to any critical stability limit α_c or periodic symmetry well")
                     }
-                    .menuStyle(.borderedButton)
+                    
+                    Divider().frame(height: 14)
+                    
+                    // Compact Legend
+                    HStack(spacing: 8) {
+                        HStack(spacing: 3) {
+                            Circle().fill(Color(red: 0.2, green: 0.95, blue: 0.4)).frame(width: 6, height: 6)
+                            Text("Stable").font(.system(size: 10))
+                        }
+                        HStack(spacing: 3) {
+                            Circle().fill(Color(red: 1.0, green: 0.2, blue: 0.85)).frame(width: 6, height: 6)
+                            Text("Unstable").font(.system(size: 10))
+                        }
+                        HStack(spacing: 3) {
+                            Rectangle().fill(Color.yellow).frame(width: 8, height: 2)
+                            Text("α_c").font(.system(size: 10))
+                        }
+                    }
+                    .fixedSize()
+                    
+                    Divider().frame(height: 14)
+                    
+                    // Toggle Acoustic Tensor Curve
+                    Button(action: { showAcousticTensorCurve.toggle() }) {
+                        Image(systemName: showAcousticTensorCurve ? "waveform.path.ecg" : "waveform")
+                            .foregroundColor(showAcousticTensorCurve ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("Jump directly to any critical stability limit α_c or periodic symmetry well")
-                }
-                
-                Divider().frame(height: 14)
-                
-                // Compact Legend
-                HStack(spacing: 8) {
-                    HStack(spacing: 3) {
-                        Circle().fill(Color(red: 0.2, green: 0.95, blue: 0.4)).frame(width: 6, height: 6)
-                        Text("Stable").font(.system(size: 10))
+                    .fixedSize()
+                    .help(showAcousticTensorCurve ? "Hide min det Ac curve" : "Show min det Ac curve")
+                    
+                    // Export CSV Button
+                    Button(action: exportCSV) {
+                        Image(systemName: "square.and.arrow.up")
                     }
-                    HStack(spacing: 3) {
-                        Circle().fill(Color(red: 1.0, green: 0.2, blue: 0.85)).frame(width: 6, height: 6)
-                        Text("Unstable").font(.system(size: 10))
-                    }
-                    HStack(spacing: 3) {
-                        Rectangle().fill(Color.yellow).frame(width: 8, height: 2)
-                        Text("α_c").font(.system(size: 10))
-                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Export energy path data as CSV")
                 }
-                
-                Divider().frame(height: 14)
-                
-                // Toggle Acoustic Tensor Curve
-                Button(action: { showAcousticTensorCurve.toggle() }) {
-                    Image(systemName: showAcousticTensorCurve ? "waveform.path.ecg" : "waveform")
-                        .foregroundColor(showAcousticTensorCurve ? .accentColor : .secondary)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(showAcousticTensorCurve ? "Hide min det Ac curve" : "Show min det Ac curve")
-                
-                // Export CSV Button
-                Button(action: exportCSV) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Export energy path data as CSV")
+                .padding(.vertical, 1)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(Color(NSColor.controlBackgroundColor))
@@ -144,61 +153,68 @@ public struct PathEnergyChartView: View {
             Divider()
             
             // =========================================================================
-            // 3. REAL-TIME TELEMETRY BAR (Zero plot occlusion)
+            // 3. REAL-TIME TELEMETRY BAR (Horizontally scrollable, zero plot occlusion)
             // =========================================================================
-            HStack(spacing: 8) {
-                if let pt = currentInspectedPoint {
-                    let isStable = pt.is_stable ?? ((pt.min_detAc ?? 0.0) > 0)
-                    HStack(spacing: 4) {
-                        Text(String(format: "α = %+.4f", pt.alpha))
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    if let pt = currentInspectedPoint {
+                        let isStable = pt.is_stable ?? ((pt.min_detAc ?? 0.0) > 0)
+                        HStack(spacing: 4) {
+                            Text(String(format: "α = %+.4f", pt.alpha))
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundColor(.cyan)
+                            
+                            Text(isStable ? "STABLE" : "UNSTABLE")
+                                .font(.system(size: 9, weight: .black))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(isStable ? Color.green.opacity(0.25) : Color.red.opacity(0.25), in: Capsule())
+                                .foregroundColor(isStable ? .green : .red)
+                        }
+                        .fixedSize()
                         
-                        Text(isStable ? "STABLE" : "UNSTABLE")
-                            .font(.system(size: 9, weight: .black))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(isStable ? Color.green.opacity(0.25) : Color.red.opacity(0.25), in: Capsule())
-                            .foregroundColor(isStable ? .green : .red)
-                    }
-                    
-                    Divider().frame(height: 12)
-                    
-                    HStack(spacing: 2) {
-                        Text("E:").foregroundColor(.secondary)
-                        Text(String(format: "%.4f", pt.energy)).bold()
-                    }
-                    .font(.system(size: 10, design: .monospaced))
-                    
-                    if let det = pt.min_detAc {
                         Divider().frame(height: 12)
+                        
                         HStack(spacing: 2) {
-                            Text("det Ac:").foregroundColor(.secondary)
-                            Text(String(format: "%+.2f", det)).bold()
-                                .foregroundColor(det > 0 ? .green : .red)
+                            Text("E:").foregroundColor(.secondary)
+                            Text(String(format: "%.4f", pt.energy)).bold()
                         }
                         .font(.system(size: 10, design: .monospaced))
+                        .fixedSize()
+                        
+                        if let det = pt.min_detAc {
+                            Divider().frame(height: 12)
+                            HStack(spacing: 2) {
+                                Text("det Ac:").foregroundColor(.secondary)
+                                Text(String(format: "%+.2f", det)).bold()
+                                    .foregroundColor(det > 0 ? .green : .red)
+                            }
+                            .font(.system(size: 10, design: .monospaced))
+                            .fixedSize()
+                        }
+                        
+                        Divider().frame(height: 12)
+                        
+                        HStack(spacing: 2) {
+                            Text("Poincaré:").foregroundColor(.secondary)
+                            Text(String(format: "(%.2f, %.2f)", pt.x, pt.y))
+                        }
+                        .font(.system(size: 10, design: .monospaced))
+                        .fixedSize()
+                    } else {
+                        Image(systemName: "hand.point.up.left")
+                            .foregroundColor(.secondary)
+                            .font(.caption2)
+                        Text("Hover or drag across the chart to inspect local stability & Poincaré mapping.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                     }
-                    
-                    Divider().frame(height: 12)
-                    
-                    HStack(spacing: 2) {
-                        Text("Poincaré:").foregroundColor(.secondary)
-                        Text(String(format: "(%.2f, %.2f)", pt.x, pt.y))
-                    }
-                    .font(.system(size: 10, design: .monospaced))
-                    
-                    Spacer()
-                } else {
-                    Image(systemName: "hand.point.up.left")
-                        .foregroundColor(.secondary)
-                        .font(.caption2)
-                    Text("Hover or drag across the chart to inspect local stability & Poincaré mapping.")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Spacer()
                 }
+                .padding(.vertical, 1)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(Color(NSColor.controlBackgroundColor).opacity(0.85))

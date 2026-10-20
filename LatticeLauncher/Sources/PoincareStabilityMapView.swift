@@ -24,65 +24,73 @@ public struct PoincareStabilityMapView: View {
     public var body: some View {
         VStack(spacing: 0) {
             // =========================================================================
-            // 1. TOP DEDICATED TOOLBAR (Fixed height, completely ABOVE canvas)
+            // 1. TOP DEDICATED TOOLBAR (Horizontally scrollable so it never clips in Split View)
             // =========================================================================
-            HStack(spacing: 6) {
-                // Coordinate Mode Switcher
-                Picker("", selection: $manager.useReducedCoordinates) {
-                    Text("Original").tag(false)
-                    Text("Reduced").tag(true)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .frame(width: 130)
-                
-                // Color Field Mode (Stability vs Energy)
-                Picker("", selection: $manager.colorField) {
-                    ForEach(ColorFieldMode.allCases) { mode in
-                        Text(mode.shortLabel).tag(mode)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    // Coordinate Mode Switcher
+                    Picker("", selection: $manager.useReducedCoordinates) {
+                        Text("Original").tag(false)
+                        Text("Reduced").tag(true)
                     }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .frame(width: 125)
-                
-                // Render Style Mode (Smooth Surface vs Scatter)
-                Picker("", selection: $manager.renderStyle) {
-                    Text("Surface").tag(RenderStyleMode.smoothSurface)
-                    Text("Scatter").tag(RenderStyleMode.scatterPoints)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .frame(width: 115)
-                
-                Spacer(minLength: 4)
-                
-                // Display Options Menu
-                Menu {
-                    Toggle("Zero Boundary Contour", isOn: $manager.highlightZeroBoundary)
-                    Toggle("Deformation Path", isOn: $manager.showShearPath)
-                    if manager.renderStyle == .scatterPoints {
-                        Divider()
-                        Text("Point Radius: \(manager.pointRadius, specifier: "%.1f")")
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .fixedSize()
+                    
+                    // Color Field Mode (Stability vs Energy)
+                    Picker("", selection: $manager.colorField) {
+                        ForEach(ColorFieldMode.allCases) { mode in
+                            Text(mode.shortLabel).tag(mode)
+                        }
                     }
-                } label: {
-                    Image(systemName: "slider.horizontal.2.square")
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .fixedSize()
+                    
+                    // Render Style Mode (Smooth Surface vs Scatter)
+                    Picker("", selection: $manager.renderStyle) {
+                        Text("Surface").tag(RenderStyleMode.smoothSurface)
+                        Text("Scatter").tag(RenderStyleMode.scatterPoints)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .fixedSize()
+                    
+                    Divider().frame(height: 14)
+                    
+                    // Display Options Menu
+                    Menu {
+                        Toggle("Zero Boundary Contour", isOn: $manager.highlightZeroBoundary)
+                        Toggle("Deformation Path", isOn: $manager.showShearPath)
+                        if manager.renderStyle == .scatterPoints {
+                            Divider()
+                            Text("Point Radius: \(manager.pointRadius, specifier: "%.1f")")
+                        }
+                    } label: {
+                        Label("Options", systemImage: "slider.horizontal.2.square")
+                            .font(.caption)
+                    }
+                    .menuStyle(.borderedButton)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Display options (Zero contour, Deformation path)")
+                    
+                    // Reset View Button
+                    Button(action: resetView) {
+                        Label("Reset", systemImage: "arrow.counterclockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Reset Zoom & Pan")
                 }
-                .menuStyle(.borderlessButton)
-                .frame(width: 26)
-                .help("Display options (Zero contour, Deformation path)")
-                
-                // Reset View Button
-                Button(action: resetView) {
-                    Image(systemName: "arrow.counterclockwise")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Reset Zoom & Pan")
+                .padding(.vertical, 1)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(Color(NSColor.controlBackgroundColor))
@@ -92,112 +100,121 @@ public struct PoincareStabilityMapView: View {
             // =========================================================================
             if manager.colorField == .strainEnergy {
                 Divider()
-                VStack(spacing: 5) {
-                    HStack(spacing: 8) {
-                        // Colormap Picker
-                        HStack(spacing: 4) {
-                            Image(systemName: "paintpalette.fill")
-                                .foregroundColor(.orange)
-                                .font(.caption)
-                            Picker("", selection: $manager.energyColormap) {
-                                ForEach(EnergyColormapPreset.allCases) { cmap in
-                                    Text(cmap.rawValue).tag(cmap)
+                VStack(alignment: .leading, spacing: 5) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            // Colormap Picker
+                            HStack(spacing: 4) {
+                                Image(systemName: "paintpalette.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.caption)
+                                Picker("", selection: $manager.energyColormap) {
+                                    ForEach(EnergyColormapPreset.allCases) { cmap in
+                                        Text(cmap.rawValue).tag(cmap)
+                                    }
+                                }
+                                .labelsHidden()
+                                .controlSize(.small)
+                                .fixedSize()
+                                
+                                Toggle("Invert", isOn: $manager.invertEnergyColormap)
+                                    .toggleStyle(.checkbox)
+                                    .controlSize(.small)
+                                    .font(.caption2)
+                                    .fixedSize()
+                            }
+                            
+                            Divider().frame(height: 16)
+                            
+                            // Percentile Cutoff Slider + Presets
+                            if !manager.useCustomEnergyRange {
+                                HStack(spacing: 5) {
+                                    Text("P_max:")
+                                        .font(.caption.bold())
+                                        .fixedSize()
+                                    Slider(value: $manager.energyUpperPercentile, in: 10.0...100.0, step: 0.5)
+                                        .controlSize(.small)
+                                        .frame(width: 90)
+                                    Text(String(format: "%.1f%%", manager.energyUpperPercentile))
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundColor(.orange)
+                                        .frame(width: 44, alignment: .trailing)
+                                    
+                                    ForEach([100.0, 99.0, 95.0, 90.0, 80.0, 65.0], id: \.self) { pct in
+                                        Button(String(format: "%.0f%%", pct)) {
+                                            manager.energyUpperPercentile = pct
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.mini)
+                                        .fixedSize()
+                                    }
+                                }
+                            } else {
+                                HStack(spacing: 6) {
+                                    Text("Min:")
+                                        .font(.caption)
+                                    DoubleField(title: "0.0", value: $manager.customEnergyMin, width: 60)
+                                    Text("Max:")
+                                        .font(.caption)
+                                    DoubleField(title: "10.0", value: $manager.customEnergyMax, width: 60)
                                 }
                             }
-                            .labelsHidden()
-                            .controlSize(.small)
-                            .frame(width: 95)
                             
-                            Toggle("Invert", isOn: $manager.invertEnergyColormap)
+                            Toggle("Custom", isOn: $manager.useCustomEnergyRange)
                                 .toggleStyle(.checkbox)
                                 .controlSize(.small)
                                 .font(.caption2)
+                                .fixedSize()
                         }
-                        
-                        Divider().frame(height: 16)
-                        
-                        // Percentile Cutoff Slider + Presets
-                        if !manager.useCustomEnergyRange {
-                            HStack(spacing: 5) {
-                                Text("P_max:")
-                                    .font(.caption.bold())
-                                Slider(value: $manager.energyUpperPercentile, in: 10.0...100.0, step: 0.5)
-                                    .controlSize(.small)
-                                    .frame(width: 100)
-                                Text(String(format: "%.1f%%", manager.energyUpperPercentile))
-                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                    .foregroundColor(.orange)
-                                    .frame(width: 44, alignment: .trailing)
-                                
-                                ForEach([100.0, 99.0, 95.0, 90.0, 80.0, 65.0], id: \.self) { pct in
-                                    Button(String(format: "%.0f%%", pct)) {
-                                        manager.energyUpperPercentile = pct
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.mini)
-                                }
-                            }
-                        } else {
-                            HStack(spacing: 6) {
-                                Text("Min:")
-                                    .font(.caption)
-                                DoubleField(title: "0.0", value: $manager.customEnergyMin, width: 60)
-                                Text("Max:")
-                                    .font(.caption)
-                                DoubleField(title: "10.0", value: $manager.customEnergyMax, width: 60)
-                            }
-                        }
-                        
-                        Toggle("Custom", isOn: $manager.useCustomEnergyRange)
-                            .toggleStyle(.checkbox)
-                            .controlSize(.small)
-                            .font(.caption2)
-                        
-                        Spacer(minLength: 4)
+                        .padding(.vertical, 1)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    HStack(spacing: 8) {
-                        // Outlier Filtering Mode: Hide/Discard vs Clamp
-                        Picker("", selection: $manager.discardAbovePercentile) {
-                            Text("Hide > Cutoff").tag(true)
-                            Text("Clamp Color").tag(false)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            // Outlier Filtering Mode: Hide/Discard vs Clamp
+                            Picker("", selection: $manager.discardAbovePercentile) {
+                                Text("Hide > Cutoff").tag(true)
+                                Text("Clamp Color").tag(false)
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .controlSize(.small)
+                            .fixedSize()
+                            
+                            Divider().frame(height: 16)
+                            
+                            // Gamma / Contrast Slider
+                            HStack(spacing: 5) {
+                                Text("γ:")
+                                    .font(.caption.bold())
+                                Slider(value: $manager.energyGamma, in: 0.15...2.50, step: 0.05)
+                                    .controlSize(.small)
+                                    .frame(width: 80)
+                                Text(String(format: "%.2f", manager.energyGamma))
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .frame(width: 34)
+                                Button("0.5") { manager.energyGamma = 0.50 }
+                                    .buttonStyle(.bordered).controlSize(.mini).fixedSize()
+                                Button("0.7") { manager.energyGamma = 0.70 }
+                                    .buttonStyle(.bordered).controlSize(.mini).fixedSize()
+                                Button("1.0") { manager.energyGamma = 1.00 }
+                                    .buttonStyle(.bordered).controlSize(.mini).fixedSize()
+                            }
+                            
+                            // Live Cutoff Readout Badge
+                            let b = energyBounds
+                            Text(String(format: "ΔΦ ∈ [%.2f, %.2f] (%d/%d)", b.min, b.max, b.keptCount, b.totalCount))
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .fixedSize()
                         }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .controlSize(.small)
-                        .frame(width: 195)
-                        
-                        Divider().frame(height: 16)
-                        
-                        // Gamma / Contrast Slider
-                        HStack(spacing: 5) {
-                            Text("γ:")
-                                .font(.caption.bold())
-                            Slider(value: $manager.energyGamma, in: 0.15...2.50, step: 0.05)
-                                .controlSize(.small)
-                                .frame(width: 85)
-                            Text(String(format: "%.2f", manager.energyGamma))
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .frame(width: 34)
-                            Button("0.5") { manager.energyGamma = 0.50 }
-                                .buttonStyle(.bordered).controlSize(.mini)
-                            Button("0.7") { manager.energyGamma = 0.70 }
-                                .buttonStyle(.bordered).controlSize(.mini)
-                            Button("1.0") { manager.energyGamma = 1.00 }
-                                .buttonStyle(.bordered).controlSize(.mini)
-                        }
-                        
-                        Spacer(minLength: 4)
-                        
-                        // Live Cutoff Readout Badge
-                        let b = energyBounds
-                        Text(String(format: "ΔΦ ∈ [%.2f, %.2f] (%d/%d)", b.min, b.max, b.keptCount, b.totalCount))
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
+                        .padding(.vertical, 1)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Color(NSColor.controlBackgroundColor).opacity(0.95))
             }

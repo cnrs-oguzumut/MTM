@@ -112,16 +112,18 @@ public struct StiffnessStudyView: View {
                                         Slider(value: $manager.beta, in: -0.25...4.0, step: 0.01)
                                         
                                         // Quick Presets
-                                        HStack(spacing: 4) {
-                                            Text("Presets:")
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                            ForEach([-0.25, -0.1, 0.0, 0.5, 1.0, 2.0, 4.0], id: \.self) { val in
-                                                Button(String(format: "%.2f", val)) {
-                                                    manager.beta = val
+                                        ScrollView(.horizontal, showsIndicators: false) {
+                                            HStack(spacing: 4) {
+                                                Text("Presets:")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                                ForEach([-0.25, -0.1, 0.0, 0.5, 1.0, 2.0, 4.0], id: \.self) { val in
+                                                    Button(String(format: "%.2f", val)) {
+                                                        manager.beta = val
+                                                    }
+                                                    .buttonStyle(.bordered)
+                                                    .controlSize(.mini)
                                                 }
-                                                .buttonStyle(.bordered)
-                                                .controlSize(.mini)
                                             }
                                         }
                                         
@@ -227,6 +229,7 @@ public struct StiffnessStudyView: View {
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(14)
                 }
                 
@@ -256,43 +259,66 @@ public struct StiffnessStudyView: View {
                 .padding(12)
                 .background(Color(NSColor.controlBackgroundColor))
             }
-            .frame(minWidth: 320, idealWidth: 350, maxWidth: 400)
+            .frame(minWidth: 350, idealWidth: 380, maxWidth: 430)
             
             // RIGHT MAIN AREA: Visualizations & Data
             VStack(spacing: 0) {
-                // Header Bar with Tab Picker
-                HStack {
+                // Header Bar: Pinned Tab Picker + Horizontally Scrollable Options & Badges
+                HStack(spacing: 10) {
                     Picker("", selection: $selectedDisplayTab) {
-                        Label("Stiffness λ_min(α)", systemImage: "chart.xyaxis.line").tag(0)
-                        Label("Strain Energy E(α)", systemImage: "waveform.path.ecg").tag(1)
-                        Label("Split View", systemImage: "rectangle.split.2x1").tag(2)
-                        Label("Data Table", systemImage: "tablecells").tag(3)
-                        Label("Console Log", systemImage: "terminal").tag(4)
+                        Label("λ_min(α)", systemImage: "chart.xyaxis.line").tag(0)
+                        Label("Energy E(α)", systemImage: "waveform.path.ecg").tag(1)
+                        Label("Split", systemImage: "rectangle.split.2x1").tag(2)
+                        Label("Table", systemImage: "tablecells").tag(3)
+                        Label("Log", systemImage: "terminal").tag(4)
                     }
+                    .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(width: 580)
+                    .controlSize(.small)
+                    .fixedSize()
                     
-                    Spacer()
+                    Divider()
+                        .frame(height: 18)
                     
-                    if (selectedDisplayTab == 0 || selectedDisplayTab == 2) && !manager.points.isEmpty {
-                        Toggle(isOn: $showHigherModes) {
-                            Text("Show λ₂, λ₃")
-                                .font(.caption)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            if (selectedDisplayTab == 0 || selectedDisplayTab == 2) && !manager.points.isEmpty {
+                                Toggle(isOn: $showHigherModes) {
+                                    Text("Show λ₂, λ₃")
+                                        .font(.caption)
+                                }
+                                .toggleStyle(.checkbox)
+                                .controlSize(.small)
+                                .fixedSize()
+                            }
+                            
+                            if !manager.points.isEmpty {
+                                HStack(spacing: 5) {
+                                    Text(String(format: "α_c: [%.4f, +%.4f]", manager.summary.alpha_c_neg, manager.summary.alpha_c_pos))
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(.red)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.red.opacity(0.10), in: Capsule())
+                                .fixedSize()
+                                
+                                Button(action: exportCSV) {
+                                    Label("Export CSV", systemImage: "square.and.arrow.up")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .fixedSize()
+                            }
                         }
-                        .toggleStyle(.checkbox)
-                        .padding(.trailing, 8)
+                        .padding(.vertical, 1)
                     }
-                    
-                    if !manager.points.isEmpty {
-                        Button(action: exportCSV) {
-                            Label("Export CSV", systemImage: "square.and.arrow.up")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.bordered)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
                 .background(Color(NSColor.controlBackgroundColor))
                 
                 Divider()
@@ -444,20 +470,24 @@ struct StiffnessChartView: View {
             
             // Top Legend Labels
             VStack {
-                HStack {
-                    Text("λ_min > 0 : ELASTICALLY STABLE")
-                        .font(.caption2.bold())
-                        .foregroundColor(.green)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
-                    Spacer()
-                    Text("λ_min < 0 : UNSTABLE / DISLOCATION NUCLEATION")
-                        .font(.caption2.bold())
-                        .foregroundColor(.red)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        Text("λ_min > 0 : ELASTICALLY STABLE")
+                            .font(.caption2.bold())
+                            .foregroundColor(.green)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
+                        
+                        Text("λ_min < 0 : UNSTABLE / DISLOCATION NUCLEATION")
+                            .font(.caption2.bold())
+                            .foregroundColor(.red)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
+                    }
                 }
                 .padding(.leading, padLeft + 8)
                 .padding(.trailing, padRight + 8)
@@ -733,29 +763,33 @@ struct StiffnessEnergyChartView: View {
             
             // Top Legend & Energy Mode Picker
             VStack {
-                HStack(spacing: 14) {
-                    HStack(spacing: 5) {
-                        Circle().fill(Color.blue).frame(width: 8, height: 8)
-                        Text("Simulated Lattice FEM")
-                            .font(.caption.bold())
-                            .foregroundColor(.blue)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        Picker("", selection: $energyMode) {
+                            Text("Per Triangle").tag(0)
+                            Text("Total Integrated").tag(1)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
+                        .fixedSize()
+                        
+                        HStack(spacing: 5) {
+                            Circle().fill(Color.blue).frame(width: 8, height: 8)
+                            Text("Lattice FEM")
+                                .font(.caption.bold())
+                                .foregroundColor(.blue)
+                        }
+                        .fixedSize()
+                        
+                        HStack(spacing: 5) {
+                            Rectangle().fill(Color.orange).frame(width: 14, height: 2)
+                            Text("Continuum W(C)")
+                                .font(.caption.bold())
+                                .foregroundColor(.orange)
+                        }
+                        .fixedSize()
                     }
-                    
-                    HStack(spacing: 5) {
-                        Rectangle().fill(Color.orange).frame(width: 14, height: 2)
-                        Text("Continuum Theory W(C)")
-                            .font(.caption.bold())
-                            .foregroundColor(.orange)
-                    }
-                    
-                    Spacer()
-                    
-                    Picker("Scale", selection: $energyMode) {
-                        Text("Energy / Triangle").tag(0)
-                        Text("Total Integrated").tag(1)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 220)
                 }
                 .padding(.leading, padLeft + 8)
                 .padding(.trailing, padRight + 8)

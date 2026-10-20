@@ -40,17 +40,18 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Global App Top Bar
-            HStack(spacing: 16) {
-                Picker("Navigation Mode", selection: $appTab) {
-                    ForEach(AppNavigationTab.allCases) { tab in
-                        Label(tab.rawValue, systemImage: tab.icon).tag(tab)
+            HStack(spacing: 12) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Picker("Navigation Mode", selection: $appTab) {
+                        ForEach(AppNavigationTab.allCases) { tab in
+                            Label(tab.rawValue, systemImage: tab.icon).tag(tab)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 600)
-                
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
                 
                 // Active Lattice Badge
                 HStack(spacing: 6) {
@@ -64,6 +65,7 @@ struct ContentView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
                 .background(Color(NSColor.controlBackgroundColor), in: Capsule())
+                .fixedSize()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
@@ -79,71 +81,39 @@ struct ContentView: View {
                         .frame(minWidth: 380, idealWidth: 420, maxWidth: 480)
                     
                     // RIGHT: Monitor & Live Terminal / Curve
-            VStack(spacing: 0) {
-                // Top Header: Live Status & Metrics
-                LiveStatusHeaderView()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
-                    .padding(.bottom, 10)
-                    .background(Color(NSColor.controlBackgroundColor))
-                
-                Divider()
-                
-                // View Selector Bar (Curve vs Terminal)
-                HStack {
-                    Picker("View", selection: $displayTab) {
-                        ForEach(MainDisplayTab.allCases) { tab in
-                            Label(tab.rawValue, systemImage: tab.icon).tag(tab)
+                    VStack(spacing: 0) {
+                        // Unified Top Header: Status, Live Metrics & View Switcher
+                        LiveStatusHeaderView(config: config, displayTab: $displayTab)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Color(NSColor.controlBackgroundColor))
+                        
+                        Divider()
+                        
+                        // Main Content View: Live Curve or Terminal
+                        if displayTab == .curve {
+                            StressStrainChartView()
+                        } else {
+                            TerminalView(
+                                logLines: runner.logLines,
+                                filterText: $filterText,
+                                autoScroll: $autoScroll
+                            )
                         }
+                        
+                        Divider()
+                        
+                        // Bottom Action Bar
+                        BottomActionBar(config: config)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .background(Color(NSColor.windowBackgroundColor))
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 300)
-                    
-                    Spacer()
-                    
-                    // Quick stats tag
-                    if !runner.curvePoints.isEmpty {
-                        Text("\(runner.curvePoints.count) data points plotted")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                    .frame(minWidth: 580)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color(NSColor.controlBackgroundColor))
-                
-                Divider()
-                
-                // Command Preview Banner
-                CommandPreviewBar(config: config)
-                
-                Divider()
-                
-                // Main Content View: Live Curve or Terminal
-                if displayTab == .curve {
-                    StressStrainChartView()
-                } else {
-                    TerminalView(
-                        logLines: runner.logLines,
-                        filterText: $filterText,
-                        autoScroll: $autoScroll
-                    )
+                .onAppear {
+                    runner.loadExistingIfAvailable(dir: config.targetDirectory)
                 }
-                
-                Divider()
-                
-                // Bottom Action Bar
-                BottomActionBar(config: config)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(Color(NSColor.windowBackgroundColor))
-            }
-            .frame(minWidth: 550)
-        }
-        .onAppear {
-            runner.loadExistingIfAvailable(dir: config.targetDirectory)
-        }
             } else if appTab == .acousticStudy {
                 AcousticStudyView()
             } else if appTab == .stiffnessStudy {
@@ -176,22 +146,26 @@ struct SidebarControlsView: View {
                                     .foregroundColor(.secondary)
                                 IntField(title: "100", value: $config.ny, width: 80)
                             }
+                            Spacer()
                         }
                         
                         // Preset buttons
-                        HStack(spacing: 6) {
-                            Text("Presets:")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            ForEach([(50, 50), (100, 100), (150, 150), (200, 200), (300, 300)], id: \.0) { size in
-                                Button("\(size.0)×\(size.1)") {
-                                    config.setSize(nx: size.0, ny: size.1)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                Text("Presets:")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                ForEach([(50, 50), (100, 100), (150, 150), (200, 200), (300, 300)], id: \.0) { size in
+                                    Button("\(size.0)×\(size.1)") {
+                                        config.setSize(nx: size.0, ny: size.1)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.mini)
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.mini)
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 }
                 
@@ -233,9 +207,23 @@ struct SidebarControlsView: View {
                             .controlSize(.small)
                         }
                         
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Initial Noise (σ):")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "0.04", value: $config.noiseLevel, width: 75, minValue: 0.0, maxValue: 1.0)
+                            }
+                            Slider(value: Binding(
+                                get: { config.noiseLevel },
+                                set: { config.noiseLevel = (round($0 * 1000) / 1000) }
+                            ), in: 0.0...0.20)
+                        }
+                        
                         Toggle("Adaptive Remeshing (Delaunay Surgery)", isOn: $config.enableRemeshing)
                             .toggleStyle(.switch)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 }
                 
@@ -250,10 +238,10 @@ struct SidebarControlsView: View {
                         
                         Picker("Potential", selection: $config.potentialMode) {
                             ForEach(AcousticPotentialMode.allCases) { mode in
-                                Text(mode.shortName).tag(mode)
+                                Text(mode.displayName).tag(mode)
                             }
                         }
-                        .pickerStyle(.segmented)
+                        .pickerStyle(.menu)
                         
                         if config.potentialMode == .zanzotto {
                             HStack {
@@ -269,36 +257,37 @@ struct SidebarControlsView: View {
                                 Spacer()
                                 DoubleField(title: "K", value: $config.bulkK, width: 80)
                             }
-                        }
-                        
-                        // Presets
-                        HStack(spacing: 6) {
-                            Text("Presets:")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Button("Square (β=-0.25)") {
-                                config.latticeSymmetry = .square
-                                config.potentialMode = .zanzotto
-                                config.beta = -0.25
-                                config.bulkK = 5.0
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
                             
-                            Button("Triangular (β=4.0)") {
-                                config.latticeSymmetry = .triangular
-                                config.potentialMode = .zanzotto
-                                config.beta = 4.0
-                                config.bulkK = 5.0
+                            // Presets (Only applicable to Mode 3 Continuum Potential)
+                            HStack(spacing: 6) {
+                                Text("Presets:")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Button("Square (β=-0.25)") {
+                                    config.latticeSymmetry = .square
+                                    config.potentialMode = .zanzotto
+                                    config.beta = -0.25
+                                    config.bulkK = 5.0
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
+                                
+                                Button("Triangular (β=4.0)") {
+                                    config.latticeSymmetry = .triangular
+                                    config.potentialMode = .zanzotto
+                                    config.beta = 4.0
+                                    config.bulkK = 5.0
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
                         }
                         
                         Text("Equilibrium lattice parameter a₀ and elastic constants (C₁₁, C₁₂, C₆₆) are dynamically computed from the selected potential.")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 }
                 
@@ -459,35 +448,81 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
         }
         .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
     }
 }
 
-// MARK: - Live Status Header
+// MARK: - Unified Live Status & View Switcher Header
 struct LiveStatusHeaderView: View {
+    @ObservedObject var config: SimulationConfig
+    @Binding var displayTab: MainDisplayTab
     @EnvironmentObject var runner: ProcessRunner
     
     var body: some View {
-        HStack(spacing: 16) {
-            // Status Badge
-            HStack(spacing: 6) {
+        HStack(spacing: 10) {
+            // 1. Pinned View Switcher (Curve vs Terminal) — never moves or clips
+            Picker("View", selection: $displayTab) {
+                ForEach(MainDisplayTab.allCases) { tab in
+                    Label(tab.rawValue, systemImage: tab.icon).tag(tab)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .fixedSize()
+            
+            // 2. Pinned Concise Status Pill
+            HStack(spacing: 5) {
                 Circle()
                     .fill(statusColor)
-                    .frame(width: 10, height: 10)
-                Text(runner.status.label)
-                    .font(.headline)
+                    .frame(width: 8, height: 8)
+                Text(shortStatusLabel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color(NSColor.quaternaryLabelColor).opacity(0.6))
+            .cornerRadius(6)
+            .fixedSize()
+            .help(runner.status.label)
             
-            Spacer()
+            Divider()
+                .frame(height: 18)
             
-            // Metrics Cards
-            MetricPill(label: "Step", value: "\(runner.currentStep)")
-            MetricPill(label: "Strain |α|", value: String(format: "%.4f", runner.currentAlpha))
-            MetricPill(label: "Stress σ", value: String(format: "%.4f", runner.currentStress))
-            MetricPill(label: "Avalanches", value: "\(runner.avalancheCount)")
-            MetricPill(label: "Elapsed", value: formatTime(runner.elapsedTime))
+            // 3. Horizontally scrollable Live Metrics Pills so they never push or clip the header
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    MetricPill(label: "Step", value: "\(runner.currentStep)")
+                    MetricPill(label: "Strain |α|", value: String(format: "%.4f", runner.currentAlpha))
+                    MetricPill(label: "Stress σ", value: String(format: "%.4f", runner.currentStress))
+                    if let lmin = runner.currentLambdaMin {
+                        MetricPill(
+                            label: "λ_min",
+                            value: String(format: "%.2e", lmin),
+                            valueColor: lmin <= 0 ? .red : .teal
+                        )
+                    }
+                    MetricPill(label: "Avalanches", value: "\(runner.avalancheCount)")
+                    MetricPill(label: "Elapsed", value: formatTime(runner.elapsedTime))
+                }
+                .padding(.vertical, 1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    private var shortStatusLabel: String {
+        switch runner.status {
+        case .idle: return "Ready"
+        case .running: return "Running"
+        case .completed(let code, _): return code == 0 ? "Completed" : "Exit \(code)"
+        case .failed: return "Failed"
+        case .terminated: return "Stopped"
         }
     }
     
@@ -510,53 +545,23 @@ struct LiveStatusHeaderView: View {
 struct MetricPill: View {
     let label: String
     let value: String
+    var valueColor: Color = .primary
     
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 1) {
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 9, weight: .semibold))
                 .foregroundColor(.secondary)
             Text(value)
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(valueColor)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
         .background(Color(NSColor.quaternaryLabelColor))
         .cornerRadius(6)
-    }
-}
-
-// MARK: - Command Preview Bar
-struct CommandPreviewBar: View {
-    @ObservedObject var config: SimulationConfig
-    @State private var copied: Bool = false
-    
-    var body: some View {
-        HStack {
-            Image(systemName: "terminal")
-                .foregroundColor(.secondary)
-            Text(config.fullCommandLine())
-                .font(.system(size: 11, design: .monospaced))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundColor(.primary)
-            Spacer()
-            Button(action: {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(config.fullCommandLine(), forType: .string)
-                copied = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    copied = false
-                }
-            }) {
-                Label(copied ? "Copied!" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(Color(NSColor.textBackgroundColor).opacity(0.4))
+        .lineLimit(1)
+        .fixedSize()
     }
 }
 
@@ -626,9 +631,10 @@ struct TerminalView: View {
 struct BottomActionBar: View {
     @ObservedObject var config: SimulationConfig
     @EnvironmentObject var runner: ProcessRunner
+    @State private var copiedCLI: Bool = false
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             // Clear Console
             Button(action: { runner.clearLogs() }) {
                 Label("Clear Log", systemImage: "trash")
@@ -640,6 +646,20 @@ struct BottomActionBar: View {
                 Label("Open Output Folder", systemImage: "folder")
             }
             .controlSize(.regular)
+            
+            // Copy CLI Command
+            Button(action: {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(config.fullCommandLine(), forType: .string)
+                copiedCLI = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    copiedCLI = false
+                }
+            }) {
+                Label(copiedCLI ? "Copied CLI!" : "Copy CLI", systemImage: copiedCLI ? "checkmark" : "terminal")
+            }
+            .controlSize(.regular)
+            .help(config.fullCommandLine())
             
             Spacer()
             

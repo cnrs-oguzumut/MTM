@@ -158,6 +158,7 @@ Tracks the lowest eigenvalues ($\lambda_{\min}$) of the analytic stiffness matri
 | `--trace-avalanche` | `--trace-avalanche=1` (or `--trace=1`) | disabled (`0`) | Records every micro-step of L-BFGS minimization and topological remeshing reconnection jumps into `avalanche_trace/*.csv`. |
 | `--save-surgery-vtk` | `--save-surgery-vtk` (or `--surgery-vtk`) | disabled (`0`) | Saves 3-stage surgical VTK snapshots per remeshing pass (`before_remesh`, `after_remesh`, `relaxed_accepted`/`rejected`) into `vtk_surgery/` with Lagrange reduction enabled, and automatically generates `step_XXXXX_avalanche_surgery.png`. |
 | `--max-avalanches=<N>` | `--max-avalanches=10` (or `--avalanches=10`) | disabled (`0`) | Cleanly terminates the simulation after $N$ avalanches have been completed (ideal for targeted avalanche studies). |
+| `--noise-level=<val>` | `--noise-level=0.04` (or `--noise=0.04`) | `0.04` | Initial Gaussian displacement noise amplitude $\sigma$ applied at step 0 to break crystal symmetry ($0.0$ disables noise). |
 
 ---
 

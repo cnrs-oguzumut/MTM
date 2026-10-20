@@ -36,7 +36,8 @@ public struct DoubleField: View {
                 text = Self.formatValue(value)
             }
             .onChange(of: value) { _, newVal in
-                if !isFocused {
+                let currentParsed = Double(text.replacingOccurrences(of: ",", with: "."))
+                if currentParsed == nil || abs((currentParsed ?? 0) - newVal) > 1e-9 {
                     text = Self.formatValue(newVal)
                 }
             }

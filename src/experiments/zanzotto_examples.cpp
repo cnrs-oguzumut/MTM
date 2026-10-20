@@ -458,7 +458,8 @@ void example_1_conti_zanzotto_loading(
     double stress_drop_threshold,
     bool save_triangle_data,
     int max_avalanches,
-    const std::string& lattice_type) {
+    const std::string& lattice_type,
+    double noise_level) {
 
   // Parameters for lattice
   if (nx <= 0 || ny <= 0) {
@@ -757,15 +758,22 @@ void example_1_conti_zanzotto_loading(
 
     // Apply initial noise (only for first iteration of a fresh run)
     if (i == 0 && restart_chk == nullptr) {
-      // Use deterministic seed so both positive and negative runs share the exact same initial noise
-      std::mt19937 gen(seed);
-      double noise_level = 0.04;
-      std::normal_distribution<double> noise_dist(0.0, noise_level);
-      std::cout << "Seeded initial noise generator with seed: " << seed << std::endl;
+      if (noise_level > 0.0) {
+        // Use deterministic seed so both positive and negative runs share the exact same initial noise
+        std::mt19937 gen(seed);
+        std::normal_distribution<double> noise_dist(0.0, noise_level);
+        std::cout << "Seeded initial noise generator with seed: " << seed
+                  << " (noise amplitude σ = " << noise_level << ")" << std::endl;
 
-      for (size_t j = 0; j < square_points.size(); j++) {
-        Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
-        square_points[j].coord = F_ext * square_points[j].coord + noise;
+        for (size_t j = 0; j < square_points.size(); j++) {
+          Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
+          square_points[j].coord = F_ext * square_points[j].coord + noise;
+        }
+      } else {
+        std::cout << "Initial noise disabled (noise amplitude σ = " << noise_level << ")" << std::endl;
+        for (size_t j = 0; j < square_points.size(); j++) {
+          square_points[j].coord = F_ext * square_points[j].coord;
+        }
       }
     } else {
       for (size_t j = 0; j < square_points.size(); j++) {
@@ -1200,7 +1208,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                double stress_drop_threshold,
                                                bool save_triangle_data,
                                                int max_avalanches,
-                                               const std::string& lattice_type) {
+                                               const std::string& lattice_type,
+                                               double noise_level) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1213,7 +1222,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    stress_drop_threshold,
                                    save_triangle_data,
                                    max_avalanches,
-                                   lattice_type);
+                                   lattice_type,
+                                   noise_level);
 }
 
 void restart_zanzotto_simulation(const std::string& checkpoint_path,

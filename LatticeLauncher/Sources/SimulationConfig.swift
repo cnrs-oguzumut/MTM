@@ -75,6 +75,7 @@ public class SimulationConfig: ObservableObject {
     // 3. Loading & Mode
     @Published public var mode: LoadingMode = .positive
     @Published public var seed: Int = 42
+    @Published public var noiseLevel: Double = 0.04
     @Published public var enableRemeshing: Bool = true
     @Published public var rFree: Double = 35.0
     @Published public var exportFullMesh: Bool = true
@@ -195,8 +196,11 @@ public class SimulationConfig: ObservableObject {
         // Lattice Symmetry & Potential Parameters
         args.append("--lattice=\(latticeSymmetry.rawValue)")
         args.append("--potential-mode=\(potentialMode.rawValue)")
-        args.append(String(format: "--beta=%.4f", beta))
-        args.append(String(format: "--K=%.4f", bulkK))
+        if potentialMode == .zanzotto {
+            args.append(String(format: "--beta=%.4f", beta))
+            args.append(String(format: "--K=%.4f", bulkK))
+        }
+        args.append(String(format: "--noise-level=%.6f", noiseLevel))
         
         if mode == .volterra {
             args.append(String(format: "--r-free=%.2f", rFree))

@@ -17,7 +17,8 @@ void example_1_conti_zanzotto_loading(
     double stress_drop_threshold = 0.10,
     bool save_triangle_data = false,
     int max_avalanches = 0,
-    const std::string& lattice_type = "square");
+    const std::string& lattice_type = "square",
+    double noise_level = 0.04);
 void example_1_conti_zanzotto_negative_loading(
     int caller_id, int nx, int ny,
     double alpha_min = -0.14,
@@ -30,7 +31,8 @@ void example_1_conti_zanzotto_negative_loading(
     double stress_drop_threshold = 0.10,
     bool save_triangle_data = false,
     int max_avalanches = 0,
-    const std::string& lattice_type = "square");
+    const std::string& lattice_type = "square",
+    double noise_level = 0.04);
 void example_2_conti_zanzotto_triangular();
 void restart_zanzotto_simulation(
     const std::string& checkpoint_path,

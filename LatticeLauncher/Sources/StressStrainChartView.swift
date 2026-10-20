@@ -4,6 +4,7 @@ import Charts
 public enum ChartMetricMode: String, CaseIterable, Identifiable {
     case stress = "Stress σ(α)"
     case energy = "Energy E(α)"
+    case eigenvalue = "λ_min(α)"
     
     public var id: String { rawValue }
 }
@@ -20,7 +21,7 @@ public enum ChartScaleMode: String, CaseIterable, Identifiable {
         case .autoFit:
             return "Clever Auto-Fit: dynamically zooms to active data range"
         case .fullSchedule:
-            return "Full Schedule: starts at α_start (0.14) up to α_end (1.0)"
+            return "Full Schedule: starts at α_start up to α_end"
         case .fromZero:
             return "Origin at 0: shows strain from 0.0"
         }
@@ -42,10 +43,18 @@ struct StressStrainChartView: View {
     
     // MARK: - Dynamic Clever Domain Calculations
     
+    private var activeAlphas: [Double] {
+        if chartMode == .eigenvalue && !runner.eigenPoints.isEmpty {
+            return runner.eigenPoints.map(\.alpha)
+        }
+        return runner.curvePoints.map(\.alpha)
+    }
+    
     private var xDomain: ClosedRange<Double> {
-        let firstAlpha = runner.curvePoints.first?.alpha ?? (runner.activeConfig?.alphaStart ?? 0.14)
+        let alphas = activeAlphas
+        let firstAlpha = alphas.first ?? (runner.activeConfig?.alphaStart ?? 0.14)
         
-        guard !runner.curvePoints.isEmpty else {
+        guard !alphas.isEmpty else {
             let endAlpha = runner.activeConfig?.alphaEnd ?? 1.0
             switch scaleMode {
             case .autoFit:
@@ -57,23 +66,20 @@ struct StressStrainChartView: View {
             }
         }
         
-        let alphas = runner.curvePoints.map(\.alpha)
         let minA = alphas.min() ?? firstAlpha
         let maxA = alphas.max() ?? (minA + 0.001)
         let span = maxA - minA
         
         switch scaleMode {
         case .autoFit:
-            // Clever tight auto-fit around the active data
             let effectiveSpan = max(0.0008, span)
             let padLeft = effectiveSpan * 0.025
-            let padRight = effectiveSpan * 0.065 // extra room on right for incoming points
+            let padRight = effectiveSpan * 0.065
             let xMin = minA - padLeft
             let xMax = maxA + padRight
             return xMin <= xMax ? xMin...xMax : (minA - 0.001)...(minA + 0.005)
             
         case .fullSchedule:
-            // Starts at simulation start strain (e.g. 0.14), NEVER at 0
             let schedStart = runner.activeConfig?.alphaStart ?? minA
             let schedEnd = max(maxA + 0.005, runner.activeConfig?.alphaEnd ?? 1.0)
             let fullSpan = max(0.01, schedEnd - schedStart)
@@ -88,43 +94,45 @@ struct StressStrainChartView: View {
     }
     
     private var yDomain: ClosedRange<Double> {
-        guard !runner.curvePoints.isEmpty else {
-            return chartMode == .stress ? 0.0...0.05 : 0.0...100.0
-        }
-        
-        let vals = runner.curvePoints.map { chartMode == .stress ? $0.postStress : $0.postEnergy }
-        let minY = vals.min() ?? 0.0
-        let maxY = vals.max() ?? 0.01
-        let span = maxY - minY
-        
         switch chartMode {
         case .stress:
+            guard !runner.curvePoints.isEmpty else { return 0.0...0.05 }
+            let vals = runner.curvePoints.map(\.postStress)
+            let minY = vals.min() ?? 0.0
+            let maxY = vals.max() ?? 0.01
+            let span = maxY - minY
+            
             if span < 1e-6 {
                 let pad = max(abs(minY) * 0.1, 0.002)
-                let yMin = max(0.0, minY - pad)
+                let yMin = min(0.0, minY - pad)
                 return yMin...(maxY + pad)
             }
             
             let pad = span * 0.08
             let yMin: Double
             if scaleMode == .fromZero || (minY >= 0 && minY < span * 0.3) {
-                // If baseline is naturally close to 0, anchor cleanly
                 yMin = min(0.0, minY - pad * 0.5)
             } else {
-                // Auto-scale tight to stress range
                 yMin = minY - pad
             }
             
             var yMax = maxY + pad
-            if showYieldLine && runner.peakStress > 0 {
+            if showYieldLine && runner.peakStress > 0 && maxY > 0 {
                 yMax = max(yMax, runner.peakStress + pad * 0.5)
             }
             return yMin <= yMax ? yMin...yMax : 0.0...0.05
             
         case .energy:
-            // Energy levels (e.g. ~51.8) MUST be tightly zoomed; otherwise it looks completely flat
+            guard !runner.curvePoints.isEmpty else { return 0.0...100.0 }
+            let vals = runner.curvePoints.map(\.postEnergy)
+            let minY = vals.min() ?? 0.0
+            let maxY = vals.max() ?? 0.01
+            let span = maxY - minY
+            
             if scaleMode == .fromZero {
-                return 0.0...(maxY * 1.1)
+                let lo = min(0.0, minY * 1.1)
+                let hi = max(0.01, maxY * 1.1)
+                return lo...hi
             }
             
             if span < 1e-6 {
@@ -136,6 +144,17 @@ struct StressStrainChartView: View {
             let yMin = minY - pad
             let yMax = maxY + pad
             return yMin <= yMax ? yMin...yMax : (minY - 0.1)...(maxY + 0.1)
+            
+        case .eigenvalue:
+            guard !runner.eigenPoints.isEmpty else { return -0.05...0.5 }
+            let vals = runner.eigenPoints.map(\.lambdaMin)
+            let minY = vals.min() ?? 0.0
+            let maxY = vals.max() ?? 0.1
+            let span = max(maxY - minY, 1e-5)
+            let pad = span * 0.12
+            let yMin = min(0.0, minY) - pad
+            let yMax = max(0.0, maxY) + pad
+            return yMin < yMax ? yMin...yMax : -0.05...0.5
         }
     }
     
@@ -157,7 +176,7 @@ struct StressStrainChartView: View {
     private func formatYValue(_ val: Double) -> String {
         let span = yDomain.upperBound - yDomain.lowerBound
         switch chartMode {
-        case .stress:
+        case .stress, .eigenvalue:
             if span <= 0.002 {
                 return String(format: "%.5f", val)
             } else if span <= 0.02 {
@@ -184,9 +203,9 @@ struct StressStrainChartView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Chart Control & Metrics Sub-header with clean single-line alignment
+            // Chart Control Toolbar: Pinned left pickers + horizontally scrollable options/badges
             HStack(spacing: 10) {
-                // 1. Metric Selector: Stress vs Energy
+                // 1. Pinned Metric Selector: Stress vs Energy vs Eigenvalue
                 Picker("", selection: $chartMode) {
                     ForEach(ChartMetricMode.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
@@ -194,10 +213,11 @@ struct StressStrainChartView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 175)
-                .help("Select plotted quantity: Shear Stress σ(α) or Internal Energy E(α)")
+                .controlSize(.small)
+                .fixedSize()
+                .help("Select plotted quantity: Shear Stress σ(α), Internal Energy E(α), or Smallest Stiffness Eigenvalue λ_min(α)")
                 
-                // 2. Clever Auto-Scaling Selector
+                // 2. Pinned Clever Auto-Scaling Selector
                 Picker("", selection: $scaleMode) {
                     ForEach(ChartScaleMode.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
@@ -205,74 +225,82 @@ struct StressStrainChartView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 195)
+                .controlSize(.small)
+                .fixedSize()
                 .help(scaleMode.tooltip)
                 
                 Divider()
-                    .frame(height: 16)
+                    .frame(height: 14)
                 
-                // 3. Toggles with live remesh count and single-line protection
-                Toggle("Remesh (\(remeshEvents.count))", isOn: $showRemeshEvents)
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .help("Highlight Delaunay remeshing & plastic surgery avalanche events")
-                
-                Toggle("Peak Yield", isOn: $showYieldLine)
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .help("Display peak stress horizontal guide line")
-                
-                Spacer(minLength: 8)
-                
-                // 4. Yield Stats Badge (Single un-wrapped line)
-                if runner.peakStress > 0 {
-                    HStack(spacing: 6) {
-                        Image(systemName: "crown.fill")
-                            .font(.system(size: 9))
-                            .foregroundColor(.orange)
-                        Text("σ_max: \(String(format: "%.4f", runner.peakStress))")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.orange)
-                        Text("α: \(String(format: "%.4f", runner.yieldStrain))")
+                // 3. Horizontally scrollable toggles & badges so left pickers never shift or clip
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        if chartMode != .eigenvalue {
+                            Toggle("Remesh (\(remeshEvents.count))", isOn: $showRemeshEvents)
+                                .toggleStyle(.checkbox)
+                                .controlSize(.small)
+                                .lineLimit(1)
+                                .fixedSize()
+                                .help("Highlight Delaunay remeshing & plastic surgery avalanche events")
+                        }
+                        
+                        if chartMode == .stress {
+                            Toggle("Peak Yield", isOn: $showYieldLine)
+                                .toggleStyle(.checkbox)
+                                .controlSize(.small)
+                                .lineLimit(1)
+                                .fixedSize()
+                                .help("Display peak stress horizontal guide line")
+                        }
+                        
+                        if chartMode == .stress && runner.peakStress > 0 {
+                            HStack(spacing: 4) {
+                                Image(systemName: "crown.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.orange)
+                                Text("|σ|_max: \(String(format: "%.4f", runner.peakStress))")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.orange)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(4)
+                            .lineLimit(1)
+                            .fixedSize()
+                        } else if chartMode == .eigenvalue, let lastEig = runner.eigenPoints.last {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(lastEig.isUnstable ? Color.red : Color.green)
+                                    .frame(width: 6, height: 6)
+                                Text("λ_min: \(String(format: "%.4e", lastEig.lambdaMin))")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(lastEig.isUnstable ? .red : .green)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(4)
+                            .lineLimit(1)
+                            .fixedSize()
+                        }
+                        
+                        let ptCount = chartMode == .eigenvalue ? runner.eigenPoints.count : runner.curvePoints.count
+                        Text("\(ptCount) pts")
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
                             .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(4)
+                            .lineLimit(1)
+                            .fixedSize()
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .cornerRadius(5)
-                    .lineLimit(1)
-                    .fixedSize()
+                    .padding(.vertical, 1)
                 }
-                
-                // 5. Active Strain Range Badge
-                if let firstA = runner.curvePoints.first?.alpha, let lastA = runner.curvePoints.last?.alpha {
-                    Text("α: [\(String(format: "%.3f", firstA)) → \(String(format: "%.3f", lastA))]")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color(NSColor.controlBackgroundColor))
-                        .cornerRadius(4)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-                
-                // 6. Point Counter
-                Text("\(runner.curvePoints.count) pts")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .cornerRadius(4)
-                    .lineLimit(1)
-                    .fixedSize()
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(Color(NSColor.controlBackgroundColor).opacity(0.85))
@@ -280,7 +308,25 @@ struct StressStrainChartView: View {
             Divider()
             
             // Main Chart Canvas
-            if runner.curvePoints.isEmpty {
+            if chartMode == .eigenvalue && runner.eigenPoints.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 44))
+                        .foregroundColor(.secondary.opacity(0.5))
+                    Text("No Eigenvalue Data Recorded Yet")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Text(runner.activeConfig?.enableEigenvalues == true || runner.status == .idle
+                         ? "Enable 'Compute Lowest Stiffness Eigenvalues' in the Stability & Eigenvalues sidebar section and launch the simulation to plot λ_min(α) live."
+                         : "Eigenvalue computation was disabled for this run. Enable 'Compute Lowest Stiffness Eigenvalues' in the sidebar for the next run.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 440)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(NSColor.textBackgroundColor))
+            } else if runner.curvePoints.isEmpty {
                 VStack(spacing: 14) {
                     Image(systemName: "chart.xyaxis.line")
                         .font(.system(size: 48))
@@ -288,7 +334,7 @@ struct StressStrainChartView: View {
                     Text("No Simulation Data Yet")
                         .font(.headline)
                         .foregroundColor(.secondary)
-                    Text("Click 'Launch Simulation' to stream the live stress–strain curve in real-time. Clever auto-scaling dynamically fits your data.")
+                    Text("Click 'Launch Simulation' to stream the live stress–strain, energy, and lowest eigenvalue curves in real-time.")
                         .font(.subheadline)
                         .foregroundColor(.secondary.opacity(0.8))
                         .multilineTextAlignment(.center)
@@ -298,68 +344,123 @@ struct StressStrainChartView: View {
                 .background(Color(NSColor.textBackgroundColor))
             } else {
                 Chart {
-                    // 1. Primary Line Mark
-                    ForEach(runner.curvePoints) { pt in
-                        LineMark(
-                            x: .value("Shear Strain (α)", pt.alpha),
-                            y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
-                                     chartMode == .stress ? pt.postStress : pt.postEnergy)
-                        )
-                        .foregroundStyle(chartMode == .stress ? Color.blue : Color.purple)
-                        .interpolationMethod(.linear)
-                    }
-                    
-                    // 2. Plasticity / Remesh Events Overlay (Concentric Target Ring + Solid Core)
-                    if showRemeshEvents {
-                        ForEach(remeshEvents) { pt in
-                            PointMark(
+                    if chartMode == .eigenvalue {
+                        // Zero-eigenvalue stability threshold line
+                        RuleMark(y: .value("Stability Threshold", 0.0))
+                            .foregroundStyle(Color.red.opacity(0.65))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .annotation(position: .top, alignment: .leading) {
+                                Text("λ = 0 (Instability Threshold)")
+                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(.red.opacity(0.85))
+                                    .padding(2)
+                            }
+                        
+                        ForEach(runner.eigenPoints) { pt in
+                            LineMark(
                                 x: .value("Shear Strain (α)", pt.alpha),
-                                y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
-                                         chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                y: .value("Smallest Eigenvalue (λ_min)", pt.lambdaMin)
                             )
-                            .symbol(Circle())
-                            .symbolSize(48)
-                            .foregroundStyle(Color.red)
+                            .foregroundStyle(Color.teal)
+                            .interpolationMethod(.linear)
                             
                             PointMark(
                                 x: .value("Shear Strain (α)", pt.alpha),
+                                y: .value("Smallest Eigenvalue (λ_min)", pt.lambdaMin)
+                            )
+                            .symbol(Circle())
+                            .symbolSize(pt.isUnstable ? 55 : 32)
+                            .foregroundStyle(pt.isUnstable ? Color.red : Color.teal)
+                        }
+                        
+                        if let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha) {
+                            RuleMark(x: .value("Selected α", eigPt.alpha))
+                                .foregroundStyle(Color.secondary.opacity(0.4))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                            
+                            PointMark(
+                                x: .value("Selected α", eigPt.alpha),
+                                y: .value("Smallest Eigenvalue (λ_min)", eigPt.lambdaMin)
+                            )
+                            .symbolSize(85)
+                            .foregroundStyle(Color.cyan)
+                        }
+                    } else {
+                        // 1. Primary Stress / Energy Line Mark (+ PointMark when sparse)
+                        ForEach(runner.curvePoints) { pt in
+                            LineMark(
+                                x: .value("Shear Strain (α)", pt.alpha),
                                 y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
                                          chartMode == .stress ? pt.postStress : pt.postEnergy)
                             )
-                            .symbol(Circle().strokeBorder(lineWidth: 1.5))
-                            .symbolSize(80)
-                            .foregroundStyle(Color.red.opacity(0.85))
+                            .foregroundStyle(chartMode == .stress ? Color.blue : Color.purple)
+                            .interpolationMethod(.linear)
+                            
+                            if runner.curvePoints.count <= 50 {
+                                PointMark(
+                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
+                                             chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                )
+                                .symbol(Circle())
+                                .symbolSize(30)
+                                .foregroundStyle(chartMode == .stress ? Color.blue : Color.purple)
+                            }
                         }
-                    }
-                    
-                    // 3. Peak / Yield Stress Guide Line
-                    if showYieldLine && chartMode == .stress && runner.peakStress > 0 {
-                        RuleMark(
-                            y: .value("Peak Stress", runner.peakStress)
-                        )
-                        .foregroundStyle(Color.orange.opacity(0.7))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                        .annotation(position: .top, alignment: .trailing) {
-                            Text("σ_max: \(String(format: "%.4f", runner.peakStress))")
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(.orange)
-                                .padding(2)
-                                .background(Color(NSColor.windowBackgroundColor).opacity(0.8))
-                        }
-                    }
-                    
-                    // 4. Hover Cursor / Selection Indicator
-                    if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
-                        RuleMark(x: .value("Selected α", pt.alpha))
-                            .foregroundStyle(Color.secondary.opacity(0.4))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
                         
-                        PointMark(
-                            x: .value("Selected α", pt.alpha),
-                            y: .value("Value", chartMode == .stress ? pt.postStress : pt.postEnergy)
-                        )
-                        .symbolSize(80)
-                        .foregroundStyle(Color.cyan)
+                        // 2. Plasticity / Remesh Events Overlay
+                        if showRemeshEvents {
+                            ForEach(remeshEvents) { pt in
+                                PointMark(
+                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
+                                             chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                )
+                                .symbol(Circle())
+                                .symbolSize(48)
+                                .foregroundStyle(Color.red)
+                                
+                                PointMark(
+                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
+                                             chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                )
+                                .symbol(Circle().strokeBorder(lineWidth: 1.5))
+                                .symbolSize(80)
+                                .foregroundStyle(Color.red.opacity(0.85))
+                            }
+                        }
+                        
+                        // 3. Peak / Yield Stress Guide Line
+                        if showYieldLine && chartMode == .stress && runner.peakStress > 0 {
+                            let peakY = (runner.curvePoints.last?.postStress ?? 0) < 0 ? -runner.peakStress : runner.peakStress
+                            RuleMark(
+                                y: .value("Peak Stress", peakY)
+                            )
+                            .foregroundStyle(Color.orange.opacity(0.7))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .annotation(position: .top, alignment: .trailing) {
+                                Text("|σ|_max: \(String(format: "%.4f", runner.peakStress))")
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.orange)
+                                    .padding(2)
+                                    .background(Color(NSColor.windowBackgroundColor).opacity(0.8))
+                            }
+                        }
+                        
+                        // 4. Hover Cursor / Selection Indicator
+                        if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
+                            RuleMark(x: .value("Selected α", pt.alpha))
+                                .foregroundStyle(Color.secondary.opacity(0.4))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                            
+                            PointMark(
+                                x: .value("Selected α", pt.alpha),
+                                y: .value("Value", chartMode == .stress ? pt.postStress : pt.postEnergy)
+                            )
+                            .symbolSize(80)
+                            .foregroundStyle(Color.cyan)
+                        }
                     }
                 }
                 .chartXScale(domain: xDomain)
@@ -415,7 +516,28 @@ struct StressStrainChartView: View {
                 .background(Color(NSColor.textBackgroundColor))
                 
                 // Hovered point details bar
-                if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
+                if chartMode == .eigenvalue, let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha) {
+                    HStack(spacing: 18) {
+                        Text("Step: \(eigPt.iteration)")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        Text("Strain α: \(String(format: "%.6f", eigPt.alpha))")
+                            .font(.system(size: 11, design: .monospaced))
+                        Text("λ₁ (min): \(String(format: "%.6e", eigPt.lambdaMin))")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(eigPt.isUnstable ? .red : .teal)
+                        if let l2 = eigPt.lambda2 {
+                            Text("λ₂: \(String(format: "%.6e", l2))")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        Text("Trigger: \(eigPt.trigger)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Color(NSColor.controlBackgroundColor))
+                } else if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
                     HStack(spacing: 20) {
                         Text("Step: \(pt.iteration)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -444,5 +566,10 @@ struct StressStrainChartView: View {
     private func findClosestPoint(to alpha: Double) -> StressStrainPoint? {
         guard !runner.curvePoints.isEmpty else { return nil }
         return runner.curvePoints.min(by: { abs($0.alpha - alpha) < abs($1.alpha - alpha) })
+    }
+    
+    private func findClosestEigenPoint(to alpha: Double) -> EigenPoint? {
+        guard !runner.eigenPoints.isEmpty else { return nil }
+        return runner.eigenPoints.min(by: { abs($0.alpha - alpha) < abs($1.alpha - alpha) })
     }
 }

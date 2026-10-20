@@ -234,14 +234,16 @@ public struct AcousticStudyView: View {
                                     }
                                     Slider(value: $manager.energyUpperPercentile, in: 10.0...100.0, step: 0.5)
                                     
-                                    HStack(spacing: 4) {
-                                        ForEach([100.0, 99.0, 95.0, 90.0, 85.0, 75.0, 50.0], id: \.self) { pct in
-                                            Button(String(format: "%.0f%%", pct)) {
-                                                manager.useCustomEnergyRange = false
-                                                manager.energyUpperPercentile = pct
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 4) {
+                                            ForEach([100.0, 99.0, 95.0, 90.0, 85.0, 75.0, 50.0], id: \.self) { pct in
+                                                Button(String(format: "%.0f%%", pct)) {
+                                                    manager.useCustomEnergyRange = false
+                                                    manager.energyUpperPercentile = pct
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.mini)
                                             }
-                                            .buttonStyle(.bordered)
-                                            .controlSize(.mini)
                                         }
                                     }
                                 }
@@ -298,35 +300,37 @@ public struct AcousticStudyView: View {
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                     
-                                    HStack(spacing: 6) {
-                                        Button("Fast") {
-                                            manager.dt = 0.04
-                                            manager.dp = 0.08
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 6) {
+                                            Button("Fast") {
+                                                manager.dt = 0.04
+                                                manager.dp = 0.08
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                            
+                                            Button("Medium") {
+                                                manager.dt = 0.02
+                                                manager.dp = 0.05
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                            
+                                            Button("Fine") {
+                                                manager.dt = 0.015
+                                                manager.dp = 0.03
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                            
+                                            Button("Ultra-Fine") {
+                                                manager.dt = 0.01
+                                                manager.dp = 0.02
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .tint(.purple)
+                                            .controlSize(.small)
                                         }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-                                        
-                                        Button("Medium") {
-                                            manager.dt = 0.02
-                                            manager.dp = 0.05
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-                                        
-                                        Button("Fine") {
-                                            manager.dt = 0.015
-                                            manager.dp = 0.03
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-                                        
-                                        Button("Ultra-Fine") {
-                                            manager.dt = 0.01
-                                            manager.dp = 0.02
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(.purple)
-                                        .controlSize(.small)
                                     }
                                 }
                                 
@@ -366,6 +370,7 @@ public struct AcousticStudyView: View {
                             .padding(6)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
                 }
                 
@@ -427,21 +432,9 @@ public struct AcousticStudyView: View {
             
             // RIGHT MAIN: Poincaré Stability Map & Console
             VStack(spacing: 0) {
-                // Top status bar
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(viewMode == .energyPath ? "Deformation Path Energy E(α)" : "Poincaré Projection Stability Map")
-                            .font(.headline)
-                        Text(manager.lastLoadedFile.isEmpty ? 
-                             "Inverse stereographic coordinates x = t·(c₁₁−c₂₂)/2, y = t·c₁₂" : 
-                             "File: \(manager.lastLoadedFile)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    Spacer(minLength: 8)
-                    
-                    // View Mode Switcher
+                // Top Header Bar: Pinned View Mode Switcher + Horizontally Scrollable Status & Stats
+                HStack(spacing: 10) {
+                    // 1. Pinned View Mode Switcher on the left — never moves or clips
                     Picker("", selection: $viewMode) {
                         Label("Poincaré", systemImage: "circle").tag(AcousticViewMode.poincare)
                         Label("Split", systemImage: "rectangle.split.2x1").tag(AcousticViewMode.split)
@@ -450,31 +443,62 @@ public struct AcousticStudyView: View {
                     .labelsHidden()
                     .pickerStyle(.segmented)
                     .controlSize(.small)
-                    .frame(width: 250)
+                    .fixedSize()
                     
-                    // Clean Compact Stats Pill
-                    if !manager.points.isEmpty {
-                        HStack(spacing: 5) {
-                            Circle().fill(Color.blue).frame(width: 7, height: 7)
-                            Text("\(manager.summary.stable_points)")
-                                .font(.caption.monospaced().bold())
-                            Text("/")
-                                .foregroundColor(.secondary)
-                                .font(.caption2)
-                            Circle().fill(Color.red).frame(width: 7, height: 7)
-                            Text("\(manager.summary.unstable_points)")
-                                .font(.caption.monospaced().bold())
+                    Divider()
+                        .frame(height: 18)
+                    
+                    // 2. Horizontally scrollable stats & subtitle
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            if !manager.points.isEmpty {
+                                HStack(spacing: 5) {
+                                    Circle().fill(Color.blue).frame(width: 7, height: 7)
+                                    Text("\(manager.summary.stable_points) stable")
+                                        .font(.caption.monospaced().bold())
+                                    Text("/")
+                                        .foregroundColor(.secondary)
+                                        .font(.caption2)
+                                    Circle().fill(Color.red).frame(width: 7, height: 7)
+                                    Text("\(manager.summary.unstable_points) unstable")
+                                        .font(.caption.monospaced().bold())
+                                    
+                                    let pct = manager.summary.total_points > 0 ? (Double(manager.summary.stable_points) / Double(manager.summary.total_points) * 100.0) : 0
+                                    Text(String(format: "(%.0f%%)", pct))
+                                        .font(.caption2.monospaced())
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.secondary.opacity(0.12), in: Capsule())
+                                .fixedSize()
+                            }
                             
-                            let pct = manager.summary.total_points > 0 ? (Double(manager.summary.stable_points) / Double(manager.summary.total_points) * 100.0) : 0
-                            Text(String(format: "(%.0f%%)", pct))
-                                .font(.caption2.monospaced())
+                            if let sp = manager.shearPath, !sp.critical_alphas.isEmpty {
+                                HStack(spacing: 5) {
+                                    Circle().fill(Color.yellow).frame(width: 6, height: 6)
+                                    Text("α_c: " + sp.critical_alphas.map { String(format: "%+.4f", $0) }.joined(separator: ", "))
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.yellow.opacity(0.12), in: Capsule())
+                                .fixedSize()
+                            }
+                            
+                            Text(manager.lastLoadedFile.isEmpty ?
+                                 "Stereographic coordinates x = t·(c₁₁−c₂₂)/2, y = t·c₁₂" :
+                                 "File: \(manager.lastLoadedFile)")
+                                .font(.caption2)
                                 .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .fixedSize()
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.12), in: Capsule())
+                        .padding(.vertical, 1)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
                 .background(Color(NSColor.controlBackgroundColor))
