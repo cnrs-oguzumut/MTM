@@ -259,14 +259,14 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         double lambda_5 = 0.0;
         std::vector<Eigen::VectorXd> mode_vecs;
 
+        std::vector<double> cand_evals;
+        std::vector<Eigen::VectorXd> cand_vecs;
+
         if (total_dofs <= 1200) {
             Eigen::MatrixXd K_dense(K);
             Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(K_dense);
             const auto &evals = es.eigenvalues();
             const auto &evecs = es.eigenvectors();
-
-            std::vector<double> non_rigid_evals;
-            non_rigid_evals.reserve(evals.size());
 
             const int m = static_cast<int>(evecs.rows() / 2);
             for (int k = 0; k < evals.size(); ++k) {
@@ -282,38 +282,52 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                     vec.head(m).array() -= mu;
                     vec.tail(m).array() -= mv;
                 }
-                non_rigid_evals.push_back(evals(k));
-                if (mode_vecs.size() < 5) {
-                    mode_vecs.push_back(vec);
-                }
-            }
-
-            if (!non_rigid_evals.empty()) {
-                lambda_min = non_rigid_evals[0];
-                lambda_2 = (non_rigid_evals.size() > 1) ? non_rigid_evals[1] : lambda_min;
-                lambda_3 = (non_rigid_evals.size() > 2) ? non_rigid_evals[2] : lambda_2;
-                lambda_4 = (non_rigid_evals.size() > 3) ? non_rigid_evals[3] : lambda_3;
-                lambda_5 = (non_rigid_evals.size() > 4) ? non_rigid_evals[4] : lambda_4;
+                cand_evals.push_back(evals(k));
+                cand_vecs.push_back(vec);
             }
         } else {
             StiffnessSpectrumOptions opt;
-            opt.n_modes = 6;
+            // When filtering unique physical levels (skipping sin/cos doublets), request more raw modes
+            opt.n_modes = config.unique_levels_only ? 14 : 6;
             opt.deflate_translations = pbc ? 1 : 0;
             opt.compute_vectors = true;
             StiffnessSpectrum spec = lowest_stiffness_modes(K, opt);
             if (spec.num_computed > 0) {
-                lambda_min = spec.eigenvalues(0);
-                lambda_2 = (spec.num_computed > 1) ? spec.eigenvalues(1) : lambda_min;
-                lambda_3 = (spec.num_computed > 2) ? spec.eigenvalues(2) : lambda_2;
-                lambda_4 = (spec.num_computed > 3) ? spec.eigenvalues(3) : lambda_3;
-                lambda_5 = (spec.num_computed > 4) ? spec.eigenvalues(4) : lambda_4;
-                for (int k = 0; k < std::min(5, spec.num_computed); ++k) {
+                for (int k = 0; k < spec.num_computed; ++k) {
+                    cand_evals.push_back(spec.eigenvalues(k));
                     if (k < spec.eigenvectors.cols()) {
-                        mode_vecs.push_back(spec.eigenvectors.col(k));
+                        cand_vecs.push_back(spec.eigenvectors.col(k));
                     }
                 }
             }
         }
+
+        // Filter and select up to 5 modes (optionally skipping degenerate sin/cos twins)
+        std::vector<double> selected_evals;
+        std::vector<Eigen::VectorXd> selected_vecs;
+        for (size_t k = 0; k < cand_evals.size() && selected_evals.size() < 5; ++k) {
+            double val = cand_evals[k];
+            if (config.unique_levels_only && !selected_evals.empty()) {
+                double last_val = selected_evals.back();
+                double rel_diff = std::abs(val - last_val) / std::max(1e-12, std::abs(last_val));
+                if (rel_diff < 1e-4) {
+                    continue; // Skip sin/cos degenerate partner of previous level
+                }
+            }
+            selected_evals.push_back(val);
+            if (k < cand_vecs.size()) {
+                selected_vecs.push_back(cand_vecs[k]);
+            }
+        }
+
+        if (!selected_evals.empty()) {
+            lambda_min = selected_evals[0];
+            lambda_2 = (selected_evals.size() > 1) ? selected_evals[1] : lambda_min;
+            lambda_3 = (selected_evals.size() > 2) ? selected_evals[2] : lambda_2;
+            lambda_4 = (selected_evals.size() > 3) ? selected_evals[3] : lambda_3;
+            lambda_5 = (selected_evals.size() > 4) ? selected_evals[4] : lambda_4;
+        }
+        mode_vecs = selected_vecs;
 
         // Map solver DOF eigenvectors to full N_nodes lattice and normalize so max_i |du_i| = 1
         auto extractFullNodeMode = [&](const Eigen::VectorXd &v,
@@ -487,7 +501,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             json << "    \"alpha_max\": " << config.alpha_max << ",\n";
             json << "    \"dalpha\": " << config.dalpha << ",\n";
             json << "    \"beta\": " << config.beta << ",\n";
-            json << "    \"K\": " << config.K << "\n";
+            json << "    \"K\": " << config.K << ",\n";
+            json << "    \"unique_levels_only\": " << (config.unique_levels_only ? "true" : "false") << "\n";
             json << "  },\n";
             json << "  \"summary\": {\n";
             json << "    \"total_nodes\": " << results.summary.total_nodes << ",\n";
@@ -661,6 +676,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             fs_json << "  \"a_0\": " << a_0 << ",\n";
             fs_json << "  \"lattice_type\": \"" << config.lattice_type << "\",\n";
             fs_json << "  \"bc\": \"" << config.bc << "\",\n";
+            fs_json << "  \"unique_levels_only\": " << (config.unique_levels_only ? "true" : "false") << ",\n";
 
             // Write exact reference mesh used in calculation (zero UI re-meshing)
             fs_json << "  \"mesh\": {\n";

@@ -99,6 +99,7 @@ int main(int argc, char **argv) {
   std::string stiffness_fullscale_json = "scratch/stiffness_fullscale.json";
   bool stiffness_single_alpha_only = false;
   double stiffness_single_alpha = 0.0;
+  bool stiffness_unique_levels = false;
   double stiffness_alpha_min = -0.3;
   double stiffness_alpha_max = 0.3;
   double stiffness_dalpha = 0.005;
@@ -124,6 +125,8 @@ int main(int argc, char **argv) {
       stiffness_single_alpha_only = true;
       stiffness_single_alpha = std::stod(arg.substr(15));
       run_stiffness_study = true;
+    } else if (arg == "--unique-levels" || arg == "--unique-levels-only" || arg == "--unique-modes" || arg == "--no-doublets") {
+      stiffness_unique_levels = true;
     } else if (arg.rfind("--nx=", 0) == 0) {
       nx = std::stoi(arg.substr(5));
     } else if (arg.rfind("--ny=", 0) == 0) {
@@ -436,6 +439,7 @@ int main(int argc, char **argv) {
     stiff_cfg.fullscale_json_output = stiffness_fullscale_json;
     stiff_cfg.single_alpha_only = stiffness_single_alpha_only;
     stiff_cfg.single_alpha = stiffness_single_alpha;
+    stiff_cfg.unique_levels_only = stiffness_unique_levels;
 
     runStiffnessShearStudy(stiff_cfg);
     return 0;

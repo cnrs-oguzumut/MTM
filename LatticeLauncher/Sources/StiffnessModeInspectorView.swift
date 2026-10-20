@@ -20,6 +20,17 @@ public enum StiffnessEigenmodeChoice: Int, CaseIterable, Identifiable {
         case .mode5: return "Mode 5 (λ₅)"
         }
     }
+    
+    public func dynamicLabel(isUniqueLevels: Bool) -> String {
+        let prefix = isUniqueLevels ? "Level" : "Mode"
+        switch self {
+        case .mode1: return "\(prefix) 1 (λ₁)"
+        case .mode2: return "\(prefix) 2 (λ₂)"
+        case .mode3: return "\(prefix) 3 (λ₃)"
+        case .mode4: return "\(prefix) 4 (λ₄)"
+        case .mode5: return "\(prefix) 5 (λ₅)"
+        }
+    }
 }
 
 public enum StiffnessColorField: String, CaseIterable, Identifiable {
@@ -197,10 +208,34 @@ public struct StiffnessModeInspectorView: View {
                     
                     Divider().frame(height: 16)
                     
-                    // D. Eigenmode Picker (Mode 1, Mode 2, Mode 3)
+                    // D1. Unique Levels Toggle (No Doublets)
+                    Button(action: {
+                        manager.uniqueLevelsOnly.toggle()
+                        if let curAlpha = currentPoint?.alpha {
+                            manager.computeFullScaleAtAlpha(curAlpha)
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: manager.uniqueLevelsOnly ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 11))
+                                .foregroundColor(manager.uniqueLevelsOnly ? .accentColor : .secondary)
+                            Text(manager.uniqueLevelsOnly ? "Unique Levels" : "All Modes")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(manager.uniqueLevelsOnly ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Toggle between unique physical energy levels (skipping sin/cos doublets under PBC) and all raw eigenmodes")
+                    .fixedSize()
+                    
+                    Divider().frame(height: 16)
+                    
+                    // D2. Eigenmode / Level Picker (Level 1 ... Level 5)
                     Picker("", selection: $selectedMode) {
                         ForEach(StiffnessEigenmodeChoice.allCases) { m in
-                            Text(m.label).tag(m)
+                            Text(m.dynamicLabel(isUniqueLevels: manager.uniqueLevelsOnly)).tag(m)
                         }
                     }
                     .labelsHidden()
@@ -318,6 +353,22 @@ public struct StiffnessModeInspectorView: View {
                         .fixedSize()
                         
                         Divider().frame(height: 12)
+                        
+                        if manager.uniqueLevelsOnly {
+                            HStack(spacing: 3) {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 8))
+                                Text("UNIQUE LEVELS (NO DOUBLETS)")
+                                    .font(.system(size: 8.5, weight: .bold))
+                            }
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(Color.accentColor.opacity(0.18), in: Capsule())
+                            .foregroundColor(.accentColor)
+                            .fixedSize()
+                            
+                            Divider().frame(height: 12)
+                        }
                         
                         HStack(spacing: 3) {
                             Text("λ₁:").foregroundColor(.secondary)

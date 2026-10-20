@@ -307,12 +307,21 @@ public struct StiffnessStudyView: View {
                         HStack(spacing: 10) {
                             if (selectedDisplayTab == 0 || selectedDisplayTab == 2) && !manager.points.isEmpty {
                                 Toggle(isOn: $showHigherModes) {
-                                    Text("Show λ₂, λ₃")
+                                    Text("Show Higher Modes (λ₂…λ₅)")
                                         .font(.caption)
                                 }
                                 .toggleStyle(.checkbox)
                                 .controlSize(.small)
                                 .fixedSize()
+                                
+                                Toggle(isOn: $manager.uniqueLevelsOnly) {
+                                    Text("Unique Levels (no doublets)")
+                                        .font(.caption)
+                                }
+                                .toggleStyle(.checkbox)
+                                .controlSize(.small)
+                                .fixedSize()
+                                .help("Filter out sin/cos Bloch doublet partners under PBC to compute 5 distinct physical energy levels")
                             }
                             
                             if !manager.points.isEmpty {

@@ -111,6 +111,7 @@ public struct StiffnessStudyConfigModel: Codable {
     public var dalpha: Double?
     public var beta: Double?
     public var K: Double?
+    public var unique_levels_only: Bool?
 }
 
 public struct StiffnessFullScaleSnapshot: Codable {
@@ -167,6 +168,7 @@ public struct StiffnessFullScaleWrapper: Codable {
     public var a_0: Double = 1.0
     public var lattice_type: String = "square"
     public var bc: String = "periodic"
+    public var unique_levels_only: Bool? = nil
     public var mesh: StiffnessMeshModel? = nil
     public var snapshots: [StiffnessFullScaleSnapshot] = []
 }
@@ -194,6 +196,9 @@ public class StiffnessStudyManager: ObservableObject {
     // Zanzotto Mode 3 parameters
     @Published public var beta: Double = -0.25
     @Published public var bulkK: Double = 5.0
+    
+    // Physical Energy Levels Filter (skips degenerate sin/cos Bloch partners under PBC)
+    @Published public var uniqueLevelsOnly: Bool = true
     
     // Process State
     @Published public var isRunning: Bool = false
@@ -271,6 +276,9 @@ public class StiffnessStudyManager: ObservableObject {
             "--stiffness-json=\(jsonOut)",
             "--stiffness-fullscale-json=\(fsOut)"
         ]
+        if uniqueLevelsOnly {
+            args.append("--unique-levels")
+        }
         if potentialMode == .zanzotto {
             args.append("--beta=\(beta)")
             args.append("--K=\(bulkK)")
@@ -553,6 +561,9 @@ public class StiffnessStudyManager: ObservableObject {
               let decoded = try? JSONDecoder().decode(StiffnessFullScaleWrapper.self, from: data) else {
             return
         }
+        if let u = decoded.unique_levels_only {
+            self.uniqueLevelsOnly = u
+        }
         if mergeExisting, var existing = self.fullScaleData,
            existing.nx == decoded.nx, existing.ny == decoded.ny,
            existing.lattice_type == decoded.lattice_type {
@@ -590,6 +601,9 @@ public class StiffnessStudyManager: ObservableObject {
             "--single-alpha=\(String(format: "%.6f", alpha))",
             "--stiffness-fullscale-json=\(fsOut)"
         ]
+        if uniqueLevelsOnly {
+            args.append("--unique-levels")
+        }
         if potentialMode == .zanzotto {
             args.append("--beta=\(beta)")
             args.append("--K=\(bulkK)")

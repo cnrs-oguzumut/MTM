@@ -24,6 +24,7 @@ struct StiffnessShearConfig {
     std::string fullscale_json_output = "scratch/stiffness_fullscale.json";
     bool single_alpha_only = false;
     double single_alpha = 0.0;
+    bool unique_levels_only = false;
 };
 
 struct StiffnessShearPoint {
