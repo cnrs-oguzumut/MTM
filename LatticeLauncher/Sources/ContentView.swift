@@ -119,6 +119,11 @@ struct ContentView: View {
                 .onAppear {
                     runner.loadExistingIfAvailable(dir: config.targetDirectory)
                 }
+                .onChange(of: config.targetDirectory) { newDir in
+                    if !runner.status.isRunning {
+                        runner.loadExistingIfAvailable(dir: newDir)
+                    }
+                }
             } else if appTab == .acousticStudy {
                 AcousticStudyView()
             } else if appTab == .stiffnessStudy {

@@ -62,7 +62,6 @@ public class ProcessRunner: ObservableObject {
     private var startTime: Date?
     private let maxLogLines = 10_000
     private var outputDirectory: String = ""
-    private var lastReadCSVLineCount: Int = 0
     
     public init() {}
     
@@ -73,15 +72,28 @@ public class ProcessRunner: ObservableObject {
         currentLambdaMin = nil
         peakStress = 0.0
         yieldStrain = 0.0
-        lastReadCSVLineCount = 0
+        currentStep = 0
+        currentAlpha = 0.0
+        currentStress = 0.0
+        currentEnergy = 0.0
+        avalancheCount = 0
     }
     
     public func loadExistingIfAvailable(dir: String) {
-        let csvPath = "\(dir)/energy_stress_log.csv"
-        guard FileManager.default.fileExists(atPath: csvPath) else { return }
         self.outputDirectory = dir
-        self.lastReadCSVLineCount = 0
+        let csvPath = "\(dir)/energy_stress_log.csv"
+        guard FileManager.default.fileExists(atPath: csvPath) else {
+            self.curvePoints.removeAll()
+            self.eigenPoints.removeAll()
+            self.currentStep = 0
+            self.currentAlpha = 0.0
+            self.currentStress = 0.0
+            self.currentEnergy = 0.0
+            self.avalancheCount = 0
+            return
+        }
         self.curvePoints.removeAll()
+        self.eigenPoints.removeAll()
         self.pollCSV()
     }
     
@@ -117,7 +129,6 @@ public class ProcessRunner: ObservableObject {
         
         // 3. Clear stats and set running state
         self.activeConfig = config
-        self.lastReadCSVLineCount = 0
         self.curvePoints.removeAll()
         self.eigenPoints.removeAll()
         self.currentLambdaMin = nil
@@ -242,17 +253,11 @@ public class ProcessRunner: ObservableObject {
                 return
             }
             
-            var lines = content.components(separatedBy: "\n")
-            if !content.hasSuffix("\n") && !lines.isEmpty {
-                // Drop incomplete last line currently being written
-                lines.removeLast()
-            }
+            let lines = content.components(separatedBy: .newlines)
+            var allPoints: [StressStrainPoint] = []
+            allPoints.reserveCapacity(lines.count)
             
-            let startIdx = (self.curvePoints.isEmpty || lines.count < self.lastReadCSVLineCount) ? 0 : max(0, min(self.lastReadCSVLineCount, lines.count))
-            var newPoints: [StressStrainPoint] = []
-            let currentLastIter = self.curvePoints.last?.iteration ?? -1
-            
-            for line in lines[startIdx...] {
+            for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty || trimmed.hasPrefix("Iteration") { continue }
                 
@@ -260,7 +265,6 @@ public class ProcessRunner: ObservableObject {
                 guard parts.count >= 11 else { continue }
                 
                 guard let iter = Int(parts[0].trimmingCharacters(in: .whitespaces)),
-                      iter > currentLastIter,
                       let alpha = Double(parts[1].trimmingCharacters(in: .whitespaces)),
                       let preEnergy = Double(parts[2].trimmingCharacters(in: .whitespaces)),
                       let preStress = Double(parts[3].trimmingCharacters(in: .whitespaces)),
@@ -272,7 +276,7 @@ public class ProcessRunner: ObservableObject {
                 let remeshStr = parts[10].trimmingCharacters(in: .whitespacesAndNewlines)
                 let shouldRemesh = (remeshStr == "1" || remeshStr.lowercased() == "true")
                 
-                let pt = StressStrainPoint(
+                allPoints.append(StressStrainPoint(
                     iteration: iter,
                     alpha: alpha,
                     preStress: preStress,
@@ -280,15 +284,15 @@ public class ProcessRunner: ObservableObject {
                     preEnergy: preEnergy,
                     postEnergy: postEnergy,
                     shouldRemesh: shouldRemesh
-                )
-                newPoints.append(pt)
+                ))
             }
             
             DispatchQueue.main.async {
-                self.lastReadCSVLineCount = lines.count
-                if !newPoints.isEmpty {
-                    self.curvePoints.append(contentsOf: newPoints)
-                    if let last = self.curvePoints.last {
+                self.isPolling = false
+                
+                if allPoints.count != self.curvePoints.count || allPoints.last?.iteration != self.curvePoints.last?.iteration {
+                    self.curvePoints = allPoints
+                    if let last = allPoints.last {
                         self.currentStep = last.iteration
                         self.currentAlpha = last.alpha
                         self.currentStress = last.postStress
@@ -300,7 +304,6 @@ public class ProcessRunner: ObservableObject {
                     }
                     self.updateAvalancheStats()
                 }
-                self.isPolling = false
                 self.pollEigenCSV()
             }
         }
@@ -311,10 +314,7 @@ public class ProcessRunner: ObservableObject {
         guard FileManager.default.fileExists(atPath: eigPath) else { return }
         guard let content = try? String(contentsOfFile: eigPath, encoding: .utf8) else { return }
         
-        var lines = content.components(separatedBy: "\n")
-        if !content.hasSuffix("\n") && !lines.isEmpty {
-            lines.removeLast()
-        }
+        let lines = content.components(separatedBy: .newlines)
         
         var parsed: [EigenPoint] = []
         for line in lines {
@@ -348,7 +348,7 @@ public class ProcessRunner: ObservableObject {
             ))
         }
         
-        if parsed.count != self.eigenPoints.count {
+        if parsed.count != self.eigenPoints.count || parsed.last?.iteration != self.eigenPoints.last?.iteration {
             self.eigenPoints = parsed
             self.currentLambdaMin = parsed.last?.lambdaMin
         }
