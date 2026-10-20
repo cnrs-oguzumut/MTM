@@ -588,19 +588,7 @@ void example_1_conti_zanzotto_loading(
                 << rotation_angle << "°: " << pts.size() << " points ("
                 << dims.size_x << " x " << dims.size_y << ")\n";
     }
-
-    // Rotate reference element shape function derivatives by rotation angle
-    if (std::abs(theta_rot) > 1e-6) {
-      Eigen::Matrix2d R;
-      double rad = theta_rot * M_PI / 180.0;
-      R << std::cos(rad), -std::sin(rad),
-           std::sin(rad),  std::cos(rad);
-      p1 = R * p1;
-      p2 = R * p2;
-      p3 = R * p3;
-      dndx = calculateShapeDerivatives(p1, p2, p3);
-      std::cout << "[Rotation] Rotated reference element dN/dx by " << theta_rot << "°\n";
-    }
+    // Note: Reference element is always kept unrotated square (p1=(0,0), p2=(h,0), p3=(0,h))
   } else {
     square_points = LatticeGenerator::generate_2d_lattice(
         nx, ny, lattice_constant, lattice_type);

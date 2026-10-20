@@ -443,20 +443,11 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     map_points_to_solver_array(x0, points_ref, interior_mapping, free_nodes);
 
     // Reference element shape function derivatives:
-    // Scale h corresponds to calc_scale so that F_elem = F_shear * F0 at all scales
+    // User requirement: Always use square reference (p1=(0,0), p2=(h,0), p3=(0,h)) without rotating.
     double h = (config.potential_mode == 3) ? 1.0 : calc_scale;
     Eigen::Vector2d p1(0.0, 0.0);
     Eigen::Vector2d p2(h, 0.0);
     Eigen::Vector2d p3(0.0, h);
-    if (config.use_rotation && std::abs(actual_theta_deg) > 1e-6) {
-        Eigen::Matrix2d R;
-        double rad = actual_theta_deg * M_PI / 180.0;
-        R << std::cos(rad), -std::sin(rad),
-             std::sin(rad),  std::cos(rad);
-        p1 = R * p1;
-        p2 = R * p2;
-        p3 = R * p3;
-    }
     Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
     const Eigen::Matrix<double, 3, 2>* manual_dndx = &dndx;
 

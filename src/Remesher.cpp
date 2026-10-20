@@ -72,10 +72,21 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
         unique_triangle_tolerance);
   } else {
     // Reject triangles with overly long diagonals/edges in non-periodic
-    // remeshing.
+    // remeshing, scaled by the actual nearest-neighbor distance in square_points.
+    double min_dist = 1e9;
+    int check_n = std::min(100, static_cast<int>(square_points.size()));
+    for (int i = 0; i < check_n; ++i) {
+      for (int j = i + 1; j < check_n; ++j) {
+        double d = (square_points[i].coord - square_points[j].coord).norm();
+        if (d > 1e-4 && d < min_dist) {
+          min_dist = d;
+        }
+      }
+    }
+    double max_edge = (min_dist < 1e8) ? (min_dist * (std::sqrt(2.0) + 0.35)) : (std::sqrt(2.0) + 0.1);
     unique_triangles = MeshGenerator::select_unique_connected_triangles(
         points_used, triangulation, original_domain_map, square_points.size(),
-        unique_triangle_tolerance, sqrt(2) + 0.1);
+        unique_triangle_tolerance, max_edge);
   }
 
   // Create new finite elements
