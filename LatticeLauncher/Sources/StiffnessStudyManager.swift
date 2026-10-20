@@ -22,6 +22,16 @@ public enum BoundaryConditionMode: String, CaseIterable, Identifiable {
     }
 }
 
+public struct StiffnessMeshModel: Codable {
+    public var a_0: Double = 1.0
+    public var nodes_x: [Double] = []
+    public var nodes_y: [Double] = []
+    public var is_free: [Int] = []
+    public var triangles: [[Int]] = []
+    
+    public init() {}
+}
+
 public struct StiffnessPointModel: Identifiable, Codable {
     public var id: UUID = UUID()
     public var alpha: Double = 0.0
@@ -32,9 +42,16 @@ public struct StiffnessPointModel: Identifiable, Codable {
     public var energy: Double = 0.0
     public var energy_density: Double = 0.0
     public var continuum_energy: Double = 0.0
+    public var mode1_ux: [Double]? = nil
+    public var mode1_uy: [Double]? = nil
+    public var mode2_ux: [Double]? = nil
+    public var mode2_uy: [Double]? = nil
+    public var mode3_ux: [Double]? = nil
+    public var mode3_uy: [Double]? = nil
     
     enum CodingKeys: String, CodingKey {
         case alpha, lambda_min, lambda_2, lambda_3, is_stable, energy, energy_density, continuum_energy
+        case mode1_ux, mode1_uy, mode2_ux, mode2_uy, mode3_ux, mode3_uy
     }
     
     public init() {}
@@ -50,6 +67,12 @@ public struct StiffnessPointModel: Identifiable, Codable {
         self.energy = try container.decode(Double.self, forKey: .energy)
         self.energy_density = try container.decodeIfPresent(Double.self, forKey: .energy_density) ?? energy
         self.continuum_energy = try container.decodeIfPresent(Double.self, forKey: .continuum_energy) ?? energy_density
+        self.mode1_ux = try container.decodeIfPresent([Double].self, forKey: .mode1_ux)
+        self.mode1_uy = try container.decodeIfPresent([Double].self, forKey: .mode1_uy)
+        self.mode2_ux = try container.decodeIfPresent([Double].self, forKey: .mode2_ux)
+        self.mode2_uy = try container.decodeIfPresent([Double].self, forKey: .mode2_uy)
+        self.mode3_ux = try container.decodeIfPresent([Double].self, forKey: .mode3_ux)
+        self.mode3_uy = try container.decodeIfPresent([Double].self, forKey: .mode3_uy)
     }
 }
 
@@ -78,9 +101,34 @@ public struct StiffnessStudyConfigModel: Codable {
     public var K: Double?
 }
 
+public struct StiffnessFullScaleSnapshot: Codable {
+    public var alpha: Double = 0.0
+    public var lambda_min: Double = 0.0
+    public var lambda_2: Double = 0.0
+    public var lambda_3: Double = 0.0
+    public var is_stable: Bool = true
+    public var mode1_ux: [Double]? = nil
+    public var mode1_uy: [Double]? = nil
+    public var mode2_ux: [Double]? = nil
+    public var mode2_uy: [Double]? = nil
+    public var mode3_ux: [Double]? = nil
+    public var mode3_uy: [Double]? = nil
+}
+
+public struct StiffnessFullScaleWrapper: Codable {
+    public var nx: Int = 10
+    public var ny: Int = 10
+    public var a_0: Double = 1.0
+    public var lattice_type: String = "square"
+    public var bc: String = "periodic"
+    public var mesh: StiffnessMeshModel? = nil
+    public var snapshots: [StiffnessFullScaleSnapshot] = []
+}
+
 public struct StiffnessStudyJSONWrapper: Codable {
     public var config: StiffnessStudyConfigModel?
     public var summary: StiffnessStudySummaryModel
+    public var mesh: StiffnessMeshModel?
     public var points: [StiffnessPointModel]
 }
 
@@ -103,6 +151,7 @@ public class StiffnessStudyManager: ObservableObject {
     
     // Process State
     @Published public var isRunning: Bool = false
+    @Published public var isComputingFullScale: Bool = false
     @Published public var progress: Double = 0.0
     @Published public var completedSteps: Int = 0
     @Published public var totalSteps: Int = 0
@@ -114,6 +163,9 @@ public class StiffnessStudyManager: ObservableObject {
     // Results
     @Published public var points: [StiffnessPointModel] = []
     @Published public var summary: StiffnessStudySummaryModel = StiffnessStudySummaryModel()
+    @Published public var mesh: StiffnessMeshModel? = nil
+    @Published public var fullScaleData: StiffnessFullScaleWrapper? = nil
+    @Published public var selectedAlpha: Double? = nil
     
     private var process: Process?
     
@@ -122,6 +174,10 @@ public class StiffnessStudyManager: ObservableObject {
         let jsonOut = "\(root)/scratch/stiffness_shear_study.json"
         if FileManager.default.fileExists(atPath: jsonOut) {
             loadResultsJSON(jsonPath: jsonOut, restoreConfig: true)
+        }
+        let fsOut = "\(root)/scratch/stiffness_fullscale.json"
+        if FileManager.default.fileExists(atPath: fsOut) {
+            loadFullScaleJSON(jsonPath: fsOut, mergeExisting: false)
         }
     }
     
@@ -150,6 +206,7 @@ public class StiffnessStudyManager: ObservableObject {
         try? FileManager.default.createDirectory(atPath: scratchDir, withIntermediateDirectories: true)
         let csvOut = "\(scratchDir)/stiffness_shear_study.csv"
         let jsonOut = "\(scratchDir)/stiffness_shear_study.json"
+        let fsOut = "\(scratchDir)/stiffness_fullscale.json"
         
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
@@ -165,7 +222,8 @@ public class StiffnessStudyManager: ObservableObject {
             "--alpha-max=\(alphaMax)",
             "--dalpha=\(dalpha)",
             "--stiffness-csv=\(csvOut)",
-            "--stiffness-json=\(jsonOut)"
+            "--stiffness-json=\(jsonOut)",
+            "--stiffness-fullscale-json=\(fsOut)"
         ]
         if potentialMode == .zanzotto {
             args.append("--beta=\(beta)")
@@ -217,6 +275,7 @@ public class StiffnessStudyManager: ObservableObject {
                     self?.etaSeconds = 0.0
                     self?.statusMessage = "Complete! Data parsed successfully."
                     self?.loadResultsJSON(jsonPath: jsonOut)
+                    self?.loadFullScaleJSON(jsonPath: fsOut, mergeExisting: false)
                 } else {
                     self?.statusMessage = "Process exited with error code \(proc.terminationStatus)"
                 }
@@ -315,8 +374,16 @@ public class StiffnessStudyManager: ObservableObject {
             let res = try decoder.decode(StiffnessStudyJSONWrapper.self, from: data)
             self.points = res.points
             self.summary = res.summary
+            self.mesh = res.mesh
+            if self.selectedAlpha == nil {
+                if res.summary.alpha_c_pos > 0 {
+                    self.selectedAlpha = res.summary.alpha_c_pos
+                } else {
+                    self.selectedAlpha = res.points.first(where: { !$0.is_stable })?.alpha ?? res.points.first?.alpha
+                }
+            }
             
-            // If high-precision CSV is alongside JSON, prefer its 10-digit precision points
+            // If high-precision CSV is alongside JSON, merge its 10-digit precision scalars while keeping eigenvectors
             let csvPath = jsonPath.replacingOccurrences(of: ".json", with: ".csv")
             if FileManager.default.fileExists(atPath: csvPath) {
                 loadResultsCSV(csvPath: csvPath)
@@ -372,6 +439,82 @@ public class StiffnessStudyManager: ObservableObject {
             pt.continuum_energy = (parts.count >= 8) ? (Double(parts[7]) ?? pt.energy_density) : pt.energy_density
             parsed.append(pt)
         }
+        if self.points.count == parsed.count {
+            for i in 0..<parsed.count {
+                parsed[i].mode1_ux = self.points[i].mode1_ux
+                parsed[i].mode1_uy = self.points[i].mode1_uy
+                parsed[i].mode2_ux = self.points[i].mode2_ux
+                parsed[i].mode2_uy = self.points[i].mode2_uy
+                parsed[i].mode3_ux = self.points[i].mode3_ux
+                parsed[i].mode3_uy = self.points[i].mode3_uy
+            }
+        }
         self.points = parsed
+    }
+    
+    public func loadFullScaleJSON(jsonPath: String, mergeExisting: Bool) {
+        guard FileManager.default.fileExists(atPath: jsonPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)),
+              let decoded = try? JSONDecoder().decode(StiffnessFullScaleWrapper.self, from: data) else {
+            return
+        }
+        if mergeExisting, var existing = self.fullScaleData,
+           existing.nx == decoded.nx, existing.ny == decoded.ny,
+           existing.lattice_type == decoded.lattice_type {
+            for snap in decoded.snapshots {
+                existing.snapshots.removeAll(where: { abs($0.alpha - snap.alpha) < 1e-6 })
+                existing.snapshots.append(snap)
+            }
+            existing.snapshots.sort(by: { $0.alpha < $1.alpha })
+            self.fullScaleData = existing
+        } else {
+            self.fullScaleData = decoded
+        }
+    }
+    
+    public func computeFullScaleAtAlpha(_ alpha: Double) {
+        guard !isRunning && !isComputingFullScale else { return }
+        let root = SimulationConfig.detectProjectRoot()
+        let binary = "\(root)/build/lattice_triangulation"
+        guard FileManager.default.fileExists(atPath: binary) else { return }
+        
+        let scratchDir = "\(root)/scratch"
+        try? FileManager.default.createDirectory(atPath: scratchDir, withIntermediateDirectories: true)
+        let fsOut = "\(scratchDir)/stiffness_fullscale_single.json"
+        
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: binary)
+        p.currentDirectoryURL = URL(fileURLWithPath: root)
+        var args = [
+            "--stiffness-study",
+            "--nx=\(nx)",
+            "--ny=\(ny)",
+            "--lattice=\(latticeSymmetry.rawValue)",
+            "--potential-mode=\(potentialMode.rawValue)",
+            "--bc=\(boundaryCondition.rawValue)",
+            "--single-alpha=\(String(format: "%.6f", alpha))",
+            "--stiffness-fullscale-json=\(fsOut)"
+        ]
+        if potentialMode == .zanzotto {
+            args.append("--beta=\(beta)")
+            args.append("--K=\(bulkK)")
+        }
+        p.arguments = args
+        
+        self.isComputingFullScale = true
+        self.statusMessage = String(format: "Computing full %d×%d mode at α = %+.4f...", nx, ny, alpha)
+        
+        p.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async {
+                self?.isComputingFullScale = false
+                if proc.terminationStatus == 0 {
+                    self?.loadFullScaleJSON(jsonPath: fsOut, mergeExisting: true)
+                    self?.statusMessage = String(format: "Full %d×%d mode ready at α = %+.4f", self?.nx ?? 0, self?.ny ?? 0, alpha)
+                } else {
+                    self?.statusMessage = "Full-scale mode computation failed (code \(proc.terminationStatus))"
+                }
+            }
+        }
+        try? p.run()
     }
 }

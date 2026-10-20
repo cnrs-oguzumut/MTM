@@ -21,6 +21,9 @@ struct StiffnessShearConfig {
     
     std::string csv_output = "stiffness_shear_study.csv";
     std::string json_output = "stiffness_shear_study.json";
+    std::string fullscale_json_output = "scratch/stiffness_fullscale.json";
+    bool single_alpha_only = false;
+    double single_alpha = 0.0;
 };
 
 struct StiffnessShearPoint {
@@ -32,6 +35,13 @@ struct StiffnessShearPoint {
     double energy = 0.0;           // Total integrated energy over all elements
     double energy_density = 0.0;   // Energy per unit area: total_energy / total_area
     double continuum_energy = 0.0; // Homogeneous continuum strain energy density W_cont(alpha)
+    // Normalized nodal eigenvectors v_1, v_2, v_3 on the full N_nodes lattice (max |du_i| = 1)
+    std::vector<double> mode1_ux;
+    std::vector<double> mode1_uy;
+    std::vector<double> mode2_ux;
+    std::vector<double> mode2_uy;
+    std::vector<double> mode3_ux;
+    std::vector<double> mode3_uy;
 };
 
 struct StiffnessShearSummary {

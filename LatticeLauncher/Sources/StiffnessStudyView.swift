@@ -291,6 +291,7 @@ public struct StiffnessStudyView: View {
                         Label("λ_min(α)", systemImage: "chart.xyaxis.line").tag(0)
                         Label("Energy E(α)", systemImage: "waveform.path.ecg").tag(1)
                         Label("Split", systemImage: "rectangle.split.2x1").tag(2)
+                        Label("Mode v(α)", systemImage: "scope").tag(5)
                         Label("Table", systemImage: "tablecells").tag(3)
                         Label("Log", systemImage: "terminal").tag(4)
                     }
@@ -377,6 +378,8 @@ public struct StiffnessStudyView: View {
                             )
                             .frame(minWidth: 350)
                         }
+                    } else if selectedDisplayTab == 5 {
+                        StiffnessModeInspectorView(manager: manager)
                     } else if selectedDisplayTab == 3 {
                         StiffnessTableView(points: manager.points)
                     } else {

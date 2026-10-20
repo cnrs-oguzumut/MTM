@@ -96,6 +96,9 @@ int main(int argc, char **argv) {
   std::string stiffness_bc = "periodic";
   std::string stiffness_csv_output = "stiffness_shear_study.csv";
   std::string stiffness_json_output = "stiffness_shear_study.json";
+  std::string stiffness_fullscale_json = "scratch/stiffness_fullscale.json";
+  bool stiffness_single_alpha_only = false;
+  double stiffness_single_alpha = 0.0;
   double stiffness_alpha_min = -0.3;
   double stiffness_alpha_max = 0.3;
   double stiffness_dalpha = 0.005;
@@ -115,6 +118,12 @@ int main(int argc, char **argv) {
       stiffness_csv_output = arg.substr(16);
     } else if (arg.rfind("--stiffness-json=", 0) == 0) {
       stiffness_json_output = arg.substr(17);
+    } else if (arg.rfind("--stiffness-fullscale-json=", 0) == 0) {
+      stiffness_fullscale_json = arg.substr(27);
+    } else if (arg.rfind("--single-alpha=", 0) == 0) {
+      stiffness_single_alpha_only = true;
+      stiffness_single_alpha = std::stod(arg.substr(15));
+      run_stiffness_study = true;
     } else if (arg.rfind("--nx=", 0) == 0) {
       nx = std::stoi(arg.substr(5));
     } else if (arg.rfind("--ny=", 0) == 0) {
@@ -424,6 +433,9 @@ int main(int argc, char **argv) {
     stiff_cfg.K = bulk_K;
     stiff_cfg.csv_output = stiffness_csv_output;
     stiff_cfg.json_output = stiffness_json_output;
+    stiff_cfg.fullscale_json_output = stiffness_fullscale_json;
+    stiff_cfg.single_alpha_only = stiffness_single_alpha_only;
+    stiff_cfg.single_alpha = stiffness_single_alpha;
 
     runStiffnessShearStudy(stiff_cfg);
     return 0;

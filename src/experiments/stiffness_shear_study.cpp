@@ -204,7 +204,9 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         return results;
     }
     FastStiffnessAssembler assembler;
-    int num_steps = std::max(1, static_cast<int>(std::round((config.alpha_max - config.alpha_min) / config.dalpha))) + 1;
+    int num_steps = config.single_alpha_only
+        ? 1
+        : (std::max(1, static_cast<int>(std::round((config.alpha_max - config.alpha_min) / config.dalpha))) + 1);
 
     double global_min_lambda = 1e30;
     double global_max_lambda = -1e30;
@@ -216,7 +218,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     bool found_pos_c = false;
 
     for (int step = 0; step < num_steps; ++step) {
-        double alpha = config.alpha_min + step * config.dalpha;
+        double alpha = config.single_alpha_only ? config.single_alpha : (config.alpha_min + step * config.dalpha);
         if (std::abs(alpha) < 1e-12) alpha = 0.0;
 
         Eigen::Matrix2d F_shear;
@@ -249,10 +251,11 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
 
         const Eigen::SparseMatrix<double> &K = assembler.assembleStiffness(x_alpha, &userData, false);
 
-        // Compute smallest eigenvalues of K
+        // Compute smallest eigenvalues & eigenvectors of K
         double lambda_min = 0.0;
         double lambda_2 = 0.0;
         double lambda_3 = 0.0;
+        std::vector<Eigen::VectorXd> mode_vecs;
 
         if (total_dofs <= 1200) {
             Eigen::MatrixXd K_dense(K);
@@ -263,17 +266,24 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             std::vector<double> non_rigid_evals;
             non_rigid_evals.reserve(evals.size());
 
+            const int m = static_cast<int>(evecs.rows() / 2);
             for (int k = 0; k < evals.size(); ++k) {
-                if (pbc) {
-                    const int m = static_cast<int>(evecs.rows() / 2);
-                    const double mu = evecs.col(k).head(m).mean();
-                    const double mv = evecs.col(k).tail(m).mean();
-                    const double trans_frac = (mu * mu + mv * mv) * static_cast<double>(m) / std::max(evecs.col(k).squaredNorm(), 1e-300);
+                Eigen::VectorXd vec = evecs.col(k);
+                if (pbc && m > 0) {
+                    const double mu = vec.head(m).mean();
+                    const double mv = vec.tail(m).mean();
+                    const double trans_frac = (mu * mu + mv * mv) * static_cast<double>(m) / std::max(vec.squaredNorm(), 1e-300);
                     if (trans_frac > 0.5) {
                         continue; // Skip rigid translation mode
                     }
+                    // Project out any residual uniform translation component
+                    vec.head(m).array() -= mu;
+                    vec.tail(m).array() -= mv;
                 }
                 non_rigid_evals.push_back(evals(k));
+                if (mode_vecs.size() < 3) {
+                    mode_vecs.push_back(vec);
+                }
             }
 
             if (!non_rigid_evals.empty()) {
@@ -285,13 +295,54 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             StiffnessSpectrumOptions opt;
             opt.n_modes = 5;
             opt.deflate_translations = pbc ? 1 : 0;
+            opt.compute_vectors = true;
             StiffnessSpectrum spec = lowest_stiffness_modes(K, opt);
             if (spec.num_computed > 0) {
                 lambda_min = spec.eigenvalues(0);
                 lambda_2 = (spec.num_computed > 1) ? spec.eigenvalues(1) : lambda_min;
                 lambda_3 = (spec.num_computed > 2) ? spec.eigenvalues(2) : lambda_2;
+                for (int k = 0; k < std::min(3, spec.num_computed); ++k) {
+                    if (k < spec.eigenvectors.cols()) {
+                        mode_vecs.push_back(spec.eigenvectors.col(k));
+                    }
+                }
             }
         }
+
+        // Map solver DOF eigenvectors to full N_nodes lattice and normalize so max_i |du_i| = 1
+        auto extractFullNodeMode = [&](const Eigen::VectorXd &v,
+                                       std::vector<double> &out_ux,
+                                       std::vector<double> &out_uy) {
+            out_ux.assign(total_nodes, 0.0);
+            out_uy.assign(total_nodes, 0.0);
+            if (v.size() < 2 * free_nodes) return;
+
+            double max_amp = 0.0;
+            int max_idx = 0;
+            for (int i = 0; i < total_nodes; ++i) {
+                int s_idx = (i < static_cast<int>(full_mapping.size())) ? full_mapping[i].second : -1;
+                if (s_idx >= 0 && s_idx < free_nodes) {
+                    double ux = v(s_idx);
+                    double uy = v(s_idx + free_nodes);
+                    out_ux[i] = ux;
+                    out_uy[i] = uy;
+                    double amp = std::hypot(ux, uy);
+                    if (amp > max_amp) {
+                        max_amp = amp;
+                        max_idx = i;
+                    }
+                }
+            }
+            if (max_amp > 1e-15) {
+                // Consistent sign orientation so the dominant node displacement points in +x/+y half-plane
+                double sgn = (out_ux[max_idx] + 0.37 * out_uy[max_idx] >= 0.0) ? 1.0 : -1.0;
+                double inv = sgn / max_amp;
+                for (int i = 0; i < total_nodes; ++i) {
+                    out_ux[i] *= inv;
+                    out_uy[i] *= inv;
+                }
+            }
+        };
 
         // Calculate total strain energy & normalize by finite element triangle number
         double total_energy = 0.0;
@@ -347,6 +398,9 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         pt.energy = total_energy;
         pt.energy_density = energy_density;
         pt.continuum_energy = continuum_energy;
+        if (mode_vecs.size() > 0) extractFullNodeMode(mode_vecs[0], pt.mode1_ux, pt.mode1_uy);
+        if (mode_vecs.size() > 1) extractFullNodeMode(mode_vecs[1], pt.mode2_ux, pt.mode2_uy);
+        if (mode_vecs.size() > 2) extractFullNodeMode(mode_vecs[2], pt.mode3_ux, pt.mode3_uy);
         results.points.push_back(pt);
 
         // Print log every few steps or near transition, and flush progress for GUI
@@ -382,8 +436,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     std::cout << "    Execution time:       " << std::fixed << std::setprecision(3) << results.summary.execution_seconds << " s\n";
     std::cout << "=======================================================\n\n";
 
-    // 5. Output CSV
-    if (!config.csv_output.empty()) {
+    // 5. Output CSV (skip if single-alpha full-scale evaluation)
+    if (!config.single_alpha_only && !config.csv_output.empty()) {
         std::ofstream csv(config.csv_output);
         if (csv.is_open()) {
             csv << "alpha,lambda_min,lambda_2,lambda_3,is_stable,energy,energy_density,continuum_energy\n";
@@ -403,8 +457,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         }
     }
 
-    // 6. Output JSON
-    if (!config.json_output.empty()) {
+    // 6. Output JSON (skip if single-alpha full-scale evaluation)
+    if (!config.single_alpha_only && !config.json_output.empty()) {
         std::ofstream json(config.json_output);
         if (json.is_open()) {
             json << "{\n";
@@ -431,9 +485,97 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             json << "    \"max_lambda\": " << results.summary.max_lambda << ",\n";
             json << "    \"execution_seconds\": " << results.summary.execution_seconds << "\n";
             json << "  },\n";
+
+            // Build visualization node subset (full mesh if <= 625 nodes; stride-subsampled <= 24x24 grid if larger)
+            std::vector<int> vis_nodes;
+            std::vector<std::array<int, 3>> vis_tris;
+            if (total_nodes <= 625) {
+                vis_nodes.resize(total_nodes);
+                for (int i = 0; i < total_nodes; ++i) vis_nodes[i] = i;
+                for (size_t idx : active_elements) {
+                    const ElementTriangle2D &elem = elements[idx];
+                    double trans_norm = elem.getTranslation(0).norm() + elem.getTranslation(1).norm() + elem.getTranslation(2).norm();
+                    if (trans_norm > 1e-5) continue;
+                    int n0 = elem.getNodeIndex(0), n1 = elem.getNodeIndex(1), n2 = elem.getNodeIndex(2);
+                    if (n0 >= 0 && n0 < total_nodes && n1 >= 0 && n1 < total_nodes && n2 >= 0 && n2 < total_nodes) {
+                        vis_tris.push_back({n0, n1, n2});
+                    }
+                }
+            } else {
+                const int sx = std::max(1, config.nx / 22);
+                const int sy = std::max(1, study_ny / 22);
+                std::vector<int> grid_row_cols;
+                int sub_nx = 0, sub_ny = 0;
+                for (int j = 0; j < study_ny; j += sy) {
+                    int row_cnt = 0;
+                    for (int i = 0; i < config.nx; i += sx) {
+                        int orig_idx = j * config.nx + i;
+                        if (orig_idx < total_nodes) {
+                            vis_nodes.push_back(orig_idx);
+                            row_cnt++;
+                        }
+                    }
+                    if (sub_nx == 0) sub_nx = row_cnt;
+                    sub_ny++;
+                }
+                for (int j = 0; j + 1 < sub_ny; ++j) {
+                    for (int i = 0; i + 1 < sub_nx; ++i) {
+                        int n00 = j * sub_nx + i;
+                        int n10 = j * sub_nx + (i + 1);
+                        int n01 = (j + 1) * sub_nx + i;
+                        int n11 = (j + 1) * sub_nx + (i + 1);
+                        vis_tris.push_back({n00, n10, n11});
+                        vis_tris.push_back({n00, n11, n01});
+                    }
+                }
+            }
+            const size_t n_vis = vis_nodes.size();
+
+            // Write reference mesh geometry once for eigenvector mode visualization
+            json << "  \"mesh\": {\n";
+            json << "    \"a_0\": " << a_0 << ",\n";
+            json << "    \"nodes_x\": [";
+            for (size_t k = 0; k < n_vis; ++k) {
+                json << std::fixed << std::setprecision(5) << points_ref[vis_nodes[k]].coord(0) << (k + 1 < n_vis ? "," : "");
+            }
+            json << "],\n";
+            json << "    \"nodes_y\": [";
+            for (size_t k = 0; k < n_vis; ++k) {
+                json << std::fixed << std::setprecision(5) << points_ref[vis_nodes[k]].coord(1) << (k + 1 < n_vis ? "," : "");
+            }
+            json << "],\n";
+            json << "    \"is_free\": [";
+            for (size_t k = 0; k < n_vis; ++k) {
+                int i = vis_nodes[k];
+                int s_idx = (i < static_cast<int>(full_mapping.size())) ? full_mapping[i].second : -1;
+                json << ((s_idx >= 0 && s_idx < free_nodes) ? 1 : 0) << (k + 1 < n_vis ? "," : "");
+            }
+            json << "],\n";
+            json << "    \"triangles\": [";
+            for (size_t k = 0; k < vis_tris.size(); ++k) {
+                json << "[" << vis_tris[k][0] << "," << vis_tris[k][1] << "," << vis_tris[k][2] << "]"
+                     << (k + 1 < vis_tris.size() ? "," : "");
+            }
+            json << "]\n";
+            json << "  },\n";
+
+            auto writeVecCompact = [&](const char *key, const std::vector<double> &vec) {
+                if (vec.empty()) return;
+                json << ", \"" << key << "\": [";
+                json << std::fixed << std::setprecision(4);
+                for (size_t k = 0; k < n_vis; ++k) {
+                    int idx = vis_nodes[k];
+                    double val = (idx >= 0 && idx < static_cast<int>(vec.size())) ? vec[idx] : 0.0;
+                    json << val << (k + 1 < n_vis ? "," : "");
+                }
+                json << "]";
+                json << std::defaultfloat << std::setprecision(6);
+            };
+
             json << "  \"points\": [\n";
             for (size_t i = 0; i < results.points.size(); ++i) {
                 const auto &p = results.points[i];
+                json << std::defaultfloat << std::setprecision(6);
                 json << "    {\"alpha\": " << p.alpha
                      << ", \"lambda_min\": " << p.lambda_min
                      << ", \"lambda_2\": " << p.lambda_2
@@ -441,7 +583,14 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                      << ", \"is_stable\": " << (p.is_stable ? "true" : "false")
                      << ", \"energy\": " << p.energy
                      << ", \"energy_density\": " << p.energy_density
-                     << ", \"continuum_energy\": " << p.continuum_energy << "}";
+                     << ", \"continuum_energy\": " << p.continuum_energy;
+                writeVecCompact("mode1_ux", p.mode1_ux);
+                writeVecCompact("mode1_uy", p.mode1_uy);
+                writeVecCompact("mode2_ux", p.mode2_ux);
+                writeVecCompact("mode2_uy", p.mode2_uy);
+                writeVecCompact("mode3_ux", p.mode3_ux);
+                writeVecCompact("mode3_uy", p.mode3_uy);
+                json << "}";
                 if (i + 1 < results.points.size()) json << ",";
                 json << "\n";
             }
@@ -449,6 +598,118 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             json << "}\n";
             json.close();
             std::cout << "Wrote JSON results to " << config.json_output << std::endl;
+        }
+    }
+
+    // 7. Output Full-Scale Static Snapshot JSON (all N_x * N_y nodes at critical alphas or single_alpha)
+    if (!config.fullscale_json_output.empty() && !results.points.empty()) {
+        std::vector<size_t> snap_indices;
+        if (config.single_alpha_only || results.points.size() <= 3) {
+            for (size_t i = 0; i < results.points.size(); ++i) snap_indices.push_back(i);
+        } else {
+            // Find closest steps to alpha_c(-), alpha = 0, and alpha_c(+)
+            auto addClosest = [&](double target_a) {
+                size_t best_i = 0;
+                double best_d = 1e30;
+                for (size_t i = 0; i < results.points.size(); ++i) {
+                    double d = std::abs(results.points[i].alpha - target_a);
+                    if (d < best_d) { best_d = d; best_i = i; }
+                }
+                if (std::find(snap_indices.begin(), snap_indices.end(), best_i) == snap_indices.end()) {
+                    snap_indices.push_back(best_i);
+                }
+            };
+            if (found_neg_c) addClosest(alpha_c_neg);
+            addClosest(0.0);
+            if (found_pos_c) addClosest(alpha_c_pos);
+            // Also add global min lambda step
+            size_t min_l_idx = 0;
+            for (size_t i = 1; i < results.points.size(); ++i) {
+                if (results.points[i].lambda_min < results.points[min_l_idx].lambda_min) min_l_idx = i;
+            }
+            if (std::find(snap_indices.begin(), snap_indices.end(), min_l_idx) == snap_indices.end()) {
+                snap_indices.push_back(min_l_idx);
+            }
+        }
+
+        std::ofstream fs_json(config.fullscale_json_output);
+        if (fs_json.is_open()) {
+            fs_json << "{\n";
+            fs_json << "  \"nx\": " << config.nx << ",\n";
+            fs_json << "  \"ny\": " << study_ny << ",\n";
+            fs_json << "  \"a_0\": " << a_0 << ",\n";
+            fs_json << "  \"lattice_type\": \"" << config.lattice_type << "\",\n";
+            fs_json << "  \"bc\": \"" << config.bc << "\",\n";
+
+            // Write exact reference mesh used in calculation (zero UI re-meshing)
+            fs_json << "  \"mesh\": {\n";
+            fs_json << "    \"a_0\": " << a_0 << ",\n";
+            fs_json << "    \"nodes_x\": [";
+            for (int k = 0; k < total_nodes; ++k) {
+                fs_json << std::fixed << std::setprecision(5) << points_ref[k].coord(0) << (k + 1 < total_nodes ? "," : "");
+            }
+            fs_json << "],\n";
+            fs_json << "    \"nodes_y\": [";
+            for (int k = 0; k < total_nodes; ++k) {
+                fs_json << std::fixed << std::setprecision(5) << points_ref[k].coord(1) << (k + 1 < total_nodes ? "," : "");
+            }
+            fs_json << "],\n";
+            fs_json << "    \"is_free\": [";
+            for (int k = 0; k < total_nodes; ++k) {
+                int s_idx = (k < static_cast<int>(full_mapping.size())) ? full_mapping[k].second : -1;
+                fs_json << ((s_idx >= 0 && s_idx < free_nodes) ? 1 : 0) << (k + 1 < total_nodes ? "," : "");
+            }
+            fs_json << "],\n";
+            fs_json << "    \"triangles\": [";
+            bool first_tri = true;
+            for (size_t idx : active_elements) {
+                const ElementTriangle2D &elem = elements[idx];
+                double trans_norm = elem.getTranslation(0).norm() + elem.getTranslation(1).norm() + elem.getTranslation(2).norm();
+                if (trans_norm > 1e-5) continue;
+                int n0 = elem.getNodeIndex(0), n1 = elem.getNodeIndex(1), n2 = elem.getNodeIndex(2);
+                if (n0 >= 0 && n0 < total_nodes && n1 >= 0 && n1 < total_nodes && n2 >= 0 && n2 < total_nodes) {
+                    if (!first_tri) fs_json << ",";
+                    fs_json << "[" << n0 << "," << n1 << "," << n2 << "]";
+                    first_tri = false;
+                }
+            }
+            fs_json << "]\n";
+            fs_json << "  },\n";
+
+            fs_json << "  \"snapshots\": [\n";
+
+            auto writeFullVec = [&](const char *key, const std::vector<double> &vec) {
+                if (vec.empty()) return;
+                fs_json << ", \"" << key << "\": [";
+                fs_json << std::fixed << std::setprecision(4);
+                for (size_t k = 0; k < vec.size(); ++k) {
+                    fs_json << vec[k] << (k + 1 < vec.size() ? "," : "");
+                }
+                fs_json << "]";
+                fs_json << std::defaultfloat << std::setprecision(6);
+            };
+
+            for (size_t s = 0; s < snap_indices.size(); ++s) {
+                const auto &p = results.points[snap_indices[s]];
+                fs_json << std::defaultfloat << std::setprecision(6);
+                fs_json << "    {\"alpha\": " << p.alpha
+                        << ", \"lambda_min\": " << p.lambda_min
+                        << ", \"lambda_2\": " << p.lambda_2
+                        << ", \"lambda_3\": " << p.lambda_3
+                        << ", \"is_stable\": " << (p.is_stable ? "true" : "false");
+                writeFullVec("mode1_ux", p.mode1_ux);
+                writeFullVec("mode1_uy", p.mode1_uy);
+                writeFullVec("mode2_ux", p.mode2_ux);
+                writeFullVec("mode2_uy", p.mode2_uy);
+                writeFullVec("mode3_ux", p.mode3_ux);
+                writeFullVec("mode3_uy", p.mode3_uy);
+                fs_json << "}" << (s + 1 < snap_indices.size() ? ",\n" : "\n");
+            }
+            fs_json << "  ]\n";
+            fs_json << "}\n";
+            fs_json.close();
+            std::cout << "Wrote Full-Scale (" << config.nx << "x" << study_ny << ") snapshots to "
+                      << config.fullscale_json_output << std::endl;
         }
     }
 

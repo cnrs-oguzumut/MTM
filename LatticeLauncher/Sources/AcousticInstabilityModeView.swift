@@ -312,20 +312,25 @@ public struct AcousticInstabilityModeView: View {
                 HSplitView {
                     // LEFT PANE: Directional Polar Stability Rosette Q(ξ)
                     VStack(spacing: 0) {
-                        HStack {
-                            Label(polarMetric == .detQ ? "Directional Stability Profile det Q(ξ)" : "Directional Soft-Mode Profile λ_min(Q(ξ))",
-                                  systemImage: "circle.dashed")
-                                .font(.caption.bold())
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            if let hDeg = hoveredAngleDeg {
-                                Text(String(format: "Cursor ξ = %.1f°", hDeg))
-                                    .font(.caption2.monospaced())
-                                    .foregroundColor(.accentColor)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                Label(polarMetric == .detQ ? "Directional Stability Profile det Q(ξ)" : "Directional Soft-Mode Profile λ_min(Q(ξ))",
+                                      systemImage: "circle.dashed")
+                                    .font(.caption.bold())
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                if let hDeg = hoveredAngleDeg {
+                                    Text(String(format: "Cursor ξ = %.1f°", hDeg))
+                                        .font(.caption2.monospaced())
+                                        .foregroundColor(.accentColor)
+                                        .fixedSize()
+                                }
                             }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
+                        .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
                         
                         GeometryReader { geo in
                             ZStack {
@@ -388,27 +393,37 @@ public struct AcousticInstabilityModeView: View {
                     
                     // RIGHT PANE: 4-Atom Unit Cell (Undeformed Lagrangian vs Deformed Eulerian) + (n*, m*) / (N*, M*)
                     VStack(spacing: 0) {
-                        HStack {
-                            Label(frameMode == .eulerian
-                                  ? "4-Atom Unit Cell (Eulerian Deformed x = F·X) & (n*, m*)"
-                                  : (frameMode == .lagrangian
-                                     ? "4-Atom Unit Cell (Lagrangian Undeformed X) & (N*, M*)"
-                                     : "4-Atom Unit Cell Overlay: Eulerian (n*, m*) vs Lagrangian (N*, M*)"),
-                                  systemImage: "square.grid.2x2")
-                                .font(.caption.bold())
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            HStack(spacing: 4) {
-                                Text("Mode Disp:")
-                                    .font(.caption2)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                Label(frameMode == .eulerian
+                                      ? "4-Atom Unit Cell (Eulerian x = F·X) & (n*, m*)"
+                                      : (frameMode == .lagrangian
+                                         ? "4-Atom Unit Cell (Lagrangian X) & (N*, M*)"
+                                         : "4-Atom Unit Cell: Eulerian (n*, m*) vs Lagrangian (N*, M*)"),
+                                      systemImage: "square.grid.2x2")
+                                    .font(.caption.bold())
                                     .foregroundColor(.secondary)
-                                Slider(value: $modeAmplitude, in: 0.0...0.45)
-                                    .frame(width: 75)
-                                    .controlSize(.mini)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                
+                                Divider().frame(height: 12)
+                                
+                                HStack(spacing: 4) {
+                                    Text("Mode Disp:")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                    Slider(value: $modeAmplitude, in: 0.0...0.45)
+                                        .frame(width: 75)
+                                        .controlSize(.mini)
+                                }
+                                .fixedSize()
                             }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
+                        .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
                         
                         GeometryReader { geo in
                             Canvas { ctx, size in
@@ -417,34 +432,37 @@ public struct AcousticInstabilityModeView: View {
                         }
                         
                         // Mode Decomposition Bar Footer
-                        HStack(spacing: 12) {
-                            Text("Mode Character:")
-                                .font(.caption2.bold())
-                                .foregroundColor(.secondary)
-                            
-                            GeometryReader { barGeo in
-                                let w = barGeo.size.width
-                                let sFrac = CGFloat(max(0.0, min(1.0, resolved.shearPercent / 100.0)))
-                                HStack(spacing: 0) {
-                                    Rectangle()
-                                        .fill(Color.cyan)
-                                        .frame(width: w * sFrac)
-                                    Rectangle()
-                                        .fill(Color.pink.opacity(0.8))
-                                        .frame(width: max(0, w * (1.0 - sFrac)))
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                Text("Mode Character:")
+                                    .font(.caption2.bold())
+                                    .foregroundColor(.secondary)
+                                    .fixedSize()
+                                
+                                GeometryReader { barGeo in
+                                    let w = barGeo.size.width
+                                    let sFrac = CGFloat(max(0.0, min(1.0, resolved.shearPercent / 100.0)))
+                                    HStack(spacing: 0) {
+                                        Rectangle()
+                                            .fill(Color.cyan)
+                                            .frame(width: w * sFrac)
+                                        Rectangle()
+                                            .fill(Color.pink.opacity(0.8))
+                                            .frame(width: max(0, w * (1.0 - sFrac)))
+                                    }
+                                    .clipShape(Capsule())
                                 }
-                                .clipShape(Capsule())
+                                .frame(width: 110, height: 7)
+                                
+                                Text(String(format: "Shear |m*×n*| = %.1f%%  •  Dilatation |m*·n*| = %.1f%%",
+                                            resolved.shearPercent, 100.0 - resolved.shearPercent))
+                                    .font(.caption2.monospaced())
+                                    .foregroundColor(.secondary)
+                                    .fixedSize()
                             }
-                            .frame(width: 110, height: 7)
-                            
-                            Text(String(format: "Shear |m*×n*| = %.1f%%  •  Dilatation |m*·n*| = %.1f%%",
-                                        resolved.shearPercent, 100.0 - resolved.shearPercent))
-                                .font(.caption2.monospaced())
-                                .foregroundColor(.secondary)
-                            Spacer()
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
                         .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
                     }
                     .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
@@ -1104,23 +1122,6 @@ public struct AcousticInstabilityModeView: View {
                         .foregroundColor(.yellow),
                      at: CGPoint(x: mTip.x + 22 * CGFloat(resolved.mx), y: mTip.y - 14 * CGFloat(resolved.my)),
                      anchor: .center)
-        }
-        
-        // 5. Compact Top-Left HUD Badge showing exact Eulerian vs Lagrangian (n, m) values on the canvas
-        let hudX: CGFloat = 10
-        var hudY: CGFloat = 10
-        if showEulerPrimary {
-            let eText = String(format: "Eulerian (Deformed):   n* = (%+.2f, %+.2f) [%.1f°]   m* = (%+.2f, %+.2f) [%.1f°]",
-                               nx, ny, resolved.eulerAngleDeg, resolved.mx, resolved.my, resolved.eulerPolDeg)
-            ctx.draw(Text(eText).font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundColor(.orange),
-                     at: CGPoint(x: hudX, y: hudY), anchor: .topLeading)
-            hudY += 14
-        }
-        if showLagrPrimary {
-            let lText = String(format: "Lagrangian (Ref B₀):   N* = (%+.2f, %+.2f) [%.1f°]   M* = (%+.2f, %+.2f) [%.1f°]",
-                               NLx, NLy, resolved.lagrAngleDeg, resolved.lagrMx, resolved.lagrMy, resolved.lagrPolDeg)
-            ctx.draw(Text(lText).font(.system(size: 9.5, weight: .semibold, design: .monospaced)).foregroundColor(.purple),
-                     at: CGPoint(x: hudX, y: hudY), anchor: .topLeading)
         }
     }
     
