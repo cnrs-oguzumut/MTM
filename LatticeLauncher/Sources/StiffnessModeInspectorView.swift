@@ -1207,35 +1207,34 @@ public struct StiffnessModeInspectorView: View {
                 path.addLine(to: p2)
                 path.closeSubpath()
                 
-                if nNodes <= 900 || effZoom >= 2.5 {
-                    let mag0 = hypot(dispUx[i0], dispUy[i0])
-                    let mag1 = hypot(dispUx[i1], dispUy[i1])
-                    let mag2 = hypot(dispUx[i2], dispUy[i2])
-                    let avgMag = (mag0 + mag1 + mag2) / 3.0
-                    
-                    let fillCol: Color
-                    switch colorField {
-                    case .magnitude:
-                        fillCol = samplePalette(t: min(1.0, avgMag), palette: colorPalette).opacity(0.24)
-                    case .elementShear:
-                        let du1 = hypot(dispUx[i1] - dispUx[i0], dispUy[i1] - dispUy[i0])
-                        let du2 = hypot(dispUx[i2] - dispUx[i0], dispUy[i2] - dispUy[i0])
-                        let shearInt = min(1.0, 0.8 * (du1 + du2))
-                        fillCol = samplePalette(t: shearInt, palette: colorPalette).opacity(0.28)
-                    case .direction:
-                        let uxAvg = (dispUx[i0] + dispUx[i1] + dispUx[i2]) / 3.0
-                        let uyAvg = (dispUy[i0] + dispUy[i1] + dispUy[i2]) / 3.0
-                        let angleNorm = fmod((atan2(uyAvg, uxAvg) / (2.0 * .pi)) + 1.0, 1.0)
-                        fillCol = samplePalette(t: angleNorm, palette: colorPalette).opacity(0.26)
-                    }
-                    ctx.fill(path, with: .color(fillCol))
+                // 1. Element Color Filling (Always active for rich continuous colormaps at any zoom level)
+                let mag0 = hypot(dispUx[i0], dispUy[i0])
+                let mag1 = hypot(dispUx[i1], dispUy[i1])
+                let mag2 = hypot(dispUx[i2], dispUy[i2])
+                let avgMag = (mag0 + mag1 + mag2) / 3.0
+                
+                let fillCol: Color
+                switch colorField {
+                case .magnitude:
+                    fillCol = samplePalette(t: min(1.0, avgMag), palette: colorPalette).opacity(0.85)
+                case .elementShear:
+                    let du1 = hypot(dispUx[i1] - dispUx[i0], dispUy[i1] - dispUy[i0])
+                    let du2 = hypot(dispUx[i2] - dispUx[i0], dispUy[i2] - dispUy[i0])
+                    let shearInt = min(1.0, 0.8 * (du1 + du2))
+                    fillCol = samplePalette(t: shearInt, palette: colorPalette).opacity(0.85)
+                case .direction:
+                    let uxAvg = (dispUx[i0] + dispUx[i1] + dispUx[i2]) / 3.0
+                    let uyAvg = (dispUy[i0] + dispUy[i1] + dispUy[i2]) / 3.0
+                    let angleNorm = fmod((atan2(uyAvg, uxAvg) / (2.0 * .pi)) + 1.0, 1.0)
+                    fillCol = samplePalette(t: angleNorm, palette: colorPalette).opacity(0.85)
                 }
+                ctx.fill(path, with: .color(fillCol))
                 
                 if showMeshEdges {
                     let edgeCol = isPublicationWhite
-                        ? Color.black.opacity(effZoom > 2.0 ? 0.40 : 0.20)
-                        : Color.primary.opacity(effZoom > 2.0 ? 0.35 : 0.14)
-                    ctx.stroke(path, with: .color(edgeCol), lineWidth: effZoom > 3.0 ? 1.0 : 0.65)
+                        ? Color.black.opacity(effZoom > 2.0 ? 0.35 : 0.08)
+                        : Color.white.opacity(effZoom > 2.0 ? 0.35 : 0.08)
+                    ctx.stroke(path, with: .color(edgeCol), lineWidth: effZoom > 3.0 ? 0.85 : 0.45)
                 }
             }
         }
