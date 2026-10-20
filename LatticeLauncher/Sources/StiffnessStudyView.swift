@@ -145,7 +145,7 @@ public struct StiffnessStudyView: View {
                                                     Text("m:")
                                                         .font(.caption2.bold())
                                                     IntField(title: "m", value: $manager.cslM, width: 40)
-                                                    Stepper("", value: $manager.cslM, in: 1...20)
+                                                    Stepper("", value: $manager.cslM, in: -20...20)
                                                         .labelsHidden()
                                                 }
                                                 HStack {

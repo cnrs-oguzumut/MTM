@@ -377,8 +377,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     if (config.use_rotation) {
         if (pbc) {
             is_csl_active = true;
-            int m = config.csl_m > 0 ? config.csl_m : 1;
-            int n = config.csl_n >= 0 ? config.csl_n : 0;
+            int m = (config.csl_m == 0 && config.csl_n == 0) ? 1 : config.csl_m;
+            int n = (config.csl_m == 0 && config.csl_n == 0) ? 0 : config.csl_n;
             if (m == 1 && n == 0 && std::abs(config.rotation_angle) > 0.01) {
                 auto best_csl = LatticeGenerator::find_closest_csl_angle(config.lattice_type, config.rotation_angle, 80);
                 m = best_csl.m;
@@ -386,8 +386,17 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                 std::cout << "  [CSL] Snapped target angle " << config.rotation_angle << "° to closest CSL (m="
                           << m << ", n=" << n << ", θ=" << best_csl.theta_deg << "°, Σ=" << best_csl.sigma << ")\n";
             }
+            auto cell_1x1 = LatticeGenerator::generate_csl_lattice(config.lattice_type, m, n, 1, 1, a_0);
             int kx = config.csl_kx > 0 ? config.csl_kx : 1;
             int ky = config.csl_ky > 0 ? config.csl_ky : 1;
+            if (kx <= 2 && ky <= 2 && config.nx >= 15 && study_ny >= 15) {
+                int auto_kx = std::max(1, (int)std::round((config.nx * a_0) / cell_1x1.Lx));
+                int auto_ky = std::max(1, (int)std::round((study_ny * a_0) / cell_1x1.Ly));
+                if (auto_kx > kx || auto_ky > ky) {
+                    kx = auto_kx;
+                    ky = auto_ky;
+                }
+            }
             auto csl_res = LatticeGenerator::generate_csl_lattice(config.lattice_type, m, n, kx, ky, a_0);
             points_ref = csl_res.points;
             domain_dims = DomainDimensions(csl_res.Lx, csl_res.Ly);

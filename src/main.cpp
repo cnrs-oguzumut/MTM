@@ -498,10 +498,10 @@ int main(int argc, char **argv) {
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
     example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc);
   } else {
     example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

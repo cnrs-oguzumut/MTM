@@ -229,6 +229,20 @@ struct SidebarControlsView: View {
                         
                         Toggle("Adaptive Remeshing (Delaunay Surgery)", isOn: $config.enableRemeshing)
                             .toggleStyle(.switch)
+                        
+                        Divider().padding(.vertical, 2)
+                        
+                        // Boundary Conditions Selector
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Boundary Condition:")
+                                .font(.subheadline)
+                            Picker("Boundary Condition", selection: $config.boundaryCondition) {
+                                ForEach(BoundaryConditionMode.allCases) { bc in
+                                    Text(bc.displayName).tag(bc)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -308,9 +322,9 @@ struct SidebarControlsView: View {
                         .toggleStyle(.checkbox)
                         
                         if config.useRotation {
-                            if config.mode == .volterra {
+                            if config.boundaryCondition == .fixed || config.mode == .volterra {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("Arbitrary Rotation (Fixed BC):")
+                                    Text("Arbitrary Continuous Rotation (Fixed BC):")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                     HStack {
@@ -321,6 +335,9 @@ struct SidebarControlsView: View {
                                         Text("°").font(.caption2)
                                     }
                                     Slider(value: $config.rotationAngle, in: 0.0...360.0, step: 0.5)
+                                    Text("Under fixed boundary conditions, the lattice can be rotated to any continuous angle θ ∈ [0, 360°].")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
                                 }
                             } else {
                                 // Periodic BC: CSL Discrete Angles
@@ -358,7 +375,7 @@ struct SidebarControlsView: View {
                                             Stepper("", value: Binding(
                                                 get: { config.cslM },
                                                 set: { config.cslM = $0; config.updateCSLSupercellAuto() }
-                                            ), in: 1...20)
+                                            ), in: -20...20)
                                                 .labelsHidden()
                                         }
                                         HStack {
@@ -417,7 +434,7 @@ struct SidebarControlsView: View {
                             previewManager.ny = config.ny
                             previewManager.latticeSymmetry = config.latticeSymmetry
                             previewManager.potentialMode = config.potentialMode
-                            previewManager.boundaryCondition = (config.mode == .volterra) ? .fixed : .periodic
+                            previewManager.boundaryCondition = (config.mode == .volterra) ? .fixed : config.boundaryCondition
                             previewManager.beta = config.beta
                             previewManager.bulkK = config.bulkK
                             previewManager.useRotation = config.useRotation

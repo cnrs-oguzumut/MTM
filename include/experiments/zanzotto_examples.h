@@ -24,7 +24,8 @@ void example_1_conti_zanzotto_loading(
     int csl_n = 0,
     int csl_kx = 1,
     int csl_ky = 1,
-    double rotation_angle = 0.0);
+    double rotation_angle = 0.0,
+    const std::string& bc = "periodic");
 void example_1_conti_zanzotto_negative_loading(
     int caller_id, int nx, int ny,
     double alpha_min = -0.14,
@@ -44,7 +45,8 @@ void example_1_conti_zanzotto_negative_loading(
     int csl_n = 0,
     int csl_kx = 1,
     int csl_ky = 1,
-    double rotation_angle = 0.0);
+    double rotation_angle = 0.0,
+    const std::string& bc = "periodic");
 void example_2_conti_zanzotto_triangular();
 void restart_zanzotto_simulation(
     const std::string& checkpoint_path,

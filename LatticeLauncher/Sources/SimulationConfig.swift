@@ -81,6 +81,7 @@ public class SimulationConfig: ObservableObject {
     @Published public var exportFullMesh: Bool = true
     
     // 3. Loading Schedule
+    @Published public var boundaryCondition: BoundaryConditionMode = .periodic
     @Published public var alphaStart: Double = 0.14
     @Published public var alphaEnd: Double = 1.0
     @Published public var stepSize: Double = 0.00006
@@ -186,8 +187,9 @@ public class SimulationConfig: ObservableObject {
     public var defaultRunDirName: String {
         let remeshTag = enableRemeshing ? "remesh" : "noremesh"
         let latTag = latticeSymmetry == .triangular ? "_tri" : ""
-        let rotTag = useRotation ? (mode == .volterra ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
-        return "run_\(mode.rawValue)_\(nx)x\(ny)_seed\(seed)_\(remeshTag)\(latTag)\(rotTag)"
+        let bcTag = (boundaryCondition == .fixed) ? "_fixed" : ""
+        let rotTag = useRotation ? ((boundaryCondition == .fixed || mode == .volterra) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
+        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)_seed\(seed)_\(remeshTag)\(latTag)\(rotTag)"
     }
     
     public var targetDirectory: String {
@@ -294,10 +296,13 @@ public class SimulationConfig: ObservableObject {
             args.append("--eig-every=0")
         }
         
+        // Boundary condition
+        args.append("--bc=\(boundaryCondition.rawValue)")
+        
         // Rotated Crystal Orientation / CSL
         if useRotation {
             args.append("--use-rotation")
-            if mode == .volterra {
+            if boundaryCondition == .fixed || mode == .volterra {
                 args.append(String(format: "--rotation-angle=%.4f", rotationAngle))
             } else {
                 args.append("--csl-m=\(cslM)")

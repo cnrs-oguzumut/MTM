@@ -465,7 +465,10 @@ void example_1_conti_zanzotto_loading(
     int csl_n,
     int csl_kx,
     int csl_ky,
-    double rotation_angle) {
+    double rotation_angle,
+    const std::string& bc) {
+
+  bool pbc = (bc == "periodic" || bc == "Periodic" || bc == "pbc" || bc == "PBC");
 
   // Parameters for lattice
   if (nx <= 0 || ny <= 0) {
@@ -476,7 +479,7 @@ void example_1_conti_zanzotto_loading(
   // Periodic triangular lattice requires an even number of rows (ny) so that
   // row (ny - 1) (which has a 0.5*a stagger) alternates seamlessly with row 0 (0.0 stagger)
   // across the vertical periodic boundary, preventing artificial boundary dislocations.
-  if (lattice_type == "triangular" && (ny % 2 != 0)) {
+  if (pbc && lattice_type == "triangular" && (ny % 2 != 0)) {
     int old_ny = ny;
     ny++;
     std::cout << "[INFO] Enforcing even ny for periodic triangular lattice: adjusted ny from "
@@ -539,48 +542,64 @@ void example_1_conti_zanzotto_loading(
   std::vector<Point2D> square_points_ref;
   DomainDimensions domain_dims(0.0, 0.0);
   std::array<double, 2> offsets = {0.0, 0.0};
+  double theta_rot = 0.0;
 
   if (use_rotation) {
-    int m = csl_m > 0 ? csl_m : 1;
-    int n = csl_n >= 0 ? csl_n : 0;
-    if (m == 1 && n == 0 && std::abs(rotation_angle) > 0.01) {
-      auto best_csl = LatticeGenerator::find_closest_csl_angle(lattice_type, rotation_angle, 80);
-      m = best_csl.m;
-      n = best_csl.n;
-      std::cout << "[CSL] Snapped target angle " << rotation_angle << "° to closest CSL (m="
-                << m << ", n=" << n << ", θ=" << best_csl.theta_deg << "°, Σ=" << best_csl.sigma << ")\n";
-    }
-    auto cell_1x1 = LatticeGenerator::generate_csl_lattice(lattice_type, m, n, 1, 1, lattice_constant);
-    int kx = csl_kx > 0 ? csl_kx : 1;
-    int ky = csl_ky > 0 ? csl_ky : 1;
-    if (kx <= 2 && ky <= 2 && nx >= 15 && ny >= 15) {
-      int auto_kx = std::max(1, (int)std::round((nx * lattice_constant) / cell_1x1.Lx));
-      int auto_ky = std::max(1, (int)std::round((ny * lattice_constant) / cell_1x1.Ly));
-      if (auto_kx > kx || auto_ky > ky) {
-        std::cout << "[CSL] Auto-scaling supercell from default (" << kx << "x" << ky
-                  << ") to honor requested system size nx=" << nx << ", ny=" << ny
-                  << " -> Kx=" << auto_kx << ", Ky=" << auto_ky << "\n";
-        kx = auto_kx;
-        ky = auto_ky;
+    if (pbc) {
+      int m = (csl_m == 0 && csl_n == 0) ? 1 : csl_m;
+      int n = (csl_m == 0 && csl_n == 0) ? 0 : csl_n;
+      if (m == 1 && n == 0 && std::abs(rotation_angle) > 0.01) {
+        auto best_csl = LatticeGenerator::find_closest_csl_angle(lattice_type, rotation_angle, 80);
+        m = best_csl.m;
+        n = best_csl.n;
+        std::cout << "[CSL] Snapped target angle " << rotation_angle << "° to closest CSL (m="
+                  << m << ", n=" << n << ", θ=" << best_csl.theta_deg << "°, Σ=" << best_csl.sigma << ")\n";
       }
+      auto cell_1x1 = LatticeGenerator::generate_csl_lattice(lattice_type, m, n, 1, 1, lattice_constant);
+      int kx = csl_kx > 0 ? csl_kx : 1;
+      int ky = csl_ky > 0 ? csl_ky : 1;
+      if (kx <= 2 && ky <= 2 && nx >= 15 && ny >= 15) {
+        int auto_kx = std::max(1, (int)std::round((nx * lattice_constant) / cell_1x1.Lx));
+        int auto_ky = std::max(1, (int)std::round((ny * lattice_constant) / cell_1x1.Ly));
+        if (auto_kx > kx || auto_ky > ky) {
+          std::cout << "[CSL] Auto-scaling supercell from default (" << kx << "x" << ky
+                    << ") to honor requested system size nx=" << nx << ", ny=" << ny
+                    << " -> Kx=" << auto_kx << ", Ky=" << auto_ky << "\n";
+          kx = auto_kx;
+          ky = auto_ky;
+        }
+      }
+      auto csl_res = LatticeGenerator::generate_csl_lattice(lattice_type, m, n, kx, ky, lattice_constant);
+      square_points = csl_res.points;
+      square_points_ref = csl_res.points;
+      domain_dims = DomainDimensions(csl_res.Lx, csl_res.Ly);
+      offsets = {0.0, 0.0};
+      theta_rot = csl_res.theta_deg;
+    } else {
+      // Fixed Boundary Condition: ANY arbitrary rotation angle
+      auto [pts, dims] = LatticeGenerator::generate_rotated_fixed_lattice(
+          lattice_type, nx, ny, lattice_constant, rotation_angle);
+      square_points = pts;
+      square_points_ref = pts;
+      domain_dims = dims;
+      offsets = {0.0, 0.0};
+      theta_rot = rotation_angle;
+      std::cout << "[Fixed BC] Generated rotated " << lattice_type << " lattice with arbitrary angle θ="
+                << rotation_angle << "°: " << pts.size() << " points ("
+                << dims.size_x << " x " << dims.size_y << ")\n";
     }
-    auto csl_res = LatticeGenerator::generate_csl_lattice(lattice_type, m, n, kx, ky, lattice_constant);
-    square_points = csl_res.points;
-    square_points_ref = csl_res.points;
-    domain_dims = DomainDimensions(csl_res.Lx, csl_res.Ly);
-    offsets = {0.0, 0.0};
 
-    // Rotate reference element shape function derivatives by CSL angle
-    if (std::abs(csl_res.theta_deg) > 1e-6) {
+    // Rotate reference element shape function derivatives by rotation angle
+    if (std::abs(theta_rot) > 1e-6) {
       Eigen::Matrix2d R;
-      double rad = csl_res.theta_deg * M_PI / 180.0;
+      double rad = theta_rot * M_PI / 180.0;
       R << std::cos(rad), -std::sin(rad),
            std::sin(rad),  std::cos(rad);
       p1 = R * p1;
       p2 = R * p2;
       p3 = R * p3;
       dndx = calculateShapeDerivatives(p1, p2, p3);
-      std::cout << "[CSL] Rotated reference element dN/dx by " << csl_res.theta_deg << "°\n";
+      std::cout << "[Rotation] Rotated reference element dN/dx by " << theta_rot << "°\n";
     }
   } else {
     square_points = LatticeGenerator::generate_2d_lattice(
@@ -605,10 +624,7 @@ void example_1_conti_zanzotto_loading(
   std::cout << "domain_size.get_height(): " << domain_dims.size_y
             << std::endl;
 
-  // Setup triangulation variables
-  bool pbc = true;
-
-  // Create domain maps
+  // Setup triangulation variables and domain maps
   auto [original_domain_map, translation_map] =
       MeshGenerator::create_domain_maps(original_domain_size, domain_dims,
                                         offsets);
@@ -1239,7 +1255,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                int csl_n,
                                                int csl_kx,
                                                int csl_ky,
-                                               double rotation_angle) {
+                                               double rotation_angle,
+                                               const std::string& bc) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1259,7 +1276,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    csl_n,
                                    csl_kx,
                                    csl_ky,
-                                   rotation_angle);
+                                   rotation_angle,
+                                   bc);
 }
 
 void restart_zanzotto_simulation(const std::string& checkpoint_path,

@@ -824,18 +824,23 @@ std::vector<CSLAngleInfo> LatticeGenerator::get_allowed_csl_angles(
             }
         }
     } else { // triangular
-        for (int m = 1; m <= max_m; ++m) {
-            for (int n = 0; n <= m; ++n) {
+        for (int m = -max_m; m <= max_m; ++m) {
+            for (int n = 0; n <= max_m; ++n) {
+                if (m == 0 && n == 0) continue;
                 if (csl_gcd(m, n) != 1) continue;
                 int sigma = m * m + m * n + n * n;
-                if (sigma > max_sigma) continue;
+                if (sigma > max_sigma || sigma == 0) continue;
+
+                double theta_rad = std::atan2(static_cast<double>(n) * sqrt3, static_cast<double>(2 * m + n));
+                double theta_deg = theta_rad * 180.0 / M_PI;
+                if (theta_deg < -1e-6 || theta_deg > 120.0 + 1e-6) continue;
 
                 CSLAngleInfo info;
                 info.m = m;
                 info.n = n;
                 info.sigma = sigma;
-                info.theta_rad = std::atan2(static_cast<double>(n) * sqrt3, static_cast<double>(2 * m + n));
-                info.theta_deg = info.theta_rad * 180.0 / M_PI;
+                info.theta_rad = theta_rad;
+                info.theta_deg = theta_deg;
                 info.Lx_over_a = std::sqrt(static_cast<double>(sigma));
                 if ((m - n) % 3 == 0) {
                     info.Ly_over_a = std::sqrt(static_cast<double>(sigma) / 3.0);
@@ -877,9 +882,10 @@ CSLAngleInfo LatticeGenerator::find_closest_csl_angle(
     }
 
     // Fold target angle into fundamental domain
-    double max_angle = (lattice_type == "square") ? 45.0 : 30.0;
-    double folded = std::fmod(std::abs(target_angle_deg), (lattice_type == "square" ? 90.0 : 60.0));
-    if (folded > max_angle) folded = 2.0 * max_angle - folded;
+    double period = (lattice_type == "square") ? 90.0 : 120.0;
+    double max_angle = (lattice_type == "square") ? 45.0 : 120.0;
+    double folded = std::fmod(std::abs(target_angle_deg), period);
+    if (lattice_type == "square" && folded > max_angle) folded = 2.0 * max_angle - folded;
 
     CSLAngleInfo best = allowed[0];
     double min_diff = std::abs(best.theta_deg - folded);
@@ -897,7 +903,9 @@ CSLLatticeResult LatticeGenerator::generate_csl_lattice(
     const std::string& lattice_type, int m, int n, int kx, int ky, double lattice_constant) {
     
     if (m == 0 && n == 0) m = 1;
-    if (m < n) std::swap(m, n);
+    if (lattice_type == "square") {
+        if (m < n) std::swap(m, n);
+    }
     if (kx <= 0) kx = 1;
     if (ky <= 0) ky = 1;
     double a = lattice_constant > 0.0 ? lattice_constant : 1.0;
