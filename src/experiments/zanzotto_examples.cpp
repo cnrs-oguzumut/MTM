@@ -550,13 +550,38 @@ void example_1_conti_zanzotto_loading(
       std::cout << "[CSL] Snapped target angle " << rotation_angle << "° to closest CSL (m="
                 << m << ", n=" << n << ", θ=" << best_csl.theta_deg << "°, Σ=" << best_csl.sigma << ")\n";
     }
+    auto cell_1x1 = LatticeGenerator::generate_csl_lattice(lattice_type, m, n, 1, 1, lattice_constant);
     int kx = csl_kx > 0 ? csl_kx : 1;
     int ky = csl_ky > 0 ? csl_ky : 1;
+    if (kx <= 2 && ky <= 2 && nx >= 15 && ny >= 15) {
+      int auto_kx = std::max(1, (int)std::round((nx * lattice_constant) / cell_1x1.Lx));
+      int auto_ky = std::max(1, (int)std::round((ny * lattice_constant) / cell_1x1.Ly));
+      if (auto_kx > kx || auto_ky > ky) {
+        std::cout << "[CSL] Auto-scaling supercell from default (" << kx << "x" << ky
+                  << ") to honor requested system size nx=" << nx << ", ny=" << ny
+                  << " -> Kx=" << auto_kx << ", Ky=" << auto_ky << "\n";
+        kx = auto_kx;
+        ky = auto_ky;
+      }
+    }
     auto csl_res = LatticeGenerator::generate_csl_lattice(lattice_type, m, n, kx, ky, lattice_constant);
     square_points = csl_res.points;
     square_points_ref = csl_res.points;
     domain_dims = DomainDimensions(csl_res.Lx, csl_res.Ly);
     offsets = {0.0, 0.0};
+
+    // Rotate reference element shape function derivatives by CSL angle
+    if (std::abs(csl_res.theta_deg) > 1e-6) {
+      Eigen::Matrix2d R;
+      double rad = csl_res.theta_deg * M_PI / 180.0;
+      R << std::cos(rad), -std::sin(rad),
+           std::sin(rad),  std::cos(rad);
+      p1 = R * p1;
+      p2 = R * p2;
+      p3 = R * p3;
+      dndx = calculateShapeDerivatives(p1, p2, p3);
+      std::cout << "[CSL] Rotated reference element dN/dx by " << csl_res.theta_deg << "°\n";
+    }
   } else {
     square_points = LatticeGenerator::generate_2d_lattice(
         nx, ny, lattice_constant, lattice_type);

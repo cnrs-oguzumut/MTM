@@ -339,6 +339,7 @@ struct SidebarControlsView: View {
                                             config.cslM = opt.m
                                             config.cslN = opt.n
                                             config.rotationAngle = opt.theta_deg
+                                            config.updateCSLSupercellAuto()
                                         }
                                     )) {
                                         ForEach(allowedCSL) { opt in
@@ -354,33 +355,57 @@ struct SidebarControlsView: View {
                                             Text("m:")
                                                 .font(.caption2.bold())
                                             IntField(title: "m", value: $config.cslM, width: 40)
-                                            Stepper("", value: $config.cslM, in: 1...20)
+                                            Stepper("", value: Binding(
+                                                get: { config.cslM },
+                                                set: { config.cslM = $0; config.updateCSLSupercellAuto() }
+                                            ), in: 1...20)
                                                 .labelsHidden()
                                         }
                                         HStack {
                                             Text("n:")
                                                 .font(.caption2.bold())
                                             IntField(title: "n", value: $config.cslN, width: 40)
-                                            Stepper("", value: $config.cslN, in: 0...20)
+                                            Stepper("", value: Binding(
+                                                get: { config.cslN },
+                                                set: { config.cslN = $0; config.updateCSLSupercellAuto() }
+                                            ), in: 0...20)
                                                 .labelsHidden()
                                         }
                                     }
                                     
-                                    // Supercell Multipliers (Kx, Ky)
-                                    HStack(spacing: 12) {
-                                        HStack {
-                                            Text("Kx:")
-                                                .font(.caption2.bold())
-                                            IntField(title: "Kx", value: $config.cslKx, width: 40)
-                                            Stepper("", value: $config.cslKx, in: 1...10)
-                                                .labelsHidden()
+                                    // Supercell Auto-scaling to Nx x Ny
+                                    Toggle("Auto-scale Supercell to match \(config.nx)×\(config.ny)", isOn: $config.autoScaleSupercell)
+                                        .font(.caption2)
+                                        .onChange(of: config.autoScaleSupercell) { auto in
+                                            if auto { config.updateCSLSupercellAuto() }
                                         }
-                                        HStack {
-                                            Text("Ky:")
-                                                .font(.caption2.bold())
-                                            IntField(title: "Ky", value: $config.cslKy, width: 40)
-                                            Stepper("", value: $config.cslKy, in: 1...10)
-                                                .labelsHidden()
+                                    
+                                    HStack {
+                                        Text("Supercell: \(config.cslKx) × \(config.cslKy)")
+                                            .font(.caption2.bold())
+                                        Spacer()
+                                        Text("~\(config.cslEstimatedAtoms) atoms")
+                                            .font(.caption2)
+                                            .foregroundColor(.accentColor)
+                                    }
+                                    
+                                    if !config.autoScaleSupercell {
+                                        // Manual Supercell Multipliers (Kx, Ky)
+                                        HStack(spacing: 12) {
+                                            HStack {
+                                                Text("Kx:")
+                                                    .font(.caption2.bold())
+                                                IntField(title: "Kx", value: $config.cslKx, width: 40)
+                                                Stepper("", value: $config.cslKx, in: 1...100)
+                                                    .labelsHidden()
+                                            }
+                                            HStack {
+                                                Text("Ky:")
+                                                    .font(.caption2.bold())
+                                                IntField(title: "Ky", value: $config.cslKy, width: 40)
+                                                Stepper("", value: $config.cslKy, in: 1...100)
+                                                    .labelsHidden()
+                                            }
                                         }
                                     }
                                 }

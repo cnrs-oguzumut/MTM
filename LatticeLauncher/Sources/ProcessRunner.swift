@@ -73,6 +73,7 @@ public class ProcessRunner: ObservableObject {
         currentLambdaMin = nil
         peakStress = 0.0
         yieldStrain = 0.0
+        lastReadCSVLineCount = 0
     }
     
     public func loadExistingIfAvailable(dir: String) {
@@ -224,70 +225,82 @@ public class ProcessRunner: ObservableObject {
         pollCSV()
     }
     
+    private var isPolling = false
     public func pollCSV() {
-        self.pollEigenCSV()
-        
+        guard !isPolling else { return }
         let csvPath = "\(outputDirectory)/energy_stress_log.csv"
         guard FileManager.default.fileExists(atPath: csvPath) else { return }
-        guard let content = try? String(contentsOfFile: csvPath, encoding: .utf8) else { return }
         
-        var lines = content.components(separatedBy: "\n")
-        if !content.hasSuffix("\n") && !lines.isEmpty {
-            // Drop incomplete last line currently being written
-            lines.removeLast()
-        }
-        
-        var newPoints: [StressStrainPoint] = []
-        let currentLastIter = self.curvePoints.last?.iteration ?? -1
-        
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("Iteration") { continue }
-            
-            let parts = trimmed.components(separatedBy: ",")
-            guard parts.count >= 11 else { continue }
-            
-            guard let iter = Int(parts[0].trimmingCharacters(in: .whitespaces)),
-                  iter > currentLastIter,
-                  let alpha = Double(parts[1].trimmingCharacters(in: .whitespaces)),
-                  let preEnergy = Double(parts[2].trimmingCharacters(in: .whitespaces)),
-                  let preStress = Double(parts[3].trimmingCharacters(in: .whitespaces)),
-                  let postEnergy = Double(parts[4].trimmingCharacters(in: .whitespaces)),
-                  let postStress = Double(parts[5].trimmingCharacters(in: .whitespaces)) else {
-                continue
+        isPolling = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self,
+                  let content = try? String(contentsOfFile: csvPath, encoding: .utf8) else {
+                DispatchQueue.main.async { self?.isPolling = false }
+                return
             }
             
-            let remeshStr = parts[10].trimmingCharacters(in: .whitespacesAndNewlines)
-            let shouldRemesh = (remeshStr == "1" || remeshStr.lowercased() == "true")
+            var lines = content.components(separatedBy: "\n")
+            if !content.hasSuffix("\n") && !lines.isEmpty {
+                // Drop incomplete last line currently being written
+                lines.removeLast()
+            }
             
-            let pt = StressStrainPoint(
-                iteration: iter,
-                alpha: alpha,
-                preStress: preStress,
-                postStress: postStress,
-                preEnergy: preEnergy,
-                postEnergy: postEnergy,
-                shouldRemesh: shouldRemesh
-            )
-            newPoints.append(pt)
-        }
-        
-        if !newPoints.isEmpty {
-            self.curvePoints.append(contentsOf: newPoints)
-            if let last = self.curvePoints.last {
-                self.currentStep = last.iteration
-                self.currentAlpha = last.alpha
-                self.currentStress = last.postStress
-                self.currentEnergy = last.postEnergy
-                if abs(last.postStress) > self.peakStress {
-                    self.peakStress = abs(last.postStress)
-                    self.yieldStrain = last.alpha
+            let startIdx = max(0, min(self.lastReadCSVLineCount, lines.count))
+            var newPoints: [StressStrainPoint] = []
+            let currentLastIter = self.curvePoints.last?.iteration ?? -1
+            
+            for line in lines[startIdx...] {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty || trimmed.hasPrefix("Iteration") { continue }
+                
+                let parts = trimmed.components(separatedBy: ",")
+                guard parts.count >= 11 else { continue }
+                
+                guard let iter = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+                      iter > currentLastIter,
+                      let alpha = Double(parts[1].trimmingCharacters(in: .whitespaces)),
+                      let preEnergy = Double(parts[2].trimmingCharacters(in: .whitespaces)),
+                      let preStress = Double(parts[3].trimmingCharacters(in: .whitespaces)),
+                      let postEnergy = Double(parts[4].trimmingCharacters(in: .whitespaces)),
+                      let postStress = Double(parts[5].trimmingCharacters(in: .whitespaces)) else {
+                    continue
                 }
+                
+                let remeshStr = parts[10].trimmingCharacters(in: .whitespacesAndNewlines)
+                let shouldRemesh = (remeshStr == "1" || remeshStr.lowercased() == "true")
+                
+                let pt = StressStrainPoint(
+                    iteration: iter,
+                    alpha: alpha,
+                    preStress: preStress,
+                    postStress: postStress,
+                    preEnergy: preEnergy,
+                    postEnergy: postEnergy,
+                    shouldRemesh: shouldRemesh
+                )
+                newPoints.append(pt)
             }
-            self.updateAvalancheStats()
+            
+            DispatchQueue.main.async {
+                self.lastReadCSVLineCount = lines.count
+                if !newPoints.isEmpty {
+                    self.curvePoints.append(contentsOf: newPoints)
+                    if let last = self.curvePoints.last {
+                        self.currentStep = last.iteration
+                        self.currentAlpha = last.alpha
+                        self.currentStress = last.postStress
+                        self.currentEnergy = last.postEnergy
+                        if abs(last.postStress) > self.peakStress {
+                            self.peakStress = abs(last.postStress)
+                            self.yieldStrain = last.alpha
+                        }
+                    }
+                    self.updateAvalancheStats()
+                }
+                self.isPolling = false
+                self.pollEigenCSV()
+            }
         }
-        
-        self.pollEigenCSV()
     }
     
     public func pollEigenCSV() {
@@ -394,8 +407,8 @@ public class ProcessRunner: ObservableObject {
     
     private func appendLog(text: String, isError: Bool = false) {
         logLines.append(LogMessage(text: text, isError: isError))
-        if logLines.count > maxLogLines {
-            logLines.removeFirst(logLines.count - maxLogLines)
+        if logLines.count > maxLogLines + 200 {
+            logLines.removeFirst(200)
         }
     }
 }

@@ -90,8 +90,23 @@ public class SimulationConfig: ObservableObject {
     @Published public var rotationAngle: Double = 0.0
     @Published public var cslM: Int = 2
     @Published public var cslN: Int = 1
-    @Published public var cslKx: Int = 2
-    @Published public var cslKy: Int = 2
+    @Published public var cslKx: Int = 45
+    @Published public var cslKy: Int = 45
+    @Published public var autoScaleSupercell: Bool = true
+    
+    public func updateCSLSupercellAuto() {
+        guard autoScaleSupercell else { return }
+        let allowed = CSLAngleOption.allowedAngles(for: latticeSymmetry)
+        let opt = allowed.first(where: { $0.m == cslM && $0.n == cslN }) ?? allowed[0]
+        cslKx = max(1, Int(round(Double(nx) / opt.Lx_ratio)))
+        cslKy = max(1, Int(round(Double(ny) / opt.Ly_ratio)))
+    }
+    
+    public var cslEstimatedAtoms: Int {
+        let allowed = CSLAngleOption.allowedAngles(for: latticeSymmetry)
+        let opt = allowed.first(where: { $0.m == cslM && $0.n == cslN }) ?? allowed[0]
+        return cslKx * cslKy * opt.atoms_cell
+    }
     
     // 4. Preconditioning
     @Published public var preconditioner: PreconditionerType = .stiffness
@@ -165,6 +180,7 @@ public class SimulationConfig: ObservableObject {
     
     public init() {
         self.projectRoot = SimulationConfig.detectProjectRoot()
+        updateCSLSupercellAuto()
     }
     
     public var defaultRunDirName: String {
@@ -188,6 +204,7 @@ public class SimulationConfig: ObservableObject {
     public func setSize(nx: Int, ny: Int) {
         self.nx = nx
         self.ny = ny
+        updateCSLSupercellAuto()
     }
     
     /// Constructs the array of command-line arguments for the executable

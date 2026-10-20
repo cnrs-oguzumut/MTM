@@ -356,7 +356,7 @@ struct StressStrainChartView: View {
                                     .padding(2)
                             }
                         
-                        ForEach(runner.eigenPoints) { pt in
+                        ForEach(displayEigenPoints) { pt in
                             LineMark(
                                 x: .value("Shear Strain (α)", pt.alpha),
                                 y: .value("Smallest Eigenvalue (λ_min)", pt.lambdaMin)
@@ -387,7 +387,7 @@ struct StressStrainChartView: View {
                         }
                     } else {
                         // 1. Primary Stress / Energy Line Mark (+ PointMark when sparse)
-                        ForEach(runner.curvePoints) { pt in
+                        ForEach(displayCurvePoints) { pt in
                             LineMark(
                                 x: .value("Shear Strain (α)", pt.alpha),
                                 y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
@@ -410,7 +410,7 @@ struct StressStrainChartView: View {
                         
                         // 2. Plasticity / Remesh Events Overlay
                         if showRemeshEvents {
-                            ForEach(remeshEvents) { pt in
+                            ForEach(displayRemeshEvents) { pt in
                                 PointMark(
                                     x: .value("Shear Strain (α)", pt.alpha),
                                     y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
@@ -561,6 +561,46 @@ struct StressStrainChartView: View {
                 }
             }
         }
+    }
+    
+    private var displayCurvePoints: [StressStrainPoint] {
+        let pts = runner.curvePoints
+        guard pts.count > 1000 else { return pts }
+        let stride = max(1, pts.count / 800)
+        var sampled: [StressStrainPoint] = []
+        sampled.reserveCapacity(800 + 2)
+        for i in Swift.stride(from: 0, to: pts.count, by: stride) {
+            sampled.append(pts[i])
+        }
+        if let last = pts.last, sampled.last?.iteration != last.iteration {
+            sampled.append(last)
+        }
+        return sampled
+    }
+    
+    private var displayRemeshEvents: [StressStrainPoint] {
+        let events = remeshEvents
+        guard events.count > 400 else { return events }
+        let stride = max(1, events.count / 300)
+        var sampled: [StressStrainPoint] = []
+        for i in Swift.stride(from: 0, to: events.count, by: stride) {
+            sampled.append(events[i])
+        }
+        return sampled
+    }
+    
+    private var displayEigenPoints: [EigenPoint] {
+        let pts = runner.eigenPoints
+        guard pts.count > 1000 else { return pts }
+        let stride = max(1, pts.count / 800)
+        var sampled: [EigenPoint] = []
+        for i in Swift.stride(from: 0, to: pts.count, by: stride) {
+            sampled.append(pts[i])
+        }
+        if let last = pts.last, sampled.last?.iteration != last.iteration {
+            sampled.append(last)
+        }
+        return sampled
     }
     
     private func findClosestPoint(to alpha: Double) -> StressStrainPoint? {
