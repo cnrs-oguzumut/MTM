@@ -576,7 +576,7 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
 
     ConfigurationSaver::logEnergyAndStress_v2(
         file_id, saving_value, pre_energy, pre_stress, post_energy, post_stress,
-        pre_area, post_area, shouldRemesh);
+        pre_area, post_area, (hasChanges > 0));
 
     std::cout << "Step " << step << "/" << (total_steps - 1)
               << " horizontal_shift=" << horizontal_displacement

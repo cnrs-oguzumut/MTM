@@ -345,13 +345,13 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
         change_info
             .has_changed; // disable remeshing for continous Zanzotto test
 
+    int hasChanges = 0;
     if (shouldRemesh) {
       std::cout << "REMESHING STARTS" << std::endl;
 
       std::vector<int> contact_atoms;
       std::vector<int> boundary_fixed_nodes;
       int max_iterations = 1000;
-      int hasChanges = 0;
 
       auto [post_energy_re, stress_tensor_re, iterations] =
           perform_remeshing_loop_reduction(
@@ -429,7 +429,7 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
     // ==================== LOG DATA ====================
     ConfigurationSaver::logEnergyAndStress_v2(
         restart_iteration + i, alpha, pre_energy, pre_stress, post_energy,
-        post_stress, pre_area, post_area, shouldRemesh);
+        post_stress, pre_area, post_area, (hasChanges > 0));
 
     post_energy_previous = post_energy;
 
@@ -1203,7 +1203,7 @@ void example_1_conti_zanzotto_loading(
     // ==================== LOG DATA ====================
     ConfigurationSaver::logEnergyAndStress_v2(
         i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area,
-        post_area, shouldRemesh);
+        post_area, (hasChanges > 0));
 
     post_energy_previous = post_energy;
     post_stress_previous = post_stress;

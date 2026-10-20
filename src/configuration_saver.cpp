@@ -720,14 +720,14 @@ void ConfigurationSaver::writeToVTKFile(
         double element_area = element.getReferenceArea();
         double element_energy = userData->calculator.calculate_energy(
             C, userData->energy_function, userData->zero_energy
-        ) / pow(userData->ideal_lattice_parameter, 2.0);
+        ) / userData->calculator.getUnitCellArea();
         element_energy *= element_area;
         element_energy_values.push_back(element_energy);
         
         // Calculate Cauchy stress
         Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
             C, userData->derivative_function
-        ) / pow(userData->ideal_lattice_parameter, 2.0);
+        ) / userData->calculator.getUnitCellArea();
         
         if(reduction==true) {
             P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
