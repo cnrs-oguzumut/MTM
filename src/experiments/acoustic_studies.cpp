@@ -1207,13 +1207,84 @@ ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double
         pt.energy = strain_e;
         pt.is_stable = (res_ac.detAc > 0.0);
 
+        // 1. Rotate spatial polarization basis from F_eval = U frame to laboratory F_tot = R * U frame
+        Eigen::Matrix2d R_rot = Eigen::Matrix2d::Identity();
+        if (std::abs(F_eval.determinant()) > 1e-12) {
+            R_rot = F_tot * F_eval.inverse();
+        }
+        auto rotSym2 = [&](double qxx, double qyy, double qxy) -> Eigen::Matrix2d {
+            Eigen::Matrix2d M;
+            M << qxx, qxy, qxy, qyy;
+            return R_rot * M * R_rot.transpose();
+        };
+        Eigen::Matrix2d Q11_Z = rotSym2(res_ac.q11_xx, res_ac.q11_yy, res_ac.q11_xy);
+        Eigen::Matrix2d Q22_Z = rotSym2(res_ac.q22_xx, res_ac.q22_yy, res_ac.q22_xy);
+        Eigen::Matrix2d Q12_Z = rotSym2(res_ac.q12_xx, res_ac.q12_yy, res_ac.q12_xy);
+
+        // 2. Map wave-normal basis from integer lattice indices Z^2 to physical undeformed crystal B_0
+        // via G0 = a0 * F0^{-T} so Q^Lagr(N) is directly in physical Cartesian coordinates of B_0
+        Eigen::Matrix2d G0 = Eigen::Matrix2d::Identity();
+        if (std::abs(F0.determinant()) > 1e-12) {
+            G0 = a0 * F0.inverse().transpose();
+        }
+        // In integer basis: Q(N_Z) = N_Z1^2 Q11_Z + N_Z1*N_Z2 Q12_Z + N_Z2^2 Q22_Z
+        // Since N_Z = G0^{-1} N_Lagr, let H0 = G0.inverse() = (1/a0) * F0^T:
+        Eigen::Matrix2d H0 = (1.0 / a0) * F0.transpose();
+        auto evalQZ = [&](const Eigen::Vector2d& v1, const Eigen::Vector2d& v2) -> Eigen::Matrix2d {
+            return (v1(0) * v2(0)) * Q11_Z
+                 + 0.5 * (v1(0) * v2(1) + v1(1) * v2(0)) * Q12_Z
+                 + (v1(1) * v2(1)) * Q22_Z;
+        };
+        Eigen::Vector2d h1 = H0.col(0);
+        Eigen::Vector2d h2 = H0.col(1);
+        Eigen::Matrix2d Q11_L = evalQZ(h1, h1);
+        Eigen::Matrix2d Q22_L = evalQZ(h2, h2);
+        Eigen::Matrix2d Q12_L = 2.0 * evalQZ(h1, h2);
+
+        pt.q11_xx = Q11_L(0, 0); pt.q11_yy = Q11_L(1, 1); pt.q11_xy = 0.5 * (Q11_L(0, 1) + Q11_L(1, 0));
+        pt.q22_xx = Q22_L(0, 0); pt.q22_yy = Q22_L(1, 1); pt.q22_xy = 0.5 * (Q22_L(0, 1) + Q22_L(1, 0));
+        pt.q12_xx = Q12_L(0, 0); pt.q12_yy = Q12_L(1, 1); pt.q12_xy = 0.5 * (Q12_L(0, 1) + Q12_L(1, 0));
+
+        // Store macroscopic deformation gradient F_path(alpha) from undeformed crystal B_0 to deformed B_t
+        pt.f11 = F_path(0, 0); pt.f12 = F_path(0, 1);
+        pt.f21 = F_path(1, 0); pt.f22 = F_path(1, 1);
+        pt.lambda_min_Q = res_ac.lambda_min;
+        pt.lambda_max_Q = res_ac.lambda_max;
+
+        // Compute Lagrangian wave-normal N* in B_0 and Eulerian wave-normal n* in B_t
+        double rad_z = res_ac.xsi_lagr * (M_PI / 180.0);
+        Eigen::Vector2d N_z(std::cos(rad_z), std::sin(rad_z));
+        Eigen::Vector2d N_lagr = G0 * N_z;
+        if (N_lagr.norm() > 1e-12) N_lagr.normalize();
+        double deg_lagr = std::atan2(N_lagr.y(), N_lagr.x()) * (180.0 / M_PI);
+        deg_lagr = std::fmod(deg_lagr, 180.0);
+        if (deg_lagr < 0.0) deg_lagr += 180.0;
+        pt.angle_deg = deg_lagr;
+
+        Eigen::Vector2d n_euler = N_lagr;
+        if (std::abs(F_path.determinant()) > 1e-12) {
+            n_euler = F_path.inverse().transpose() * N_lagr;
+            if (n_euler.norm() > 1e-12) n_euler.normalize();
+        }
+        double deg_euler = std::atan2(n_euler.y(), n_euler.x()) * (180.0 / M_PI);
+        deg_euler = std::fmod(deg_euler, 180.0);
+        if (deg_euler < 0.0) deg_euler += 180.0;
+        pt.angle_euler_deg = deg_euler;
+
+        Eigen::Vector2d m_lab = R_rot * Eigen::Vector2d(res_ac.mode_mx, res_ac.mode_my);
+        if (m_lab.norm() > 1e-12) m_lab.normalize();
+        Eigen::Vector2d t_euler(-std::sin(deg_euler * (M_PI / 180.0)), std::cos(deg_euler * (M_PI / 180.0)));
+        if (m_lab.dot(t_euler) < 0.0) m_lab = -m_lab;
+        pt.mode_mx = m_lab.x();
+        pt.mode_my = m_lab.y();
+
         if (has_prev) {
             if ((prev_det > 0.0 && res_ac.detAc <= 0.0) || (prev_det < 0.0 && res_ac.detAc >= 0.0)) {
                 double frac = (0.0 - prev_det) / (res_ac.detAc - prev_det);
                 double alpha_c = prev_alpha + frac * (alpha - prev_alpha);
                 res.critical_alphas.push_back(alpha_c);
 
-                ShearPathPoint cp;
+                ShearPathPoint cp = pt;
                 cp.alpha = alpha_c;
                 cp.x = prev_pt.x + frac * (pt.x - prev_pt.x);
                 cp.y = prev_pt.y + frac * (pt.y - prev_pt.y);
@@ -1556,24 +1627,35 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
         json_file << shear_res.critical_alphas[i] << (i + 1 < shear_res.critical_alphas.size() ? ", " : "");
     }
     json_file << "],\n";
-    json_file << "    \"critical_points\": [\n";
-    for (size_t i = 0; i < shear_res.critical_points.size(); ++i) {
-        const auto& cp = shear_res.critical_points[i];
-        json_file << "      {\"alpha\":" << cp.alpha << ",\"x\":" << cp.x << ",\"y\":" << cp.y
-                  << ",\"x_red\":" << cp.x_red << ",\"y_red\":" << cp.y_red
-                  << ",\"c11\":" << cp.c11 << ",\"c22\":" << cp.c22 << ",\"c12\":" << cp.c12
-                  << ",\"energy\":" << cp.energy << "}" << (i + 1 < shear_res.critical_points.size() ? ",\n" : "\n");
-    }
-    json_file << "    ],\n";
-    json_file << "    \"points\": [\n";
-    for (size_t i = 0; i < shear_res.path.size(); ++i) {
-        const auto& pt = shear_res.path[i];
+    auto writeShearPtJSON = [&](const ShearPathPoint& pt) {
         json_file << "      {\"alpha\":" << pt.alpha << ",\"x\":" << pt.x << ",\"y\":" << pt.y
                   << ",\"x_red\":" << pt.x_red << ",\"y_red\":" << pt.y_red
                   << ",\"c11\":" << pt.c11 << ",\"c22\":" << pt.c22 << ",\"c12\":" << pt.c12
                   << ",\"min_detAc\":" << pt.min_detAc << ",\"energy\":" << pt.energy
-                  << ",\"is_stable\":" << (pt.is_stable ? "true" : "false") << "}"
-                  << (i + 1 < shear_res.path.size() ? ",\n" : "\n");
+                  << ",\"is_stable\":" << (pt.is_stable ? "true" : "false")
+                  << ",\"angle_deg\":" << pt.angle_deg
+                  << ",\"angle_euler_deg\":" << pt.angle_euler_deg
+                  << ",\"lambda_min_Q\":" << pt.lambda_min_Q
+                  << ",\"lambda_max_Q\":" << pt.lambda_max_Q
+                  << ",\"mode_mx\":" << pt.mode_mx
+                  << ",\"mode_my\":" << pt.mode_my
+                  << ",\"f11\":" << pt.f11 << ",\"f12\":" << pt.f12
+                  << ",\"f21\":" << pt.f21 << ",\"f22\":" << pt.f22
+                  << ",\"q11_xx\":" << pt.q11_xx << ",\"q11_yy\":" << pt.q11_yy << ",\"q11_xy\":" << pt.q11_xy
+                  << ",\"q22_xx\":" << pt.q22_xx << ",\"q22_yy\":" << pt.q22_yy << ",\"q22_xy\":" << pt.q22_xy
+                  << ",\"q12_xx\":" << pt.q12_xx << ",\"q12_yy\":" << pt.q12_yy << ",\"q12_xy\":" << pt.q12_xy
+                  << "}";
+    };
+    json_file << "    \"critical_points\": [\n";
+    for (size_t i = 0; i < shear_res.critical_points.size(); ++i) {
+        writeShearPtJSON(shear_res.critical_points[i]);
+        json_file << (i + 1 < shear_res.critical_points.size() ? ",\n" : "\n");
+    }
+    json_file << "    ],\n";
+    json_file << "    \"points\": [\n";
+    for (size_t i = 0; i < shear_res.path.size(); ++i) {
+        writeShearPtJSON(shear_res.path[i]);
+        json_file << (i + 1 < shear_res.path.size() ? ",\n" : "\n");
     }
     json_file << "    ]\n";
     json_file << "  }\n";

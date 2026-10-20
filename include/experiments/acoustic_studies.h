@@ -29,6 +29,16 @@ struct ShearPathPoint {
     double min_detAc = 0.0;
     double energy = 0.0;
     bool is_stable = true;
+    double angle_deg = 0.0;        // Lagrangian critical normal angle N* (deg)
+    double angle_euler_deg = 0.0;  // Eulerian critical normal angle n* (deg)
+    double lambda_min_Q = 0.0;     // Smallest eigenvalue of Q(n*)
+    double lambda_max_Q = 0.0;     // Largest eigenvalue of Q(n*)
+    double mode_mx = 1.0;          // Spatial polarization eigenvector m*_x
+    double mode_my = 0.0;          // Spatial polarization eigenvector m*_y
+    double f11 = 1.0, f12 = 0.0, f21 = 0.0, f22 = 1.0;
+    double q11_xx = 0.0, q11_yy = 0.0, q11_xy = 0.0;
+    double q22_xx = 0.0, q22_yy = 0.0, q22_xy = 0.0;
+    double q12_xx = 0.0, q12_yy = 0.0, q12_xy = 0.0;
 };
 
 struct ShearPathResult {

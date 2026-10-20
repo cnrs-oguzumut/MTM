@@ -283,6 +283,25 @@ public struct ShearPathPointModel: Codable, Identifiable {
     public var min_detAc: Double? = nil
     public var energy: Double = 0.0
     public var is_stable: Bool? = nil
+    public var angle_deg: Double? = nil
+    public var angle_euler_deg: Double? = nil
+    public var lambda_min_Q: Double? = nil
+    public var lambda_max_Q: Double? = nil
+    public var mode_mx: Double? = nil
+    public var mode_my: Double? = nil
+    public var f11: Double? = nil
+    public var f12: Double? = nil
+    public var f21: Double? = nil
+    public var f22: Double? = nil
+    public var q11_xx: Double? = nil
+    public var q11_yy: Double? = nil
+    public var q11_xy: Double? = nil
+    public var q22_xx: Double? = nil
+    public var q22_yy: Double? = nil
+    public var q22_xy: Double? = nil
+    public var q12_xx: Double? = nil
+    public var q12_yy: Double? = nil
+    public var q12_xy: Double? = nil
 }
 
 public struct ShearPathModel: Codable {

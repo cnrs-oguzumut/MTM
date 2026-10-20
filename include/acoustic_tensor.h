@@ -18,8 +18,18 @@
  * Structure to hold acoustic tensor analysis results
  */
 struct AcousticAnalysis {
-    double detAc;  // Determinant of acoustic tensor
-    double xsi;    // Angle at minimum
+    double detAc = 0.0;        // Determinant of acoustic tensor at minimum
+    double xsi = 0.0;          // Critical angle at minimum (degrees)
+    double xsi_euler = 0.0;    // Eulerian critical wave-normal angle n* (degrees)
+    double xsi_lagr = 0.0;     // Lagrangian critical wave-normal angle N* (degrees)
+    double lambda_min = 0.0;   // Smallest eigenvalue of Q(n*)
+    double lambda_max = 0.0;   // Largest eigenvalue of Q(n*)
+    double mode_mx = 1.0;      // Unit polarization eigenvector m* (x component)
+    double mode_my = 0.0;      // Unit polarization eigenvector m* (y component)
+    // Quadratic form basis matrices Q^Lagr(N) = N1^2 Q11 + N1*N2 Q12 + N2^2 Q22
+    double q11_xx = 0.0, q11_yy = 0.0, q11_xy = 0.0;
+    double q22_xx = 0.0, q22_yy = 0.0, q22_xy = 0.0;
+    double q12_xx = 0.0, q12_yy = 0.0, q12_xy = 0.0;
 };
 
 /**

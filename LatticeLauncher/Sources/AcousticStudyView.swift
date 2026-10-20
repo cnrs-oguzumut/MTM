@@ -5,6 +5,7 @@ public enum AcousticViewMode: String, CaseIterable, Identifiable {
     case split = "Split View"
     case poincare = "Poincaré Disk"
     case energyPath = "Deformation Energy E(α)"
+    case instabilityMode = "Mode Q(n)"
     
     public var id: String { rawValue }
     public var iconName: String {
@@ -12,6 +13,7 @@ public enum AcousticViewMode: String, CaseIterable, Identifiable {
         case .split: return "rectangle.split.2x1"
         case .poincare: return "circle"
         case .energyPath: return "chart.xyaxis.line"
+        case .instabilityMode: return "scope"
         }
     }
 }
@@ -177,6 +179,15 @@ public struct AcousticStudyView: View {
                                                 .buttonStyle(.borderless)
                                                 .font(.system(size: 10))
                                                 .foregroundColor(.accentColor)
+                                                
+                                                Button("Mode") {
+                                                    manager.hoveredAlpha = ac
+                                                    manager.selectedCriticalAlpha = ac
+                                                    viewMode = .instabilityMode
+                                                }
+                                                .buttonStyle(.borderless)
+                                                .font(.system(size: 10, weight: .semibold))
+                                                .foregroundColor(.orange)
                                             }
                                         }
                                     }
@@ -439,6 +450,7 @@ public struct AcousticStudyView: View {
                         Label("Poincaré", systemImage: "circle").tag(AcousticViewMode.poincare)
                         Label("Split", systemImage: "rectangle.split.2x1").tag(AcousticViewMode.split)
                         Label("Energy E(α)", systemImage: "chart.xyaxis.line").tag(AcousticViewMode.energyPath)
+                        Label("Mode Q(n)", systemImage: "scope").tag(AcousticViewMode.instabilityMode)
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
@@ -512,6 +524,8 @@ public struct AcousticStudyView: View {
                         PoincareStabilityMapView(manager: manager)
                     case .energyPath:
                         PathEnergyChartView(manager: manager)
+                    case .instabilityMode:
+                        AcousticInstabilityModeView(manager: manager)
                     case .split:
                         HSplitView {
                             PoincareStabilityMapView(manager: manager)

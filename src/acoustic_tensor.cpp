@@ -260,6 +260,21 @@ AcousticAnalysis AcousticTensor::analyzeAcousticTensor(bool lagrangian) {
     AcousticAnalysis result;
     result.detAc = 100000.0;
 
+    // Extract the 3 symmetric 2x2 basis matrices for Q^Lagr(N) = N1^2 Q11 + N1*N2 Q12 + N2^2 Q22
+    // where (r_, i_) are the polarization indices and (s_, j_) are the reference wave-normal indices.
+    result.q11_xx = final_tensor.elt(r_=1, s_=1, i_=1, j_=1);
+    result.q11_yy = final_tensor.elt(r_=2, s_=1, i_=2, j_=1);
+    result.q11_xy = 0.5 * (final_tensor.elt(r_=1, s_=1, i_=2, j_=1) + final_tensor.elt(r_=2, s_=1, i_=1, j_=1));
+
+    result.q22_xx = final_tensor.elt(r_=1, s_=2, i_=1, j_=2);
+    result.q22_yy = final_tensor.elt(r_=2, s_=2, i_=2, j_=2);
+    result.q22_xy = 0.5 * (final_tensor.elt(r_=1, s_=2, i_=2, j_=2) + final_tensor.elt(r_=2, s_=2, i_=1, j_=2));
+
+    result.q12_xx = final_tensor.elt(r_=1, s_=1, i_=1, j_=2) + final_tensor.elt(r_=1, s_=2, i_=1, j_=1);
+    result.q12_yy = final_tensor.elt(r_=2, s_=1, i_=2, j_=2) + final_tensor.elt(r_=2, s_=2, i_=2, j_=1);
+    result.q12_xy = 0.5 * (final_tensor.elt(r_=1, s_=1, i_=2, j_=2) + final_tensor.elt(r_=2, s_=1, i_=1, j_=2)
+                         + final_tensor.elt(r_=1, s_=2, i_=2, j_=1) + final_tensor.elt(r_=2, s_=2, i_=1, j_=1));
+
     // Create additional indices for Eulerian transformation
     if(!lagrangian){
         auto p = itensor::Index(2, "p");
@@ -335,8 +350,65 @@ AcousticAnalysis AcousticTensor::analyzeAcousticTensor(bool lagrangian) {
             }
         }
     }
-        
-    
+
+    // Refine critical angle and compute polarization eigenvector m* and Eulerian/Lagrangian normals
+    {
+        double best_ksi_lagr = result.xsi * (M_PI / 180.0);
+        double min_det_refined = 1e30;
+        // High-resolution search around best_ksi_lagr (+/- 6 deg in 0.1 deg steps)
+        for (int step = -60; step <= 60; ++step) {
+            double ksi = best_ksi_lagr + step * (0.1 * M_PI / 180.0);
+            double c = std::cos(ksi), s = std::sin(ksi);
+            double qxx = c * c * result.q11_xx + c * s * result.q12_xx + s * s * result.q22_xx;
+            double qyy = c * c * result.q11_yy + c * s * result.q12_yy + s * s * result.q22_yy;
+            double qxy = c * c * result.q11_xy + c * s * result.q12_xy + s * s * result.q22_xy;
+            double d = qxx * qyy - qxy * qxy;
+            if (d < min_det_refined) {
+                min_det_refined = d;
+                best_ksi_lagr = ksi;
+            }
+        }
+        // Normalize angle to [0, 180)
+        double deg_lagr = std::fmod(best_ksi_lagr * (180.0 / M_PI), 180.0);
+        if (deg_lagr < 0.0) deg_lagr += 180.0;
+        result.xsi_lagr = deg_lagr;
+
+        double c = std::cos(deg_lagr * (M_PI / 180.0));
+        double s = std::sin(deg_lagr * (M_PI / 180.0));
+        Eigen::Matrix2d Q_crit;
+        Q_crit(0, 0) = c * c * result.q11_xx + c * s * result.q12_xx + s * s * result.q22_xx;
+        Q_crit(1, 1) = c * c * result.q11_yy + c * s * result.q12_yy + s * s * result.q22_yy;
+        Q_crit(0, 1) = c * c * result.q11_xy + c * s * result.q12_xy + s * s * result.q22_xy;
+        Q_crit(1, 0) = Q_crit(0, 1);
+
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> es(Q_crit);
+        result.lambda_min = es.eigenvalues()(0);
+        result.lambda_max = es.eigenvalues()(1);
+        Eigen::Vector2d m_vec = es.eigenvectors().col(0);
+
+        // Push Lagrangian normal N* forward to Eulerian frame via F^{-T} N*
+        Eigen::Vector2d N_lagr(c, s);
+        Eigen::Vector2d n_euler = N_lagr;
+        double detF = F_.determinant();
+        if (std::abs(detF) > 1e-12) {
+            n_euler = F_.inverse().transpose() * N_lagr;
+            double n_norm = n_euler.norm();
+            if (n_norm > 1e-12) n_euler /= n_norm;
+        }
+        double deg_euler = std::atan2(n_euler.y(), n_euler.x()) * (180.0 / M_PI);
+        deg_euler = std::fmod(deg_euler, 180.0);
+        if (deg_euler < 0.0) deg_euler += 180.0;
+        result.xsi_euler = deg_euler;
+
+        // Orient m* consistently with slip tangent t* = (-n_y, n_x)
+        Eigen::Vector2d t_euler(-std::sin(deg_euler * (M_PI / 180.0)), std::cos(deg_euler * (M_PI / 180.0)));
+        if (m_vec.dot(t_euler) < 0.0) {
+            m_vec = -m_vec;
+        }
+        result.mode_mx = m_vec.x();
+        result.mode_my = m_vec.y();
+    }
+
     return result;
 }
 
