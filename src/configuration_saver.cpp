@@ -81,6 +81,7 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     // Calculate nodal stress and energy values
     std::vector<double> nodal_stress(points.size(), 0.0);
     std::vector<double> nodal_energy(points.size(), 0.0);
+    std::vector<double> nodal_area(points.size(), 0.0);
     // Add vectors for Cauchy stress components
     std::vector<double> nodal_cauchy_xx(points.size(), 0.0);
     std::vector<double> nodal_cauchy_xy(points.size(), 0.0);
@@ -172,6 +173,7 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
             
             nodal_stress[global_idx] += stress_value;
             nodal_energy[global_idx] += element_energy / 3.0;  // Divide by 3 nodes for triangle
+            nodal_area[global_idx] += element_area / 3.0;
             // Add Cauchy stress components
             nodal_cauchy_xx[global_idx] += cauchy_stress(0, 0);
             nodal_cauchy_xy[global_idx] += cauchy_stress(0, 1);
@@ -215,7 +217,8 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
     // std::cout << "DEBUG: " << nodes_with_data << " nodes out of " << points.size() 
     //           << " received stress/energy data." << std::endl;
     
-    // Average stress values where nodes were counted multiple times
+    // Average stress values and normalize nodal energy by Voronoi area so it does not depend on valence
+    double mean_cell_area = (points.size() > 0 && total_area > 0.0) ? (total_area / points.size()) : 1.0;
     for (size_t i = 0; i < points.size(); i++) {
         if (node_count[i] > 0) {
             nodal_stress[i] /= node_count[i];
@@ -223,7 +226,10 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
             nodal_cauchy_xx[i] /= node_count[i];
             nodal_cauchy_xy[i] /= node_count[i];
             nodal_cauchy_yy[i] /= node_count[i];
-            // Note: energy is already distributed per node, no need to average
+            // Normalize nodal energy by Voronoi area to scale as energy per atom
+            if (nodal_area[i] > 1e-12) {
+                nodal_energy[i] = (nodal_energy[i] / nodal_area[i]) * mean_cell_area;
+            }
         }
     }
     
@@ -684,6 +690,7 @@ void ConfigurationSaver::writeToVTKFile(
     // Initialize nodal value arrays
     std::vector<double> nodal_energy(extended_point_count, 0.0);
     std::vector<double> atom_energy(original_points_count, 0.0);
+    std::vector<double> atom_area(original_points_count, 0.0);
     std::vector<double> nodal_projected_stress(extended_point_count, 0.0);
     std::vector<double> nodal_cauchy_xx(extended_point_count, 0.0);
     std::vector<double> nodal_cauchy_xy(extended_point_count, 0.0);
@@ -747,6 +754,7 @@ void ConfigurationSaver::writeToVTKFile(
             
             if (original_idx >= 0 && original_idx < original_points_count) {
                 atom_energy[original_idx] += element_energy / 3.0;  // Divide by 3 nodes across the physical atom
+                atom_area[original_idx] += element_area / 3.0;      // Voronoi / dual area for this atom
             }
             nodal_projected_stress[extended_idx] += stress_value;
             nodal_cauchy_xx[extended_idx] += cauchy_stress(0, 0);
@@ -756,13 +764,33 @@ void ConfigurationSaver::writeToVTKFile(
         }
     }
     
-    // Map accumulated atomic energy to all extended points (including periodic images at boundaries)
+    // Calculate reference unit cell area (mean area per atom)
+    double total_ref_area = 0.0;
+    for (size_t elem_idx : userData->active_elements) {
+        if (elem_idx < elements.size() && elements[elem_idx].isInitialized()) {
+            total_ref_area += elements[elem_idx].getReferenceArea();
+        }
+    }
+    double cell_area = (original_points_count > 0 && total_ref_area > 0.0)
+                     ? (total_ref_area / original_points_count)
+                     : 1.0;
+
+    // Map normalized atomic energy to all extended points (including periodic images at boundaries)
+    // Energy is normalized by Voronoi dual area so it reflects true local strain energy rather than node valence (5, 6, 7).
+    std::vector<double> nodal_energy_density(extended_point_count, 0.0);
     for (const auto& entry : node_map) {
         int original_idx = entry.first.index;
         int extended_idx = entry.second;
         if (original_idx >= 0 && original_idx < original_points_count &&
             extended_idx >= 0 && extended_idx < extended_point_count) {
-            nodal_energy[extended_idx] = atom_energy[original_idx];
+            double a_node = atom_area[original_idx];
+            if (a_node > 1e-12) {
+                nodal_energy[extended_idx] = (atom_energy[original_idx] / a_node) * cell_area;
+                nodal_energy_density[extended_idx] = atom_energy[original_idx] / a_node;
+            } else {
+                nodal_energy[extended_idx] = atom_energy[original_idx];
+                nodal_energy_density[extended_idx] = 0.0;
+            }
         }
     }
     
@@ -888,7 +916,7 @@ void ConfigurationSaver::writeToVTKFile(
     // --- Write Point Data (Per-Node Values) ---
     file << "\nPOINT_DATA " << extended_point_count << "\n";
     
-    // Nodal Energy
+    // Nodal Energy (normalized per atom by Voronoi dual area)
     file << "SCALARS NodalEnergy float 1\n";
     file << "LOOKUP_TABLE default\n";
     std::vector<float> nodal_energy_buf;
@@ -897,6 +925,17 @@ void ConfigurationSaver::writeToVTKFile(
         nodal_energy_buf.push_back(vtk_swap_float(static_cast<float>(val)));
     }
     file.write(reinterpret_cast<const char*>(nodal_energy_buf.data()), nodal_energy_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Nodal Energy Density (energy per unit reference area)
+    file << "SCALARS NodalEnergyDensity float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> nodal_density_buf;
+    nodal_density_buf.reserve(nodal_energy_density.size());
+    for (double val : nodal_energy_density) {
+        nodal_density_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(nodal_density_buf.data()), nodal_density_buf.size() * sizeof(float));
     file << "\n";
 
     // Nodal Projected Stress
