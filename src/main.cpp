@@ -103,6 +103,14 @@ int main(int argc, char **argv) {
   double stiffness_alpha_min = -0.3;
   double stiffness_alpha_max = 0.3;
   double stiffness_dalpha = 0.005;
+  bool stiffness_use_rotation = false;
+  double stiffness_rotation_angle = 0.0;
+  int stiffness_csl_m = 1;
+  int stiffness_csl_n = 0;
+  int stiffness_csl_kx = 1;
+  int stiffness_csl_ky = 1;
+  bool stiffness_initial_mesh_only = false;
+  std::string stiffness_initial_mesh_json = "scratch/initial_lattice.json";
 
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
@@ -127,6 +135,31 @@ int main(int argc, char **argv) {
       run_stiffness_study = true;
     } else if (arg == "--unique-levels" || arg == "--unique-levels-only" || arg == "--unique-modes" || arg == "--no-doublets") {
       stiffness_unique_levels = true;
+    } else if (arg == "--initial-mesh-only" || arg == "--initial-mesh-preview" || arg == "--preview-initial-mesh") {
+      stiffness_initial_mesh_only = true;
+      run_stiffness_study = true;
+    } else if (arg.rfind("--initial-mesh-json=", 0) == 0) {
+      stiffness_initial_mesh_json = arg.substr(20);
+    } else if (arg == "--use-rotation" || arg == "--rotated") {
+      stiffness_use_rotation = true;
+    } else if (arg.rfind("--rotation-angle=", 0) == 0) {
+      stiffness_rotation_angle = std::stod(arg.substr(17));
+      stiffness_use_rotation = true;
+    } else if (arg.rfind("--rotation=", 0) == 0) {
+      stiffness_rotation_angle = std::stod(arg.substr(11));
+      stiffness_use_rotation = true;
+    } else if (arg.rfind("--csl-m=", 0) == 0) {
+      stiffness_csl_m = std::stoi(arg.substr(8));
+      stiffness_use_rotation = true;
+    } else if (arg.rfind("--csl-n=", 0) == 0) {
+      stiffness_csl_n = std::stoi(arg.substr(8));
+      stiffness_use_rotation = true;
+    } else if (arg.rfind("--csl-kx=", 0) == 0) {
+      stiffness_csl_kx = std::stoi(arg.substr(9));
+      stiffness_use_rotation = true;
+    } else if (arg.rfind("--csl-ky=", 0) == 0) {
+      stiffness_csl_ky = std::stoi(arg.substr(9));
+      stiffness_use_rotation = true;
     } else if (arg.rfind("--nx=", 0) == 0) {
       nx = std::stoi(arg.substr(5));
     } else if (arg.rfind("--ny=", 0) == 0) {
@@ -440,6 +473,14 @@ int main(int argc, char **argv) {
     stiff_cfg.single_alpha_only = stiffness_single_alpha_only;
     stiff_cfg.single_alpha = stiffness_single_alpha;
     stiff_cfg.unique_levels_only = stiffness_unique_levels;
+    stiff_cfg.use_rotation = stiffness_use_rotation;
+    stiff_cfg.rotation_angle = stiffness_rotation_angle;
+    stiff_cfg.csl_m = stiffness_csl_m;
+    stiff_cfg.csl_n = stiffness_csl_n;
+    stiff_cfg.csl_kx = stiffness_csl_kx;
+    stiff_cfg.csl_ky = stiffness_csl_ky;
+    stiff_cfg.initial_mesh_only = stiffness_initial_mesh_only;
+    stiff_cfg.initial_mesh_json = stiffness_initial_mesh_json;
 
     runStiffnessShearStudy(stiff_cfg);
     return 0;

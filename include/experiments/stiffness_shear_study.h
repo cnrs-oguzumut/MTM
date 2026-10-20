@@ -25,6 +25,16 @@ struct StiffnessShearConfig {
     bool single_alpha_only = false;
     double single_alpha = 0.0;
     bool unique_levels_only = false;
+
+    // Rotated Lattice & CSL parameters
+    bool use_rotation = false;           // Enable crystal rotation
+    double rotation_angle = 0.0;         // Angle in degrees (arbitrary for fixed BC, or target for CSL)
+    int csl_m = 1;                       // CSL parameter m
+    int csl_n = 0;                       // CSL parameter n
+    int csl_kx = 1;                      // Supercell replication multiplier along x
+    int csl_ky = 1;                      // Supercell replication multiplier along y
+    bool initial_mesh_only = false;      // If true, only generate initial mesh and export JSON (fast preview)
+    std::string initial_mesh_json = "scratch/initial_lattice.json";
 };
 
 struct StiffnessShearPoint {

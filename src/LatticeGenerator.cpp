@@ -781,3 +781,317 @@ LatticeGenerator::generate_periodic_rotated_lattice_v2(
 
 // --- Example main() function to demonstrate usage ---
 // (No changes needed here)
+
+// ======================================================================
+// Modern CSL (Coincident Site Lattice) Recipe (Paper Oct 19, 2026)
+// ======================================================================
+
+static int csl_gcd(int a, int b) {
+    a = std::abs(a);
+    b = std::abs(b);
+    while (b != 0) {
+        int temp = b;
+        b = a % b;
+        a = temp;
+    }
+    return a;
+}
+
+std::vector<CSLAngleInfo> LatticeGenerator::get_allowed_csl_angles(
+    const std::string& lattice_type, int max_sigma) {
+    std::vector<CSLAngleInfo> result;
+    const double sqrt3 = std::sqrt(3.0);
+    const int max_m = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(max_sigma)))) + 2;
+
+    if (lattice_type == "square") {
+        for (int m = 1; m <= max_m; ++m) {
+            for (int n = 0; n <= m; ++n) {
+                if (csl_gcd(m, n) != 1) continue;
+                int sigma = m * m + n * n;
+                if (sigma > max_sigma) continue;
+
+                CSLAngleInfo info;
+                info.m = m;
+                info.n = n;
+                info.sigma = sigma;
+                info.theta_rad = std::atan2(static_cast<double>(n), static_cast<double>(m));
+                info.theta_deg = info.theta_rad * 180.0 / M_PI;
+                info.Lx_over_a = std::sqrt(static_cast<double>(sigma));
+                info.Ly_over_a = info.Lx_over_a;
+                info.atoms_per_cell = sigma;
+                info.is_reduced = false;
+                result.push_back(info);
+            }
+        }
+    } else { // triangular
+        for (int m = 1; m <= max_m; ++m) {
+            for (int n = 0; n <= m; ++n) {
+                if (csl_gcd(m, n) != 1) continue;
+                int sigma = m * m + m * n + n * n;
+                if (sigma > max_sigma) continue;
+
+                CSLAngleInfo info;
+                info.m = m;
+                info.n = n;
+                info.sigma = sigma;
+                info.theta_rad = std::atan2(static_cast<double>(n) * sqrt3, static_cast<double>(2 * m + n));
+                info.theta_deg = info.theta_rad * 180.0 / M_PI;
+                info.Lx_over_a = std::sqrt(static_cast<double>(sigma));
+                if ((m - n) % 3 == 0) {
+                    info.Ly_over_a = std::sqrt(static_cast<double>(sigma) / 3.0);
+                    info.atoms_per_cell = (2 * sigma) / 3;
+                    info.is_reduced = true;
+                } else {
+                    info.Ly_over_a = std::sqrt(3.0 * static_cast<double>(sigma));
+                    info.atoms_per_cell = 2 * sigma;
+                    info.is_reduced = false;
+                }
+                result.push_back(info);
+            }
+        }
+    }
+
+    std::sort(result.begin(), result.end(), [](const CSLAngleInfo& a, const CSLAngleInfo& b) {
+        if (std::abs(a.theta_deg - b.theta_deg) > 1e-6) {
+            return a.theta_deg < b.theta_deg;
+        }
+        return a.sigma < b.sigma;
+    });
+
+    // Remove any exact angle duplicates (keep smaller sigma)
+    std::vector<CSLAngleInfo> unique_result;
+    for (const auto& item : result) {
+        if (unique_result.empty() || std::abs(unique_result.back().theta_deg - item.theta_deg) > 1e-4) {
+            unique_result.push_back(item);
+        }
+    }
+    return unique_result;
+}
+
+CSLAngleInfo LatticeGenerator::find_closest_csl_angle(
+    const std::string& lattice_type, double target_angle_deg, int max_sigma) {
+    auto allowed = get_allowed_csl_angles(lattice_type, max_sigma);
+    if (allowed.empty()) {
+        CSLAngleInfo default_info;
+        return default_info;
+    }
+
+    // Fold target angle into fundamental domain
+    double max_angle = (lattice_type == "square") ? 45.0 : 30.0;
+    double folded = std::fmod(std::abs(target_angle_deg), (lattice_type == "square" ? 90.0 : 60.0));
+    if (folded > max_angle) folded = 2.0 * max_angle - folded;
+
+    CSLAngleInfo best = allowed[0];
+    double min_diff = std::abs(best.theta_deg - folded);
+    for (const auto& info : allowed) {
+        double diff = std::abs(info.theta_deg - folded);
+        if (diff < min_diff) {
+            min_diff = diff;
+            best = info;
+        }
+    }
+    return best;
+}
+
+CSLLatticeResult LatticeGenerator::generate_csl_lattice(
+    const std::string& lattice_type, int m, int n, int kx, int ky, double lattice_constant) {
+    
+    if (m == 0 && n == 0) m = 1;
+    if (m < n) std::swap(m, n);
+    if (kx <= 0) kx = 1;
+    if (ky <= 0) ky = 1;
+    double a = lattice_constant > 0.0 ? lattice_constant : 1.0;
+
+    int g = csl_gcd(m, n);
+    if (g > 1) {
+        m /= g;
+        n /= g;
+    }
+
+    CSLLatticeResult res;
+    res.m = m;
+    res.n = n;
+    res.kx = kx;
+    res.ky = ky;
+
+    int sigma = 0;
+    double theta = 0.0;
+    double Lx_cell = 0.0;
+    double Ly_cell = 0.0;
+    int N_cell = 0;
+    bool reduced = false;
+    const double sqrt3 = std::sqrt(3.0);
+
+    if (lattice_type == "square") {
+        sigma = m * m + n * n;
+        theta = std::atan2(static_cast<double>(n), static_cast<double>(m));
+        Lx_cell = a * std::sqrt(static_cast<double>(sigma));
+        Ly_cell = Lx_cell;
+        N_cell = sigma;
+    } else {
+        sigma = m * m + m * n + n * n;
+        theta = std::atan2(static_cast<double>(n) * sqrt3, static_cast<double>(2 * m + n));
+        Lx_cell = a * std::sqrt(static_cast<double>(sigma));
+        if ((m - n) % 3 == 0) {
+            reduced = true;
+            Ly_cell = a * std::sqrt(static_cast<double>(sigma) / 3.0);
+            N_cell = (2 * sigma) / 3;
+        } else {
+            Ly_cell = a * std::sqrt(3.0 * static_cast<double>(sigma));
+            N_cell = 2 * sigma;
+        }
+    }
+
+    res.sigma = sigma;
+    res.theta_deg = theta * 180.0 / M_PI;
+    res.atoms_cell = N_cell;
+    res.is_reduced = reduced;
+
+    double cos_th = std::cos(theta);
+    double sin_th = std::sin(theta);
+
+    std::vector<Point2D> cell_points;
+    cell_points.reserve(N_cell);
+
+    int search_range = 3 * (m + n) + 3;
+
+    for (int i = -search_range; i <= search_range; ++i) {
+        for (int j = -search_range; j <= search_range; ++j) {
+            bool keep = false;
+            double px = 0.0, py = 0.0;
+
+            if (lattice_type == "square") {
+                long long U = static_cast<long long>(i) * m + static_cast<long long>(j) * n;
+                long long V = -static_cast<long long>(i) * n + static_cast<long long>(j) * m;
+                if (U >= 0 && U < sigma && V >= 0 && V < sigma) {
+                    keep = true;
+                    px = a * i;
+                    py = a * j;
+                }
+            } else {
+                long long U = static_cast<long long>(i) * (2 * m + n) + static_cast<long long>(j) * (m + 2 * n);
+                long long V = static_cast<long long>(j) * m - static_cast<long long>(i) * n;
+                if (reduced) {
+                    if (U >= 0 && U < 2 * sigma && 3 * V >= 0 && 3 * V < 2 * sigma) {
+                        keep = true;
+                    }
+                } else {
+                    if (U >= 0 && U < 2 * sigma && V >= 0 && V < 2 * sigma) {
+                        keep = true;
+                    }
+                }
+                if (keep) {
+                    px = a * (static_cast<double>(i) + 0.5 * static_cast<double>(j));
+                    py = a * (static_cast<double>(j) * sqrt3 * 0.5);
+                }
+            }
+
+            if (keep) {
+                // Box frame position (rotate by -theta)
+                double x = cos_th * px + sin_th * py;
+                double y = -sin_th * px + cos_th * py;
+
+                // Clamp tiny negative coordinates near 0
+                if (std::abs(x) < 1e-12) x = 0.0;
+                if (std::abs(y) < 1e-12) y = 0.0;
+                if (x < 0.0 && x > -1e-9) x = 0.0;
+                if (y < 0.0 && y > -1e-9) y = 0.0;
+
+                cell_points.push_back(Point2D(x, y));
+            }
+        }
+    }
+
+    if (static_cast<int>(cell_points.size()) != N_cell) {
+        std::cerr << "Warning: CSL atom count mismatch! Found " << cell_points.size() 
+                  << ", expected N_cell = " << N_cell << std::endl;
+    }
+
+    // Replicate across kx x ky supercell
+    std::vector<Point2D> supercell_points;
+    supercell_points.reserve(kx * ky * cell_points.size());
+
+    for (int ikx = 0; ikx < kx; ++ikx) {
+        for (int iky = 0; iky < ky; ++iky) {
+            double shift_x = ikx * Lx_cell;
+            double shift_y = iky * Ly_cell;
+            for (const auto& pt : cell_points) {
+                supercell_points.push_back(Point2D(pt.coord.x() + shift_x, pt.coord.y() + shift_y));
+            }
+        }
+    }
+
+    res.points = supercell_points;
+    res.Lx = kx * Lx_cell;
+    res.Ly = ky * Ly_cell;
+    res.total_atoms = static_cast<int>(supercell_points.size());
+
+    std::cout << "[CSL] Generated " << lattice_type << " lattice: (m=" << m << ", n=" << n 
+              << "), θ=" << res.theta_deg << "°, Σ=" << sigma 
+              << ", Supercell: " << kx << "x" << ky << " (" << res.Lx << " x " << res.Ly 
+              << "), Total Atoms: " << res.total_atoms << std::endl;
+
+    return res;
+}
+
+std::pair<std::vector<Point2D>, DomainDimensions> LatticeGenerator::generate_rotated_fixed_lattice(
+    const std::string& lattice_type, int nx, int ny, double lattice_constant, double rotation_angle_degrees) {
+
+    double a = lattice_constant > 0.0 ? lattice_constant : 1.0;
+    const double sqrt3 = std::sqrt(3.0);
+    double size_x = nx * a;
+    double size_y = (lattice_type == "triangular") ? ny * a * sqrt3 * 0.5 : ny * a;
+
+    double theta = rotation_angle_degrees * M_PI / 180.0;
+    double cos_th = std::cos(theta);
+    double sin_th = std::sin(theta);
+
+    double cx = size_x * 0.5;
+    double cy = size_y * 0.5;
+
+    // Search range in crystal lattice coordinates to cover the bounding circle
+    double max_dim = std::max(size_x, size_y);
+    int margin = static_cast<int>(std::ceil(max_dim / a)) + 4;
+
+    std::vector<Point2D> points;
+    double tol = 1e-5;
+
+    if (lattice_type == "square") {
+        for (int i = -margin; i <= margin + nx; ++i) {
+            for (int j = -margin; j <= margin + ny; ++j) {
+                double px = i * a - cx;
+                double py = j * a - cy;
+                double rx = cos_th * px - sin_th * py + cx;
+                double ry = sin_th * px + cos_th * py + cy;
+
+                if (rx >= -tol && rx <= size_x + tol && ry >= -tol && ry <= size_y + tol) {
+                    rx = std::max(0.0, std::min(size_x, rx));
+                    ry = std::max(0.0, std::min(size_y, ry));
+                    points.push_back(Point2D(rx, ry));
+                }
+            }
+        }
+    } else { // triangular
+        for (int i = -margin; i <= margin + nx; ++i) {
+            for (int j = -margin; j <= margin + ny; ++j) {
+                double px = (i + 0.5 * j) * a - cx;
+                double py = (j * sqrt3 * 0.5) * a - cy;
+                double rx = cos_th * px - sin_th * py + cx;
+                double ry = sin_th * px + cos_th * py + cy;
+
+                if (rx >= -tol && rx <= size_x + tol && ry >= -tol && ry <= size_y + tol) {
+                    rx = std::max(0.0, std::min(size_x, rx));
+                    ry = std::max(0.0, std::min(size_y, ry));
+                    points.push_back(Point2D(rx, ry));
+                }
+            }
+        }
+    }
+
+    std::cout << "[Fixed Rotated] Generated " << points.size() << " points for "
+              << lattice_type << " lattice at θ=" << rotation_angle_degrees << "° in box "
+              << size_x << " x " << size_y << std::endl;
+
+    return {points, DomainDimensions(size_x, size_y)};
+}
+

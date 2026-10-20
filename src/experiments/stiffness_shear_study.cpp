@@ -33,7 +33,237 @@ double seconds_since(Clock::time_point start) {
 
 } // namespace
 
+static void exportInitialMeshJSON(
+    const std::string& filepath,
+    const StiffnessShearConfig& config,
+    const std::vector<Point2D>& points_ref,
+    const DomainDimensions& domain_dims,
+    const std::array<double, 2>& offsets,
+    const std::vector<ElementTriangle2D>& elements,
+    const std::vector<size_t>& active_elements,
+    const std::vector<std::pair<int, int>>& full_mapping,
+    const std::unique_ptr<BaseLatticeCalculator>& calc,
+    const std::function<double(double)>& pot_func,
+    const std::function<double(double)>& deriv_func,
+    double zero_energy,
+    double normalisation,
+    double actual_theta_deg,
+    int actual_m, int actual_n, int actual_sigma,
+    bool is_csl_active,
+    bool pbc) {
+
+    std::ofstream out(filepath);
+    if (!out.is_open()) {
+        std::cerr << "  [WARN] Could not open " << filepath << " for writing initial mesh JSON\n";
+        return;
+    }
+
+    const double box_Lx = domain_dims.size_x + offsets[0];
+    const double box_Ly = domain_dims.size_y + offsets[1];
+    const int total_nodes = static_cast<int>(points_ref.size());
+
+    out << "{\n";
+    out << "  \"lattice_type\": \"" << config.lattice_type << "\",\n";
+    out << "  \"bc\": \"" << config.bc << "\",\n";
+    out << "  \"rotation_angle\": " << actual_theta_deg << ",\n";
+    out << "  \"is_csl\": " << (is_csl_active ? "true" : "false") << ",\n";
+    out << "  \"m\": " << actual_m << ",\n";
+    out << "  \"n\": " << actual_n << ",\n";
+    out << "  \"sigma\": " << actual_sigma << ",\n";
+    out << "  \"kx\": " << config.csl_kx << ",\n";
+    out << "  \"ky\": " << config.csl_ky << ",\n";
+    out << "  \"Lx\": " << box_Lx << ",\n";
+    out << "  \"Ly\": " << box_Ly << ",\n";
+    out << "  \"num_primary_nodes\": " << total_nodes << ",\n";
+    out << "  \"num_elements\": " << elements.size() << ",\n";
+
+    // 1. Primary Nodes
+    out << "  \"primary_nodes\": [\n";
+    for (int i = 0; i < total_nodes; ++i) {
+        bool is_bnd = false;
+        if (i < static_cast<int>(full_mapping.size())) {
+            is_bnd = (full_mapping[i].second == -1);
+        }
+        out << "    {\"id\": " << i
+            << ", \"x\": " << std::fixed << std::setprecision(6) << points_ref[i].coord.x()
+            << ", \"y\": " << points_ref[i].coord.y()
+            << ", \"is_boundary\": " << (is_bnd ? "true" : "false") << "}"
+            << (i + 1 < total_nodes ? ",\n" : "\n");
+    }
+    out << "  ],\n";
+
+    // 2. 9 Domains (Translations and Nodes)
+    const std::vector<std::pair<int, int>> domain_translations = {
+        {0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
+    };
+    out << "  \"translated_domains\": [\n";
+    for (size_t d = 0; d < domain_translations.size(); ++d) {
+        int tx = domain_translations[d].first;
+        int ty = domain_translations[d].second;
+        double off_x = tx * box_Lx;
+        double off_y = ty * box_Ly;
+
+        out << "    {\n";
+        out << "      \"tx\": " << tx << ",\n";
+        out << "      \"ty\": " << ty << ",\n";
+        out << "      \"offset_x\": " << off_x << ",\n";
+        out << "      \"offset_y\": " << off_y << ",\n";
+        out << "      \"nodes\": [\n";
+        for (int i = 0; i < total_nodes; ++i) {
+            out << "        {\"id\": " << i
+                << ", \"x\": " << (points_ref[i].coord.x() + off_x)
+                << ", \"y\": " << (points_ref[i].coord.y() + off_y) << "}"
+                << (i + 1 < total_nodes ? ",\n" : "\n");
+        }
+        out << "      ]\n";
+        out << "    }" << (d + 1 < domain_translations.size() ? ",\n" : "\n");
+    }
+    out << "  ],\n";
+
+    // 3. Primary Elements (with stress, energy, vertices)
+    double min_e = 1e30, max_e = -1e30;
+    double min_vm = 1e30, max_vm = -1e30;
+    double min_shear = 1e30, max_shear = -1e30;
+    double min_press = 1e30, max_press = -1e30;
+
+    out << "  \"elements\": [\n";
+    for (size_t idx = 0; idx < elements.size(); ++idx) {
+        const auto& elem = elements[idx];
+        int n0 = elem.getNodeIndex(0);
+        int n1 = elem.getNodeIndex(1);
+        int n2 = elem.getNodeIndex(2);
+
+        Eigen::Vector2d t0 = elem.getTranslation(0);
+        Eigen::Vector2d t1 = elem.getTranslation(1);
+        Eigen::Vector2d t2 = elem.getTranslation(2);
+
+        Eigen::Vector2d p0 = points_ref[n0].coord + t0;
+        Eigen::Vector2d p1 = points_ref[n1].coord + t1;
+        Eigen::Vector2d p2 = points_ref[n2].coord + t2;
+
+        bool crosses = (t0.norm() > 1e-6 || t1.norm() > 1e-6 || t2.norm() > 1e-6);
+        double area = elem.getReferenceArea();
+
+        Eigen::Matrix2d C = elem.getMetricTensor();
+        const auto red = lagrange::reduce(C);
+        double elem_e = calc->calculate_energy(red.C_reduced, pot_func, zero_energy) / normalisation;
+
+        Eigen::Matrix2d dE_dC = calc->calculate_derivative(red.C_reduced, deriv_func) / normalisation;
+        const Eigen::Matrix2d& F = elem.getDeformationGradient();
+        Eigen::Matrix2d P = 2.0 * F * red.m_matrix * dE_dC * red.m_matrix.transpose();
+        double detF = std::max(1e-12, F.determinant());
+        Eigen::Matrix2d cauchy = (1.0 / detF) * P * F.transpose();
+
+        double s_xx = cauchy(0, 0);
+        double s_yy = cauchy(1, 1);
+        double s_xy = cauchy(0, 1);
+        double vm = std::sqrt(std::max(0.0, s_xx * s_xx - s_xx * s_yy + s_yy * s_yy + 3.0 * s_xy * s_xy));
+        double press = -(s_xx + s_yy) * 0.5;
+
+        min_e = std::min(min_e, elem_e);
+        max_e = std::max(max_e, elem_e);
+        min_vm = std::min(min_vm, vm);
+        max_vm = std::max(max_vm, vm);
+        min_shear = std::min(min_shear, s_xy);
+        max_shear = std::max(max_shear, s_xy);
+        min_press = std::min(min_press, press);
+        max_press = std::max(max_press, press);
+
+        out << "    {\n";
+        out << "      \"id\": " << idx << ",\n";
+        out << "      \"nodes\": [" << n0 << ", " << n1 << ", " << n2 << "],\n";
+        out << "      \"node_coords\": [[" << p0.x() << ", " << p0.y() << "], ["
+            << p1.x() << ", " << p1.y() << "], [" << p2.x() << ", " << p2.y() << "]],\n";
+        out << "      \"translations\": [[" << t0.x() << ", " << t0.y() << "], ["
+            << t1.x() << ", " << t1.y() << "], [" << t2.x() << ", " << t2.y() << "]],\n";
+        out << "      \"crosses_boundary\": " << (crosses ? "true" : "false") << ",\n";
+        out << "      \"area\": " << area << ",\n";
+        out << "      \"strain_energy_density\": " << elem_e << ",\n";
+        out << "      \"sigma_xx\": " << s_xx << ",\n";
+        out << "      \"sigma_yy\": " << s_yy << ",\n";
+        out << "      \"sigma_xy\": " << s_xy << ",\n";
+        out << "      \"von_mises\": " << vm << ",\n";
+        out << "      \"pressure\": " << press << "\n";
+        out << "    }" << (idx + 1 < elements.size() ? ",\n" : "\n");
+    }
+    out << "  ],\n";
+
+    // 4. Elements 3x3 (Tiling over all 9 domains for complete periodic seamless visualization)
+    out << "  \"elements_3x3\": [\n";
+    size_t count_3x3 = 0;
+    const size_t total_3x3 = elements.size() * domain_translations.size();
+    for (size_t d = 0; d < domain_translations.size(); ++d) {
+        int tx = domain_translations[d].first;
+        int ty = domain_translations[d].second;
+        double off_x = tx * box_Lx;
+        double off_y = ty * box_Ly;
+
+        for (size_t idx = 0; idx < elements.size(); ++idx) {
+            const auto& elem = elements[idx];
+            int n0 = elem.getNodeIndex(0);
+            int n1 = elem.getNodeIndex(1);
+            int n2 = elem.getNodeIndex(2);
+
+            Eigen::Vector2d t0 = elem.getTranslation(0);
+            Eigen::Vector2d t1 = elem.getTranslation(1);
+            Eigen::Vector2d t2 = elem.getTranslation(2);
+
+            Eigen::Vector2d p0 = points_ref[n0].coord + t0 + Eigen::Vector2d(off_x, off_y);
+            Eigen::Vector2d p1 = points_ref[n1].coord + t1 + Eigen::Vector2d(off_x, off_y);
+            Eigen::Vector2d p2 = points_ref[n2].coord + t2 + Eigen::Vector2d(off_x, off_y);
+
+            Eigen::Matrix2d C = elem.getMetricTensor();
+            const auto red = lagrange::reduce(C);
+            double elem_e = calc->calculate_energy(red.C_reduced, pot_func, zero_energy) / normalisation;
+
+            Eigen::Matrix2d dE_dC = calc->calculate_derivative(red.C_reduced, deriv_func) / normalisation;
+            const Eigen::Matrix2d& F = elem.getDeformationGradient();
+            Eigen::Matrix2d P = 2.0 * F * red.m_matrix * dE_dC * red.m_matrix.transpose();
+            double detF = std::max(1e-12, F.determinant());
+            Eigen::Matrix2d cauchy = (1.0 / detF) * P * F.transpose();
+
+            double s_xx = cauchy(0, 0);
+            double s_yy = cauchy(1, 1);
+            double s_xy = cauchy(0, 1);
+            double vm = std::sqrt(std::max(0.0, s_xx * s_xx - s_xx * s_yy + s_yy * s_yy + 3.0 * s_xy * s_xy));
+            double press = -(s_xx + s_yy) * 0.5;
+
+            out << "    {\n";
+            out << "      \"domain_tx\": " << tx << ",\n";
+            out << "      \"domain_ty\": " << ty << ",\n";
+            out << "      \"orig_id\": " << idx << ",\n";
+            out << "      \"node_coords\": [[" << p0.x() << ", " << p0.y() << "], ["
+                << p1.x() << ", " << p1.y() << "], [" << p2.x() << ", " << p2.y() << "]],\n";
+            out << "      \"strain_energy_density\": " << elem_e << ",\n";
+            out << "      \"sigma_xx\": " << s_xx << ",\n";
+            out << "      \"sigma_yy\": " << s_yy << ",\n";
+            out << "      \"sigma_xy\": " << s_xy << ",\n";
+            out << "      \"von_mises\": " << vm << ",\n";
+            out << "      \"pressure\": " << press << "\n";
+            out << "    }" << (++count_3x3 < total_3x3 ? ",\n" : "\n");
+        }
+    }
+    out << "  ],\n";
+
+    // 5. Statistics
+    out << "  \"statistics\": {\n";
+    out << "    \"min_energy\": " << min_e << ",\n";
+    out << "    \"max_energy\": " << max_e << ",\n";
+    out << "    \"min_von_mises\": " << min_vm << ",\n";
+    out << "    \"max_von_mises\": " << max_vm << ",\n";
+    out << "    \"min_shear\": " << min_shear << ",\n";
+    out << "    \"max_shear\": " << max_shear << ",\n";
+    out << "    \"min_pressure\": " << min_press << ",\n";
+    out << "    \"max_pressure\": " << max_press << "\n";
+    out << "  }\n";
+    out << "}\n";
+
+    out.close();
+    std::cout << "  [JSON] Initial mesh & periodic elements exported to: " << filepath << "\n";
+}
+
 StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config) {
+
     const auto t_start = Clock::now();
     StiffnessShearResults results;
     results.config = config;
@@ -136,15 +366,54 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     }
 
     // 3. Pristine Reference Mesh Generation
-    std::vector<Point2D> points_ref = LatticeGenerator::generate_2d_lattice(
-        config.nx, study_ny, a_0, config.lattice_type);
-    const int total_nodes = static_cast<int>(points_ref.size());
+    std::vector<Point2D> points_ref;
+    DomainDimensions domain_dims(0.0, 0.0);
+    std::array<double, 2> offsets = {0.0, 0.0};
+    double actual_theta_deg = 0.0;
+    int actual_m = 1, actual_n = 0;
+    int actual_sigma = 1;
+    bool is_csl_active = false;
 
-    DomainInfo domain_size = compute_domain_size(points_ref);
-    DomainDimensions domain_dims(domain_size.get_width(), domain_size.get_height());
-    std::array<double, 2> offsets = (config.lattice_type == "square")
-        ? std::array<double, 2>{a_0, a_0}
-        : std::array<double, 2>{a_0 / 2.0, (std::sqrt(3.0) / 2.0) * a_0};
+    if (config.use_rotation) {
+        if (pbc) {
+            is_csl_active = true;
+            int m = config.csl_m > 0 ? config.csl_m : 1;
+            int n = config.csl_n >= 0 ? config.csl_n : 0;
+            if (m == 1 && n == 0 && std::abs(config.rotation_angle) > 0.01) {
+                auto best_csl = LatticeGenerator::find_closest_csl_angle(config.lattice_type, config.rotation_angle, 80);
+                m = best_csl.m;
+                n = best_csl.n;
+                std::cout << "  [CSL] Snapped target angle " << config.rotation_angle << "° to closest CSL (m="
+                          << m << ", n=" << n << ", θ=" << best_csl.theta_deg << "°, Σ=" << best_csl.sigma << ")\n";
+            }
+            int kx = config.csl_kx > 0 ? config.csl_kx : 1;
+            int ky = config.csl_ky > 0 ? config.csl_ky : 1;
+            auto csl_res = LatticeGenerator::generate_csl_lattice(config.lattice_type, m, n, kx, ky, a_0);
+            points_ref = csl_res.points;
+            domain_dims = DomainDimensions(csl_res.Lx, csl_res.Ly);
+            offsets = {0.0, 0.0};
+            actual_theta_deg = csl_res.theta_deg;
+            actual_m = csl_res.m;
+            actual_n = csl_res.n;
+            actual_sigma = csl_res.sigma;
+        } else {
+            actual_theta_deg = config.rotation_angle;
+            auto [pts, dims] = LatticeGenerator::generate_rotated_fixed_lattice(
+                config.lattice_type, config.nx, study_ny, a_0, config.rotation_angle);
+            points_ref = pts;
+            domain_dims = dims;
+            offsets = {0.0, 0.0};
+        }
+    } else {
+        points_ref = LatticeGenerator::generate_2d_lattice(
+            config.nx, study_ny, a_0, config.lattice_type);
+        DomainInfo domain_size = compute_domain_size(points_ref);
+        domain_dims = DomainDimensions(domain_size.get_width(), domain_size.get_height());
+        offsets = (config.lattice_type == "square")
+            ? std::array<double, 2>{a_0, a_0}
+            : std::array<double, 2>{a_0 / 2.0, (std::sqrt(3.0) / 2.0) * a_0};
+    }
+    const int total_nodes = static_cast<int>(points_ref.size());
 
     auto [original_domain_map, translation_map] =
         MeshGenerator::create_domain_maps(total_nodes, domain_dims, offsets);
@@ -171,9 +440,10 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     Eigen::Vector2d p2(h, 0.0);
     Eigen::Vector2d p3(0.0, h);
     Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+    const Eigen::Matrix<double, 3, 2>* manual_dndx = config.use_rotation ? nullptr : &dndx;
 
     auto [elements, active_elements] =
-        mesher.createMesh(points_ref, x0, Eigen::Matrix2d::Identity(), &dndx);
+        mesher.createMesh(points_ref, x0, Eigen::Matrix2d::Identity(), manual_dndx);
 
     for (auto &elem : elements) {
         elem.set_dof_mapping(full_mapping);
@@ -185,6 +455,19 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     results.summary.free_nodes = free_nodes;
     results.summary.total_dofs = total_dofs;
     results.summary.total_elements = total_elements;
+
+    if (!config.initial_mesh_json.empty()) {
+        exportInitialMeshJSON(
+            config.initial_mesh_json, config, points_ref, domain_dims, offsets,
+            elements, active_elements, full_mapping, calc, pot_func, pot_der,
+            zero_energy, normalisation, actual_theta_deg, actual_m, actual_n,
+            actual_sigma, is_csl_active, pbc);
+    }
+
+    if (config.initial_mesh_only) {
+        std::cout << "  [INFO] Initial mesh only requested. Preview JSON saved. Exiting.\n";
+        return results;
+    }
 
     std::cout << "  Mesh info:          " << total_nodes << " nodes, "
               << free_nodes << " free nodes (" << total_dofs << " DOFs), "

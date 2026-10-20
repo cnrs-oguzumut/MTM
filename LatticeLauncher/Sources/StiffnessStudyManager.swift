@@ -200,6 +200,19 @@ public class StiffnessStudyManager: ObservableObject {
     // Physical Energy Levels Filter (skips degenerate sin/cos Bloch partners under PBC)
     @Published public var uniqueLevelsOnly: Bool = true
     
+    // Rotated Lattice & CSL inputs
+    @Published public var useRotation: Bool = false
+    @Published public var rotationAngle: Double = 0.0
+    @Published public var cslM: Int = 2
+    @Published public var cslN: Int = 1
+    @Published public var cslKx: Int = 2
+    @Published public var cslKy: Int = 2
+    @Published public var selectedCSLOption: CSLAngleOption? = nil
+    
+    // Initial Lattice Mesh Data
+    @Published public var initialMeshData: InitialMeshModel? = nil
+    @Published public var isGeneratingPreview: Bool = false
+    
     // Process State
     @Published public var isRunning: Bool = false
     @Published public var isComputingFullScale: Bool = false
@@ -230,6 +243,90 @@ public class StiffnessStudyManager: ObservableObject {
         if FileManager.default.fileExists(atPath: fsOut) {
             loadFullScaleJSON(jsonPath: fsOut, mergeExisting: false)
         }
+        let initMeshOut = "\(root)/scratch/initial_lattice.json"
+        if FileManager.default.fileExists(atPath: initMeshOut) {
+            loadInitialMeshJSON(jsonPath: initMeshOut)
+        }
+    }
+
+    public func loadInitialMeshJSON(jsonPath: String) {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)) else { return }
+        do {
+            let decoder = JSONDecoder()
+            let decoded = try decoder.decode(InitialMeshModel.self, from: data)
+            DispatchQueue.main.async {
+                self.initialMeshData = decoded
+            }
+        } catch {
+            print("Failed to parse initial_lattice.json: \(error)")
+        }
+    }
+
+    public func generateInitialMeshPreview() {
+        guard !isGeneratingPreview else { return }
+        let root = SimulationConfig.detectProjectRoot()
+        let binary = "\(root)/build/lattice_triangulation"
+        guard FileManager.default.fileExists(atPath: binary) else {
+            statusMessage = "Binary not found at \(binary). Build project first."
+            return
+        }
+        
+        let scratchDir = "\(root)/scratch"
+        try? FileManager.default.createDirectory(atPath: scratchDir, withIntermediateDirectories: true)
+        let initJsonOut = "\(scratchDir)/initial_lattice.json"
+        
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: binary)
+        p.currentDirectoryURL = URL(fileURLWithPath: root)
+        
+        var args = [
+            "--stiffness-study",
+            "--nx=\(nx)",
+            "--ny=\(ny)",
+            "--lattice=\(latticeSymmetry.rawValue)",
+            "--potential-mode=\(potentialMode.rawValue)",
+            "--bc=\(boundaryCondition.rawValue)",
+            "--initial-mesh-only",
+            "--initial-mesh-json=\(initJsonOut)"
+        ]
+        
+        if useRotation {
+            args.append("--use-rotation")
+            if boundaryCondition == .periodic {
+                args.append("--csl-m=\(cslM)")
+                args.append("--csl-n=\(cslN)")
+                args.append("--csl-kx=\(cslKx)")
+                args.append("--csl-ky=\(cslKy)")
+                if rotationAngle > 0.001 {
+                    args.append("--rotation-angle=\(rotationAngle)")
+                }
+            } else {
+                args.append("--rotation-angle=\(rotationAngle)")
+            }
+        }
+        
+        p.arguments = args
+        self.isGeneratingPreview = true
+        self.statusMessage = "Generating initial mesh preview..."
+        
+        p.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async {
+                self?.isGeneratingPreview = false
+                if proc.terminationStatus == 0 {
+                    self?.statusMessage = "Initial mesh preview generated."
+                    self?.loadInitialMeshJSON(jsonPath: initJsonOut)
+                } else {
+                    self?.statusMessage = "Mesh preview exited with code \(proc.terminationStatus)"
+                }
+            }
+        }
+        
+        do {
+            try p.run()
+        } catch {
+            self.isGeneratingPreview = false
+            self.statusMessage = "Failed to run mesh preview: \(error.localizedDescription)"
+        }
     }
     
     public func runStudy() {
@@ -258,6 +355,7 @@ public class StiffnessStudyManager: ObservableObject {
         let csvOut = "\(scratchDir)/stiffness_shear_study.csv"
         let jsonOut = "\(scratchDir)/stiffness_shear_study.json"
         let fsOut = "\(scratchDir)/stiffness_fullscale.json"
+        let initJsonOut = "\(scratchDir)/initial_lattice.json"
         
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
@@ -274,8 +372,23 @@ public class StiffnessStudyManager: ObservableObject {
             "--dalpha=\(dalpha)",
             "--stiffness-csv=\(csvOut)",
             "--stiffness-json=\(jsonOut)",
-            "--stiffness-fullscale-json=\(fsOut)"
+            "--stiffness-fullscale-json=\(fsOut)",
+            "--initial-mesh-json=\(initJsonOut)"
         ]
+        if useRotation {
+            args.append("--use-rotation")
+            if boundaryCondition == .periodic {
+                args.append("--csl-m=\(cslM)")
+                args.append("--csl-n=\(cslN)")
+                args.append("--csl-kx=\(cslKx)")
+                args.append("--csl-ky=\(cslKy)")
+                if rotationAngle > 0.001 {
+                    args.append("--rotation-angle=\(rotationAngle)")
+                }
+            } else {
+                args.append("--rotation-angle=\(rotationAngle)")
+            }
+        }
         if uniqueLevelsOnly {
             args.append("--unique-levels")
         }
@@ -330,6 +443,7 @@ public class StiffnessStudyManager: ObservableObject {
                     self?.statusMessage = "Complete! Data parsed successfully."
                     self?.loadResultsJSON(jsonPath: jsonOut)
                     self?.loadFullScaleJSON(jsonPath: fsOut, mergeExisting: false)
+                    self?.loadInitialMeshJSON(jsonPath: initJsonOut)
                 } else {
                     self?.statusMessage = "Process exited with error code \(proc.terminationStatus)"
                 }

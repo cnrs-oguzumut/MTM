@@ -89,6 +89,116 @@ public struct StiffnessStudyView: View {
                             .padding(.top, 4)
                         }
                         
+                        // 2b. Rotated Crystal Orientation
+                        GroupBox(label: Label("Rotated Crystal Orientation", systemImage: "rotate.right")) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Toggle(isOn: $manager.useRotation) {
+                                    Text("Enable Rotated Lattice")
+                                        .font(.caption.bold())
+                                }
+                                .toggleStyle(.checkbox)
+                                
+                                if manager.useRotation {
+                                    if manager.boundaryCondition == .fixed {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("Arbitrary Rotation (Fixed BC):")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                            HStack {
+                                                Text("Angle θ:")
+                                                    .font(.caption2.bold())
+                                                Spacer()
+                                                DoubleField(title: "0.0", value: $manager.rotationAngle, width: 65, minValue: 0.0, maxValue: 360.0)
+                                                Text("°").font(.caption2)
+                                            }
+                                            Slider(value: $manager.rotationAngle, in: 0.0...360.0, step: 0.5)
+                                        }
+                                    } else {
+                                        // Periodic BC: CSL Discrete Angles
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            Text("Coincident Site Lattice (CSL) for PBC:")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                            
+                                            // CSL Presets Picker
+                                            let allowedCSL = CSLAngleOption.allowedAngles(for: manager.latticeSymmetry)
+                                            Picker("CSL Angle", selection: Binding(
+                                                get: {
+                                                    allowedCSL.first(where: { $0.m == manager.cslM && $0.n == manager.cslN }) ?? allowedCSL[0]
+                                                },
+                                                set: { opt in
+                                                    manager.cslM = opt.m
+                                                    manager.cslN = opt.n
+                                                    manager.rotationAngle = opt.theta_deg
+                                                }
+                                            )) {
+                                                ForEach(allowedCSL) { opt in
+                                                    Text(opt.displayName).tag(opt)
+                                                }
+                                            }
+                                            .pickerStyle(.menu)
+                                            .controlSize(.small)
+                                            
+                                            // Coprime (m, n) manual overrides
+                                            HStack(spacing: 12) {
+                                                HStack {
+                                                    Text("m:")
+                                                        .font(.caption2.bold())
+                                                    IntField(title: "m", value: $manager.cslM, width: 40)
+                                                    Stepper("", value: $manager.cslM, in: 1...20)
+                                                        .labelsHidden()
+                                                }
+                                                HStack {
+                                                    Text("n:")
+                                                        .font(.caption2.bold())
+                                                    IntField(title: "n", value: $manager.cslN, width: 40)
+                                                    Stepper("", value: $manager.cslN, in: 0...20)
+                                                        .labelsHidden()
+                                                }
+                                            }
+                                            
+                                            // Supercell Multipliers (Kx, Ky)
+                                            HStack(spacing: 12) {
+                                                HStack {
+                                                    Text("Kx:")
+                                                        .font(.caption2.bold())
+                                                    IntField(title: "Kx", value: $manager.cslKx, width: 40)
+                                                    Stepper("", value: $manager.cslKx, in: 1...10)
+                                                        .labelsHidden()
+                                                }
+                                                HStack {
+                                                    Text("Ky:")
+                                                        .font(.caption2.bold())
+                                                    IntField(title: "Ky", value: $manager.cslKy, width: 40)
+                                                    Stepper("", value: $manager.cslKy, in: 1...10)
+                                                        .labelsHidden()
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    Button(action: {
+                                        manager.generateInitialMeshPreview()
+                                        selectedDisplayTab = 6
+                                    }) {
+                                        HStack {
+                                            if manager.isGeneratingPreview {
+                                                ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
+                                            } else {
+                                                Image(systemName: "eye.fill")
+                                            }
+                                            Text("Preview Initial Mesh")
+                                        }
+                                        .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                    .padding(.top, 2)
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+                        
                         // 3. Constitutive Potential
                         GroupBox(label: Label("Underlying Energy Potential", systemImage: "atom")) {
                             VStack(alignment: .leading, spacing: 8) {
@@ -292,6 +402,7 @@ public struct StiffnessStudyView: View {
                         Label("Energy E(α)", systemImage: "waveform.path.ecg").tag(1)
                         Label("Split", systemImage: "rectangle.split.2x1").tag(2)
                         Label("Mode v(α)", systemImage: "scope").tag(5)
+                        Label("Initial Mesh", systemImage: "square.grid.3x3.fill").tag(6)
                         Label("Table", systemImage: "tablecells").tag(3)
                         Label("Log", systemImage: "terminal").tag(4)
                     }
@@ -389,6 +500,8 @@ public struct StiffnessStudyView: View {
                         }
                     } else if selectedDisplayTab == 5 {
                         StiffnessModeInspectorView(manager: manager)
+                    } else if selectedDisplayTab == 6 {
+                        InitialLatticeVisualizerView(manager: manager)
                     } else if selectedDisplayTab == 3 {
                         StiffnessTableView(points: manager.points)
                     } else {
