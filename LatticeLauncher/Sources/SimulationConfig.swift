@@ -85,6 +85,14 @@ public class SimulationConfig: ObservableObject {
     @Published public var alphaEnd: Double = 1.0
     @Published public var stepSize: Double = 0.00006
     
+    // Rotated Lattice & CSL inputs
+    @Published public var useRotation: Bool = false
+    @Published public var rotationAngle: Double = 0.0
+    @Published public var cslM: Int = 2
+    @Published public var cslN: Int = 1
+    @Published public var cslKx: Int = 2
+    @Published public var cslKy: Int = 2
+    
     // 4. Preconditioning
     @Published public var preconditioner: PreconditionerType = .stiffness
     @Published public var precondFromStep: Int = 1
@@ -162,7 +170,8 @@ public class SimulationConfig: ObservableObject {
     public var defaultRunDirName: String {
         let remeshTag = enableRemeshing ? "remesh" : "noremesh"
         let latTag = latticeSymmetry == .triangular ? "_tri" : ""
-        return "run_\(mode.rawValue)_\(nx)x\(ny)_seed\(seed)_\(remeshTag)\(latTag)"
+        let rotTag = useRotation ? (mode == .volterra ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
+        return "run_\(mode.rawValue)_\(nx)x\(ny)_seed\(seed)_\(remeshTag)\(latTag)\(rotTag)"
     }
     
     public var targetDirectory: String {
@@ -266,6 +275,22 @@ public class SimulationConfig: ObservableObject {
             args.append("--eig-solver=\(eigSolver.rawValue)")
         } else {
             args.append("--eig-every=0")
+        }
+        
+        // Rotated Crystal Orientation / CSL
+        if useRotation {
+            args.append("--use-rotation")
+            if mode == .volterra {
+                args.append(String(format: "--rotation-angle=%.4f", rotationAngle))
+            } else {
+                args.append("--csl-m=\(cslM)")
+                args.append("--csl-n=\(cslN)")
+                args.append("--csl-kx=\(cslKx)")
+                args.append("--csl-ky=\(cslKy)")
+                if rotationAngle > 0.001 {
+                    args.append(String(format: "--rotation-angle=%.4f", rotationAngle))
+                }
+            }
         }
         
         return args

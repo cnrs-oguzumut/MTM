@@ -459,7 +459,13 @@ void example_1_conti_zanzotto_loading(
     bool save_triangle_data,
     int max_avalanches,
     const std::string& lattice_type,
-    double noise_level) {
+    double noise_level,
+    bool use_rotation,
+    int csl_m,
+    int csl_n,
+    int csl_kx,
+    int csl_ky,
+    double rotation_angle) {
 
   // Parameters for lattice
   if (nx <= 0 || ny <= 0) {
@@ -529,56 +535,49 @@ void example_1_conti_zanzotto_loading(
   std::cout << "Optimal lattice parameter: " << lattice_constant << std::endl;
 
   // ==================== GENERATE INITIAL LATTICE ====================
-  // Generate current and reference lattice configurations
-  std::vector<Point2D> square_points = LatticeGenerator::generate_2d_lattice(
-      nx, ny, lattice_constant, lattice_type);
+  std::vector<Point2D> square_points;
+  std::vector<Point2D> square_points_ref;
+  DomainDimensions domain_dims(0.0, 0.0);
+  std::array<double, 2> offsets = {0.0, 0.0};
 
-  std::vector<Point2D> square_points_ref =
-      LatticeGenerator::generate_2d_lattice(nx, ny, lattice_constant,
-                                            lattice_type);
-
-  // auto [square_points_ref, gap_offsets]
-  // =LatticeGenerator::generate_periodic_rotated_lattice_v2( 1, 1,
-  // nx,ny,lattice_constant, lattice_type) ;
-
-  // auto [square_points, gap_offsets2]
-  // =LatticeGenerator::generate_periodic_rotated_lattice_v2( 1, 1,
-  // nx,ny,lattice_constant, lattice_type) ;
-
-  // std::cout << "User-defined gap offset vector: ("
-  //           << gap_offsets.coord.x() << ", "
-  //           << gap_offsets.coord.y() << ")" << std::endl;
+  if (use_rotation) {
+    int m = csl_m > 0 ? csl_m : 1;
+    int n = csl_n >= 0 ? csl_n : 0;
+    if (m == 1 && n == 0 && std::abs(rotation_angle) > 0.01) {
+      auto best_csl = LatticeGenerator::find_closest_csl_angle(lattice_type, rotation_angle, 80);
+      m = best_csl.m;
+      n = best_csl.n;
+      std::cout << "[CSL] Snapped target angle " << rotation_angle << "° to closest CSL (m="
+                << m << ", n=" << n << ", θ=" << best_csl.theta_deg << "°, Σ=" << best_csl.sigma << ")\n";
+    }
+    int kx = csl_kx > 0 ? csl_kx : 1;
+    int ky = csl_ky > 0 ? csl_ky : 1;
+    auto csl_res = LatticeGenerator::generate_csl_lattice(lattice_type, m, n, kx, ky, lattice_constant);
+    square_points = csl_res.points;
+    square_points_ref = csl_res.points;
+    domain_dims = DomainDimensions(csl_res.Lx, csl_res.Ly);
+    offsets = {0.0, 0.0};
+  } else {
+    square_points = LatticeGenerator::generate_2d_lattice(
+        nx, ny, lattice_constant, lattice_type);
+    square_points_ref = square_points;
+    DomainInfo domain_size = compute_domain_size(square_points);
+    domain_dims = DomainDimensions(domain_size.get_width(),
+                                   domain_size.get_height());
+    offsets = (lattice_type == "square")
+        ? std::array<double, 2>{lattice_constant, lattice_constant}
+        : std::array<double, 2>{lattice_constant / 2.0,
+                                (sqrt(3.0) / 2.0) * lattice_constant};
+  }
 
   int original_domain_size = square_points.size();
   std::cout << "Generated lattice with " << original_domain_size << " points"
             << std::endl;
-
-  // Calculate domain properties
-  DomainInfo domain_size = compute_domain_size(square_points);
-
-  // Set periodic boundary offsets based on lattice type
-
-  const std::array<double, 2> offsets =
-      (lattice_type == "square")
-          ? std::array<double, 2>{lattice_constant, lattice_constant}
-          : std::array<double, 2>{lattice_constant / 2.0,
-                                  (sqrt(3.0) / 2.0) * lattice_constant};
-
-  // const std::array<double, 2> offsets = (lattice_type == "square") ?
-  //     std::array<double, 2>{sqrt(2)*lattice_constant/2.,
-  //     sqrt(2)*lattice_constant/2.} : std::array<double, 2>{lattice_constant
-  //     / 2.0, (sqrt(3.0) / 2.0) * lattice_constant};
-
-  // const std::array<double, 2> offsets =
-  // {gap_offsets.coord.x(),gap_offsets.coord.y()};
   std::cout << "PBC offsets: [" << offsets[0] << ", " << offsets[1] << "]"
             << std::endl;
-
-  DomainDimensions domain_dims(domain_size.get_width(),
-                               domain_size.get_height());
-  std::cout << "domain_size.get_width(): " << domain_size.get_width()
+  std::cout << "domain_size.get_width(): " << domain_dims.size_x
             << std::endl;
-  std::cout << "domain_size.get_height(): " << domain_size.get_height()
+  std::cout << "domain_size.get_height(): " << domain_dims.size_y
             << std::endl;
 
   // Setup triangulation variables
@@ -1209,7 +1208,13 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                bool save_triangle_data,
                                                int max_avalanches,
                                                const std::string& lattice_type,
-                                               double noise_level) {
+                                               double noise_level,
+                                               bool use_rotation,
+                                               int csl_m,
+                                               int csl_n,
+                                               int csl_kx,
+                                               int csl_ky,
+                                               double rotation_angle) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1223,7 +1228,13 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    save_triangle_data,
                                    max_avalanches,
                                    lattice_type,
-                                   noise_level);
+                                   noise_level,
+                                   use_rotation,
+                                   csl_m,
+                                   csl_n,
+                                   csl_kx,
+                                   csl_ky,
+                                   rotation_angle);
 }
 
 void restart_zanzotto_simulation(const std::string& checkpoint_path,

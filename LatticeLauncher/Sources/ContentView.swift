@@ -18,12 +18,14 @@ enum AppNavigationTab: String, CaseIterable, Identifiable {
 
 enum MainDisplayTab: String, CaseIterable, Identifiable {
     case curve = "Stress–Strain Curve"
+    case initialMesh = "Initial Mesh"
     case terminal = "Terminal Log"
     
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .curve: return "chart.xyaxis.line"
+        case .initialMesh: return "square.stack.3d.down.right.fill"
         case .terminal: return "terminal"
         }
     }
@@ -32,6 +34,7 @@ enum MainDisplayTab: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @ObservedObject var config: SimulationConfig
     @EnvironmentObject var runner: ProcessRunner
+    @StateObject private var previewManager = StiffnessStudyManager()
     @State private var appTab: AppNavigationTab = .simulation
     @State private var displayTab: MainDisplayTab = .curve
     @State private var filterText: String = ""
@@ -77,7 +80,7 @@ struct ContentView: View {
             if appTab == .simulation {
                 HSplitView {
                     // LEFT: Configuration Sidebar (Width ~420px)
-                    SidebarControlsView(config: config)
+                    SidebarControlsView(config: config, previewManager: previewManager, displayTab: $displayTab)
                         .frame(minWidth: 380, idealWidth: 420, maxWidth: 480)
                     
                     // RIGHT: Monitor & Live Terminal / Curve
@@ -90,9 +93,11 @@ struct ContentView: View {
                         
                         Divider()
                         
-                        // Main Content View: Live Curve or Terminal
+                        // Main Content View: Live Curve, Initial Mesh, or Terminal
                         if displayTab == .curve {
                             StressStrainChartView()
+                        } else if displayTab == .initialMesh {
+                            InitialLatticeVisualizerView(manager: previewManager)
                         } else {
                             TerminalView(
                                 logLines: runner.logLines,
@@ -126,6 +131,8 @@ struct ContentView: View {
 // MARK: - Sidebar Controls
 struct SidebarControlsView: View {
     @ObservedObject var config: SimulationConfig
+    @ObservedObject var previewManager: StiffnessStudyManager
+    @Binding var displayTab: MainDisplayTab
     
     var body: some View {
         ScrollView {
@@ -286,6 +293,130 @@ struct SidebarControlsView: View {
                         Text("Equilibrium lattice parameter a₀ and elastic constants (C₁₁, C₁₂, C₆₆) are dynamically computed from the selected potential.")
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                }
+                
+                // 3b. Rotated Crystal Orientation / CSL
+                GroupBox(label: Label("Rotated Crystal Orientation", systemImage: "rotate.right")) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(isOn: $config.useRotation) {
+                            Text("Enable Rotated Lattice")
+                                .font(.caption.bold())
+                        }
+                        .toggleStyle(.checkbox)
+                        
+                        if config.useRotation {
+                            if config.mode == .volterra {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Arbitrary Rotation (Fixed BC):")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    HStack {
+                                        Text("Angle θ:")
+                                            .font(.caption2.bold())
+                                        Spacer()
+                                        DoubleField(title: "0.0", value: $config.rotationAngle, width: 65, minValue: 0.0, maxValue: 360.0)
+                                        Text("°").font(.caption2)
+                                    }
+                                    Slider(value: $config.rotationAngle, in: 0.0...360.0, step: 0.5)
+                                }
+                            } else {
+                                // Periodic BC: CSL Discrete Angles
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Coincident Site Lattice (CSL) for PBC:")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    
+                                    // CSL Presets Picker
+                                    let allowedCSL = CSLAngleOption.allowedAngles(for: config.latticeSymmetry)
+                                    Picker("CSL Angle", selection: Binding(
+                                        get: {
+                                            allowedCSL.first(where: { $0.m == config.cslM && $0.n == config.cslN }) ?? allowedCSL[0]
+                                        },
+                                        set: { opt in
+                                            config.cslM = opt.m
+                                            config.cslN = opt.n
+                                            config.rotationAngle = opt.theta_deg
+                                        }
+                                    )) {
+                                        ForEach(allowedCSL) { opt in
+                                            Text(opt.displayName).tag(opt)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .controlSize(.small)
+                                    
+                                    // Coprime (m, n) manual overrides
+                                    HStack(spacing: 12) {
+                                        HStack {
+                                            Text("m:")
+                                                .font(.caption2.bold())
+                                            IntField(title: "m", value: $config.cslM, width: 40)
+                                            Stepper("", value: $config.cslM, in: 1...20)
+                                                .labelsHidden()
+                                        }
+                                        HStack {
+                                            Text("n:")
+                                                .font(.caption2.bold())
+                                            IntField(title: "n", value: $config.cslN, width: 40)
+                                            Stepper("", value: $config.cslN, in: 0...20)
+                                                .labelsHidden()
+                                        }
+                                    }
+                                    
+                                    // Supercell Multipliers (Kx, Ky)
+                                    HStack(spacing: 12) {
+                                        HStack {
+                                            Text("Kx:")
+                                                .font(.caption2.bold())
+                                            IntField(title: "Kx", value: $config.cslKx, width: 40)
+                                            Stepper("", value: $config.cslKx, in: 1...10)
+                                                .labelsHidden()
+                                        }
+                                        HStack {
+                                            Text("Ky:")
+                                                .font(.caption2.bold())
+                                            IntField(title: "Ky", value: $config.cslKy, width: 40)
+                                            Stepper("", value: $config.cslKy, in: 1...10)
+                                                .labelsHidden()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        Button(action: {
+                            previewManager.nx = config.nx
+                            previewManager.ny = config.ny
+                            previewManager.latticeSymmetry = config.latticeSymmetry
+                            previewManager.potentialMode = config.potentialMode
+                            previewManager.boundaryCondition = (config.mode == .volterra) ? .fixed : .periodic
+                            previewManager.beta = config.beta
+                            previewManager.bulkK = config.bulkK
+                            previewManager.useRotation = config.useRotation
+                            previewManager.rotationAngle = config.rotationAngle
+                            previewManager.cslM = config.cslM
+                            previewManager.cslN = config.cslN
+                            previewManager.cslKx = config.cslKx
+                            previewManager.cslKy = config.cslKy
+                            previewManager.generateInitialMeshPreview()
+                            displayTab = .initialMesh
+                        }) {
+                            HStack {
+                                if previewManager.isGeneratingPreview {
+                                    ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
+                                } else {
+                                    Image(systemName: "eye.fill")
+                                }
+                                Text("Preview Initial Mesh")
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .padding(.top, 2)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
