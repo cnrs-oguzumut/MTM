@@ -377,6 +377,7 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
                              potential_func, potential_func_der, zero,
                              optimal_lattice_parameter, F_ext, interior_mapping,
                              full_mapping, active_elements, plasticity);
+    postOptUserData.second_derivative_function = &potential_func_sder;
     post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
 
     if (stress_drop_detected || i >= 0) {
@@ -466,7 +467,8 @@ void example_1_conti_zanzotto_loading(
     int csl_kx,
     int csl_ky,
     double rotation_angle,
-    const std::string& bc) {
+    const std::string& bc,
+    int potential_mode) {
 
   bool pbc = (bc == "periodic" || bc == "Periodic" || bc == "pbc" || bc == "PBC");
 
@@ -486,13 +488,63 @@ void example_1_conti_zanzotto_loading(
               << old_ny << " to " << ny << std::endl;
   }
 
-  // Print Zanzotto potential and calculated elastic constants
-  auto ec = energy_functions::calculate_elastic_constants(
-      energy_functions::current_beta, energy_functions::current_K, lattice_type);
-  std::cout << "Zanzotto Potential: beta = " << energy_functions::current_beta
-            << ", K = " << energy_functions::current_K << " | Lattice: " << lattice_type << std::endl;
-  std::cout << "Ground-state Elastic Constants: C11=" << ec.C11 << ", C12=" << ec.C12 
-            << ", C66=" << ec.C66 << ", Zener A=" << ec.Zener_A << std::endl;
+  // Print potential information
+  if (potential_mode == 3) {
+    auto ec = energy_functions::calculate_elastic_constants(
+        energy_functions::current_beta, energy_functions::current_K, lattice_type);
+    std::cout << "Zanzotto Potential: beta = " << energy_functions::current_beta
+              << ", K = " << energy_functions::current_K << " | Lattice: " << lattice_type << std::endl;
+    std::cout << "Ground-state Elastic Constants: C11=" << ec.C11 << ", C12=" << ec.C12 
+              << ", C66=" << ec.C66 << ", Zener A=" << ec.Zener_A << std::endl;
+  }
+
+  // ==================== SETUP ENERGY POTENTIAL & OPTIMAL LATTICE PARAMETER ====================
+  std::function<double(double)> potential_func;
+  std::function<double(double)> potential_func_der;
+  std::function<double(double)> potential_func_sder;
+  double optimal_lattice_parameter = 1.0;
+  double r_cutoff = 2.5;
+
+  if (potential_mode == 3) {
+    energy_functions::set_parameters(energy_functions::current_beta, energy_functions::current_K);
+    optimal_lattice_parameter = (lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
+    potential_func = square_energy;
+    potential_func_der = square_energy_der;
+    potential_func_sder = square_energy_der;
+    std::cout << "[POTENTIAL] Mode 3: Zanzotto Continuum Model (beta = " << energy_functions::current_beta
+              << ", K = " << energy_functions::current_K << ")\n";
+  } else if (potential_mode == 1) {
+    potential_func = lennard_jones_energy_v2;
+    potential_func_der = lennard_jones_energy_der_v2;
+    potential_func_sder = lennard_jones_energy_sder_v2;
+    r_cutoff = 2.5;
+    optimal_lattice_parameter = find_optimal_lattice_parameter(potential_func, lattice_type, r_cutoff, potential_func_der, potential_func_sder);
+    std::cout << "[POTENTIAL] Mode 1: Lennard-Jones v2 (cutoff = " << r_cutoff << ")\n";
+  } else if (potential_mode == 2) {
+    potential_func = lennard_jones_energy_v3;
+    potential_func_der = lennard_jones_energy_der_v3;
+    potential_func_sder = lennard_jones_energy_sder_v3;
+    r_cutoff = 1.86602540378444;
+    optimal_lattice_parameter = find_optimal_lattice_parameter(potential_func, lattice_type, r_cutoff, potential_func_der, potential_func_sder);
+    std::cout << "[POTENTIAL] Mode 2: Lennard-Jones v3 (cutoff = " << r_cutoff << ")\n";
+  } else if (potential_mode == 4) {
+    potential_func = square_energy;
+    potential_func_der = square_energy_der;
+    potential_func_sder = square_energy_sder;
+    r_cutoff = 2.5;
+    optimal_lattice_parameter = find_optimal_lattice_parameter(potential_func, lattice_type, r_cutoff, potential_func_der, potential_func_sder);
+    std::cout << "[POTENTIAL] Mode 4: Square 2-Well Gaussian (cutoff = " << r_cutoff << ")\n";
+  } else {
+    std::cerr << "Unknown potential mode: " << potential_mode << std::endl;
+    exit(EXIT_FAILURE);
+  }
+
+  double lattice_constant = optimal_lattice_parameter;
+  std::cout << "Optimal lattice parameter a_0: " << std::fixed << std::setprecision(8) << lattice_constant << std::endl;
+
+  double calc_scale = (potential_mode == 3)
+      ? 1.0
+      : ((lattice_type == "triangular") ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25)) : optimal_lattice_parameter);
 
   // ==================== SETUP REFERENCE GEOMETRY ====================
   // Save domain dimensions
@@ -503,7 +555,7 @@ void example_1_conti_zanzotto_loading(
             << std::endl;
 
   // Reference element is always kept SQUARE (reference state)
-  double h = 1.0;                      // Reference element size
+  double h = (potential_mode == 3) ? 1.0 : calc_scale;                      // Reference element size
 
   // Reference triangle vertices (for shape function derivatives)
   Eigen::Vector2d p1(0.0, 0.0);
@@ -515,27 +567,6 @@ void example_1_conti_zanzotto_loading(
 
   std::cout << "Reference element shape derivatives (dN/dx):" << std::endl;
   std::cout << dndx << std::endl;
-
-  // ==================== SETUP ENERGY POTENTIAL ====================
-  // Define DUMMY ATOMISTIC energy functions (currently using square potential)
-  std::function<double(double)> potential_func = square_energy;
-  std::function<double(double)> potential_func_der = square_energy_der;
-  std::function<double(double)> potential_func_sder = square_energy_der;
-
-  // ==================== DETERMINE OPTIMAL LATTICE PARAMETER
-  // ====================
-  std::cout << "STEP 1: Finding optimal lattice parameter..." << std::endl;
-
-  // Lattice symmetry correction factor
-  double symmetry_constantx =
-      (lattice_type == "triangular") ? pow(4.0 / 3.0, 1.0 / 4.0) : 1.0;
-  std::cout << "Symmetry constant for " << lattice_type
-            << " lattice: " << symmetry_constantx << std::endl;
-
-  // Set optimal lattice parameter
-  double optimal_lattice_parameter = symmetry_constantx * 1.0;
-  double lattice_constant = optimal_lattice_parameter;
-  std::cout << "Optimal lattice parameter: " << lattice_constant << std::endl;
 
   // ==================== GENERATE INITIAL LATTICE ====================
   std::vector<Point2D> square_points;
@@ -717,21 +748,35 @@ void example_1_conti_zanzotto_loading(
             << std::endl;
 
   // Setup energy calculation
-  Strain_Energy_LatticeCalculator calculator(1.0);
-
+  std::unique_ptr<BaseLatticeCalculator> calculator_ptr;
   Eigen::Matrix2d C_ref;
-  if (lattice_type == "triangular") {
-    double a2 = std::sqrt(4.0 / 3.0);
-    C_ref << a2, 0.5 * a2,
-             0.5 * a2, a2;
+
+  if (potential_mode == 3) {
+    calculator_ptr = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
+    if (lattice_type == "triangular") {
+      double a2 = std::sqrt(4.0 / 3.0);
+      C_ref << a2, 0.5 * a2,
+               0.5 * a2, a2;
+    } else {
+      C_ref = Eigen::Matrix2d::Identity();
+    }
   } else {
-    C_ref = Eigen::Matrix2d::Identity();
+    if (lattice_type == "triangular") {
+      double calc_scale = optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25);
+      calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
+      double a2 = std::sqrt(4.0 / 3.0);
+      C_ref << a2, 0.5 * a2,
+               0.5 * a2, a2;
+    } else {
+      calculator_ptr = std::make_unique<SquareLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
+      C_ref = Eigen::Matrix2d::Identity();
+    }
   }
 
+  BaseLatticeCalculator& calculator = *calculator_ptr;
   double zero = calculator.calculate_energy(C_ref, potential_func, 0);
 
-  std::cout << "debugging simple shear test" << std::endl;
-  std::cout << "zero energy value: " << zero << std::endl;
+  std::cout << "Reference state energy (zero): " << zero << std::endl;
 
   // ==================== SETUP LOADING SCHEDULE ====================
   int num_alpha_points =
@@ -757,6 +802,7 @@ void example_1_conti_zanzotto_loading(
                            potential_func_der, zero, optimal_lattice_parameter,
                            restart_chk->F_ext, interior_mapping, full_mapping,
                            active_elements, plasticity);
+    checkUserData.second_derivative_function = &potential_func_sder;
     Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
     ConfigurationSaver::calculateEnergyAndStress(&checkUserData, post_energy_previous,
                                                  stress_tensor, true);
@@ -815,6 +861,7 @@ void example_1_conti_zanzotto_loading(
                       potential_func_der, zero, optimal_lattice_parameter,
                       F_ext, interior_mapping, full_mapping, active_elements,
                       plasticity);
+    userData.second_derivative_function = &potential_func_sder;
 
     // ==================== PREPARE OPTIMIZATION ====================
     alglib::real_1d_array x;
@@ -1026,6 +1073,7 @@ void example_1_conti_zanzotto_loading(
                              potential_func, potential_func_der, zero,
                              optimal_lattice_parameter, F_ext, interior_mapping,
                              full_mapping, active_elements, plasticity);
+    postOptUserData.second_derivative_function = &potential_func_sder;
     post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
 
     std::cout << "=== DROP EVALUATION (i = " << i << ") ===" << std::endl;
@@ -1078,6 +1126,7 @@ void example_1_conti_zanzotto_loading(
                               optimal_lattice_parameter, pre_F_ext,
                               interior_mapping, full_mapping,
                               pre_active_elements, plasticity);
+      preOptUserData.second_derivative_function = &potential_func_sder;
 
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
           &preOptUserData, pre_file_id, pre_energy_val, pre_stress_val, true);
@@ -1244,7 +1293,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                int csl_kx,
                                                int csl_ky,
                                                double rotation_angle,
-                                               const std::string& bc) {
+                                               const std::string& bc,
+                                               int potential_mode) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1265,7 +1315,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    csl_kx,
                                    csl_ky,
                                    rotation_angle,
-                                   bc);
+                                   bc,
+                                   potential_mode);
 }
 
 void restart_zanzotto_simulation(const std::string& checkpoint_path,
@@ -1273,7 +1324,8 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
                                  double stress_drop_threshold,
                                  bool save_triangle_data,
                                  int max_avalanches,
-                                 const std::string& lattice_type) {
+                                 const std::string& lattice_type,
+                                 int potential_mode) {
   std::string path = checkpoint_path;
   if (path == "latest" || path == "checkpoints/latest") {
     path = "checkpoints/latest.chk";
@@ -1306,7 +1358,9 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
         0.0, chk.seed, chk.enable_remeshing, &chk,
         checkpoint_interval, stress_drop_threshold, save_triangle_data,
         max_avalanches,
-        lattice_type);
+        lattice_type,
+        0.04, false, 1, 0, 1, 1, 0.0, "periodic",
+        potential_mode);
   } else {
     example_1_conti_zanzotto_negative_loading(
         0, chk.nx, chk.ny,
@@ -1314,6 +1368,8 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
         chk.seed, chk.enable_remeshing, &chk,
         checkpoint_interval, stress_drop_threshold, save_triangle_data,
         max_avalanches,
-        lattice_type);
+        lattice_type,
+        0.04, false, 1, 0, 1, 1, 0.0, "periodic",
+        potential_mode);
   }
 }

@@ -188,9 +188,11 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--alpha-min=", 0) == 0) {
       acoustic_alpha_min = std::stod(arg.substr(12));
       stiffness_alpha_min = acoustic_alpha_min;
+      alpha_start = acoustic_alpha_min;
     } else if (arg.rfind("--alpha-max=", 0) == 0) {
       acoustic_alpha_max = std::stod(arg.substr(12));
       stiffness_alpha_max = acoustic_alpha_max;
+      alpha_end = acoustic_alpha_max;
     } else if (arg.rfind("--dalpha=", 0) == 0) {
       acoustic_dalpha = std::stod(arg.substr(9));
       stiffness_dalpha = acoustic_dalpha;
@@ -328,7 +330,7 @@ int main(int argc, char **argv) {
   configure_stability_monitor(stability_options);
 
   if (!restart_checkpoint.empty()) {
-    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type);
+    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, acoustic_potential_mode);
     return 0;
   }
 
@@ -494,14 +496,14 @@ int main(int argc, char **argv) {
   //    Applies stress-controlled shear/axial loading with adaptive remeshing.
   // example_3_stress_controlled_final_clean(0, nx, ny);
 
-  // 7. Zanzotto Continuous Shear Loading:
+  // 7. Continuous Shear Loading:
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
     example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, acoustic_potential_mode);
   } else {
     example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, acoustic_potential_mode);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):
