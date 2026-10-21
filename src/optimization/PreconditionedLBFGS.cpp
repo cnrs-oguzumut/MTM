@@ -190,13 +190,20 @@ FastStiffnessAssembler::assembleStiffness(const alglib::real_1d_array &x,
   const auto &active = userData->active_elements;
   const double normalisation = userData->calculator.getUnitCellArea();
 
+  std::function<double(double)> fd_d2pot;
   const std::function<double(double)> *d2pot = userData->second_derivative_function;
   if (d2pot == nullptr) {
     if (dynamic_cast<Strain_Energy_LatticeCalculator *>(&userData->calculator) == nullptr) {
-      throw std::runtime_error("FastStiffnessAssembler: set UserData::second_derivative_function "
-                               "for lattice-sum calculators");
+      // Fallback: approximate second derivative via central differences of derivative_function
+      const auto &df = userData->derivative_function;
+      fd_d2pot = [&df](double r) {
+        double eps = 1e-6 * std::max(1.0, std::abs(r));
+        return (df(r + eps) - df(r - eps)) / (2.0 * eps);
+      };
+      d2pot = &fd_d2pot;
+    } else {
+      d2pot = &userData->derivative_function; // ignored by the analytic strain energy
     }
-    d2pot = &userData->derivative_function; // ignored by the analytic strain energy
   }
 
   double *values = K_.valuePtr();

@@ -229,7 +229,8 @@ void StabilityMonitor::end_of_step(int step, double alpha, double post_stress, U
         std::vector<size_t> active = prev_active;
         UserData kept(st.points, elements, post.calculator, post.energy_function,
                       post.derivative_function, post.zero_energy, post.ideal_lattice_parameter,
-                      st.F, post.interior_mapping, post.full_mapping, active, false);
+                      st.F, post.interior_mapping, post.full_mapping, active, false,
+                      post.second_derivative_function);
         const auto t0 = Clock::now();
         s = compute(kept, vectors);
         if (!st.computed)

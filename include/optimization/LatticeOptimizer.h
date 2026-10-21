@@ -53,7 +53,8 @@ struct UserData {
              const std::vector<std::pair<int, int>>& int_map,
              const std::vector<std::pair<int, int>>& full_map,
             std::vector<size_t>& active_elems,
-             bool third_cond_flag = false)
+             bool third_cond_flag = false,
+             const std::function<double(double)>* second_deriv_func = nullptr)
         : points(pts), 
           elements(elems), 
           calculator(calc),
@@ -66,7 +67,8 @@ struct UserData {
           full_mapping(full_map),
           active_elements(active_elems),
           third_condition_flag(third_cond_flag),
-          optimizer_state(nullptr)      // Initialize 
+          optimizer_state(nullptr),
+          second_derivative_function(second_deriv_func)
           {}
 };
 

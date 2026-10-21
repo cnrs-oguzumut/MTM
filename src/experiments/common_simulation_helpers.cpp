@@ -76,7 +76,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     UserData oldUserData(square_points, elements, userData->calculator,
                          potential_func, potential_func_der, zero,
                          ideal_lattice_parameter, F_ext, interior_mapping,
-                         full_mapping, active_elements, plasticity);
+                         full_mapping, active_elements, plasticity,
+                         userData->second_derivative_function);
 
     double energy_old = 0.0;
     Eigen::Matrix2d stress_old;
@@ -124,7 +125,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     UserData newUserData(square_points, elements, userData->calculator,
                          potential_func, potential_func_der, zero,
                          ideal_lattice_parameter, F_ext, interior_mapping,
-                         full_mapping, active_elements, plasticity);
+                         full_mapping, active_elements, plasticity,
+                         userData->second_derivative_function);
 
     // Evaluate immediate post-reconnection energy (coordinates x frozen)
     double energy_reconnected = 0.0;
@@ -164,7 +166,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     UserData newUserData_after(square_points, elements, userData->calculator,
                                potential_func, potential_func_der, zero,
                                ideal_lattice_parameter, F_ext, interior_mapping,
-                               full_mapping, active_elements, plasticity);
+                               full_mapping, active_elements, plasticity,
+                               userData->second_derivative_function);
 
     double energy_new = 0.0;
     Eigen::Matrix2d stress_new;
