@@ -1,4 +1,5 @@
 #include "../include/optimization/LatticeOptimizer.h"
+#include "../include/optimization/MetalEnergyMinimizer.h"
 #include "../include/output/ChangeMeasures.h"
 
 #include <fstream>
@@ -603,6 +604,20 @@ void minimize_energy_with_triangles(
     }
 
     func = total_energy;
+}
+
+void minimize_energy_with_triangles_GPU(
+    const alglib::real_1d_array &x, 
+    double &func, 
+    alglib::real_1d_array &grad, 
+    void *ptr) 
+{
+    auto* userData = reinterpret_cast<UserData*>(ptr);
+#if defined(__APPLE__) && defined(USE_METAL)
+    metal_gpu::compute_energy_and_gradient(x, func, grad, userData);
+#else
+    minimize_energy_with_triangles(x, func, grad, ptr);
+#endif
 }
 
 

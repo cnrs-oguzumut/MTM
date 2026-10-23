@@ -371,6 +371,19 @@ file(GLOB_RECURSE LIB_SOURCES
 list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
 list(FILTER LIB_SOURCES EXCLUDE REGEX ".*main_splines\\.cpp$")
 list(REMOVE_ITEM LIB_SOURCES ${EXPERIMENT_SOURCES})
+
+# Metal GPU acceleration (Apple Silicon / macOS)
+set(METAL_GPU_SUPPORT FALSE)
+if(APPLE)
+    enable_language(OBJCXX)
+    find_library(METAL_FRAMEWORK Metal)
+    find_library(FOUNDATION_FRAMEWORK Foundation)
+    if(METAL_FRAMEWORK AND FOUNDATION_FRAMEWORK)
+        set(METAL_GPU_SUPPORT TRUE)
+        list(APPEND LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/optimization/MetalEnergyMinimizer.mm")
+    endif()
+endif()
+
 add_library(lattice_lib STATIC
     ${LIB_SOURCES}
     ${EXPERIMENT_SOURCES}
@@ -426,6 +439,15 @@ if(ACCELERATE_FOUND)
     message(STATUS "Apple Accelerate support ENABLED - USE_ACCELERATE=1 defined")
 else()
     message(STATUS "Apple Accelerate support DISABLED")
+endif()
+
+# Metal framework linking
+if(METAL_GPU_SUPPORT)
+    target_compile_definitions(lattice_lib PUBLIC USE_METAL=1)
+    target_link_libraries(lattice_lib PUBLIC ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+    message(STATUS "Apple Metal GPU acceleration ENABLED - USE_METAL=1 defined")
+else()
+    message(STATUS "Apple Metal GPU acceleration DISABLED")
 endif()
 
 # CHOLMOD (SuiteSparse) supernodal Cholesky for the L-BFGS stiffness preconditioner;
@@ -508,6 +530,10 @@ if(ACCELERATE_FOUND)
     list(APPEND BASE_LIBRARIES ${ACCELERATE_LIBRARY})
 endif()
 
+if(METAL_GPU_SUPPORT)
+    list(APPEND BASE_LIBRARIES ${METAL_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+endif()
+
 # Note: Spectra is header-only, so no libraries to link
 
 # Link libraries to main executable
@@ -536,6 +562,25 @@ endif()
 target_link_libraries(benchmark_preconditioner ${BASE_LIBRARIES})
 if(OpenMP_CXX_FOUND)
     target_link_libraries(benchmark_preconditioner OpenMP::OpenMP_CXX)
+endif()
+
+# GPU energy minimizer benchmark
+add_executable(benchmark_gpu
+    "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/benchmark_gpu.cpp")
+if(TARGET Eigen3::Eigen)
+    target_link_libraries(benchmark_gpu PUBLIC Eigen3::Eigen)
+else()
+    target_include_directories(benchmark_gpu PUBLIC ${EIGEN3_INCLUDE_DIR})
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(benchmark_gpu PRIVATE -O3 -march=native -flto -ffast-math)
+endif()
+if(MAIN_EXE_DEFINITIONS)
+    target_compile_definitions(benchmark_gpu PRIVATE ${MAIN_EXE_DEFINITIONS})
+endif()
+target_link_libraries(benchmark_gpu ${BASE_LIBRARIES})
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(benchmark_gpu OpenMP::OpenMP_CXX)
 endif()
 
 # Add test executable if tests directory exists

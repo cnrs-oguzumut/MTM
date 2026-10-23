@@ -177,14 +177,21 @@ void map_points_to_solver_array(
         const std::vector<std::pair<int, int>>& full_mapping,
         size_t num_points  // Changed from int to size_t
     );    
-    // Main optimization function
+    // Main optimization function (CPU reference)
     void minimize_energy_with_triangles(
         const alglib::real_1d_array &x, 
         double &func, 
         alglib::real_1d_array &grad, 
         void *ptr);
 
-            // Main optimization function
+    // Main optimization function (GPU accelerated via Apple Metal)
+    void minimize_energy_with_triangles_GPU(
+        const alglib::real_1d_array &x, 
+        double &func, 
+        alglib::real_1d_array &grad, 
+        void *ptr);
+
+    // Main optimization function without reduction
     void minimize_energy_with_triangles_noreduction(
         const alglib::real_1d_array &x, 
         double &func, 
