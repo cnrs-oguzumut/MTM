@@ -727,7 +727,10 @@ static void write_dislocation_profiles_json_and_csv(
     double core_y,
     double C11, double C12, double C66, double poisson_ratio,
     const StateProfileData& unrelaxed,
-    const StateProfileData* relaxed = nullptr) {
+    const StateProfileData* relaxed = nullptr,
+    bool macro_stress_relaxed = false,
+    const Eigen::Matrix2d* final_F = nullptr,
+    const Eigen::Matrix2d* final_stress = nullptr) {
 
   std::ofstream jf(filename_json);
   if (!jf.is_open()) {
@@ -748,6 +751,16 @@ static void write_dislocation_profiles_json_and_csv(
   double active_core_y = relaxed ? relaxed->core_y : unrelaxed.core_y;
   jf << "  \"core_x\": " << active_core_x << ",\n";
   jf << "  \"core_y\": " << active_core_y << ",\n";
+  jf << "  \"macro_stress_relaxed\": " << (macro_stress_relaxed ? "true" : "false") << ",\n";
+  if (final_F) {
+    jf << "  \"final_F\": [[" << (*final_F)(0, 0) << ", " << (*final_F)(0, 1) << "], ["
+       << (*final_F)(1, 0) << ", " << (*final_F)(1, 1) << "]],\n";
+  }
+  if (final_stress) {
+    jf << "  \"final_macro_stress\": {\"xx\": " << (*final_stress)(0, 0)
+       << ", \"yy\": " << (*final_stress)(1, 1)
+       << ", \"xy\": " << (*final_stress)(0, 1) << "},\n";
+  }
   jf << "  \"elastic_constants\": {\n";
   jf << "    \"C11\": " << C11 << ",\n";
   jf << "    \"C12\": " << C12 << ",\n";
@@ -880,7 +893,10 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                                             const std::string &lattice_type,
                                             int potential_mode,
                                             double beta,
-                                            double bulk_K) {
+                                            double bulk_K,
+                                            bool relax_macro_stress,
+                                            double stress_tol,
+                                            int max_macro_iters) {
   if (nx <= 0 || ny <= 0) {
     std::cerr << "Error: nx and ny must be positive integers." << std::endl;
     exit(EXIT_FAILURE);
@@ -1159,20 +1175,166 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       lattice_constant, burgers_vector.x(), core_x, core_y,
       C11, C12, C66, poisson_ratio, unrelaxed_profile, nullptr);
 
-  // Energy minimization within R_free
-  std::cout << "Minimizing energy of free nodes within R_free..." << std::endl;
-  userData.third_condition_flag = false;
-  relaxation_begin_step(0);
-  relax_configuration(x, &userData, 13);
-
-  map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-  userData.points = square_points;
-
-  // Compute post-relaxation energy and stress
+  // Energy minimization: either standard fixed boundary or Full Cauchy Tensor macroscopic relaxation
+  Eigen::Matrix2d F_bar = F_ext; // Starts at Identity
   double post_energy = 0.0;
-  stress_tensor.setZero();
-  ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor, true);
-  double post_stress = stress_tensor(0, 1);
+  double post_stress = 0.0;
+
+  if (relax_macro_stress) {
+    std::cout << "\n========================================================" << std::endl;
+    std::cout << "  STARTING FULL CAUCHY TENSOR MACRO-STRESS RELAXATION" << std::endl;
+    std::cout << "  Target: sigma_xx -> 0, sigma_yy -> 0, sigma_xy -> 0" << std::endl;
+    std::cout << "  Tolerance: " << stress_tol << " | Max Macro Iterations: " << max_macro_iters << std::endl;
+    std::cout << "========================================================" << std::endl;
+
+    bool macro_converged = false;
+    for (int macro_iter = 0; macro_iter < max_macro_iters; ++macro_iter) {
+      // Step A: Minimize internal free nodes with current boundary positions
+      userData.third_condition_flag = false;
+      relaxation_begin_step(macro_iter);
+      relax_configuration(x, &userData, 13);
+
+      map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+      userData.points = square_points;
+
+      // Step B: Calculate volume-averaged Cauchy stress tensor
+      post_energy = 0.0;
+      stress_tensor.setZero();
+      ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor, true);
+      post_stress = stress_tensor(0, 1);
+
+      double max_stress_norm = std::max({
+          std::abs(stress_tensor(0, 0)),
+          std::abs(stress_tensor(1, 1)),
+          std::abs(stress_tensor(0, 1))
+      });
+
+      std::cout << "  [Macro Step " << macro_iter << "] Energy = " << std::setprecision(10) << post_energy
+                << " | Cauchy Stress: [xx=" << stress_tensor(0, 0)
+                << ", yy=" << stress_tensor(1, 1)
+                << ", xy=" << stress_tensor(0, 1) << "]"
+                << " | Max|sigma| = " << max_stress_norm << std::endl;
+
+      // Check convergence
+      if (max_stress_norm < stress_tol) {
+        macro_converged = true;
+        std::cout << "  >>> Full Cauchy Tensor macro-stress relaxation CONVERGED in "
+                  << (macro_iter + 1) << " iterations! Max|sigma| = " << max_stress_norm
+                  << " < tol=" << stress_tol << std::endl;
+        break;
+      }
+
+      if (macro_iter + 1 >= max_macro_iters) {
+        std::cout << "  [Warning] Reached max macro iterations (" << max_macro_iters
+                  << "). Stopping with Max|sigma| = " << max_stress_norm << std::endl;
+        break;
+      }
+
+      // Step C: Compute instantaneous spatial tangent stiffness via AcousticTensor
+      Eigen::Matrix2d C_bar = F_bar.transpose() * F_bar;
+      lagrange::Result red_res = lagrange::reduce(C_bar);
+      Eigen::Matrix2d Z = red_res.m_matrix;
+      double normalisation = calculator.getUnitCellArea();
+
+      AcousticTensor acoustic_tensor(F_bar, red_res.C_reduced, Z);
+      acoustic_tensor.computeEnergyDerivatives(
+          calculator, potential_func_der, potential_func_sder, normalisation);
+
+      itensor::ITensor C_spatial = acoustic_tensor.getSpatialTangent();
+
+      // Step D: Extract 3x3 Voigt tangent stiffness
+      Eigen::Matrix3d C_voigt = Eigen::Matrix3d::Zero();
+      auto inds = itensor::inds(C_spatial);
+      if (inds.size() == 4) {
+        itensor::Index i_idx = inds[0];
+        itensor::Index j_idx = inds[1];
+        itensor::Index k_idx = inds[2];
+        itensor::Index l_idx = inds[3];
+
+        C_voigt(0, 0) = itensor::elt(C_spatial, i_idx = 1, j_idx = 1, k_idx = 1, l_idx = 1);
+        C_voigt(0, 1) = itensor::elt(C_spatial, i_idx = 1, j_idx = 1, k_idx = 2, l_idx = 2);
+        C_voigt(0, 2) = itensor::elt(C_spatial, i_idx = 1, j_idx = 1, k_idx = 1, l_idx = 2);
+
+        C_voigt(1, 0) = itensor::elt(C_spatial, i_idx = 2, j_idx = 2, k_idx = 1, l_idx = 1);
+        C_voigt(1, 1) = itensor::elt(C_spatial, i_idx = 2, j_idx = 2, k_idx = 2, l_idx = 2);
+        C_voigt(1, 2) = itensor::elt(C_spatial, i_idx = 2, j_idx = 2, k_idx = 1, l_idx = 2);
+
+        C_voigt(2, 0) = itensor::elt(C_spatial, i_idx = 1, j_idx = 2, k_idx = 1, l_idx = 1);
+        C_voigt(2, 1) = itensor::elt(C_spatial, i_idx = 1, j_idx = 2, k_idx = 2, l_idx = 2);
+        C_voigt(2, 2) = itensor::elt(C_spatial, i_idx = 1, j_idx = 2, k_idx = 1, l_idx = 2);
+      } else {
+        std::cerr << "Warning: C_spatial rank != 4. Using fallback identity tangent." << std::endl;
+        C_voigt = Eigen::Matrix3d::Identity();
+      }
+
+      // Step E: Solve C_voigt * delta_eps = -sigma_residual
+      Eigen::Vector3d delta_sigma;
+      delta_sigma << stress_tensor(0, 0), stress_tensor(1, 1), stress_tensor(0, 1);
+
+      Eigen::Vector3d delta_eps;
+      if (std::abs(C_voigt.determinant()) > 1e-10) {
+        delta_eps = -C_voigt.fullPivLu().solve(delta_sigma);
+      } else {
+        delta_eps = -C_voigt.bdcSvd(Eigen::ComputeFullU | Eigen::ComputeFullV).solve(delta_sigma);
+      }
+
+      // Step F: Apply relaxation factor and safeguard maximum strain increment per macro step
+      double alpha_relax = 1.0;
+      Eigen::Vector3d eps_corr = alpha_relax * delta_eps;
+      double max_dE = 0.02;
+      for (int ii = 0; ii < 3; ++ii) {
+        if (std::abs(eps_corr(ii)) > max_dE) {
+          eps_corr(ii) = (eps_corr(ii) > 0) ? max_dE : -max_dE;
+        }
+      }
+
+      // Step G: Upper-triangular incremental deformation gradient
+      // keeps the slip plane y = core_y strictly horizontal (F_21 = 0)
+      Eigen::Matrix2d F_inc = Eigen::Matrix2d::Identity();
+      F_inc(0, 0) += eps_corr(0);      // Delta eps_11
+      F_inc(1, 1) += eps_corr(1);      // Delta eps_22
+      F_inc(0, 1) += eps_corr(2);      // Delta gamma_12 = 2 * Delta eps_12
+
+      Eigen::Matrix2d F_bar_new = F_inc * F_bar;
+
+      std::cout << "  [Macro Step " << macro_iter << "] Delta eps: ["
+                << eps_corr(0) << ", " << eps_corr(1) << ", " << eps_corr(2)
+                << "] -> New F_bar: [" << F_bar_new(0, 0) << ", " << F_bar_new(0, 1)
+                << "; " << F_bar_new(1, 0) << ", " << F_bar_new(1, 1) << "]" << std::endl;
+
+      // Step H: Update node positions centered at the dislocation core
+      for (size_t j = 0; j < square_points.size(); ++j) {
+        Eigen::Vector2d rel = square_points[j].coord - dislocation_core;
+        square_points[j].coord = dislocation_core + F_inc * rel;
+      }
+
+      // Re-map free nodes to solver array x
+      map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
+
+      // Update state
+      F_bar = F_bar_new;
+      F_ext = F_bar;
+      userData.points = square_points;
+      for (auto &element : elements) {
+        element.setExternalDeformation(F_ext);
+        element.set_reference_mesh(square_points);
+      }
+    }
+  } else {
+    // Standard fixed-mantle relaxation (relax_macro_stress == false)
+    std::cout << "Minimizing energy of free nodes within R_free..." << std::endl;
+    userData.third_condition_flag = false;
+    relaxation_begin_step(0);
+    relax_configuration(x, &userData, 13);
+
+    map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+    userData.points = square_points;
+
+    post_energy = 0.0;
+    stress_tensor.setZero();
+    ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor, true);
+    post_stress = stress_tensor(0, 1);
+  }
 
   std::cout << "State 1 (Relaxed core): Energy = " << post_energy
             << " (drop: " << (pre_energy - post_energy) << ")"
@@ -1250,7 +1412,8 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       "dislocation_profiles.json", "dislocation_profiles.csv",
       lattice_type, potential_mode, beta, bulk_K, R_free,
       lattice_constant, burgers_vector.x(), core_x, core_y,
-      C11, C12, C66, poisson_ratio, unrelaxed_profile, &relaxed_profile);
+      C11, C12, C66, poisson_ratio, unrelaxed_profile, &relaxed_profile,
+      relax_macro_stress, &F_ext, &stress_tensor);
 
   std::cout << "\n================ DISLOCATION ANALYSIS SUMMARY ================" << std::endl;
   std::cout << "Dislocation Core Position: (" << core_x << ", " << core_y << ")" << std::endl;
@@ -1264,6 +1427,14 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
             << ", R² = " << relaxed_profile.core_fit.R2 << std::endl;
   std::cout << "Core Energy Relaxation Drop: ΔE_core = "
             << (unrelaxed_profile.core_fit.core_energy - relaxed_profile.core_fit.core_energy) << std::endl;
+  if (relax_macro_stress) {
+    std::cout << "Macro-Stress Relaxation:     ENABLED (Full Cauchy Tensor to zero stress)" << std::endl;
+    std::cout << "Final F_bar:                 [" << F_ext(0, 0) << ", " << F_ext(0, 1)
+              << "; " << F_ext(1, 0) << ", " << F_ext(1, 1) << "]" << std::endl;
+    std::cout << "Final Cauchy Stress:         sigma_xx=" << stress_tensor(0, 0)
+              << ", sigma_yy=" << stress_tensor(1, 1)
+              << ", sigma_xy=" << stress_tensor(0, 1) << std::endl;
+  }
   std::cout << "Dislocation profiles exported to dislocation_profiles.json and dislocation_profiles.csv" << std::endl;
   std::cout << "==============================================================\n" << std::endl;
   std::cout << "=== VOLTERRA DISLOCATION RELAXATION COMPLETE ===\n" << std::endl;

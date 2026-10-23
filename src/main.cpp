@@ -26,6 +26,9 @@ int main(int argc, char **argv) {
   double r_free = 20.0;
   bool use_cylinder = false;
   bool export_full_mesh = true;
+  bool relax_macro_stress = false;
+  double stress_tol = 1e-5;
+  int max_macro_iters = 30;
   double alpha_start = 0.14;
   double alpha_end = 1.0;
   double step_size = 6e-5;
@@ -293,6 +296,17 @@ int main(int argc, char **argv) {
       export_full_mesh = true;
     } else if (arg == "--circle" || arg == "--circle-only" || arg == "--active-only") {
       export_full_mesh = false;
+    } else if (arg == "--relax-stress" || arg == "--relax-stress=1" ||
+               arg == "--relax-macro-stress" || arg == "--relax-macro-stress=1") {
+      relax_macro_stress = true;
+    } else if (arg == "--relax-stress=0" || arg == "--relax-macro-stress=0") {
+      relax_macro_stress = false;
+    } else if (arg.rfind("--stress-tol=", 0) == 0) {
+      stress_tol = std::stod(arg.substr(13));
+    } else if (arg.rfind("--max-macro-iters=", 0) == 0) {
+      max_macro_iters = std::stoi(arg.substr(18));
+    } else if (arg.rfind("--max-stress-iters=", 0) == 0) {
+      max_macro_iters = std::stoi(arg.substr(19));
     } else if (arg == "--trace-avalanche" || arg == "--trace-avalanche=1" || arg == "--trace=1") {
       AvalancheRecorder::instance().setEnabled(true);
     } else if (arg == "--trace-avalanche=0" || arg == "--trace=0") {
@@ -428,9 +442,11 @@ int main(int argc, char **argv) {
     std::cout << "\n>>> Running single dislocation cylinder relaxation with nx=" << nx
               << ", ny=" << ny << ", R_free=" << r_free
               << ", mesh=" << (export_full_mesh ? "full" : "circle")
-              << ", lattice=" << lattice_type << ", potential_mode=" << potential_mode << " <<<\n" << std::endl;
+              << ", lattice=" << lattice_type << ", potential_mode=" << potential_mode
+              << ", relax_macro_stress=" << (relax_macro_stress ? "true" : "false") << " <<<\n" << std::endl;
     single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh,
-                                           lattice_type, potential_mode, beta, bulk_K);
+                                           lattice_type, potential_mode, beta, bulk_K,
+                                           relax_macro_stress, stress_tol, max_macro_iters);
     return 0;
   }
 

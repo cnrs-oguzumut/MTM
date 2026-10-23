@@ -217,6 +217,24 @@ struct SidebarControlsView: View {
                             Toggle("Export Full Mesh (Unclipped VTK)", isOn: $config.exportFullMesh)
                                 .font(.caption)
                             
+                            Toggle("Relax Macroscopic Stress to Zero (Full Cauchy)", isOn: $config.relaxMacroStress)
+                                .font(.caption)
+                            
+                            if config.relaxMacroStress {
+                                HStack {
+                                    Text("Stress Tolerance (max |σ|):")
+                                        .font(.caption)
+                                    Spacer()
+                                    DoubleField(title: "1e-5", value: $config.stressTol, width: 75)
+                                }
+                                HStack {
+                                    Text("Max Macro Iterations:")
+                                        .font(.caption)
+                                    Spacer()
+                                    IntField(title: "30", value: $config.maxMacroIters, width: 75)
+                                }
+                            }
+                            
                             Text(config.latticeSymmetry == .triangular ?
                                  "Uses Isotropic 2D Volterra solution (Eq. 15) with ν = C₁₂/C₁₁ and equilibrium spacing a₀ computed from active potential." :
                                  "Uses Anisotropic Stroh solution (Eqs. A5–A16) with (κ, ξ, ζ, g₁, g₂, g₃) and equilibrium spacing a₀ computed from active potential.")

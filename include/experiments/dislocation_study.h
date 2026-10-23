@@ -20,5 +20,8 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                                             const std::string &lattice_type = "square",
                                             int potential_mode = 3,
                                             double beta = -0.25,
-                                            double bulk_K = 5.0);
+                                            double bulk_K = 5.0,
+                                            bool relax_macro_stress = false,
+                                            double stress_tol = 1e-5,
+                                            int max_macro_iters = 30);
 

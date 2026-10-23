@@ -107,6 +107,11 @@ public class SimulationConfig: ObservableObject {
     @Published public var rFree: Double = 35.0
     @Published public var exportFullMesh: Bool = true
     
+    // Dislocation Stress Relaxation (Full Cauchy Tensor)
+    @Published public var relaxMacroStress: Bool = false
+    @Published public var stressTol: Double = 1e-5
+    @Published public var maxMacroIters: Int = 30
+    
     // 3. Loading Schedule (Shear modes)
     @Published public var boundaryCondition: BoundaryConditionMode = .periodic
     @Published public var alphaStart: Double = 0.14
@@ -217,7 +222,8 @@ public class SimulationConfig: ObservableObject {
         let bcTag = (boundaryCondition == .fixed) ? "_fixed" : ""
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
         let rotTag = useRotation ? ((boundaryCondition == .fixed || mode == .volterra) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
-        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)"
+        let relaxTag = (mode == .volterra && relaxMacroStress) ? "_relax" : ""
+        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)"
     }
     
     public var targetDirectory: String {
@@ -281,6 +287,11 @@ public class SimulationConfig: ObservableObject {
         if mode == .volterra {
             args.append(String(format: "--r-free=%.2f", rFree))
             args.append(exportFullMesh ? "--full-mesh" : "--circle")
+            if relaxMacroStress {
+                args.append("--relax-stress=1")
+                args.append(String(format: "--stress-tol=%.1e", stressTol))
+                args.append("--max-macro-iters=\(maxMacroIters)")
+            }
         } else {
             args.append(String(format: "--alpha-start=%.6f", alphaStart))
             args.append(String(format: "--alpha-end=%.6f", alphaEnd))
