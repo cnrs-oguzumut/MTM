@@ -448,7 +448,15 @@ public struct DislocationProfileChartView: View {
         let unrelCore = root.unrelaxed.coreFit.coreEnergy
         let relCore = root.relaxed?.coreFit.coreEnergy ?? unrelCore
         let drop = unrelCore - relCore
-        
+        // Macro Stress KPI
+        let maxMacroStress: Double = {
+            if let ms = root.finalMacroStress {
+                return max(abs(ms.xx), max(abs(ms.yy), abs(ms.xy)))
+            }
+            return abs(activeState.totalStress)
+        }()
+        let isZeroStress = root.macroStressRelaxed
+
         return HStack(spacing: 14) {
             DislocKpiPill(
                 title: "Core Position (x_c, y_c)",
@@ -482,12 +490,22 @@ public struct DislocationProfileChartView: View {
             )
             
             DislocKpiPill(
-                title: "Burgers Vector b",
-                value: String(format: "%.4f", root.burgersVector),
-                subtitle: "Lattice: \(root.latticeType)",
-                icon: "arrow.right",
-                color: .indigo
+                title: "Macro Cauchy Stress",
+                value: String(format: "%.2e", maxMacroStress),
+                subtitle: isZeroStress ? "Relaxed to 0 (Full Cauchy)" : "Unrelaxed Boundary",
+                icon: isZeroStress ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                color: isZeroStress ? .green : .red
             )
+            
+            if let f = root.finalF, f.count >= 2, f[0].count >= 2, f[1].count >= 2 {
+                DislocKpiPill(
+                    title: "Macro Stretch F",
+                    value: String(format: "λ=(%.4f, %.4f)", f[0][0], f[1][1]),
+                    subtitle: String(format: "γ=%.2e", f[0][1]),
+                    icon: "arrow.up.left.and.arrow.down.right",
+                    color: .teal
+                )
+            }
             
             Spacer()
         }

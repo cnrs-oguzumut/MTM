@@ -14,6 +14,9 @@ public struct DislocationProfileJSONRoot: Codable {
     public let elasticConstants: DislocationElasticConstantsModel
     public let unrelaxed: DislocationStateDataModel
     public let relaxed: DislocationStateDataModel?
+    public let macroStressRelaxed: Bool
+    public let finalF: [[Double]]?
+    public let finalMacroStress: DislocationMacroStressModel?
 
     enum CodingKeys: String, CodingKey {
         case status
@@ -29,6 +32,9 @@ public struct DislocationProfileJSONRoot: Codable {
         case elasticConstants = "elastic_constants"
         case unrelaxed
         case relaxed
+        case macroStressRelaxed = "macro_stress_relaxed"
+        case finalF = "final_F"
+        case finalMacroStress = "final_macro_stress"
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,6 +53,21 @@ public struct DislocationProfileJSONRoot: Codable {
             ?? DislocationElasticConstantsModel(c11: 21.7, c12: 18.2, c66: 6.0, poissonRatio: 0.25)
         unrelaxed = try c.decode(DislocationStateDataModel.self, forKey: .unrelaxed)
         relaxed = try? c.decode(DislocationStateDataModel.self, forKey: .relaxed)
+        macroStressRelaxed = (try? c.decode(Bool.self, forKey: .macroStressRelaxed)) ?? false
+        finalF = try? c.decode([[Double]].self, forKey: .finalF)
+        finalMacroStress = try? c.decode(DislocationMacroStressModel.self, forKey: .finalMacroStress)
+    }
+}
+
+public struct DislocationMacroStressModel: Codable {
+    public let xx: Double
+    public let yy: Double
+    public let xy: Double
+
+    public init(xx: Double = 0, yy: Double = 0, xy: Double = 0) {
+        self.xx = xx
+        self.yy = yy
+        self.xy = xy
     }
 }
 
