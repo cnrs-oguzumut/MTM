@@ -484,7 +484,7 @@ PreconditionedLBFGSReport PreconditionedLBFGS::optimize(alglib::real_1d_array &x
   ctx.userData = userData;
   ctx.x_work.setlength(n);
   ctx.gx_work.setlength(n);
-  ctx.grad_tol = options_.grad_tol;
+  ctx.grad_tol = options_.use_gpu ? options_.gpu_grad_tol : options_.grad_tol;
   ctx.use_gpu = options_.use_gpu;
   if (options_.progress_callback) {
     ctx.progress_callback = &options_.progress_callback;
@@ -549,8 +549,18 @@ PreconditionedLBFGSReport PreconditionedLBFGS::optimize(alglib::real_1d_array &x
     report.restarts++;
   }
 
-  // Final energy and x-space gradient at the returned point (also leaves the
-  if (options_.use_gpu) {
+  // If GPU was used and CPU polish is enabled, perform a fast double-precision CPU polish step
+  if (options_.use_gpu && options_.cpu_polish) {
+    alglib::minlbfgsstate polish_state;
+    alglib::minlbfgsreport polish_rep;
+    alglib::minlbfgscreate(5, x, polish_state);
+    alglib::minlbfgssetcond(polish_state, options_.grad_tol > 0.0 ? options_.grad_tol : 1e-6, 0.0, 0.0, 3);
+    alglib::minlbfgsoptimize(polish_state, minimize_energy_with_triangles, nullptr, userData);
+    alglib::minlbfgsresults(polish_state, x, polish_rep);
+    report.iterations += static_cast<int>(polish_rep.iterationscount);
+    report.nfev += static_cast<int>(polish_rep.nfev);
+    minimize_energy_with_triangles(x, report.energy, ctx.gx_work, userData);
+  } else if (options_.use_gpu) {
     minimize_energy_with_triangles_GPU(x, report.energy, ctx.gx_work, userData);
   } else {
     minimize_energy_with_triangles(x, report.energy, ctx.gx_work, userData);

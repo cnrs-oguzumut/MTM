@@ -50,7 +50,9 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
 // keeps the initial relaxation of the noisy lattice identical to the plain-solver runs.
 void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
                                  int first_step = 0,
-                                 bool use_gpu = false);
+                                 bool use_gpu = false,
+                                 bool cpu_polish = false,
+                                 double gpu_grad_tol = 1e-4);
 
 // Tells relax_configuration() which load step is being solved.
 void relaxation_begin_step(int step);

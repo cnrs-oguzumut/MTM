@@ -532,6 +532,23 @@ struct SidebarControlsView: View {
                             .pickerStyle(.segmented)
                         }
                         
+                        if config.computeDevice == .gpu {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Toggle("Polish with CPU (Eliminate Jitter)", isOn: $config.cpuPolish)
+                                    .font(.subheadline)
+                                    .help("Performs a quick double-precision CPU step at the end of each load step to snap coordinates to double precision.")
+                                
+                                HStack {
+                                    Text("GPU Gradient Tol:")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    DoubleField(title: "1e-4", value: $config.gpuTol, width: 80)
+                                }
+                                .help("Stopping tolerance for GPU L-BFGS iterations before CPU polishing.")
+                            }
+                            .padding(.top, 2)
+                        }
+                        
                         Divider()
                         
                         Picker("Metric", selection: $config.preconditioner) {

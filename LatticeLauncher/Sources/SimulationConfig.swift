@@ -151,6 +151,8 @@ public class SimulationConfig: ObservableObject {
     
     // 4. Preconditioning & Device
     @Published public var computeDevice: ComputeDevice = .cpu
+    @Published public var cpuPolish: Bool = true
+    @Published public var gpuTol: Double = 1e-4
     @Published public var preconditioner: PreconditionerType = .stiffness
     @Published public var precondFromStep: Int = 1
     @Published public var precondRefresh: Int = 0
@@ -279,6 +281,10 @@ public class SimulationConfig: ObservableObject {
         
         // Compute Device
         args.append("--device=\(computeDevice.rawValue)")
+        if computeDevice == .gpu {
+            args.append(String(format: "--gpu-tol=%.6e", gpuTol))
+            args.append("--cpu-polish=\(cpuPolish ? 1 : 0)")
+        }
         
         // Preconditioner
         args.append("--precond=\(preconditioner.rawValue)")
