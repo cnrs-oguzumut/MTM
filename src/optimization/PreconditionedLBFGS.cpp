@@ -330,6 +330,7 @@ struct TransformContext {
   bool hit = false;
   std::vector<double> x_hit;
   int nfev = 0;
+  bool use_gpu = false;
   const std::function<void(int nfev, double energy, double grad_max)> *progress_callback = nullptr;
 };
 
@@ -430,7 +431,11 @@ static void transformed_energy(const alglib::real_1d_array &z, double &func,
     std::copy(z.getcontent(), z.getcontent() + n, x);
   }
 
-  minimize_energy_with_triangles(ctx->x_work, func, ctx->gx_work, ctx->userData);
+  if (ctx->use_gpu) {
+    minimize_energy_with_triangles_GPU(ctx->x_work, func, ctx->gx_work, ctx->userData);
+  } else {
+    minimize_energy_with_triangles(ctx->x_work, func, ctx->gx_work, ctx->userData);
+  }
   ctx->nfev++;
 
   const double *gx = ctx->gx_work.getcontent();
@@ -480,6 +485,7 @@ PreconditionedLBFGSReport PreconditionedLBFGS::optimize(alglib::real_1d_array &x
   ctx.x_work.setlength(n);
   ctx.gx_work.setlength(n);
   ctx.grad_tol = options_.grad_tol;
+  ctx.use_gpu = options_.use_gpu;
   if (options_.progress_callback) {
     ctx.progress_callback = &options_.progress_callback;
   }
@@ -544,8 +550,11 @@ PreconditionedLBFGSReport PreconditionedLBFGS::optimize(alglib::real_1d_array &x
   }
 
   // Final energy and x-space gradient at the returned point (also leaves the
-  // elements' cached F consistent with x).
-  minimize_energy_with_triangles(x, report.energy, ctx.gx_work, userData);
+  if (options_.use_gpu) {
+    minimize_energy_with_triangles_GPU(x, report.energy, ctx.gx_work, userData);
+  } else {
+    minimize_energy_with_triangles(x, report.energy, ctx.gx_work, userData);
+  }
   for (int i = 0; i < n; i++)
     report.grad_max = std::max(report.grad_max, std::abs(ctx.gx_work[i]));
 

@@ -274,16 +274,20 @@ namespace {
 std::unique_ptr<PreconditionedLBFGS> g_relaxation_solver;
 int g_relaxation_first_step = 0;
 int g_relaxation_step = 0;
+bool g_relaxation_use_gpu = false;
 }
 
 void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
-                                 int first_step) {
+                                 int first_step,
+                                 bool use_gpu) {
   g_relaxation_first_step = first_step;
+  g_relaxation_use_gpu = use_gpu;
   if (options.type == LBFGSPreconditioner::None) {
     g_relaxation_solver.reset();
     return;
   }
   PreconditionedLBFGSOptions opts = options;
+  opts.use_gpu = use_gpu;
   if (!opts.progress_callback) {
     opts.progress_callback = [](int nfev, double energy, double grad_max) {
       if (AvalancheRecorder::instance().isEnabled()) {
@@ -304,7 +308,11 @@ void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corre
     return;
   }
   LBFGSOptimizer optimizer(corrections, 0.0, 0.0, 0.0, 0);
-  optimizer.optimize(x, minimize_energy_with_triangles, userData);
+  if (g_relaxation_use_gpu) {
+    optimizer.optimize(x, minimize_energy_with_triangles_GPU, userData);
+  } else {
+    optimizer.optimize(x, minimize_energy_with_triangles, userData);
+  }
 }
 
 void writeSizesToFile(int Nx, int Ny) {

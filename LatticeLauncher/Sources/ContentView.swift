@@ -68,6 +68,20 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 
+                // Active Compute Device Badge
+                HStack(spacing: 6) {
+                    Image(systemName: config.computeDevice == .gpu ? "bolt.circle.fill" : "cpu")
+                        .foregroundColor(config.computeDevice == .gpu ? .purple : .blue)
+                        .imageScale(.small)
+                    Text(config.computeDevice == .gpu ? "Metal GPU" : "CPU (OpenMP)")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color(NSColor.controlBackgroundColor), in: Capsule())
+                .fixedSize()
+
                 // Active Lattice Badge
                 HStack(spacing: 6) {
                     Circle()
@@ -505,8 +519,21 @@ struct SidebarControlsView: View {
                 }
                 
                 // 4. Preconditioning & Energy Relaxation
-                GroupBox(label: Label("L-BFGS Preconditioner", systemImage: "bolt.fill")) {
+                GroupBox(label: Label("Compute Device & Preconditioner", systemImage: "bolt.fill")) {
                     VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Compute Device:")
+                                .font(.subheadline)
+                            Picker("Device", selection: $config.computeDevice) {
+                                ForEach(ComputeDevice.allCases) { dev in
+                                    Text(dev.displayName).tag(dev)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        
+                        Divider()
+                        
                         Picker("Metric", selection: $config.preconditioner) {
                             ForEach(PreconditionerType.allCases) { p in
                                 Text(p.displayName).tag(p)

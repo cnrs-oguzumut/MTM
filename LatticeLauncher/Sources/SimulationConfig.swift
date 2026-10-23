@@ -1,6 +1,19 @@
 import Foundation
 import Combine
 
+public enum ComputeDevice: String, CaseIterable, Identifiable {
+    case cpu = "cpu"
+    case gpu = "gpu"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .cpu: return "CPU (OpenMP)"
+        case .gpu: return "GPU (Apple Metal)"
+        }
+    }
+}
+
 public enum PreconditionerType: String, CaseIterable, Identifiable {
     case stiffness = "stiffness"
     case none = "none"
@@ -136,7 +149,8 @@ public class SimulationConfig: ObservableObject {
         return cslKx * cslKy * opt.atoms_cell
     }
     
-    // 4. Preconditioning
+    // 4. Preconditioning & Device
+    @Published public var computeDevice: ComputeDevice = .cpu
     @Published public var preconditioner: PreconditionerType = .stiffness
     @Published public var precondFromStep: Int = 1
     @Published public var precondRefresh: Int = 0
@@ -262,6 +276,9 @@ public class SimulationConfig: ObservableObject {
             args.append(String(format: "--r-free=%.2f", rFree))
             args.append("--export-full-mesh=\(exportFullMesh ? 1 : 0)")
         }
+        
+        // Compute Device
+        args.append("--device=\(computeDevice.rawValue)")
         
         // Preconditioner
         args.append("--precond=\(preconditioner.rawValue)")
