@@ -275,18 +275,15 @@ std::unique_ptr<PreconditionedLBFGS> g_relaxation_solver;
 int g_relaxation_first_step = 0;
 int g_relaxation_step = 0;
 bool g_relaxation_use_gpu = false;
-bool g_relaxation_cpu_polish = false;
 double g_relaxation_gpu_grad_tol = 1e-4;
 }
 
 void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
                                  int first_step,
                                  bool use_gpu,
-                                 bool cpu_polish,
                                  double gpu_grad_tol) {
   g_relaxation_first_step = first_step;
   g_relaxation_use_gpu = use_gpu;
-  g_relaxation_cpu_polish = cpu_polish;
   g_relaxation_gpu_grad_tol = gpu_grad_tol;
   if (options.type == LBFGSPreconditioner::None) {
     g_relaxation_solver.reset();
@@ -294,7 +291,6 @@ void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
   }
   PreconditionedLBFGSOptions opts = options;
   opts.use_gpu = use_gpu;
-  opts.cpu_polish = cpu_polish;
   opts.gpu_grad_tol = gpu_grad_tol;
   if (!opts.progress_callback) {
     opts.progress_callback = [](int nfev, double energy, double grad_max) {
@@ -318,10 +314,6 @@ void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corre
   LBFGSOptimizer optimizer(corrections, 0.0, 0.0, 0.0, 0);
   if (g_relaxation_use_gpu) {
     optimizer.optimize(x, minimize_energy_with_triangles_GPU, userData);
-    if (g_relaxation_cpu_polish) {
-      LBFGSOptimizer polisher(5, 1e-6, 0.0, 0.0, 3);
-      polisher.optimize(x, minimize_energy_with_triangles, userData);
-    }
   } else {
     optimizer.optimize(x, minimize_energy_with_triangles, userData);
   }

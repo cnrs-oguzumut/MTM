@@ -86,7 +86,6 @@ private:
 struct PreconditionedLBFGSOptions {
   LBFGSPreconditioner type = LBFGSPreconditioner::Stiffness;
   bool use_gpu = false;
-  bool cpu_polish = false;
   double gpu_grad_tol = 1e-4;
   int corrections = 13;
   double epsg = 0.0;

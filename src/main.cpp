@@ -40,7 +40,6 @@ int main(int argc, char **argv) {
   PreconditionedLBFGSOptions relax_options;
   int precond_from_step = 0;
   bool use_gpu = false;
-  bool cpu_polish = true;
   double gpu_grad_tol = 1e-4;
   relax_options.type = LBFGSPreconditioner::None;
   relax_options.grad_tol = 1e-6;
@@ -278,12 +277,6 @@ int main(int argc, char **argv) {
       use_gpu = false;
     } else if (arg.rfind("--gpu-tol=", 0) == 0) {
       gpu_grad_tol = std::stod(arg.substr(10));
-    } else if (arg.rfind("--cpu-polish=", 0) == 0) {
-      cpu_polish = std::stoi(arg.substr(13)) != 0;
-    } else if (arg == "--cpu-polish") {
-      cpu_polish = true;
-    } else if (arg == "--no-cpu-polish") {
-      cpu_polish = false;
     } else if (arg.rfind("--eig-solver=", 0) == 0) {
       eig_solver = parse_stiffness_eigen_solver(arg.substr(13));
     } else if (arg.rfind("--eig-every=", 0) == 0) {
@@ -363,7 +356,7 @@ int main(int argc, char **argv) {
   // Set Zanzotto potential parameters
   energy_functions::set_parameters(beta, bulk_K);
 
-  configure_relaxation_solver(relax_options, precond_from_step, use_gpu, cpu_polish, gpu_grad_tol);
+  configure_relaxation_solver(relax_options, precond_from_step, use_gpu, gpu_grad_tol);
   configure_stability_monitor(stability_options);
 
   if (!restart_checkpoint.empty()) {
@@ -413,7 +406,7 @@ int main(int argc, char **argv) {
               << ", from step " << precond_from_step << ")";
   std::cout << " | device=" << (use_gpu ? "GPU (Apple Metal)" : "CPU (OpenMP)");
   if (use_gpu) {
-    std::cout << " (gpu_tol=" << gpu_grad_tol << ", cpu_polish=" << (cpu_polish ? "on" : "off") << ")";
+    std::cout << " (gpu_tol=" << gpu_grad_tol << ")";
   }
   std::cout << std::endl;
   std::cout << "Saving controls: chk_interval=";

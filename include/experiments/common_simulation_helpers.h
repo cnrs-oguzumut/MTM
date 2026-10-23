@@ -51,7 +51,6 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
 void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
                                  int first_step = 0,
                                  bool use_gpu = false,
-                                 bool cpu_polish = false,
                                  double gpu_grad_tol = 1e-4);
 
 // Tells relax_configuration() which load step is being solved.
