@@ -77,7 +77,10 @@ void run_shifted_dislocation_study(int caller_id, int nx, int ny,
 
   // Master summary CSV
   std::filesystem::path current_dir = std::filesystem::current_path();
-  std::string study_name = (nx >= 300) ? "shifted_dislocation_study_300x300" : "shifted_dislocation_study";
+  // Dislocation field and free region are evaluated on the real (shifted) coordinates.
+  // Separate folder so that the earlier pristine-coordinate dataset is preserved.
+  std::string study_name = (nx >= 300) ? "shifted_dislocation_study_300x300_realcoords"
+                                       : "shifted_dislocation_study_realcoords";
   bool in_study_dir = (current_dir.filename() == study_name);
   std::string base_dir = in_study_dir ? "" : (study_name + "/");
   if (!in_study_dir) {
@@ -116,10 +119,14 @@ void run_shifted_dislocation_study(int caller_id, int nx, int ny,
     std::cout << "Shifted upper half (" << shifted_count << " atoms above y = "
               << y_mid << ") by " << shift_amount << " h" << std::endl;
 
+    // Real (shifted) atomic positions, before the dislocation field is added
+    const std::vector<Point2D> shifted_points = current_points;
+
     // 2. Install exact edge dislocation field (Stroh for square, Volterra for triangular)
+    //    evaluated at the real (shifted) coordinates
     Eigen::Vector2d burgers_vector(lattice_constant, 0.0);
     for (size_t i = 0; i < current_points.size(); ++i) {
-      Eigen::Vector2d rel_pos = pristine_points[i].coord - dislocation_core;
+      Eigen::Vector2d rel_pos = shifted_points[i].coord - dislocation_core;
       Eigen::Vector2d u_disloc = VolterraDisplacement::calculateDisplacement(
           rel_pos, burgers_vector, disloc_params);
       current_points[i].coord += u_disloc;
@@ -136,7 +143,7 @@ void run_shifted_dislocation_study(int caller_id, int nx, int ny,
     for (size_t i = 0; i < current_points.size(); ++i) {
       bool is_free = false;
       if (use_cylinder) {
-        double dist = (pristine_points[i].coord - dislocation_core).norm();
+        double dist = (shifted_points[i].coord - dislocation_core).norm();
         is_free = (dist <= R_free);
       } else {
         // Fix boundary frame (within 0.5 * h of domain boundary in pristine coordinates)

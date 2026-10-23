@@ -48,6 +48,33 @@ public enum EigenSolverType: String, CaseIterable, Identifiable {
     }
 }
 
+public enum PotentialMode: Int, CaseIterable, Identifiable {
+    case zanzotto = 3
+    case ljV2 = 1
+    case ljV3 = 2
+    case square = 4
+    
+    public var id: Int { rawValue }
+    public var displayName: String {
+        switch self {
+        case .zanzotto: return "Mode 3: Zanzotto Continuum Φ(C)"
+        case .ljV2: return "Mode 1: Lennard-Jones v2 V(r)"
+        case .ljV3: return "Mode 2: Lennard-Jones v3 V(r)"
+        case .square: return "Mode 4: Square Gaussian Potential V(r)"
+        }
+    }
+    public var shortName: String {
+        switch self {
+        case .zanzotto: return "Zanzotto Φ(C)"
+        case .ljV2: return "LJ v2"
+        case .ljV3: return "LJ v3"
+        case .square: return "Square V(r)"
+        }
+    }
+}
+
+public typealias AcousticPotentialMode = PotentialMode
+
 public enum LatticeSymmetry: String, CaseIterable, Identifiable {
     case square = "square"
     case triangular = "triangular"
@@ -66,8 +93,8 @@ public class SimulationConfig: ObservableObject {
     @Published public var nx: Int = 100
     @Published public var ny: Int = 100
     
-    // 2. Lattice & Potential
-    @Published public var potentialMode: AcousticPotentialMode = .zanzotto
+    // 2. Lattice & Potential Model
+    @Published public var potentialMode: PotentialMode = .zanzotto
     @Published public var latticeSymmetry: LatticeSymmetry = .square
     @Published public var beta: Double = -0.25
     @Published public var bulkK: Double = 5.0
@@ -80,7 +107,7 @@ public class SimulationConfig: ObservableObject {
     @Published public var rFree: Double = 35.0
     @Published public var exportFullMesh: Bool = true
     
-    // 3. Loading Schedule
+    // 3. Loading Schedule (Shear modes)
     @Published public var boundaryCondition: BoundaryConditionMode = .periodic
     @Published public var alphaStart: Double = 0.14
     @Published public var alphaEnd: Double = 1.0
@@ -188,8 +215,9 @@ public class SimulationConfig: ObservableObject {
         let remeshTag = enableRemeshing ? "remesh" : "noremesh"
         let latTag = latticeSymmetry == .triangular ? "_tri" : ""
         let bcTag = (boundaryCondition == .fixed) ? "_fixed" : ""
+        let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
         let rotTag = useRotation ? ((boundaryCondition == .fixed || mode == .volterra) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
-        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)_seed\(seed)_\(remeshTag)\(latTag)\(rotTag)"
+        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)"
     }
     
     public var targetDirectory: String {
@@ -249,10 +277,15 @@ public class SimulationConfig: ObservableObject {
             }
         }
         
-        // Loading Schedule
-        args.append(String(format: "--alpha-start=%.6f", alphaStart))
-        args.append(String(format: "--alpha-end=%.6f", alphaEnd))
-        args.append(String(format: "--step-size=%.8f", stepSize))
+        // Loading Schedule vs Dislocation Cylinder
+        if mode == .volterra {
+            args.append(String(format: "--r-free=%.2f", rFree))
+            args.append(exportFullMesh ? "--full-mesh" : "--circle")
+        } else {
+            args.append(String(format: "--alpha-start=%.6f", alphaStart))
+            args.append(String(format: "--alpha-end=%.6f", alphaEnd))
+            args.append(String(format: "--step-size=%.8f", stepSize))
+        }
         
         // Data & Checkpoints
         if checkpointInterval > 0 {

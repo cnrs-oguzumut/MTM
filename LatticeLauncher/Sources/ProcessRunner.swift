@@ -56,6 +56,9 @@ public class ProcessRunner: ObservableObject {
     @Published public var yieldStrain: Double = 0.0
     @Published public var activeConfig: SimulationConfig?
     
+    // Dislocation Profiles (for Volterra mode)
+    @Published public var dislocationData: DislocationProfileJSONRoot? = nil
+    
     private var process: Process?
     private var timer: Timer?
     private var csvPollingTimer: Timer?
@@ -77,12 +80,17 @@ public class ProcessRunner: ObservableObject {
         currentStress = 0.0
         currentEnergy = 0.0
         avalancheCount = 0
+        dislocationData = nil
     }
     
     public func loadExistingIfAvailable(dir: String) {
         self.outputDirectory = dir
         let csvPath = "\(dir)/energy_stress_log.csv"
-        guard FileManager.default.fileExists(atPath: csvPath) else {
+        if FileManager.default.fileExists(atPath: csvPath) {
+            self.curvePoints.removeAll()
+            self.eigenPoints.removeAll()
+            self.pollCSV()
+        } else {
             self.curvePoints.removeAll()
             self.eigenPoints.removeAll()
             self.currentStep = 0
@@ -90,11 +98,8 @@ public class ProcessRunner: ObservableObject {
             self.currentStress = 0.0
             self.currentEnergy = 0.0
             self.avalancheCount = 0
-            return
         }
-        self.curvePoints.removeAll()
-        self.eigenPoints.removeAll()
-        self.pollCSV()
+        self.pollDislocationProfiles(dir: dir)
     }
     
     public func openOutputFolder() {
@@ -190,6 +195,7 @@ public class ProcessRunner: ObservableObject {
                 self?.csvPollingTimer?.invalidate()
                 self?.csvPollingTimer = nil
                 self?.pollCSV() // Final flush
+                self?.pollDislocationProfiles()
                 
                 let duration = self?.startTime.map { Date().timeIntervalSince($0) } ?? 0
                 let exitCode = terminatedProc.terminationStatus
@@ -351,6 +357,57 @@ public class ProcessRunner: ObservableObject {
         if parsed.count != self.eigenPoints.count || parsed.last?.iteration != self.eigenPoints.last?.iteration {
             self.eigenPoints = parsed
             self.currentLambdaMin = parsed.last?.lambdaMin
+        }
+        
+        self.pollDislocationProfiles()
+    }
+    
+    public func pollDislocationProfiles(dir: String? = nil) {
+        let fm = FileManager.default
+        var pathsToTry: [String] = []
+        if let d = dir, !d.isEmpty {
+            pathsToTry.append("\(d)/dislocation_profiles.json")
+        }
+        if !outputDirectory.isEmpty {
+            pathsToTry.append("\(outputDirectory)/dislocation_profiles.json")
+        }
+        if let target = activeConfig?.targetDirectory, !target.isEmpty {
+            pathsToTry.append("\(target)/dislocation_profiles.json")
+        }
+        
+        let root = SimulationConfig.detectProjectRoot()
+        pathsToTry.append("\(root)/dislocation_profiles.json")
+        
+        // Also scan for recent run_volterra_* directories in project root
+        if let contents = try? fm.contentsOfDirectory(atPath: root) {
+            let sorted = contents.filter { $0.hasPrefix("run_volterra") }.compactMap { sub -> (path: String, date: Date)? in
+                let fullPath = "\(root)/\(sub)/dislocation_profiles.json"
+                if let attr = try? fm.attributesOfItem(atPath: fullPath),
+                   let date = attr[.modificationDate] as? Date {
+                    return (fullPath, date)
+                }
+                return nil
+            }.sorted { $0.date > $1.date }
+            
+            for item in sorted {
+                pathsToTry.append(item.path)
+            }
+        }
+        
+        pathsToTry.append("\(fm.currentDirectoryPath)/dislocation_profiles.json")
+        
+        for jsonPath in pathsToTry where !jsonPath.isEmpty {
+            guard fm.fileExists(atPath: jsonPath),
+                  let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)) else { continue }
+            do {
+                let decoded = try JSONDecoder().decode(DislocationProfileJSONRoot.self, from: data)
+                DispatchQueue.main.async {
+                    self.dislocationData = decoded
+                }
+                return
+            } catch {
+                print("Error decoding dislocation_profiles.json at \(jsonPath): \(error)")
+            }
         }
     }
     

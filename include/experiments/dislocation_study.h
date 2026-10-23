@@ -14,8 +14,11 @@ void single_dislocation_study(int caller_id, int nx, int ny,
 // outside radius R_free as Dirichlet boundary conditions, and relaxes the atoms
 // within R_free around the dislocation core.
 void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
-                                           double R_free = 20.0,
-                                           bool enable_remeshing = false,
-                                           bool export_full_mesh = true,
-                                           const std::string &lattice_type = "square",
-                                           int potential_mode = 3);
+                                            double R_free = 20.0,
+                                            bool enable_remeshing = false,
+                                            bool export_full_mesh = true,
+                                            const std::string &lattice_type = "square",
+                                            int potential_mode = 3,
+                                            double beta = -0.25,
+                                            double bulk_K = 5.0);
+

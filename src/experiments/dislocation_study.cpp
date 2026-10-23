@@ -308,6 +308,560 @@ void single_dislocation_study(int caller_id, int nx, int ny,
 }
 
 // ============================================================================
+// Structures and Helpers for Dislocation Core and Profile Analysis
+// ============================================================================
+struct DislocationNodalFields {
+  std::vector<double> energy;
+  std::vector<double> s_xx;
+  std::vector<double> s_yy;
+  std::vector<double> s_xy;
+  std::vector<double> s_hydro;
+  std::vector<double> s_vm;
+};
+
+struct RadialProfilePoint {
+  double r = 0.0;
+  double log_r = 0.0;
+  double cumulative_energy = 0.0;
+  double energy_density = 0.0;
+  double avg_atom_energy = 0.0;
+  double s_xx = 0.0;
+  double s_yy = 0.0;
+  double s_xy = 0.0;
+  double s_hydro = 0.0;
+  double s_vm = 0.0;
+  int atom_count = 0;
+};
+
+struct SlipProfilePoint {
+  double dx = 0.0; // x - xc
+  double dy = 0.0; // y - yc
+  double x = 0.0;
+  double y = 0.0;
+  double r = 0.0;
+  double energy = 0.0;
+  double s_xx = 0.0;
+  double s_yy = 0.0;
+  double s_xy = 0.0;
+  double s_hydro = 0.0;
+  double s_vm = 0.0;
+  std::string row; // "upper", "lower", "core", "average"
+};
+
+struct CoreFitResult {
+  double core_energy = 0.0;
+  double elastic_K = 0.0;
+  double R2 = 0.0;
+};
+
+struct StateProfileData {
+  double core_x = 0.0;
+  double core_y = 0.0;
+  double total_energy = 0.0;
+  double total_stress = 0.0;
+  CoreFitResult core_fit;
+  std::vector<RadialProfilePoint> radial_points;
+  std::vector<SlipProfilePoint> slip_points;
+  std::vector<SlipProfilePoint> slip_avg_points;
+};
+
+static DislocationNodalFields compute_dislocation_nodal_fields(UserData* userData, bool reduction = true) {
+  DislocationNodalFields fields;
+  size_t n_points = userData->points.size();
+  fields.energy.assign(n_points, 0.0);
+  fields.s_xx.assign(n_points, 0.0);
+  fields.s_yy.assign(n_points, 0.0);
+  fields.s_xy.assign(n_points, 0.0);
+  fields.s_hydro.assign(n_points, 0.0);
+  fields.s_vm.assign(n_points, 0.0);
+  std::vector<int> node_count(n_points, 0);
+
+  double norm = pow(userData->ideal_lattice_parameter, 2.0);
+  if (norm <= 1e-12) norm = 1.0;
+
+  // Loop over ALL elements in the crystal mesh so nodal fields (energy, stresses)
+  // are evaluated across the full crystal domain, not just the relaxed active cylinder
+  for (size_t elem_idx = 0; elem_idx < userData->elements.size(); ++elem_idx) {
+    auto& element = userData->elements[elem_idx];
+    if (!element.isInitialized()) continue;
+
+    element.setExternalDeformation(userData->F_external);
+    element.calculate_deformation_gradient(userData->points);
+
+    const Eigen::Matrix2d& F = element.getDeformationGradient();
+    Eigen::Matrix2d C = element.getMetricTensor();
+    lagrange::Result result;
+    Eigen::Matrix2d P;
+
+    if (reduction) {
+      result = lagrange::reduce(C);
+      C = result.C_reduced;
+    }
+
+    double element_area = element.getReferenceArea();
+    double element_energy = (userData->calculator.calculate_energy(
+        C, userData->energy_function, userData->zero_energy) / norm) * element_area;
+
+    Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
+        C, userData->derivative_function) / norm;
+
+    if (reduction) {
+      P = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+    } else {
+      P = 2.0 * F * dE_dC;
+    }
+
+    double detF = F.determinant();
+    if (std::abs(detF) < 1e-12) detF = 1.0;
+    Eigen::Matrix2d cauchy_stress = (1.0 / detF) * P * F.transpose();
+
+    for (int i = 0; i < 3; ++i) {
+      int node_idx = element.getNodeIndex(i);
+      if (node_idx >= 0 && node_idx < static_cast<int>(n_points)) {
+        fields.energy[node_idx] += element_energy / 3.0;
+        fields.s_xx[node_idx] += cauchy_stress(0, 0);
+        fields.s_xy[node_idx] += cauchy_stress(0, 1);
+        fields.s_yy[node_idx] += cauchy_stress(1, 1);
+        node_count[node_idx]++;
+      }
+    }
+  }
+
+  for (size_t i = 0; i < n_points; ++i) {
+    if (node_count[i] > 0) {
+      fields.s_xx[i] /= node_count[i];
+      fields.s_xy[i] /= node_count[i];
+      fields.s_yy[i] /= node_count[i];
+      fields.s_hydro[i] = 0.5 * (fields.s_xx[i] + fields.s_yy[i]);
+      fields.s_vm[i] = std::sqrt(std::max(0.0,
+          fields.s_xx[i]*fields.s_xx[i] - fields.s_xx[i]*fields.s_yy[i] +
+          fields.s_yy[i]*fields.s_yy[i] + 3.0*fields.s_xy[i]*fields.s_xy[i]));
+    }
+  }
+  return fields;
+}
+
+static StateProfileData extract_dislocation_profiles(
+    UserData* userData,
+    double initial_core_x, double initial_core_y,
+    double burgers_vector,
+    double R_free,
+    double lattice_constant,
+    const std::string& lattice_type,
+    double total_energy,
+    double total_stress) {
+
+  StateProfileData sp;
+  sp.total_energy = total_energy;
+  sp.total_stress = total_stress;
+
+  DislocationNodalFields fields = compute_dislocation_nodal_fields(userData, true);
+  const auto& pts = userData->points;
+  size_t n_points = pts.size();
+
+  double r_max = R_free * lattice_constant;
+
+  // Locate the dislocation core (x_c, y_c) from the concentrated nodal energy peak
+  // (matching plot_dislocation_profiles.py find_core algorithm: np.argmax(NodalEnergy))
+  size_t peak_node = 0;
+  double max_nodal_energy = -1e30;
+  for (size_t i = 0; i < n_points; ++i) {
+    double dist_from_nominal = std::hypot(pts[i].coord.x() - initial_core_x, pts[i].coord.y() - initial_core_y);
+    if (dist_from_nominal <= 0.75 * r_max) {
+      if (fields.energy[i] > max_nodal_energy) {
+        max_nodal_energy = fields.energy[i];
+        peak_node = i;
+      }
+    }
+  }
+
+  double core_x = initial_core_x;
+  double core_y = initial_core_y;
+
+  if (max_nodal_energy > -1e20) {
+    double px = pts[peak_node].coord.x();
+    double py = pts[peak_node].coord.y();
+    double row_spacing = (lattice_type == "square") ? lattice_constant : (std::sqrt(3.0) / 2.0 * lattice_constant);
+
+    // Look for paired core atom across the slip plane with highest energy
+    size_t comp_node = peak_node;
+    double max_comp_energy = -1e30;
+    for (size_t i = 0; i < n_points; ++i) {
+      if (i == peak_node) continue;
+      double dy = std::abs(pts[i].coord.y() - py);
+      double dx = std::abs(pts[i].coord.x() - px);
+      if (dy >= 0.35 * row_spacing && dy <= 1.35 * row_spacing && dx <= 0.85 * lattice_constant) {
+        if (fields.energy[i] > max_comp_energy) {
+          max_comp_energy = fields.energy[i];
+          comp_node = i;
+        }
+      }
+    }
+
+    if (comp_node != peak_node && max_comp_energy > 0.05 * max_nodal_energy) {
+      core_x = 0.5 * (px + pts[comp_node].coord.x());
+      core_y = 0.5 * (py + pts[comp_node].coord.y());
+    } else {
+      core_x = px;
+      core_y = py;
+    }
+  }
+
+  sp.core_x = core_x;
+  sp.core_y = core_y;
+
+  // 1. Gather all atoms with distance from the detected true core center
+  struct AtomDist {
+    size_t idx;
+    double dx, dy, r;
+  };
+  std::vector<AtomDist> atoms;
+  atoms.reserve(n_points);
+
+  for (size_t i = 0; i < n_points; ++i) {
+    double dx = pts[i].coord.x() - core_x;
+    double dy = pts[i].coord.y() - core_y;
+    double r = std::hypot(dx, dy);
+    atoms.push_back({i, dx, dy, r});
+  }
+
+  // Sort atoms by radial distance from core
+  std::sort(atoms.begin(), atoms.end(), [](const AtomDist& a, const AtomDist& b) {
+    return a.r < b.r;
+  });
+
+  // 2. Compute Radial Profile: cumulative energy E(r), shell density, shell stresses
+  // Use geometric (logarithmically equispaced) shells so that the dislocation core vicinity
+  // (r <= 3b) is sampled densely with >50 points, yielding uniform resolution along ln(r/b).
+  int num_bins = 100;
+  double r_min_shell = std::max(0.12 * burgers_vector, 0.05);
+  double running_cumulative_energy = 0.0;
+  size_t current_atom_idx = 0;
+  double prev_r_bin = 0.0;
+
+  for (int b = 1; b <= num_bins; ++b) {
+    double frac = static_cast<double>(b) / static_cast<double>(num_bins);
+    double r_bin = r_min_shell * std::pow(r_max / r_min_shell, frac);
+    double r_prev = prev_r_bin;
+    prev_r_bin = r_bin;
+    double shell_area = M_PI * (r_bin * r_bin - r_prev * r_prev);
+
+    double shell_energy = 0.0;
+    double shell_sxx = 0.0, shell_syy = 0.0, shell_sxy = 0.0;
+    double shell_hydro = 0.0, shell_vm = 0.0;
+    int shell_count = 0;
+
+    while (current_atom_idx < atoms.size() && atoms[current_atom_idx].r <= r_bin) {
+      size_t ai = atoms[current_atom_idx].idx;
+      double en = fields.energy[ai];
+      running_cumulative_energy += en;
+      shell_energy += en;
+      shell_sxx += fields.s_xx[ai];
+      shell_syy += fields.s_yy[ai];
+      shell_sxy += fields.s_xy[ai];
+      shell_hydro += fields.s_hydro[ai];
+      shell_vm += fields.s_vm[ai];
+      shell_count++;
+      current_atom_idx++;
+    }
+
+    RadialProfilePoint rp;
+    rp.r = r_bin;
+    rp.log_r = std::log(std::max(1e-4, r_bin / burgers_vector));
+    rp.cumulative_energy = running_cumulative_energy;
+    rp.atom_count = static_cast<int>(current_atom_idx);
+
+    if (shell_count > 0) {
+      rp.energy_density = (shell_area > 1e-8) ? (shell_energy / shell_area) : 0.0;
+      rp.avg_atom_energy = shell_energy / shell_count;
+      rp.s_xx = shell_sxx / shell_count;
+      rp.s_yy = shell_syy / shell_count;
+      rp.s_xy = shell_sxy / shell_count;
+      rp.s_hydro = shell_hydro / shell_count;
+      rp.s_vm = shell_vm / shell_count;
+    } else {
+      rp.energy_density = 0.0;
+      rp.avg_atom_energy = 0.0;
+      if (!sp.radial_points.empty()) {
+        rp.s_xx = sp.radial_points.back().s_xx;
+        rp.s_yy = sp.radial_points.back().s_yy;
+        rp.s_xy = sp.radial_points.back().s_xy;
+        rp.s_hydro = sp.radial_points.back().s_hydro;
+        rp.s_vm = sp.radial_points.back().s_vm;
+      }
+    }
+    sp.radial_points.push_back(rp);
+  }
+
+  // 3. Fit Core Energy: E(r) = K * ln(r/b) + E_core
+  double r_fit_min = 1.5 * burgers_vector;
+  double r_fit_max = 0.95 * r_max;
+  std::vector<double> X_fit, Y_fit;
+  for (const auto& rp : sp.radial_points) {
+    if (rp.r >= r_fit_min && rp.r <= r_fit_max) {
+      X_fit.push_back(rp.log_r);
+      Y_fit.push_back(rp.cumulative_energy);
+    }
+  }
+
+  if (X_fit.size() >= 3) {
+    double sum_x = 0.0, sum_y = 0.0;
+    for (size_t i = 0; i < X_fit.size(); ++i) {
+      sum_x += X_fit[i];
+      sum_y += Y_fit[i];
+    }
+    double mean_x = sum_x / X_fit.size();
+    double mean_y = sum_y / X_fit.size();
+
+    double num = 0.0, den = 0.0, ss_tot = 0.0;
+    for (size_t i = 0; i < X_fit.size(); ++i) {
+      double dx = X_fit[i] - mean_x;
+      double dy = Y_fit[i] - mean_y;
+      num += dx * dy;
+      den += dx * dx;
+      ss_tot += dy * dy;
+    }
+
+    if (den > 1e-12) {
+      sp.core_fit.elastic_K = num / den;
+      sp.core_fit.core_energy = mean_y - sp.core_fit.elastic_K * mean_x;
+      double ss_res = 0.0;
+      for (size_t i = 0; i < X_fit.size(); ++i) {
+        double pred = sp.core_fit.elastic_K * X_fit[i] + sp.core_fit.core_energy;
+        ss_res += (Y_fit[i] - pred) * (Y_fit[i] - pred);
+      }
+      sp.core_fit.R2 = (ss_tot > 1e-12) ? std::max(0.0, 1.0 - ss_res / ss_tot) : 1.0;
+    }
+  }
+
+  // 4. Extract Slip Plane Profile: atoms within vertical band |y - core_y| <= row_spacing * 1.05
+  double row_spacing = (lattice_type == "square") ? lattice_constant : (std::sqrt(3.0) / 2.0 * lattice_constant);
+  double slip_y_tol = 1.05 * row_spacing;
+
+  std::vector<SlipProfilePoint> upper_row, lower_row;
+  for (size_t i = 0; i < n_points; ++i) {
+    double dy = pts[i].coord.y() - core_y;
+    double dx = pts[i].coord.x() - core_x;
+    // Include all atoms along the slip plane across the full crystal domain
+    if (std::abs(dy) <= slip_y_tol) {
+      SlipProfilePoint p;
+      p.dx = dx;
+      p.dy = dy;
+      p.x = pts[i].coord.x();
+      p.y = pts[i].coord.y();
+      p.r = std::hypot(dx, dy);
+      p.energy = fields.energy[i];
+      p.s_xx = fields.s_xx[i];
+      p.s_yy = fields.s_yy[i];
+      p.s_xy = fields.s_xy[i];
+      p.s_hydro = fields.s_hydro[i];
+      p.s_vm = fields.s_vm[i];
+
+      if (dy > 1e-4) {
+        p.row = "upper";
+        upper_row.push_back(p);
+      } else if (dy < -1e-4) {
+        p.row = "lower";
+        lower_row.push_back(p);
+      } else {
+        p.row = "core";
+      }
+      sp.slip_points.push_back(p);
+    }
+  }
+
+  // Sort slip points by dx
+  std::sort(sp.slip_points.begin(), sp.slip_points.end(), [](const SlipProfilePoint& a, const SlipProfilePoint& b) {
+    return a.dx < b.dx;
+  });
+  std::sort(upper_row.begin(), upper_row.end(), [](const SlipProfilePoint& a, const SlipProfilePoint& b) {
+    return a.dx < b.dx;
+  });
+  std::sort(lower_row.begin(), lower_row.end(), [](const SlipProfilePoint& a, const SlipProfilePoint& b) {
+    return a.dx < b.dx;
+  });
+
+  // 5. Slip Plane Average: pair upper and lower atoms to get mean energy and stress fields along slip line
+  for (const auto& up : upper_row) {
+    auto it = std::min_element(lower_row.begin(), lower_row.end(),
+        [&up](const SlipProfilePoint& a, const SlipProfilePoint& b) {
+          return std::abs(a.dx - up.dx) < std::abs(b.dx - up.dx);
+        });
+
+    if (it != lower_row.end() && std::abs(it->dx - up.dx) <= 0.65 * lattice_constant) {
+      SlipProfilePoint avg;
+      avg.dx = 0.5 * (up.dx + it->dx);
+      avg.dy = 0.0;
+      avg.x = 0.5 * (up.x + it->x);
+      avg.y = core_y;
+      avg.r = std::abs(avg.dx);
+      avg.energy = 0.5 * (up.energy + it->energy);
+      avg.s_xx = 0.5 * (up.s_xx + it->s_xx);
+      avg.s_yy = 0.5 * (up.s_yy + it->s_yy);
+      avg.s_xy = 0.5 * (up.s_xy + it->s_xy);
+      avg.s_hydro = 0.5 * (up.s_hydro + it->s_hydro);
+      avg.s_vm = 0.5 * (up.s_vm + it->s_vm);
+      avg.row = "average";
+      sp.slip_avg_points.push_back(avg);
+    }
+  }
+
+  std::sort(sp.slip_avg_points.begin(), sp.slip_avg_points.end(), [](const SlipProfilePoint& a, const SlipProfilePoint& b) {
+    return a.dx < b.dx;
+  });
+
+  return sp;
+}
+
+static void write_dislocation_profiles_json_and_csv(
+    const std::string& filename_json,
+    const std::string& filename_csv,
+    const std::string& lattice_type,
+    int potential_mode,
+    double beta,
+    double bulk_K,
+    double R_free,
+    double lattice_constant,
+    double burgers_vector,
+    double core_x,
+    double core_y,
+    double C11, double C12, double C66, double poisson_ratio,
+    const StateProfileData& unrelaxed,
+    const StateProfileData* relaxed = nullptr) {
+
+  std::ofstream jf(filename_json);
+  if (!jf.is_open()) {
+    std::cerr << "Warning: Could not open " << filename_json << " for writing." << std::endl;
+    return;
+  }
+
+  jf << "{\n";
+  jf << "  \"status\": \"" << (relaxed ? "completed" : "in_progress") << "\",\n";
+  jf << "  \"lattice_type\": \"" << lattice_type << "\",\n";
+  jf << "  \"potential_mode\": " << potential_mode << ",\n";
+  jf << "  \"beta\": " << beta << ",\n";
+  jf << "  \"bulk_K\": " << bulk_K << ",\n";
+  jf << "  \"R_free\": " << R_free << ",\n";
+  jf << "  \"lattice_constant\": " << lattice_constant << ",\n";
+  jf << "  \"burgers_vector\": " << burgers_vector << ",\n";
+  double active_core_x = relaxed ? relaxed->core_x : unrelaxed.core_x;
+  double active_core_y = relaxed ? relaxed->core_y : unrelaxed.core_y;
+  jf << "  \"core_x\": " << active_core_x << ",\n";
+  jf << "  \"core_y\": " << active_core_y << ",\n";
+  jf << "  \"elastic_constants\": {\n";
+  jf << "    \"C11\": " << C11 << ",\n";
+  jf << "    \"C12\": " << C12 << ",\n";
+  jf << "    \"C66\": " << C66 << ",\n";
+  jf << "    \"poisson_ratio\": " << poisson_ratio << "\n";
+  jf << "  },\n";
+
+  auto write_state_json = [&jf](const std::string& key, const StateProfileData& sp, bool is_last) {
+    jf << "  \"" << key << "\": {\n";
+    jf << "    \"core_x\": " << sp.core_x << ",\n";
+    jf << "    \"core_y\": " << sp.core_y << ",\n";
+    jf << "    \"total_energy\": " << sp.total_energy << ",\n";
+    jf << "    \"total_stress\": " << sp.total_stress << ",\n";
+    jf << "    \"core_fit\": {\n";
+    jf << "      \"core_energy\": " << sp.core_fit.core_energy << ",\n";
+    jf << "      \"elastic_K\": " << sp.core_fit.elastic_K << ",\n";
+    jf << "      \"R2\": " << sp.core_fit.R2 << "\n";
+    jf << "    },\n";
+
+    // Radial points
+    jf << "    \"radial\": [\n";
+    for (size_t i = 0; i < sp.radial_points.size(); ++i) {
+      const auto& rp = sp.radial_points[i];
+      jf << "      {\"r\":" << rp.r
+         << ",\"log_r\":" << rp.log_r
+         << ",\"cumulative_energy\":" << rp.cumulative_energy
+         << ",\"energy_density\":" << rp.energy_density
+         << ",\"avg_atom_energy\":" << rp.avg_atom_energy
+         << ",\"s_xx\":" << rp.s_xx
+         << ",\"s_yy\":" << rp.s_yy
+         << ",\"s_xy\":" << rp.s_xy
+         << ",\"s_hydro\":" << rp.s_hydro
+         << ",\"s_vm\":" << rp.s_vm
+         << ",\"atom_count\":" << rp.atom_count
+         << "}" << (i + 1 < sp.radial_points.size() ? ",\n" : "\n");
+    }
+    jf << "    ],\n";
+
+    // Slip plane points
+    jf << "    \"slip_plane\": [\n";
+    for (size_t i = 0; i < sp.slip_points.size(); ++i) {
+      const auto& sp_pt = sp.slip_points[i];
+      jf << "      {\"dx\":" << sp_pt.dx
+         << ",\"dy\":" << sp_pt.dy
+         << ",\"x\":" << sp_pt.x
+         << ",\"y\":" << sp_pt.y
+         << ",\"r\":" << sp_pt.r
+         << ",\"energy\":" << sp_pt.energy
+         << ",\"s_xx\":" << sp_pt.s_xx
+         << ",\"s_yy\":" << sp_pt.s_yy
+         << ",\"s_xy\":" << sp_pt.s_xy
+         << ",\"s_hydro\":" << sp_pt.s_hydro
+         << ",\"s_vm\":" << sp_pt.s_vm
+         << ",\"row\":\"" << sp_pt.row << "\""
+         << "}" << (i + 1 < sp.slip_points.size() ? ",\n" : "\n");
+    }
+    jf << "    ],\n";
+
+    // Slip plane average points
+    jf << "    \"slip_avg\": [\n";
+    for (size_t i = 0; i < sp.slip_avg_points.size(); ++i) {
+      const auto& avg = sp.slip_avg_points[i];
+      jf << "      {\"dx\":" << avg.dx
+         << ",\"energy\":" << avg.energy
+         << ",\"s_xx\":" << avg.s_xx
+         << ",\"s_yy\":" << avg.s_yy
+         << ",\"s_xy\":" << avg.s_xy
+         << ",\"s_hydro\":" << avg.s_hydro
+         << ",\"s_vm\":" << avg.s_vm
+         << "}" << (i + 1 < sp.slip_avg_points.size() ? ",\n" : "\n");
+    }
+    jf << "    ]\n";
+    jf << "  }" << (is_last ? "\n" : ",\n");
+  };
+
+  write_state_json("unrelaxed", unrelaxed, relaxed == nullptr);
+  if (relaxed) {
+    write_state_json("relaxed", *relaxed, true);
+  }
+  jf << "}\n";
+  jf.close();
+
+  // Write CSV file
+  std::ofstream cf(filename_csv);
+  if (cf.is_open()) {
+    cf << "state,profile_type,coordinate,dx,dy,energy,cumulative_energy,sigma_xx,sigma_yy,sigma_xy,sigma_hydro,sigma_vm,row\n";
+
+    auto write_state_csv = [&cf](const std::string& state_name, const StateProfileData& sp) {
+      for (const auto& rp : sp.radial_points) {
+        cf << state_name << ",radial," << rp.r << ",0,0," << rp.avg_atom_energy << ","
+           << rp.cumulative_energy << "," << rp.s_xx << "," << rp.s_yy << "," << rp.s_xy << ","
+           << rp.s_hydro << "," << rp.s_vm << ",shell\n";
+      }
+      for (const auto& sp_pt : sp.slip_points) {
+        cf << state_name << ",slip," << sp_pt.dx << "," << sp_pt.dx << "," << sp_pt.dy << ","
+           << sp_pt.energy << ",0," << sp_pt.s_xx << "," << sp_pt.s_yy << "," << sp_pt.s_xy << ","
+           << sp_pt.s_hydro << "," << sp_pt.s_vm << "," << sp_pt.row << "\n";
+      }
+      for (const auto& avg : sp.slip_avg_points) {
+        cf << state_name << ",slip_avg," << avg.dx << "," << avg.dx << ",0,"
+           << avg.energy << ",0," << avg.s_xx << "," << avg.s_yy << "," << avg.s_xy << ","
+           << avg.s_hydro << "," << avg.s_vm << ",average\n";
+      }
+    };
+
+    write_state_csv("unrelaxed", unrelaxed);
+    if (relaxed) {
+      write_state_csv("relaxed", *relaxed);
+    }
+    cf.close();
+  }
+}
+
+// ============================================================================
 // single_dislocation_cylinder_relaxation
 //
 // Installs an analytical edge dislocation on an nx x ny lattice:
@@ -320,11 +874,13 @@ void single_dislocation_study(int caller_id, int nx, int ny,
 // - Supports L-BFGS preconditioning (--precond=stiffness/laplacian/diag/none).
 // ============================================================================
 void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
-                                           double R_free,
-                                           bool enable_remeshing,
-                                           bool export_full_mesh,
-                                           const std::string &lattice_type,
-                                           int potential_mode) {
+                                            double R_free,
+                                            bool enable_remeshing,
+                                            bool export_full_mesh,
+                                            const std::string &lattice_type,
+                                            int potential_mode,
+                                            double beta,
+                                            double bulk_K) {
   if (nx <= 0 || ny <= 0) {
     std::cerr << "Error: nx and ny must be positive integers." << std::endl;
     exit(EXIT_FAILURE);
@@ -333,6 +889,9 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   writeSizesToFile(nx, ny);
 
   double h = 1.0;
+  double lattice_constant = 1.0;
+  double scale = 1.0;
+  double r_cutoff = 1.86602540378444;
 
   // Determine lattice parameter and setup potential / calculator based on potential_mode
   double optimal_lattice_parameter = 1.0;
@@ -343,6 +902,8 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
 
   if (potential_mode == 3) {
     // Zanzotto continuum potential
+    energy_functions::current_beta = beta;
+    energy_functions::current_K = bulk_K;
     double symmetry_constantx =
         (lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
     optimal_lattice_parameter = symmetry_constantx;
@@ -368,7 +929,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       calculator_ptr = std::make_unique<SquareLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
     }
   }
-  double lattice_constant = optimal_lattice_parameter;
+  lattice_constant = optimal_lattice_parameter;
   BaseLatticeCalculator &calculator = *calculator_ptr;
 
   // Reference triangle shape derivatives
@@ -431,8 +992,9 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   std::cout << "\n=== DISLOCATION CYLINDER RELAXATION ("
             << (lattice_type == "triangular" ? "VOLTERRA / TRIANGULAR" : "STROH / SQUARE")
             << ") ===" << std::endl;
-  std::cout << "Lattice: " << nx << " x " << ny << " (" << n_points << " atoms, a = "
-            << lattice_constant << ")" << std::endl;
+  std::cout << "Lattice: " << lattice_type << " (" << nx << " x " << ny << ", " << n_points
+            << " atoms, a = " << lattice_constant << ")" << std::endl;
+  std::cout << "Potential Mode: " << potential_mode << std::endl;
   std::cout << "Dislocation core at: (" << core_x << ", " << core_y << ")" << std::endl;
   std::cout << "Relaxation radius R_free: " << R_free << " h" << std::endl;
   disloc_params.printSummary(lattice_constant);
@@ -442,6 +1004,28 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   // - Stroh (Eqs. A14-A15) for square lattice
   Eigen::Vector2d burgers_vector(lattice_constant, 0.0);
 
+  // Compute ground-state elastic constants for the selected potential
+  double C11 = 21.728397, C12 = 18.273383, C66 = 6.075140;
+  double poisson_ratio = 0.25;
+
+  if (potential_mode == 3) {
+    auto ec = energy_functions::calculate_elastic_constants(beta, bulk_K, lattice_type);
+    C11 = ec.C11;
+    C12 = ec.C12;
+    C66 = ec.C66;
+    if (ec.C11 + ec.C12 > 1e-12) {
+      poisson_ratio = ec.C12 / (ec.C11 + ec.C12);
+    }
+    std::cout << "Ground-state Elastic Constants: C11=" << C11 << ", C12=" << C12
+              << ", C66=" << C66 << ", Zener A=" << ec.Zener_A
+              << " | Poisson ratio nu=" << poisson_ratio << std::endl;
+  } else {
+    // For 2D triangular close-packed central-force lattice (Lennard-Jones):
+    // Cauchy relations hold: C11 = 3*C12, C66 = C12, Zener A = 1.0, nu = 0.25
+    poisson_ratio = 0.25;
+    std::cout << "Interatomic Mode " << potential_mode << " on triangular lattice (isotropic A=1.0, Poisson ratio nu=0.25)" << std::endl;
+  }
+
   for (size_t i = 0; i < square_points.size(); ++i) {
     Eigen::Vector2d rel_pos = square_points_ref[i].coord - dislocation_core;
     Eigen::Vector2d u_dislocation = VolterraDisplacement::calculateDisplacement(
@@ -449,7 +1033,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     square_points[i].coord = square_points_ref[i].coord + u_dislocation;
   }
 
-  // Partition into free nodes (r <= R_free) and fixed nodes (r > R_free)
+  // Partition into free nodes (r <= R_free * h) and fixed nodes (r > R_free * h)
   std::vector<std::pair<int, int>> interior_mapping;
   std::vector<std::pair<int, int>> full_mapping;
   interior_mapping.reserve(n_points);
@@ -457,9 +1041,10 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
 
   std::vector<int> fixed_nodes;
   int solver_idx = 0;
+  double r_free_dist = R_free * h;
   for (size_t i = 0; i < square_points.size(); ++i) {
     double dist = (square_points_ref[i].coord - dislocation_core).norm();
-    if (dist <= R_free) {
+    if (dist <= r_free_dist) {
       interior_mapping.push_back({static_cast<int>(i), solver_idx});
       full_mapping.push_back({static_cast<int>(i), solver_idx});
       solver_idx++;
@@ -488,10 +1073,6 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   x_ref.setlength(2 * n_vars);
   map_points_to_solver_array(x_ref, square_points_ref, interior_mapping, n_vars);
 
-  // Both simulations start from the exact same pristine crystal mesh,
-  // exactly like the avalanche / shifted crystal simulations.
-  // When enable_remeshing is true, perform_remeshing_loop_reduction will perform
-  // successive remesh-relaxation cycles on the relaxed configuration.
   auto [elements, active_elements] = mesher.createMesh(
       square_points_ref, x_ref,
       Eigen::Matrix2d::Identity(), &dndx);
@@ -551,6 +1132,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   UserData visUserDataPre(square_points, elements, calculator, potential_func,
                           potential_func_der, zero, optimal_lattice_parameter, F_ext,
                           interior_mapping, vis_full_mapping, vis_elements, plasticity);
+  visUserDataPre.second_derivative_function = &potential_func_sder;
   ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
       &visUserDataPre, initial_file_id, pre_energy, pre_stress, true);
   ConfigurationSaver::saveTriangleData(&visUserDataPre, initial_file_id, domain_dims, offsets, full_mapping);
@@ -566,6 +1148,16 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   std::cout << "Saved initial state as configuration_"
             << std::setw(5) << std::setfill('0') << initial_file_id << ".vtk ("
             << (export_full_mesh ? "full mesh" : "active elements only") << ")" << std::endl;
+
+  // Extract and export State 0 (Unrelaxed Volterra) profile data
+  StateProfileData unrelaxed_profile = extract_dislocation_profiles(
+      &visUserDataPre, core_x, core_y, burgers_vector.x(), R_free,
+      lattice_constant, lattice_type, pre_energy, pre_stress);
+  write_dislocation_profiles_json_and_csv(
+      "dislocation_profiles.json", "dislocation_profiles.csv",
+      lattice_type, potential_mode, beta, bulk_K, R_free,
+      lattice_constant, burgers_vector.x(), core_x, core_y,
+      C11, C12, C66, poisson_ratio, unrelaxed_profile, nullptr);
 
   // Energy minimization within R_free
   std::cout << "Minimizing energy of free nodes within R_free..." << std::endl;
@@ -625,6 +1217,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   UserData postOptUserData(square_points, elements, calculator, potential_func,
                            potential_func_der, zero, optimal_lattice_parameter,
                            F_ext, interior_mapping, vis_full_mapping, vis_elements_post, plasticity);
+  postOptUserData.second_derivative_function = &potential_func_sder;
 
   ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
       &postOptUserData, relaxed_file_id, post_energy, post_stress, true);
@@ -648,6 +1241,31 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   std::cout << "Saved relaxed state as configuration_"
             << std::setw(5) << std::setfill('0') << relaxed_file_id << ".vtk ("
             << (export_full_mesh ? "full mesh" : "active elements only") << ")" << std::endl;
+
+  // Extract and export State 1 (Relaxed Core) profile data (and update combined JSON + CSV)
+  StateProfileData relaxed_profile = extract_dislocation_profiles(
+      &postOptUserData, core_x, core_y, burgers_vector.x(), R_free,
+      lattice_constant, lattice_type, post_energy, post_stress);
+  write_dislocation_profiles_json_and_csv(
+      "dislocation_profiles.json", "dislocation_profiles.csv",
+      lattice_type, potential_mode, beta, bulk_K, R_free,
+      lattice_constant, burgers_vector.x(), core_x, core_y,
+      C11, C12, C66, poisson_ratio, unrelaxed_profile, &relaxed_profile);
+
+  std::cout << "\n================ DISLOCATION ANALYSIS SUMMARY ================" << std::endl;
+  std::cout << "Dislocation Core Position: (" << core_x << ", " << core_y << ")" << std::endl;
+  std::cout << "State 0 (Unrelaxed): Total Energy = " << pre_energy
+            << " | Core Fit E_core = " << unrelaxed_profile.core_fit.core_energy
+            << ", Elastic K = " << unrelaxed_profile.core_fit.elastic_K
+            << ", R² = " << unrelaxed_profile.core_fit.R2 << std::endl;
+  std::cout << "State 1 (Relaxed):   Total Energy = " << post_energy
+            << " | Core Fit E_core = " << relaxed_profile.core_fit.core_energy
+            << ", Elastic K = " << relaxed_profile.core_fit.elastic_K
+            << ", R² = " << relaxed_profile.core_fit.R2 << std::endl;
+  std::cout << "Core Energy Relaxation Drop: ΔE_core = "
+            << (unrelaxed_profile.core_fit.core_energy - relaxed_profile.core_fit.core_energy) << std::endl;
+  std::cout << "Dislocation profiles exported to dislocation_profiles.json and dislocation_profiles.csv" << std::endl;
+  std::cout << "==============================================================\n" << std::endl;
   std::cout << "=== VOLTERRA DISLOCATION RELAXATION COMPLETE ===\n" << std::endl;
 }
 

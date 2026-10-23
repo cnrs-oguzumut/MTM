@@ -75,9 +75,11 @@ int main(int argc, char **argv) {
   double bulk_K = 5.0;
   std::string lattice_type = "square";
 
+  // Potential mode flags (1: LJ v2, 2: LJ v3, 3: Zanzotto, 4: Square Gaussian)
+  int potential_mode = 3;
+
   // Acoustic study flags
   bool run_acoustic_study = false;
-  int acoustic_potential_mode = 3; // 1: LJ v2, 2: LJ v3, 3: Zanzotto, 4: Square Gaussian
   double acoustic_t_max = 1.0;
   double acoustic_dt = 0.02;
   double acoustic_dp = 0.05;
@@ -165,11 +167,26 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--ny=", 0) == 0) {
       ny = std::stoi(arg.substr(5));
     } else if (arg.rfind("--potential-mode=", 0) == 0) {
-      acoustic_potential_mode = std::stoi(arg.substr(17));
+      std::string val = arg.substr(17);
+      if (val == "mode1" || val == "1") potential_mode = 1;
+      else if (val == "mode2" || val == "2") potential_mode = 2;
+      else if (val == "mode3" || val == "3") potential_mode = 3;
+      else if (val == "mode4" || val == "4") potential_mode = 4;
+      else potential_mode = std::stoi(val);
     } else if (arg.rfind("--potential=", 0) == 0) {
-      acoustic_potential_mode = std::stoi(arg.substr(12));
+      std::string val = arg.substr(12);
+      if (val == "mode1" || val == "1") potential_mode = 1;
+      else if (val == "mode2" || val == "2") potential_mode = 2;
+      else if (val == "mode3" || val == "3") potential_mode = 3;
+      else if (val == "mode4" || val == "4") potential_mode = 4;
+      else potential_mode = std::stoi(val);
     } else if (arg.rfind("--acoustic-mode=", 0) == 0) {
-      acoustic_potential_mode = std::stoi(arg.substr(16));
+      std::string val = arg.substr(16);
+      if (val == "mode1" || val == "1") potential_mode = 1;
+      else if (val == "mode2" || val == "2") potential_mode = 2;
+      else if (val == "mode3" || val == "3") potential_mode = 3;
+      else if (val == "mode4" || val == "4") potential_mode = 4;
+      else potential_mode = std::stoi(val);
     } else if (arg.rfind("--t-max=", 0) == 0) {
       acoustic_t_max = std::stod(arg.substr(8));
     } else if (arg.rfind("--dt=", 0) == 0) {
@@ -330,7 +347,7 @@ int main(int argc, char **argv) {
   configure_stability_monitor(stability_options);
 
   if (!restart_checkpoint.empty()) {
-    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, acoustic_potential_mode);
+    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, potential_mode);
     return 0;
   }
 
@@ -409,11 +426,11 @@ int main(int argc, char **argv) {
   //    Simulates single dislocation in a cylinder / boundary-fixed crystal.
   if (mode == "volterra" || mode == "cylinder" || mode == "dislocation") {
     std::cout << "\n>>> Running single dislocation cylinder relaxation with nx=" << nx
-              << ", ny=" << ny << ", lattice=" << lattice_type
-              << ", potential_mode=" << acoustic_potential_mode
-              << ", R_free=" << r_free
-              << ", mesh=" << (export_full_mesh ? "full" : "circle") << " <<<\n" << std::endl;
-    single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh, lattice_type, acoustic_potential_mode);
+              << ", ny=" << ny << ", R_free=" << r_free
+              << ", mesh=" << (export_full_mesh ? "full" : "circle")
+              << ", lattice=" << lattice_type << ", potential_mode=" << potential_mode << " <<<\n" << std::endl;
+    single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh,
+                                           lattice_type, potential_mode, beta, bulk_K);
     return 0;
   }
 
@@ -432,7 +449,7 @@ int main(int argc, char **argv) {
   //    Calculates and logs acoustic tensor properties / stability across states.
   if (run_acoustic_study || mode == "acoustic" || mode == "acoustic_study" || mode == "parametric_acoustic") {
     AcousticStudyConfig acoustic_cfg;
-    acoustic_cfg.mode = acoustic_potential_mode;
+    acoustic_cfg.mode = potential_mode;
     acoustic_cfg.lattice_type = lattice_type;
     acoustic_cfg.beta = beta;
     acoustic_cfg.K = bulk_K;
@@ -462,7 +479,7 @@ int main(int argc, char **argv) {
     stiff_cfg.nx = nx;
     stiff_cfg.ny = ny;
     stiff_cfg.lattice_type = lattice_type;
-    stiff_cfg.potential_mode = acoustic_potential_mode;
+    stiff_cfg.potential_mode = potential_mode;
     stiff_cfg.bc = stiffness_bc;
     stiff_cfg.alpha_min = stiffness_alpha_min;
     stiff_cfg.alpha_max = stiffness_alpha_max;
@@ -500,10 +517,10 @@ int main(int argc, char **argv) {
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
     example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, acoustic_potential_mode);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode);
   } else {
     example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, acoustic_potential_mode);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

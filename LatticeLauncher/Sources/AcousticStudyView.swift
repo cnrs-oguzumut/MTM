@@ -509,6 +509,63 @@ public struct AcousticStudyView: View {
                         .padding(.vertical, 1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    // Export Data Menu
+                    if !manager.points.isEmpty {
+                        Menu {
+                            Button(action: {
+                                let csv = manager.exportStabilityBoundariesCSV()
+                                ExportDataHelper.saveStringToFile(
+                                    content: csv,
+                                    defaultFileName: "stability_boundary_points.csv"
+                                )
+                            }) {
+                                Label("Save Stability Boundary Points (CSV)...", systemImage: "circle.dashed")
+                            }
+                            
+                            Button(action: {
+                                let csv = manager.exportFullParametricScanCSV()
+                                ExportDataHelper.saveStringToFile(
+                                    content: csv,
+                                    defaultFileName: "acoustic_parametric_scan.csv"
+                                )
+                            }) {
+                                Label("Save Full Stability Scan (CSV)...", systemImage: "tablecells")
+                            }
+                            
+                            if manager.shearPath != nil {
+                                Button(action: {
+                                    let csv = manager.exportShearPathCSV()
+                                    ExportDataHelper.saveStringToFile(
+                                        content: csv,
+                                        defaultFileName: "shear_path_stability.csv"
+                                    )
+                                }) {
+                                    Label("Save Simple Shear Path (CSV)...", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+                                }
+                            }
+                            
+                            Divider()
+                            
+                            Button(action: {
+                                let csv = manager.exportStabilityBoundariesCSV()
+                                ExportDataHelper.copyToClipboard(text: csv)
+                            }) {
+                                Label("Copy Boundary Points (CSV)", systemImage: "doc.on.doc")
+                            }
+                            
+                            Button(action: {
+                                let csv = manager.exportFullParametricScanCSV()
+                                ExportDataHelper.copyToClipboard(text: csv)
+                            }) {
+                                Label("Copy Full Scan (CSV)", systemImage: "doc.on.clipboard")
+                            }
+                        } label: {
+                            Label("Export Data", systemImage: "square.and.arrow.up")
+                        }
+                        .menuStyle(.borderedButton)
+                        .controlSize(.regular)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)

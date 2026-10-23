@@ -296,9 +296,43 @@ struct StressStrainChartView: View {
                             .lineLimit(1)
                             .fixedSize()
                     }
-                    .padding(.vertical, 1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                
+                // Active Strain Range Badge
+                if let firstA = runner.curvePoints.first?.alpha, let lastA = runner.curvePoints.last?.alpha {
+                    Text("α: [\(String(format: "%.3f", firstA)) → \(String(format: "%.3f", lastA))]")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(4)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                
+                // Export Data Menu
+                if !runner.curvePoints.isEmpty {
+                    Menu {
+                        Button(action: exportCurveCSV) {
+                            Label("Save Stress–Strain Curve (CSV)...", systemImage: "chart.xyaxis.line")
+                        }
+                        if !remeshEvents.isEmpty {
+                            Button(action: exportAvalanchesCSV) {
+                                Label("Save Avalanches / Remesh Events (CSV)...", systemImage: "burst")
+                            }
+                        }
+                        Divider()
+                        Button(action: copyCurveCSVToClipboard) {
+                            Label("Copy Curve Data (CSV)", systemImage: "doc.on.doc")
+                        }
+                    } label: {
+                        Label("Export Data", systemImage: "square.and.arrow.up")
+                    }
+                    .menuStyle(.borderedButton)
+                    .controlSize(.small)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
@@ -611,5 +645,34 @@ struct StressStrainChartView: View {
     private func findClosestEigenPoint(to alpha: Double) -> EigenPoint? {
         guard !runner.eigenPoints.isEmpty else { return nil }
         return runner.eigenPoints.min(by: { abs($0.alpha - alpha) < abs($1.alpha - alpha) })
+    }
+    
+    // MARK: - Export Methods
+    
+    private func generateCurveCSV() -> String {
+        var csv = "step,alpha_strain,stress_sigma,energy_E,pre_stress,pre_energy,is_remesh\n"
+        for pt in runner.curvePoints {
+            csv += "\(pt.iteration),\(pt.alpha),\(pt.postStress),\(pt.postEnergy),\(pt.preStress),\(pt.preEnergy),\(pt.shouldRemesh)\n"
+        }
+        return csv
+    }
+    
+    private func exportCurveCSV() {
+        let csv = generateCurveCSV()
+        ExportDataHelper.saveStringToFile(content: csv, defaultFileName: "stress_strain_curve.csv")
+    }
+    
+    private func exportAvalanchesCSV() {
+        var csv = "step,alpha_strain,stress_before,stress_after,stress_drop,energy_before,energy_after,energy_drop\n"
+        for pt in remeshEvents {
+            let sDrop = pt.preStress - pt.postStress
+            let eDrop = pt.preEnergy - pt.postEnergy
+            csv += "\(pt.iteration),\(pt.alpha),\(pt.preStress),\(pt.postStress),\(sDrop),\(pt.preEnergy),\(pt.postEnergy),\(eDrop)\n"
+        }
+        ExportDataHelper.saveStringToFile(content: csv, defaultFileName: "plastic_avalanches_remesh_events.csv")
+    }
+    
+    private func copyCurveCSVToClipboard() {
+        ExportDataHelper.copyToClipboard(text: generateCurveCSV())
     }
 }

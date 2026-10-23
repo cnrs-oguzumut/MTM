@@ -144,6 +144,17 @@ public:
     );
 
     /**
+     * @brief Calculate edge dislocation displacement in an anisotropic square crystal with explicit elastic constants
+     */
+    static Eigen::Vector2d calculateAnisotropicEdgeDisplacement(
+        const Eigen::Vector2d& position,
+        const Eigen::Vector2d& burgers_vector,
+        double C11,
+        double C12,
+        double C66
+    );
+
+    /**
      * @brief Calculate edge dislocation displacement in an anisotropic square crystal using given Stroh parameters
      */
     static Eigen::Vector2d calculateAnisotropicEdgeDisplacement(

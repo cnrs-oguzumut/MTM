@@ -3,30 +3,7 @@ import Combine
 import SwiftUI
 import AppKit
 
-public enum AcousticPotentialMode: Int, CaseIterable, Identifiable {
-    case zanzotto = 3
-    case ljV2 = 1
-    case ljV3 = 2
-    case square = 4
-    
-    public var id: Int { rawValue }
-    public var displayName: String {
-        switch self {
-        case .zanzotto: return "Mode 3: Zanzotto Continuum Φ(C)"
-        case .ljV2: return "Mode 1: Lennard-Jones v2 V(r)"
-        case .ljV3: return "Mode 2: Lennard-Jones v3 V(r)"
-        case .square: return "Mode 4: Square Gaussian Potential V(r)"
-        }
-    }
-    public var shortName: String {
-        switch self {
-        case .zanzotto: return "Zanzotto Φ(C)"
-        case .ljV2: return "LJ v2"
-        case .ljV3: return "LJ v3"
-        case .square: return "Square V(r)"
-        }
-    }
-}
+// Note: AcousticPotentialMode is defined and aliased to PotentialMode in SimulationConfig.swift
 
 public enum ColorFieldMode: String, CaseIterable, Identifiable {
     case acousticStability = "Acoustic Stability (min det Q)"
@@ -983,4 +960,57 @@ public class AcousticStudyManager: ObservableObject {
         self.surfaceCells = newCells
         self.zeroContourSegments = newSegments
     }
+    
+    // MARK: - Data Export Generators
+    
+    /// Exports the exact zero-contour stability boundary line segments and near-boundary points as CSV.
+    public func exportStabilityBoundariesCSV() -> String {
+        var csv = "# Acoustic Stability Boundary (min det Ac = 0 Loss of Strong Ellipticity)\n"
+        csv += "# Symmetry: \(latticeSymmetry.displayName), Potential Mode: \(potentialMode.displayName)\n"
+        csv += "# Elastic Moduli: C11=\(elasticConstants.C11), C22=\(elasticConstants.C22), C12=\(elasticConstants.C12), C66=\(elasticConstants.C66)\n"
+        csv += "type,segment_id,point_id,poincare_x,poincare_y,poincare_x_red,poincare_y_red,t,p,c11,c22,c12,min_detAc,critical_angle_deg,is_stable\n"
+        
+        // 1. Boundary Contour Line Vertices
+        for (idx, seg) in zeroContourSegments.enumerated() {
+            csv += "contour_vertex,\(idx),start,\(seg.startX),\(seg.startY),\(seg.startXRed),\(seg.startYRed),0,0,0,0,0,0.0,0,false\n"
+            csv += "contour_vertex,\(idx),end,\(seg.endX),\(seg.endY),\(seg.endXRed),\(seg.endYRed),0,0,0,0,0,0.0,0,false\n"
+        }
+        
+        // 2. Near Boundary Sampling Points (|min_detAc| <= 0.08)
+        let nearPoints = points.filter { abs($0.min_detAc) <= 0.08 }
+        for (idx, pt) in nearPoints.enumerated() {
+            csv += "sampled_boundary,\(idx),\(pt.id),\(pt.x),\(pt.y),\(pt.x_red),\(pt.y_red),\(pt.t),\(pt.p),\(pt.c11),\(pt.c22),\(pt.c12),\(pt.min_detAc),\(pt.angle_deg),\(pt.is_stable)\n"
+        }
+        
+        return csv
+    }
+    
+    /// Exports the full parametric acoustic stability scan dataset as CSV.
+    public func exportFullParametricScanCSV() -> String {
+        var csv = "point_id,poincare_x,poincare_y,poincare_x_red,poincare_y_red,t,p,c11,c22,c12,c11_red,c22_red,c12_red,min_detAc,critical_angle_deg,energy,is_stable\n"
+        for (idx, pt) in points.enumerated() {
+            csv += "\(idx),\(pt.x),\(pt.y),\(pt.x_red),\(pt.y_red),\(pt.t),\(pt.p),\(pt.c11),\(pt.c22),\(pt.c12),\(pt.c11_red),\(pt.c22_red),\(pt.c12_red),\(pt.min_detAc),\(pt.angle_deg),\(pt.energy),\(pt.is_stable)\n"
+        }
+        return csv
+    }
+    
+    /// Exports the simple shear path and critical transition points as CSV.
+    public func exportShearPathCSV() -> String {
+        guard let sp = shearPath else { return "No shear path computed.\n" }
+        var csv = "# Simple Shear Path Stability\n"
+        csv += "# Critical points count: \(sp.critical_points.count)\n"
+        csv += "type,alpha,poincare_x,poincare_y,poincare_x_red,poincare_y_red,c11,c22,c12,min_detAc,energy,is_stable\n"
+        for pt in sp.critical_points {
+            let detStr = pt.min_detAc.map { String($0) } ?? "nan"
+            let stabStr = pt.is_stable.map { String($0) } ?? "unknown"
+            csv += "critical_transition,\(pt.alpha),\(pt.x),\(pt.y),\(pt.x_red),\(pt.y_red),\(pt.c11),\(pt.c22),\(pt.c12),\(detStr),\(pt.energy),\(stabStr)\n"
+        }
+        for pt in sp.points {
+            let detStr = pt.min_detAc.map { String($0) } ?? "nan"
+            let stabStr = pt.is_stable.map { String($0) } ?? "unknown"
+            csv += "shear_step,\(pt.alpha),\(pt.x),\(pt.y),\(pt.x_red),\(pt.y_red),\(pt.c11),\(pt.c22),\(pt.c12),\(detStr),\(pt.energy),\(stabStr)\n"
+        }
+        return csv
+    }
 }
+

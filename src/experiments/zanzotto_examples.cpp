@@ -488,7 +488,7 @@ void example_1_conti_zanzotto_loading(
               << old_ny << " to " << ny << std::endl;
   }
 
-  // Print potential information
+  // Print potential and calculated elastic constants
   if (potential_mode == 3) {
     auto ec = energy_functions::calculate_elastic_constants(
         energy_functions::current_beta, energy_functions::current_K, lattice_type);
@@ -557,7 +557,7 @@ void example_1_conti_zanzotto_loading(
   // Reference element is always kept SQUARE (reference state)
   double h = (potential_mode == 3) ? 1.0 : calc_scale;                      // Reference element size
 
-  // Reference triangle vertices (for shape function derivatives)
+  // Reference element is kept square (right isosceles triangle with legs h)
   Eigen::Vector2d p1(0.0, 0.0);
   Eigen::Vector2d p2(h, 0.0);
   Eigen::Vector2d p3(0.0, h);
@@ -1331,7 +1331,7 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
     path = "checkpoints/latest.chk";
   }
 
-  double h = 1.0;
+  double h = (potential_mode == 1) ? 0.6872044091828517 : ((potential_mode == 2) ? 0.996407146941421 : 1.0);
   Eigen::Vector2d p1(0.0, 0.0);
   Eigen::Vector2d p2(h, 0.0);
   Eigen::Vector2d p3(0.0, h);

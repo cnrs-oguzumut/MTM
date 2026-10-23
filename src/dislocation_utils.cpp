@@ -282,6 +282,17 @@ Eigen::Vector2d VolterraDisplacement::calculateAnisotropicEdgeDisplacement(
 
 Eigen::Vector2d VolterraDisplacement::calculateAnisotropicEdgeDisplacement(
     const Eigen::Vector2d& position,
+    const Eigen::Vector2d& burgers_vector,
+    double C11,
+    double C12,
+    double C66
+) {
+    DislocationSolutionParams params = DislocationSolutionParams::fromElasticConstants(C11, C12, C66, "square");
+    return calculateAnisotropicEdgeDisplacement(position, burgers_vector, params);
+}
+
+Eigen::Vector2d VolterraDisplacement::calculateAnisotropicEdgeDisplacement(
+    const Eigen::Vector2d& position,
     const Eigen::Vector2d& burgers_vector
 ) {
     // Dynamically compute Stroh parameters from the active Zanzotto potential

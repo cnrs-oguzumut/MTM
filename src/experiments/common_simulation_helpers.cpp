@@ -452,7 +452,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
     UserData newUserData(square_points, elements, calculator, potential_func,
                          potential_func_der, zero, ideal_lattice_parameter,
                          F_ext, interior_mapping, full_mapping, active_elements,
-                         plasticity);
+                         plasticity,
+                         userData->second_derivative_function);
 
     relax_configuration(x, &newUserData, 13);
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);

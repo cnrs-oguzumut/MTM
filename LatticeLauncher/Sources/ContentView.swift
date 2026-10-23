@@ -17,11 +17,23 @@ enum AppNavigationTab: String, CaseIterable, Identifiable {
 }
 
 enum MainDisplayTab: String, CaseIterable, Identifiable {
-    case curve = "Stress–Strain Curve"
+    case curve = "Curve"
     case initialMesh = "Initial Mesh"
     case terminal = "Terminal Log"
     
     var id: String { rawValue }
+    
+    func title(mode: LoadingMode) -> String {
+        switch self {
+        case .curve:
+            return mode == .volterra ? "Dislocation Profiles" : "Stress–Strain Curve"
+        case .initialMesh:
+            return "Initial Mesh"
+        case .terminal:
+            return "Terminal Log"
+        }
+    }
+    
     var icon: String {
         switch self {
         case .curve: return "chart.xyaxis.line"
@@ -95,7 +107,11 @@ struct ContentView: View {
                         
                         // Main Content View: Live Curve, Initial Mesh, or Terminal
                         if displayTab == .curve {
-                            StressStrainChartView()
+                            if config.mode == .volterra {
+                                DislocationProfileChartView()
+                            } else {
+                                StressStrainChartView()
+                            }
                         } else if displayTab == .initialMesh {
                             InitialLatticeVisualizerView(manager: previewManager)
                         } else {
@@ -253,21 +269,20 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
-                // 3. Lattice Symmetry & Interatomic / Continuum Potential
-                GroupBox(label: Label("Lattice & Potential", systemImage: "atom")) {
+                // 3. Lattice & Potential Model
+                GroupBox(label: Label("Lattice & Potential Model", systemImage: "atom")) {
                     VStack(alignment: .leading, spacing: 10) {
+                        Picker("Potential", selection: $config.potentialMode) {
+                            ForEach(PotentialMode.allCases) { pot in
+                                Text(pot.displayName).tag(pot)
+                            }
+                        }
+                        
                         Picker("Symmetry", selection: $config.latticeSymmetry) {
                             ForEach(LatticeSymmetry.allCases) { sym in
                                 Text(sym.displayName).tag(sym)
                             }
                         }
-                        
-                        Picker("Potential", selection: $config.potentialMode) {
-                            ForEach(AcousticPotentialMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.menu)
                         
                         if config.potentialMode == .zanzotto {
                             HStack {
@@ -284,14 +299,13 @@ struct SidebarControlsView: View {
                                 DoubleField(title: "K", value: $config.bulkK, width: 80)
                             }
                             
-                            // Presets (Only applicable to Mode 3 Continuum Potential)
+                            // Presets
                             HStack(spacing: 6) {
                                 Text("Presets:")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                                 Button("Square (β=-0.25)") {
                                     config.latticeSymmetry = .square
-                                    config.potentialMode = .zanzotto
                                     config.beta = -0.25
                                     config.bulkK = 5.0
                                 }
@@ -300,18 +314,39 @@ struct SidebarControlsView: View {
                                 
                                 Button("Triangular (β=4.0)") {
                                     config.latticeSymmetry = .triangular
-                                    config.potentialMode = .zanzotto
                                     config.beta = 4.0
                                     config.bulkK = 5.0
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.mini)
                             }
+                            
+                            Text("Reference element remains strictly square; deformation gradient F is measured relative to square reference.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 4) {
+                                if config.potentialMode == .ljV2 {
+                                    Text("Lennard-Jones v2: V(r) = 4[(1/r)¹² - (1/r)⁶], r_cut = 2.50")
+                                        .font(.caption)
+                                        .foregroundColor(.primary)
+                                    Text("Ground state: b = 0.6872, mesh size h = b.")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                } else {
+                                    Text("Lennard-Jones v3: V(r) = (1/r)¹² - 2(1/r)⁶, r_cut = 1.866")
+                                        .font(.caption)
+                                        .foregroundColor(.primary)
+                                    Text("Ground state: b = 0.9964, mesh size h = b.")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Text("Coarse-grained via Cauchy-Born with Lagrange reduction.")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 2)
                         }
-                        
-                        Text("Equilibrium lattice parameter a₀ and elastic constants (C₁₁, C₁₂, C₆₆) are dynamically computed from the selected potential.")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -496,29 +531,50 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
-                // 5. Loading Schedule
-                GroupBox(label: Label("Loading Schedule (|α|)", systemImage: "chart.line.uptrend.xyaxis")) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Start strain |α_start|:")
-                                .font(.subheadline)
-                            Spacer()
-                            DoubleField(title: "0.14", value: $config.alphaStart, width: 80)
+                // 5. Loading Schedule vs Dislocation Cylinder Settings
+                if config.mode == .volterra {
+                    GroupBox(label: Label("Dislocation Cylinder Settings", systemImage: "circle.dashed")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Relaxation radius R_free (in h):")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "10.0", value: $config.rFree, width: 75)
+                            }
+                            
+                            Toggle("Export Full Mesh (all atoms)", isOn: $config.exportFullMesh)
+                                .toggleStyle(.switch)
+                            
+                            Text("Note: Loading schedule is inactive in Volterra mode. The Volterra field is installed directly, and atoms within R_free relax by energy minimization.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
                         }
-                        HStack {
-                            Text("End strain |α_end|:")
-                                .font(.subheadline)
-                            Spacer()
-                            DoubleField(title: "1.0", value: $config.alphaEnd, width: 80)
-                        }
-                        HStack {
-                            Text("Step size |dα|:")
-                                .font(.subheadline)
-                            Spacer()
-                            DoubleField(title: "0.00006", value: $config.stepSize, width: 90)
-                        }
+                        .padding(8)
                     }
-                    .padding(8)
+                } else {
+                    GroupBox(label: Label("Loading Schedule (|α|)", systemImage: "chart.line.uptrend.xyaxis")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Start strain |α_start|:")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "0.14", value: $config.alphaStart, width: 80)
+                            }
+                            HStack {
+                                Text("End strain |α_end|:")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "1.0", value: $config.alphaEnd, width: 80)
+                            }
+                            HStack {
+                                Text("Step size |dα|:")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "0.00006", value: $config.stepSize, width: 90)
+                            }
+                        }
+                        .padding(8)
+                    }
                 }
                 
                 // 6. Stability Monitor & Eigenvalues

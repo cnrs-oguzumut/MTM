@@ -120,6 +120,7 @@ def compute_stress_profiles(tri_centers, areas, elem_stresses, xc, yc=149.5, x_s
         
     return {
         'x_rel': x_eval - xc,
+        'x_abs': x_eval,
         's_xy': np.array(s_xy_mid),
         's_xx_up': np.array(s_xx_up),
         's_xx_dn': np.array(s_xx_dn),
@@ -128,9 +129,13 @@ def compute_stress_profiles(tri_centers, areas, elem_stresses, xc, yc=149.5, x_s
     }
 
 def main():
+    import sys
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_dir = os.path.join(script_dir, 'shifted_dislocation_study_300x300')
-    artifact_dir = '/Users/usalman/.gemini/antigravity-ide/brain/e0366a0b-42af-4a53-9525-edb8c926ac89'
+    if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
+        base_dir = os.path.abspath(sys.argv[1])
+    else:
+        base_dir = os.path.join(script_dir, 'shifted_dislocation_study_300x300')
+    artifact_dir = '/Users/usalman/.gemini/antigravity-ide/brain/fac2e960-26a9-4cc5-af93-fee8a8b36021'
     shifts = [0, 1, 2, 3, 4, 5]
     
     # Elegant, distinguishable color palette
@@ -149,12 +154,16 @@ def main():
         x_cm = compute_slip_centroid(x_slip, e_slip)
         
         print(f"Computing stress profiles for Shift s={s} (centroid x_cm={x_cm:.3f})...")
-        # Zoomed stress profile (x in [-25, 25])
+        # 1. Centroid-aligned stress profiles (relative x in [-25, 25])
         st_zoom = compute_stress_profiles(tri_c, areas, stresses, xc=x_cm, x_span=25.0, num_x=201)
-        # Full stress profile (x in [-150, 150])
         st_full = compute_stress_profiles(tri_c, areas, stresses, xc=x_cm, x_span=150.0, num_x=301, sigma=1.5)
         
+        # 2. Unaligned stress profiles without x_c (fixed domain center xc=149.5)
+        st_abs_zoom = compute_stress_profiles(tri_c, areas, stresses, xc=149.5, x_span=25.0, num_x=201)
+        st_abs_full = compute_stress_profiles(tri_c, areas, stresses, xc=149.5, x_span=150.0, num_x=301, sigma=1.5)
+        
         r_from_cm = np.linalg.norm(pts[:, :2] - np.array([x_cm, 149.5]), axis=1)
+        r_from_fixed = np.linalg.norm(pts[:, :2] - np.array([149.5, 149.5]), axis=1)
         
         data[s] = {
             'pts': pts,
@@ -163,8 +172,11 @@ def main():
             'e_slip': e_slip,
             'x_cm': x_cm,
             'r_from_cm': r_from_cm,
+            'r_from_fixed': r_from_fixed,
             'st_zoom': st_zoom,
-            'st_full': st_full
+            'st_full': st_full,
+            'st_abs_zoom': st_abs_zoom,
+            'st_abs_full': st_abs_full
         }
         print(f"Shift s={s}: centroid x_cm = {x_cm:.4f}, max energy = {np.max(e_slip):.5f}")
 
@@ -425,6 +437,108 @@ def main():
     ax9.grid(True, which='both')
     plt.tight_layout()
     save_fig(fig9, 'dislocation_300_shifted_log_cumulative_energy.png')
+
+    # ==============================================================================
+    # FIGURES WITHOUT x_c SUBTRACTION (RAW / ABSOLUTE LATTICE COORDINATES)
+    # ==============================================================================
+
+    # FIGURE 10: Full Slip Plane Energy Profile without x_c (Absolute x in [0, 300]h)
+    fig10, ax10 = plt.subplots(figsize=(10, 5.5), dpi=300)
+    for s, col in zip(shifts, colors):
+        if s not in data: continue
+        ax10.plot(data[s]['x_slip'], data[s]['e_slip'], color=col, lw=2.0, label=f'Shift $s = {s}$')
+
+    ax10.axvline(x=149.5, color='#333333', linestyle=':', lw=1.5, label='Crystal Center ($149.5h$)')
+    ax10.axvspan(149.5 - 70.0, 149.5 + 70.0, color='#f0ad4e', alpha=0.12, label='Relaxation Zone')
+    ax10.set_xlim(0, 300)
+    ax10.set_ylim(bottom=-0.002, top=0.075)
+    ax10.set_xlabel(r'Absolute Coordinate Along Slip Plane $x / h$', fontsize=13, fontweight='bold', labelpad=8)
+    ax10.set_ylabel('Slip Plane Energy $E(x)$', fontsize=13, fontweight='bold', labelpad=8)
+    ax10.set_title(r'Shifted Dislocation: Absolute Slip Plane Energy ($300 \times 300$, without $x_c$ subtraction)', fontsize=14, fontweight='bold', pad=12)
+    ax10.legend(loc='upper right', frameon=True, facecolor='white', framealpha=0.95, edgecolor='#cccccc', fontsize=10, ncol=2)
+    ax10.grid(True)
+    plt.tight_layout()
+    save_fig(fig10, 'dislocation_300_shifted_slip_plane_absolute_full.png')
+
+    # FIGURE 11: Zoomed Core Slip Plane Energy without x_c (Absolute x in [135, 165]h)
+    fig11, ax11 = plt.subplots(figsize=(10, 5.5), dpi=300)
+    for s, col, mark in zip(shifts, colors, markers):
+        if s not in data: continue
+        x_s = data[s]['x_slip']
+        e_s = data[s]['e_slip']
+        mask_z = (x_s >= 135.0) & (x_s <= 165.0)
+        ax11.plot(x_s[mask_z], e_s[mask_z], '-', color=col, lw=2.0, ms=4.5, 
+                  marker=mark, label=f'Shift $s = {s}$ ($x_c = {data[s]["x_cm"]:.2f}h$)')
+
+    ax11.axvline(x=149.5, color='#333333', linestyle=':', lw=1.5, label='Crystal Center ($149.5h$)')
+    ax11.set_xlim(135, 165)
+    ax11.set_ylim(bottom=-0.002, top=0.075)
+    ax11.set_xlabel(r'Absolute Coordinate Along Slip Plane $x / h$', fontsize=13, fontweight='bold', labelpad=8)
+    ax11.set_ylabel('Slip Plane Energy $E(x)$', fontsize=13, fontweight='bold', labelpad=8)
+    ax11.set_title(r'Shifted Dislocation: Core Zoom without $x_c$ Subtraction (Gliding Along Slip Plane)', fontsize=14, fontweight='bold', pad=12)
+    ax11.legend(loc='upper right', frameon=True, facecolor='white', framealpha=0.95, edgecolor='#cccccc', fontsize=9.5, ncol=2)
+    ax11.grid(True)
+    plt.tight_layout()
+    save_fig(fig11, 'dislocation_300_shifted_slip_plane_absolute_zoom.png')
+
+    # FIGURE 12: Zoomed Cauchy Shear Stress sigma_xy without x_c (Absolute x in [135, 165]h)
+    fig12, ax12 = plt.subplots(figsize=(10, 5.5), dpi=300)
+    for s, col in zip(shifts, colors):
+        if s not in data: continue
+        st = data[s]['st_abs_zoom']
+        ax12.plot(st['x_abs'], st['s_xy'], color=col, lw=2.2, label=f'Shift $s = {s}$ ($x_c = {data[s]["x_cm"]:.2f}h$)')
+
+    ax12.axhline(y=0.0, color='#666666', linestyle='-', lw=0.8, alpha=0.6)
+    ax12.axvline(x=149.5, color='#333333', linestyle=':', lw=1.5, label='Crystal Center ($149.5h$)')
+    ax12.set_xlim(135, 165)
+    ax12.set_ylim(-0.20, 0.20)
+    ax12.set_xlabel(r'Absolute Coordinate Along Slip Plane $x / h$', fontsize=13, fontweight='bold', labelpad=8)
+    ax12.set_ylabel(r'Cauchy Shear Stress $\sigma_{xy}$', fontsize=13, fontweight='bold', labelpad=8)
+    ax12.set_title(r'Shifted Dislocation: Core Zoom Shear Stress $\sigma_{xy}$ without $x_c$ Subtraction', fontsize=14, fontweight='bold', pad=12)
+    ax12.legend(loc='upper right', frameon=True, facecolor='white', framealpha=0.95, edgecolor='#cccccc', fontsize=9.5, ncol=2)
+    ax12.grid(True)
+    plt.tight_layout()
+    save_fig(fig12, 'dislocation_300_shifted_slip_plane_stress_xy_absolute_zoom.png')
+
+    # FIGURE 13: Zoomed Cauchy Normal Stress sigma_xx without x_c (Absolute x in [135, 165]h)
+    fig13, ax13 = plt.subplots(figsize=(10, 5.8), dpi=300)
+    for s, col in zip(shifts, colors):
+        if s not in data: continue
+        st = data[s]['st_abs_zoom']
+        ax13.plot(st['x_abs'], st['s_xx_up'], color=col, lw=2.0)
+        ax13.plot(st['x_abs'], st['s_xx_dn'], color=col, lw=1.6, ls=':', alpha=0.85)
+
+    ax13.axhline(0.0, color='#666666', linestyle='-', lw=0.8, alpha=0.6)
+    ax13.axvline(149.5, color='#333333', linestyle=':', lw=1.5)
+    ax13.set_xlim(135, 165)
+    ax13.set_ylim(-0.65, 0.65)
+    ax13.set_xlabel(r'Absolute Coordinate Along Slip Plane $x / h$', fontsize=13, fontweight='bold', labelpad=8)
+    ax13.set_ylabel(r'Cauchy Normal Stress $\sigma_{xx}$', fontsize=13, fontweight='bold', labelpad=8)
+    ax13.set_title(r'Shifted Dislocation: Core Zoom Normal Stress $\sigma_{xx}$ without $x_c$ Subtraction', fontsize=14, fontweight='bold', pad=12)
+    make_normal_stress_legend(ax13, [s for s in shifts if s in data], is_full=False)
+    ax13.grid(True)
+    plt.tight_layout()
+    save_fig(fig13, 'dislocation_300_shifted_slip_plane_stress_xx_absolute_zoom.png')
+
+    # FIGURE 14: Zoomed Cauchy Normal Stress sigma_yy without x_c (Absolute x in [135, 165]h)
+    fig14, ax14 = plt.subplots(figsize=(10, 5.8), dpi=300)
+    for s, col in zip(shifts, colors):
+        if s not in data: continue
+        st = data[s]['st_abs_zoom']
+        ax14.plot(st['x_abs'], st['s_yy_up'], color=col, lw=2.0)
+        ax14.plot(st['x_abs'], st['s_yy_dn'], color=col, lw=1.6, ls=':', alpha=0.85)
+
+    ax14.axhline(0.0, color='#666666', linestyle='-', lw=0.8, alpha=0.6)
+    ax14.axvline(149.5, color='#333333', linestyle=':', lw=1.5)
+    ax14.set_xlim(135, 165)
+    ax14.set_ylim(-0.40, 0.40)
+    ax14.set_xlabel(r'Absolute Coordinate Along Slip Plane $x / h$', fontsize=13, fontweight='bold', labelpad=8)
+    ax14.set_ylabel(r'Cauchy Normal Stress $\sigma_{yy}$', fontsize=13, fontweight='bold', labelpad=8)
+    ax14.set_title(r'Shifted Dislocation: Core Zoom Normal Stress $\sigma_{yy}$ without $x_c$ Subtraction', fontsize=14, fontweight='bold', pad=12)
+    make_normal_stress_legend(ax14, [s for s in shifts if s in data], is_full=False)
+    ax14.grid(True)
+    plt.tight_layout()
+    save_fig(fig14, 'dislocation_300_shifted_slip_plane_stress_yy_absolute_zoom.png')
 
     print("All shifted figures successfully generated!")
 
