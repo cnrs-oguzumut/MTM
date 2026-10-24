@@ -484,7 +484,7 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
 
         // Calculate Cauchy stress tensor
         double detF = F.determinant();
-        Eigen::Matrix2d cauchy_stress = (1.0 / detF) * F * P.transpose();
+        Eigen::Matrix2d cauchy_stress = (1.0 / detF) * P * F.transpose();
 
         // Accumulate total stress weighted by element area
         double current_area = element.calculateCurrentArea(points);

@@ -378,7 +378,7 @@ static DislocationNodalFields compute_dislocation_nodal_fields(UserData* userDat
   fields.s_vm.assign(n_points, 0.0);
   std::vector<int> node_count(n_points, 0);
 
-  double norm = pow(userData->ideal_lattice_parameter, 2.0);
+  double norm = userData->calculator.getUnitCellArea();
   if (norm <= 1e-12) norm = 1.0;
 
   // Loop over ALL elements in the crystal mesh so nodal fields (energy, stresses)
@@ -951,24 +951,23 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
         potential_func, potential_func_der, potential_func_sder, lattice_type, r_cutoff);
     eq_lat.printSummary();
     optimal_lattice_parameter = eq_lat.lattice_parameter;
-
-    // NOTE: Lagrange reduction (GL(2, Z)) in the minimization operates on the integer reference grid Z^2.
-    // We ALWAYS use SquareLatticeCalculator over Z^2. For triangular lattice, calc_scale = a_0 / (4/3)^{1/4}
-    // with reference metric C_ref = [[sqrt(4/3), 0.5*sqrt(4/3)], [0.5*sqrt(4/3), sqrt(4/3)]].
-    // This avoids double-applying the triangular distortion and ensures GL(2, Z) symmetry.
-    double calc_scale = optimal_lattice_parameter;
-    if (lattice_type == "triangular") {
-      calc_scale = optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25);
-    }
-    calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
   }
   lattice_constant = optimal_lattice_parameter;
-  BaseLatticeCalculator &calculator = *calculator_ptr;
 
+  // NOTE: Lagrange reduction (GL(2, Z)) in the minimization operates on the integer reference grid Z^2.
+  // We ALWAYS use SquareLatticeCalculator over Z^2. For triangular lattice, calc_scale = a_0 / (4/3)^{1/4}
+  // with reference metric C_ref = [[sqrt(4/3), 0.5*sqrt(4/3)], [0.5*sqrt(4/3), sqrt(4/3)]].
+  // Reference element leg h matches calc_scale (or 1.0 for continuum model) so that undeformed physical elements evaluate to C_ref.
   double calc_scale = (potential_mode == 3)
       ? 1.0
       : ((lattice_type == "triangular") ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25)) : optimal_lattice_parameter);
   h = (potential_mode == 3) ? 1.0 : calc_scale;
+
+  if (potential_mode != 3) {
+    double r_cutoff = (potential_mode == 1) ? 2.5 : 1.86602540378444;
+    calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
+  }
+  BaseLatticeCalculator &calculator = *calculator_ptr;
 
   // Reference triangle shape derivatives: ALWAYS standard square reference triangle (p1=(0,0), p2=(h,0), p3=(0,h))
   // with leg length h matching reference element scale so that undeformed physical elements evaluate to C_ref
@@ -1378,6 +1377,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
             hasChanges, max_iterations, element_area, pbc, true);
 
     post_energy = post_energy_re;
+    stress_tensor = stress_tensor_re;
     post_stress = stress_tensor_re(0, 1);
     square_points = userData.points;
     elements = userData.elements;
