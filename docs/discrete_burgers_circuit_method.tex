@@ -588,18 +588,19 @@ This gives us three powerful results immediately:
 
 \subsection{Summary: Does Method 2 Look Only at a Single Triangle?}
 
-\textbf{No!} Method 2 combines \textbf{three nested loop sizes} that work together via Discrete Stokes' Theorem:
+\textbf{No!} Method 2 combines \textbf{three nested loop sizes} that work together via Discrete Stokes' Theorem~\cite{ArizaOrtiz2005,Stukowski2010,Stukowski2012}:
 
 \begin{table}[htbp]
   \centering
+  \small
   \renewcommand{\arraystretch}{1.25}
-  \begin{tabular}{@{}lllp{6.8cm}@{}}
+  \begin{tabular}{@{}p{1.6cm}p{2.9cm}p{3.8cm}p{6.5cm}@{}}
     \toprule
     \textbf{Level} & \textbf{Circuit Size} & \textbf{Formula} & \textbf{Physical Role in the Code} \\
     \midrule
-    \textbf{Level 1} & \textbf{1 Triangle} (3 atoms) & $\bm{B}_T = \Delta\bm{n}_{01} + \Delta\bm{n}_{12} + \Delta\bm{n}_{20}$ & Elementary building block (\code{ElementBurgersMagnitude}). Because any large loop is tiled by triangles and interior edges cancel, the non-zero Burgers vector of a dislocation is concentrated in the core triangle $T^*$ where slip crosses $0.5\,a_0$. \\
-    \textbf{Level 2} & \textbf{Square Unit Cell} (4 atoms, $T_1 \cup T_2$) & $\bm{B}_{\mathrm{square}} = \bm{B}_{T_1} + \bm{B}_{T_2}$ & \textbf{Anti-noise filter:} If elastic shear causes only a shared square diagonal ($\sqrt{2}\,a_0$) to round by $\pm 1$, then $\bm{B}_{T_1} = -\bm{B}_{T_2}$ and the 4-atom square loop has $\bm{B}_{\mathrm{square}} = (0,0)$, so both cancel to zero. \\
-    \textbf{Level 3} & \textbf{Nodal 1-Ring} (5--7 triangles around atom $i$) & $\bm{B}_i^{(1\text{-ring})} = \sum_{T \ni i} \bm{B}_T$ & \textbf{Full polygon Burgers circuit around atom $i$} (\code{BurgersMagnitude} \& \code{ReferenceCoordination}). All spoke edges touching atom $i$ cancel out, leaving the closed loop of neighbor atoms around $i$. \\
+    \textbf{Level 1} & \textbf{1 Triangle}\newline (3 atoms) & $\bm{B}_T = \Delta\bm{n}_{01} + \Delta\bm{n}_{12} + \Delta\bm{n}_{20}$ & Elementary building block (\code{ElementBurgersMagnitude}). Because any large loop is tiled by triangles and interior edges cancel, the non-zero Burgers vector of a dislocation is concentrated in the core triangle $T^*$ where slip crosses $0.5\,a_0$. \\
+    \textbf{Level 2} & \textbf{Square Unit Cell}\newline (4 atoms, $T_1 \cup T_2$) & $\bm{B}_{\mathrm{square}} = \bm{B}_{T_1} + \bm{B}_{T_2}$ & \textbf{Anti-noise filter:} If elastic shear causes only a shared square diagonal ($\sqrt{2}\,a_0$) to round by $\pm 1$, then $\bm{B}_{T_1} = -\bm{B}_{T_2}$ and the 4-atom square loop has $\bm{B}_{\mathrm{square}} = (0,0)$, so both cancel to zero. \\
+    \textbf{Level 3} & \textbf{Nodal 1-Ring}\newline (5--7 triangles around atom $i$) & $\bm{B}_i^{(1\text{-ring})} = \sum_{T \ni i} \bm{B}_T$ & \textbf{Full polygon Burgers circuit around atom $i$} (\code{BurgersMagnitude} \& \code{ReferenceCoordination}). All spoke edges touching atom $i$ cancel out, leaving the closed loop of neighbor atoms around $i$. \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -613,6 +614,7 @@ in ParaView, you now have the following fields available in the coloring dropdow
 
 \begin{table}[htbp]
   \centering
+  \small
   \renewcommand{\arraystretch}{1.25}
   \begin{tabular}{@{}llp{8.2cm}@{}}
     \toprule
@@ -627,5 +629,105 @@ in ParaView, you now have the following fields available in the coloring dropdow
     \bottomrule
   \end{tabular}
 \end{table}
+
+% ============================================================================
+\section{Historical Background and Literature Lineage}
+% ============================================================================
+
+Method 2 rests on four foundational developments in dislocation theory and computational mechanics:
+
+\begin{enumerate}
+  \item \textbf{The Classical Discrete Burgers Circuit --- Burgers (1939) \& Frank (1951):}
+        J.~M.~Burgers~\cite{Burgers1939} introduced the Burgers vector $\bm{b}$ to characterize a
+        dislocation line via the closure failure of an encircling loop. F.~C.~Frank~\cite{Frank1951}
+        formulated the discrete atom-to-atom \emph{Finish-to-Start / Right-Hand} (FS/RH) Burgers
+        circuit by mapping each interatomic bond in a defective crystal onto its corresponding
+        integer step $\Delta\bm{n}_{ab}$ in an ideal reference Bravais lattice, and proved Frank's
+        conservation law ($\bm{B}_{\mathrm{junction}} = \bm{B}_1 + \bm{B}_2$) at dislocation nodes
+        and junctions.
+  \item \textbf{The Continuum Elastic Pull-Back ($\bm{F}_e^{-1}$) and Nye's Tensor --- Nye (1953), Bilby et al.\ (1955) \& Kr\"oner (1960):}
+        J.~F.~Nye~\cite{Nye1953}, B.~A.~Bilby, R.~Bullough, and E.~Smith~\cite{Bilby1955}, and
+        E.~Kr\"oner~\cite{Kroner1960} established the differential-geometric continuum theory of
+        dislocations: decomposing the total distortion into elastic and plastic parts
+        ($\bm{F} = \bm{F}_e \bm{F}_p$, generalized to $\mathrm{GL}(d,\Z)$ lattice-invariant shears in
+        the Mesoscopic Tensorial Model by Conti and Zanzotto~\cite{ContiZanzotto2004}) and defining
+        the continuum Burgers vector via the circulation of the inverse elastic distortion,
+        $\bm{b}(\mathcal{C}) = -\oint_{\mathcal{C}} \bm{F}_e^{-1}\,d\bm{y} = -\int_{\Omega}\operatorname{Curl}(\bm{F}_e^{-1})\,dA$.
+        C.~S.~Hartley and Y.~Mishin~\cite{HartleyMishin2005} later bridged the continuum Nye tensor
+        with discrete atomistic neighbor bonds.
+  \item \textbf{Discrete Exterior Calculus on Crystal Triangulations --- Ariza \& Ortiz (2005):}
+        M.~P.~Ariza and M.~Ortiz~\cite{ArizaOrtiz2005} formulated discrete crystal elasticity and
+        defects on triangulated Bravais graphs using algebraic topology (discrete exterior calculus):
+        representing integer lattice bond steps as $1$-cochains $\Delta\bm{n}_{ab} \in \Z^d$ on
+        directed mesh edges and defining elementary triangle Burgers vectors as the discrete exterior
+        derivative ($2$-cochain coboundary) $\bm{B}_T = (d\Delta\bm{n})_T = \Delta\bm{n}_{01} + \Delta\bm{n}_{12} + \Delta\bm{n}_{20}$,
+        so that Discrete Stokes' Theorem $\bm{B}(\partial\Omega) = \sum_{T \subset \Omega} \bm{B}_T$
+        holds identically.
+  \item \textbf{The Delaunay-Triangle Dislocation Extraction Algorithm (DXA) --- Stukowski \& Albe (2010--2012):}
+        A.~Stukowski and K.~Albe~\cite{Stukowski2010} and A.~Stukowski, V.~V.~Bulatov, and
+        A.~Arsenlis~\cite{Stukowski2012} (implemented in \code{OVITO}) turned the Delaunay-triangle
+        Burgers circuit into a general automated algorithm for arbitrary deformed atomistic systems:
+        tiling the crystal with a Delaunay tessellation, projecting each directed Delaunay edge onto
+        its closest ideal Bravais lattice vector in a canonical anti-symmetric order
+        ($\Delta\bm{n}_{ba} = -\Delta\bm{n}_{ab}$), and marching across elementary triangles with
+        $\bm{B}_T \neq \bm{0}$. In our MTM implementation, we combine this Delaunay-triangle Burgers
+        circuit with the \textbf{Level~2 square-plaquette diagonal filter} ($\bm{B}_{T_1} + \bm{B}_{T_2} = \bm{0}$
+        across shared $\sqrt{2}\,a_0$ diagonals) and \textbf{Level~3 $1$-ring nodal summation} to
+        handle four-fold 2D square lattices without false positives.
+\end{enumerate}
+
+\begin{thebibliography}{99}
+
+\bibitem{Burgers1939}
+J.~M.~Burgers,
+``Some considerations on the fields of stress connected with dislocations in a regular crystal lattice,''
+\emph{Proc.\ Kon.\ Ned.\ Akad.\ Wetensch.}\ \textbf{42}, 293--325 \& 378--399 (1939).
+
+\bibitem{Frank1951}
+F.~C.~Frank,
+``Crystal dislocations---Elementary concepts and definitions,''
+\emph{Philosophical Magazine}\ \textbf{42}(331), 809--819 (1951).
+
+\bibitem{Nye1953}
+J.~F.~Nye,
+``Some geometrical relations in dislocated crystals,''
+\emph{Acta Metallurgica}\ \textbf{1}(2), 153--162 (1953).
+
+\bibitem{Bilby1955}
+B.~A.~Bilby, R.~Bullough, and E.~Smith,
+``Continuous distributions of dislocations: a new application of the methods of non-Riemannian geometry,''
+\emph{Proceedings of the Royal Society of London A}\ \textbf{231}(1185), 263--273 (1955).
+
+\bibitem{Kroner1960}
+E.~Kr\"oner,
+``Allgemeine Kontinuumstheorie der Versetzungen und Eigenspannungen,''
+\emph{Archive for Rational Mechanics and Analysis}\ \textbf{4}, 273--334 (1960).
+
+\bibitem{ContiZanzotto2004}
+S.~Conti and G.~Zanzotto,
+``A variational model for reconstructive phase transformations in crystals, and their relation to dislocations and plasticity,''
+\emph{Archive for Rational Mechanics and Analysis}\ \textbf{173}, 69--88 (2004).
+
+\bibitem{HartleyMishin2005}
+C.~S.~Hartley and Y.~Mishin,
+``Characterization and visualization of the lattice misfit associated with dislocation cores,''
+\emph{Acta Materialia}\ \textbf{53}(5), 1313--1321 (2005).
+
+\bibitem{ArizaOrtiz2005}
+M.~P.~Ariza and M.~Ortiz,
+``Discrete crystal elasticity,''
+\emph{Archive for Rational Mechanics and Analysis}\ \textbf{178}(2), 179--226 (2005).
+
+\bibitem{Stukowski2010}
+A.~Stukowski and K.~Albe,
+``Extracting dislocations and non-dislocation crystal defects from atomistic simulation data,''
+\emph{Modelling and Simulation in Materials Science and Engineering}\ \textbf{18}(8), 085001 (2010).
+
+\bibitem{Stukowski2012}
+A.~Stukowski, V.~V.~Bulatov, and A.~Arsenlis,
+``Automated identification and indexing of dislocations in crystal interfaces,''
+\emph{Modelling and Simulation in Materials Science and Engineering}\ \textbf{20}(8), 085007 (2012).
+
+\end{thebibliography}
 
 \end{document}
