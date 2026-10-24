@@ -242,45 +242,49 @@ struct SidebarControlsView: View {
                                 .foregroundColor(.accentColor)
                         }
                         
-                        HStack {
-                            Text("Random Seed:")
-                                .font(.subheadline)
-                            IntField(title: "Seed", value: $config.seed, width: 90)
-                            Button(action: { config.randomizeSeed() }) {
-                                Label("Random", systemImage: "dice")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                        
-                        VStack(alignment: .leading, spacing: 4) {
+                        if config.mode != .volterra {
                             HStack {
-                                Text("Initial Noise (σ):")
+                                Text("Random Seed:")
                                     .font(.subheadline)
-                                Spacer()
-                                DoubleField(title: "0.04", value: $config.noiseLevel, width: 75, minValue: 0.0, maxValue: 1.0)
+                                IntField(title: "Seed", value: $config.seed, width: 90)
+                                Button(action: { config.randomizeSeed() }) {
+                                    Label("Random", systemImage: "dice")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                             }
-                            Slider(value: Binding(
-                                get: { config.noiseLevel },
-                                set: { config.noiseLevel = (round($0 * 1000) / 1000) }
-                            ), in: 0.0...0.20)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Initial Noise (σ):")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    DoubleField(title: "0.04", value: $config.noiseLevel, width: 75, minValue: 0.0, maxValue: 1.0)
+                                }
+                                Slider(value: Binding(
+                                    get: { config.noiseLevel },
+                                    set: { config.noiseLevel = (round($0 * 1000) / 1000) }
+                                ), in: 0.0...0.20)
+                            }
                         }
                         
                         Toggle("Adaptive Remeshing (Delaunay Surgery)", isOn: $config.enableRemeshing)
                             .toggleStyle(.switch)
                         
-                        Divider().padding(.vertical, 2)
-                        
-                        // Boundary Conditions Selector
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Boundary Condition:")
-                                .font(.subheadline)
-                            Picker("Boundary Condition", selection: $config.boundaryCondition) {
-                                ForEach(BoundaryConditionMode.allCases) { bc in
-                                    Text(bc.displayName).tag(bc)
+                        if config.mode != .volterra {
+                            Divider().padding(.vertical, 2)
+                            
+                            // Boundary Conditions Selector
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Boundary Condition:")
+                                    .font(.subheadline)
+                                Picker("Boundary Condition", selection: $config.boundaryCondition) {
+                                    ForEach(BoundaryConditionMode.allCases) { bc in
+                                        Text(bc.displayName).tag(bc)
+                                    }
                                 }
+                                .pickerStyle(.segmented)
                             }
-                            .pickerStyle(.segmented)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -370,156 +374,158 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
-                // 3b. Rotated Crystal Orientation / CSL
-                GroupBox(label: Label("Rotated Crystal Orientation", systemImage: "rotate.right")) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle(isOn: $config.useRotation) {
-                            Text("Enable Rotated Lattice")
-                                .font(.caption.bold())
-                        }
-                        .toggleStyle(.checkbox)
-                        
-                        if config.useRotation {
-                            if config.boundaryCondition == .fixed || config.mode == .volterra {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Arbitrary Continuous Rotation (Fixed BC):")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                    HStack {
-                                        Text("Angle θ:")
-                                            .font(.caption2.bold())
-                                        Spacer()
-                                        DoubleField(title: "0.0", value: $config.rotationAngle, width: 65, minValue: 0.0, maxValue: 360.0)
-                                        Text("°").font(.caption2)
-                                    }
-                                    Slider(value: $config.rotationAngle, in: 0.0...360.0, step: 0.5)
-                                    Text("Under fixed boundary conditions, the lattice can be rotated to any continuous angle θ ∈ [0, 360°].")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                            } else {
-                                // Periodic BC: CSL Discrete Angles
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Coincident Site Lattice (CSL) for PBC:")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                    
-                                    // CSL Presets Picker
-                                    let allowedCSL = CSLAngleOption.allowedAngles(for: config.latticeSymmetry)
-                                    Picker("CSL Angle", selection: Binding(
-                                        get: {
-                                            allowedCSL.first(where: { $0.m == config.cslM && $0.n == config.cslN }) ?? allowedCSL[0]
-                                        },
-                                        set: { opt in
-                                            config.cslM = opt.m
-                                            config.cslN = opt.n
-                                            config.rotationAngle = opt.theta_deg
-                                            config.updateCSLSupercellAuto()
-                                        }
-                                    )) {
-                                        ForEach(allowedCSL) { opt in
-                                            Text(opt.displayName).tag(opt)
-                                        }
-                                    }
-                                    .pickerStyle(.menu)
-                                    .controlSize(.small)
-                                    
-                                    // Coprime (m, n) manual overrides
-                                    HStack(spacing: 12) {
-                                        HStack {
-                                            Text("m:")
-                                                .font(.caption2.bold())
-                                            IntField(title: "m", value: $config.cslM, width: 40)
-                                            Stepper("", value: Binding(
-                                                get: { config.cslM },
-                                                set: { config.cslM = $0; config.updateCSLSupercellAuto() }
-                                            ), in: -20...20)
-                                                .labelsHidden()
-                                        }
-                                        HStack {
-                                            Text("n:")
-                                                .font(.caption2.bold())
-                                            IntField(title: "n", value: $config.cslN, width: 40)
-                                            Stepper("", value: Binding(
-                                                get: { config.cslN },
-                                                set: { config.cslN = $0; config.updateCSLSupercellAuto() }
-                                            ), in: 0...20)
-                                                .labelsHidden()
-                                        }
-                                    }
-                                    
-                                    // Supercell Auto-scaling to Nx x Ny
-                                    Toggle("Auto-scale Supercell to match \(config.nx)×\(config.ny)", isOn: $config.autoScaleSupercell)
-                                        .font(.caption2)
-                                        .onChange(of: config.autoScaleSupercell) { auto in
-                                            if auto { config.updateCSLSupercellAuto() }
-                                        }
-                                    
-                                    HStack {
-                                        Text("Supercell: \(config.cslKx) × \(config.cslKy)")
-                                            .font(.caption2.bold())
-                                        Spacer()
-                                        Text("~\(config.cslEstimatedAtoms) atoms")
+                if config.mode != .volterra {
+                    // 3b. Rotated Crystal Orientation / CSL
+                    GroupBox(label: Label("Rotated Crystal Orientation", systemImage: "rotate.right")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $config.useRotation) {
+                                Text("Enable Rotated Lattice")
+                                    .font(.caption.bold())
+                            }
+                            .toggleStyle(.checkbox)
+                            
+                            if config.useRotation {
+                                if config.boundaryCondition == .fixed {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("Arbitrary Continuous Rotation (Fixed BC):")
                                             .font(.caption2)
-                                            .foregroundColor(.accentColor)
+                                            .foregroundColor(.secondary)
+                                        HStack {
+                                            Text("Angle θ:")
+                                                .font(.caption2.bold())
+                                            Spacer()
+                                            DoubleField(title: "0.0", value: $config.rotationAngle, width: 65, minValue: 0.0, maxValue: 360.0)
+                                            Text("°").font(.caption2)
+                                        }
+                                        Slider(value: $config.rotationAngle, in: 0.0...360.0, step: 0.5)
+                                        Text("Under fixed boundary conditions, the lattice can be rotated to any continuous angle θ ∈ [0, 360°].")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
                                     }
-                                    
-                                    if !config.autoScaleSupercell {
-                                        // Manual Supercell Multipliers (Kx, Ky)
+                                } else {
+                                    // Periodic BC: CSL Discrete Angles
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("Coincident Site Lattice (CSL) for PBC:")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        
+                                        // CSL Presets Picker
+                                        let allowedCSL = CSLAngleOption.allowedAngles(for: config.latticeSymmetry)
+                                        Picker("CSL Angle", selection: Binding(
+                                            get: {
+                                                allowedCSL.first(where: { $0.m == config.cslM && $0.n == config.cslN }) ?? allowedCSL[0]
+                                            },
+                                            set: { opt in
+                                                config.cslM = opt.m
+                                                config.cslN = opt.n
+                                                config.rotationAngle = opt.theta_deg
+                                                config.updateCSLSupercellAuto()
+                                            }
+                                        )) {
+                                            ForEach(allowedCSL) { opt in
+                                                Text(opt.displayName).tag(opt)
+                                            }
+                                        }
+                                        .pickerStyle(.menu)
+                                        .controlSize(.small)
+                                        
+                                        // Coprime (m, n) manual overrides
                                         HStack(spacing: 12) {
                                             HStack {
-                                                Text("Kx:")
+                                                Text("m:")
                                                     .font(.caption2.bold())
-                                                IntField(title: "Kx", value: $config.cslKx, width: 40)
-                                                Stepper("", value: $config.cslKx, in: 1...100)
+                                                IntField(title: "m", value: $config.cslM, width: 40)
+                                                Stepper("", value: Binding(
+                                                    get: { config.cslM },
+                                                    set: { config.cslM = $0; config.updateCSLSupercellAuto() }
+                                                ), in: -20...20)
                                                     .labelsHidden()
                                             }
                                             HStack {
-                                                Text("Ky:")
+                                                Text("n:")
                                                     .font(.caption2.bold())
-                                                IntField(title: "Ky", value: $config.cslKy, width: 40)
-                                                Stepper("", value: $config.cslKy, in: 1...100)
+                                                IntField(title: "n", value: $config.cslN, width: 40)
+                                                Stepper("", value: Binding(
+                                                    get: { config.cslN },
+                                                    set: { config.cslN = $0; config.updateCSLSupercellAuto() }
+                                                ), in: 0...20)
                                                     .labelsHidden()
+                                            }
+                                        }
+                                        
+                                        // Supercell Auto-scaling to Nx x Ny
+                                        Toggle("Auto-scale Supercell to match \(config.nx)×\(config.ny)", isOn: $config.autoScaleSupercell)
+                                            .font(.caption2)
+                                            .onChange(of: config.autoScaleSupercell) { auto in
+                                                if auto { config.updateCSLSupercellAuto() }
+                                            }
+                                        
+                                        HStack {
+                                            Text("Supercell: \(config.cslKx) × \(config.cslKy)")
+                                                .font(.caption2.bold())
+                                            Spacer()
+                                            Text("~\(config.cslEstimatedAtoms) atoms")
+                                                .font(.caption2)
+                                                .foregroundColor(.accentColor)
+                                        }
+                                        
+                                        if !config.autoScaleSupercell {
+                                            // Manual Supercell Multipliers (Kx, Ky)
+                                            HStack(spacing: 12) {
+                                                HStack {
+                                                    Text("Kx:")
+                                                        .font(.caption2.bold())
+                                                    IntField(title: "Kx", value: $config.cslKx, width: 40)
+                                                    Stepper("", value: $config.cslKx, in: 1...100)
+                                                        .labelsHidden()
+                                                }
+                                                HStack {
+                                                    Text("Ky:")
+                                                        .font(.caption2.bold())
+                                                    IntField(title: "Ky", value: $config.cslKy, width: 40)
+                                                    Stepper("", value: $config.cslKy, in: 1...100)
+                                                        .labelsHidden()
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
-                        
-                        Button(action: {
-                            previewManager.nx = config.nx
-                            previewManager.ny = config.ny
-                            previewManager.latticeSymmetry = config.latticeSymmetry
-                            previewManager.potentialMode = config.potentialMode
-                            previewManager.boundaryCondition = (config.mode == .volterra) ? .fixed : config.boundaryCondition
-                            previewManager.beta = config.beta
-                            previewManager.bulkK = config.bulkK
-                            previewManager.useRotation = config.useRotation
-                            previewManager.rotationAngle = config.rotationAngle
-                            previewManager.cslM = config.cslM
-                            previewManager.cslN = config.cslN
-                            previewManager.cslKx = config.cslKx
-                            previewManager.cslKy = config.cslKy
-                            previewManager.generateInitialMeshPreview()
-                            displayTab = .initialMesh
-                        }) {
-                            HStack {
-                                if previewManager.isGeneratingPreview {
-                                    ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
-                                } else {
-                                    Image(systemName: "eye.fill")
+                            
+                            Button(action: {
+                                previewManager.nx = config.nx
+                                previewManager.ny = config.ny
+                                previewManager.latticeSymmetry = config.latticeSymmetry
+                                previewManager.potentialMode = config.potentialMode
+                                previewManager.boundaryCondition = config.boundaryCondition
+                                previewManager.beta = config.beta
+                                previewManager.bulkK = config.bulkK
+                                previewManager.useRotation = config.useRotation
+                                previewManager.rotationAngle = config.rotationAngle
+                                previewManager.cslM = config.cslM
+                                previewManager.cslN = config.cslN
+                                previewManager.cslKx = config.cslKx
+                                previewManager.cslKy = config.cslKy
+                                previewManager.generateInitialMeshPreview()
+                                displayTab = .initialMesh
+                            }) {
+                                HStack {
+                                    if previewManager.isGeneratingPreview {
+                                        ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
+                                    } else {
+                                        Image(systemName: "eye.fill")
+                                    }
+                                    Text("Preview Initial Mesh")
                                 }
-                                Text("Preview Initial Mesh")
+                                .frame(maxWidth: .infinity)
                             }
-                            .frame(maxWidth: .infinity)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .padding(.top, 2)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .padding(.top, 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
                 }
                 
                 // 4. Preconditioning & Energy Relaxation
@@ -549,27 +555,8 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
-                // 5. Loading Schedule vs Dislocation Cylinder Settings
-                if config.mode == .volterra {
-                    GroupBox(label: Label("Dislocation Cylinder Settings", systemImage: "circle.dashed")) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("Relaxation radius R_free (in h):")
-                                    .font(.subheadline)
-                                Spacer()
-                                DoubleField(title: "10.0", value: $config.rFree, width: 75)
-                            }
-                            
-                            Toggle("Export Full Mesh (all atoms)", isOn: $config.exportFullMesh)
-                                .toggleStyle(.switch)
-                            
-                            Text("Note: Loading schedule is inactive in Volterra mode. The Volterra field is installed directly, and atoms within R_free relax by energy minimization.")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(8)
-                    }
-                } else {
+                // 5. Loading Schedule (Shear modes only)
+                if config.mode != .volterra {
                     GroupBox(label: Label("Loading Schedule (|α|)", systemImage: "chart.line.uptrend.xyaxis")) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
@@ -598,29 +585,50 @@ struct SidebarControlsView: View {
                 // 6. Stability Monitor & Eigenvalues
                 GroupBox(label: Label("Stability & Eigenvalues", systemImage: "waveform.path.ecg")) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Compute Lowest Stiffness Eigenvalues", isOn: $config.enableEigenvalues)
+                        Toggle(config.mode == .volterra ? "Analyze Dislocation Core Stability" : "Compute Lowest Stiffness Eigenvalues", isOn: $config.enableEigenvalues)
                             .toggleStyle(.switch)
                         
                         if config.enableEigenvalues {
-                            HStack {
-                                Text("Every N steps:")
-                                Spacer()
-                                IntField(title: "5", value: $config.eigEvery, width: 60)
-                            }
-                            Toggle("Compute at avalanches / stress jumps", isOn: $config.eigAtAvalanche)
-                            HStack {
-                                Text("Modes to compute:")
-                                Spacer()
-                                Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
-                            }
-                            HStack {
-                                Text("Soft modes exported:")
-                                Spacer()
-                                Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
-                            }
-                            Picker("Solver", selection: $config.eigSolver) {
-                                ForEach(EigenSolverType.allCases) { s in
-                                    Text(s.displayName).tag(s)
+                            if config.mode == .volterra {
+                                HStack {
+                                    Text("Modes to compute:")
+                                    Spacer()
+                                    Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
+                                }
+                                HStack {
+                                    Text("Soft modes exported:")
+                                    Spacer()
+                                    Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
+                                }
+                                Picker("Solver", selection: $config.eigSolver) {
+                                    ForEach(EigenSolverType.allCases) { s in
+                                        Text(s.displayName).tag(s)
+                                    }
+                                }
+                                Text("Computes the lowest eigenvalues and soft deformation modes of the relaxed dislocation core via Cholesky shift-invert Lanczos.")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                HStack {
+                                    Text("Every N steps:")
+                                    Spacer()
+                                    IntField(title: "5", value: $config.eigEvery, width: 60)
+                                }
+                                Toggle("Compute at avalanches / stress jumps", isOn: $config.eigAtAvalanche)
+                                HStack {
+                                    Text("Modes to compute:")
+                                    Spacer()
+                                    Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
+                                }
+                                HStack {
+                                    Text("Soft modes exported:")
+                                    Spacer()
+                                    Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
+                                }
+                                Picker("Solver", selection: $config.eigSolver) {
+                                    ForEach(EigenSolverType.allCases) { s in
+                                        Text(s.displayName).tag(s)
+                                    }
                                 }
                             }
                         }

@@ -17,6 +17,9 @@ public struct DislocationProfileJSONRoot: Codable {
     public let macroStressRelaxed: Bool
     public let finalF: [[Double]]?
     public let finalMacroStress: DislocationMacroStressModel?
+    public let lowestEigenvalues: [Double]?
+    public let lambdaMin: Double?
+    public let isStable: Bool?
 
     enum CodingKeys: String, CodingKey {
         case status
@@ -35,6 +38,9 @@ public struct DislocationProfileJSONRoot: Codable {
         case macroStressRelaxed = "macro_stress_relaxed"
         case finalF = "final_F"
         case finalMacroStress = "final_macro_stress"
+        case lowestEigenvalues = "lowest_eigenvalues"
+        case lambdaMin = "lambda_min"
+        case isStable = "is_stable"
     }
 
     public init(from decoder: Decoder) throws {
@@ -56,6 +62,9 @@ public struct DislocationProfileJSONRoot: Codable {
         macroStressRelaxed = (try? c.decode(Bool.self, forKey: .macroStressRelaxed)) ?? false
         finalF = try? c.decode([[Double]].self, forKey: .finalF)
         finalMacroStress = try? c.decode(DislocationMacroStressModel.self, forKey: .finalMacroStress)
+        lowestEigenvalues = try? c.decode([Double].self, forKey: .lowestEigenvalues)
+        lambdaMin = try? c.decode(Double.self, forKey: .lambdaMin)
+        isStable = try? c.decode(Bool.self, forKey: .isStable)
     }
 }
 

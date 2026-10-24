@@ -264,10 +264,6 @@ public class SimulationConfig: ObservableObject {
         }
         args.append(String(format: "--noise-level=%.6f", noiseLevel))
         
-        if mode == .volterra {
-            args.append(String(format: "--r-free=%.2f", rFree))
-            args.append("--export-full-mesh=\(exportFullMesh ? 1 : 0)")
-        }
         
         // Preconditioner
         args.append("--precond=\(preconditioner.rawValue)")
@@ -331,7 +327,8 @@ public class SimulationConfig: ObservableObject {
         
         // Stability Monitor
         if enableEigenvalues {
-            args.append("--eig-every=\(eigEvery)")
+            let everyVal = (mode == .volterra) ? max(1, eigEvery) : eigEvery
+            args.append("--eig-every=\(everyVal)")
             args.append("--eig-at-avalanche=\(eigAtAvalanche ? 1 : 0)")
             args.append("--eig-modes=\(eigModes)")
             args.append("--eig-vectors=\(eigVectors)")
@@ -344,9 +341,9 @@ public class SimulationConfig: ObservableObject {
         args.append("--bc=\(boundaryCondition.rawValue)")
         
         // Rotated Crystal Orientation / CSL
-        if useRotation {
+        if mode != .volterra && useRotation {
             args.append("--use-rotation")
-            if boundaryCondition == .fixed || mode == .volterra {
+            if boundaryCondition == .fixed {
                 args.append(String(format: "--rotation-angle=%.4f", rotationAngle))
             } else {
                 args.append("--csl-m=\(cslM)")

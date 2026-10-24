@@ -446,10 +446,10 @@ int main(int argc, char **argv) {
               << ", relax_macro_stress=" << (relax_macro_stress ? "true" : "false") << " <<<\n" << std::endl;
     single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh,
                                            lattice_type, potential_mode, beta, bulk_K,
-                                           relax_macro_stress, stress_tol, max_macro_iters);
+                                           relax_macro_stress, stress_tol, max_macro_iters,
+                                           stability_options);
     return 0;
   }
-
   // 3. Multi-Shift Dislocation Study (no remeshing):
   if (mode == "shifted_dislocation" || mode == "shift_dislocation" || mode == "shifts") {
     run_shifted_dislocation_study(0, nx, ny, {0, 1, 2, 3, 4, 5}, use_cylinder, r_free);

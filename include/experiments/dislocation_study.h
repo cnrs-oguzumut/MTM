@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include "experiments/stability_monitor.h"
 
 // Stripped-down Conti-Zanzotto crystal setup that installs a single
 // edge dislocation (Stroh for square lattice, Volterra for triangular lattice),
@@ -23,5 +24,5 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                                             double bulk_K = 5.0,
                                             bool relax_macro_stress = false,
                                             double stress_tol = 1e-5,
-                                            int max_macro_iters = 30);
-
+                                            int max_macro_iters = 30,
+                                            const StabilityMonitorOptions &stability_options = {});

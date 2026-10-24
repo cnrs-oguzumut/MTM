@@ -507,6 +507,17 @@ public struct DislocationProfileChartView: View {
                 )
             }
             
+            if let lmin = root.lambdaMin {
+                let isStable = root.isStable ?? (lmin > 0)
+                DislocKpiPill(
+                    title: "Core Stability λ_min",
+                    value: String(format: "%.4e", lmin),
+                    subtitle: isStable ? "Stable Core (λ > 0)" : "Unstable (λ ≤ 0)",
+                    icon: isStable ? "shield.lefthalf.filled" : "exclamationmark.shield.fill",
+                    color: isStable ? .mint : .red
+                )
+            }
+            
             Spacer()
         }
     }

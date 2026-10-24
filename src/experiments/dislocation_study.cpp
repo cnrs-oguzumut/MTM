@@ -1,4 +1,6 @@
 #include "../../include/experiments/experiment_includes.h"
+#include "../../include/optimization/StiffnessSpectrum.h"
+#include "../../include/experiments/stability_monitor.h"
 
 // ============================================================================
 // single_dislocation_study
@@ -730,7 +732,8 @@ static void write_dislocation_profiles_json_and_csv(
     const StateProfileData* relaxed = nullptr,
     bool macro_stress_relaxed = false,
     const Eigen::Matrix2d* final_F = nullptr,
-    const Eigen::Matrix2d* final_stress = nullptr) {
+    const Eigen::Matrix2d* final_stress = nullptr,
+    const std::vector<double>* lowest_eigenvalues = nullptr) {
 
   std::ofstream jf(filename_json);
   if (!jf.is_open()) {
@@ -760,6 +763,15 @@ static void write_dislocation_profiles_json_and_csv(
     jf << "  \"final_macro_stress\": {\"xx\": " << (*final_stress)(0, 0)
        << ", \"yy\": " << (*final_stress)(1, 1)
        << ", \"xy\": " << (*final_stress)(0, 1) << "},\n";
+  }
+  if (lowest_eigenvalues && !lowest_eigenvalues->empty()) {
+    jf << "  \"lowest_eigenvalues\": [";
+    for (size_t i = 0; i < lowest_eigenvalues->size(); ++i) {
+      jf << (*lowest_eigenvalues)[i] << (i + 1 < lowest_eigenvalues->size() ? ", " : "");
+    }
+    jf << "],\n";
+    jf << "  \"lambda_min\": " << (*lowest_eigenvalues)[0] << ",\n";
+    jf << "  \"is_stable\": " << (((*lowest_eigenvalues)[0] > 0.0) ? "true" : "false") << ",\n";
   }
   jf << "  \"elastic_constants\": {\n";
   jf << "    \"C11\": " << C11 << ",\n";
@@ -896,7 +908,8 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                                             double bulk_K,
                                             bool relax_macro_stress,
                                             double stress_tol,
-                                            int max_macro_iters) {
+                                            int max_macro_iters,
+                                            const StabilityMonitorOptions &stability_options) {
   if (nx <= 0 || ny <= 0) {
     std::cerr << "Error: nx and ny must be positive integers." << std::endl;
     exit(EXIT_FAILURE);
@@ -1408,12 +1421,143 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   StateProfileData relaxed_profile = extract_dislocation_profiles(
       &postOptUserData, core_x, core_y, burgers_vector.x(), R_free,
       lattice_constant, lattice_type, post_energy, post_stress);
+
+  // ==================== STABILITY / EIGENVALUE ANALYSIS ====================
+  std::vector<double> computed_eigenvalues;
+  double computed_lambda_min = 0.0;
+  bool has_eigenvalues = false;
+
+  if (stability_options.enabled()) {
+    std::cout << "\n========================================================" << std::endl;
+    std::cout << "  STARTING DISLOCATION CORE STABILITY ANALYSIS (EIGENVALUES)" << std::endl;
+    std::cout << "  Requested modes: " << stability_options.modes
+              << " | Soft mode vectors: " << stability_options.vectors
+              << " | Solver: Cholesky shift-invert Lanczos (Spectra)" << std::endl;
+    std::cout << "========================================================" << std::endl;
+
+    StiffnessSpectrumOptions eig_opt;
+    eig_opt.n_modes = stability_options.modes;
+    eig_opt.compute_vectors = (stability_options.vectors > 0);
+    eig_opt.verbose = false;
+
+    // Use fresh UserData with true solver DOF partition (Dirichlet fixed nodes have -1)
+    UserData eigUserData(square_points, userData.elements, calculator, potential_func,
+                         potential_func_der, zero, optimal_lattice_parameter,
+                         F_ext, interior_mapping, full_mapping, active_elements, plasticity);
+    eigUserData.second_derivative_function = &potential_func_sder;
+    for (auto &elem : eigUserData.elements) {
+      elem.setExternalDeformation(F_ext);
+    }
+    map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
+
+    StiffnessSpectrum spectrum = lowest_stiffness_modes(x, &eigUserData, eig_opt);
+
+    if (spectrum.converged && spectrum.num_computed > 0) {
+      has_eigenvalues = true;
+      computed_lambda_min = spectrum.eigenvalues(0);
+      computed_eigenvalues.resize(spectrum.num_computed);
+      for (int k = 0; k < spectrum.num_computed; ++k) {
+        computed_eigenvalues[k] = spectrum.eigenvalues(k);
+      }
+
+      std::cout << "Computed " << spectrum.num_computed << " lowest eigenvalues of relaxed core stiffness K:" << std::endl;
+      for (int k = 0; k < spectrum.num_computed; ++k) {
+        std::cout << "  λ_" << (k + 1) << " = " << std::scientific << std::setprecision(6)
+                  << spectrum.eigenvalues(k)
+                  << (k == 0 ? " (λ_min)" : "") << std::endl;
+      }
+
+      bool is_stable = (computed_lambda_min > 0.0);
+      std::cout << "Core Stability Status:       " << (is_stable ? "STABLE (Positive Definite)" : "UNSTABLE / SADDLE (λ_min <= 0)")
+                << " | λ_min = " << computed_lambda_min << std::endl;
+
+      // Log to eigen_log.csv for Lattice Launcher live charting and live KPI monitoring
+      std::ofstream eig_csv("eigen_log.csv");
+      if (eig_csv.is_open()) {
+        eig_csv << "Iteration,Alpha,Trigger,FailedShifts,Seconds";
+        for (int k = 1; k <= spectrum.num_computed; ++k) {
+          eig_csv << ",lambda_" << k;
+        }
+        eig_csv << "\n";
+        eig_csv << "1,1.000000,dislocation_relaxed," << spectrum.failed_shifts << ","
+                << std::scientific << std::setprecision(10)
+                << (spectrum.assemble_seconds + spectrum.factorize_seconds + spectrum.lanczos_seconds);
+        for (int k = 0; k < spectrum.num_computed; ++k) {
+          eig_csv << "," << spectrum.eigenvalues(k);
+        }
+        eig_csv << "\n";
+        eig_csv.close();
+      }
+
+      // Export soft modes to VTK in eigen_modes/
+      if (stability_options.vectors > 0 && spectrum.eigenvectors.cols() > 0) {
+        std::filesystem::create_directories("eigen_modes");
+        std::string mode_vtk_path = "eigen_modes/soft_modes_00001.vtk";
+        std::ofstream vtk_file(mode_vtk_path);
+        if (vtk_file.is_open()) {
+          const auto &points = square_points;
+          const auto &mesh = userData.elements;
+          const auto &active = active_elements;
+          const int n_nodes = static_cast<int>(points.size());
+          const int n_free = static_cast<int>(interior_mapping.size());
+          const std::vector<size_t> &cells = active.empty() ? std::vector<size_t>() : active;
+
+          vtk_file << "# vtk DataFile Version 3.0\n";
+          vtk_file << "Soft modes of relaxed dislocation: lambda_min " << computed_lambda_min << "\n";
+          vtk_file << "ASCII\nDATASET UNSTRUCTURED_GRID\n";
+          vtk_file << std::setprecision(10);
+          vtk_file << "POINTS " << n_nodes << " double\n";
+          for (const auto &p : points) {
+            vtk_file << p.coord.x() << " " << p.coord.y() << " 0\n";
+          }
+          vtk_file << "\nCELLS " << cells.size() << " " << 4 * cells.size() << "\n";
+          for (size_t idx : cells) {
+            vtk_file << "3 " << mesh[idx].getNodeIndex(0) << " " << mesh[idx].getNodeIndex(1) << " "
+                     << mesh[idx].getNodeIndex(2) << "\n";
+          }
+          vtk_file << "\nCELL_TYPES " << cells.size() << "\n";
+          for (size_t c = 0; c < cells.size(); ++c) {
+            vtk_file << "5\n";
+          }
+
+          int n_export_modes = std::min(static_cast<int>(spectrum.eigenvalues.size()), stability_options.vectors);
+          vtk_file << "\nPOINT_DATA " << n_nodes << "\n";
+          for (int r = 0; r < n_export_modes; ++r) {
+            const Eigen::VectorXd v = spectrum.eigenvectors.col(r);
+            std::vector<Eigen::Vector2d> d(n_nodes, Eigen::Vector2d::Zero());
+            double amax = 0.0;
+            for (int j = 0; j < n_nodes; ++j) {
+              const int dof = full_mapping[j].second;
+              if (dof < 0 || dof >= n_free) continue;
+              d[j] = Eigen::Vector2d(v(dof), v(dof + n_free));
+              amax = std::max(amax, d[j].norm());
+            }
+            if (amax <= 1e-12) amax = 1.0;
+            vtk_file << "VECTORS mode_" << (r + 1) << " double\n";
+            for (const auto &dj : d) {
+              vtk_file << (dj.x() / amax) << " " << (dj.y() / amax) << " 0\n";
+            }
+            vtk_file << "SCALARS mode_" << (r + 1) << "_amplitude double 1\nLOOKUP_TABLE default\n";
+            for (const auto &dj : d) {
+              vtk_file << (dj.norm() / amax) << "\n";
+            }
+          }
+          vtk_file.close();
+          std::cout << "  Exported " << n_export_modes << " soft modes to " << mode_vtk_path << std::endl;
+        }
+      }
+    } else {
+      std::cout << "Warning: Spectra failed to compute lowest stiffness eigenvalues." << std::endl;
+    }
+  }
+
   write_dislocation_profiles_json_and_csv(
       "dislocation_profiles.json", "dislocation_profiles.csv",
       lattice_type, potential_mode, beta, bulk_K, R_free,
       lattice_constant, burgers_vector.x(), core_x, core_y,
       C11, C12, C66, poisson_ratio, unrelaxed_profile, &relaxed_profile,
-      relax_macro_stress, &F_ext, &stress_tensor);
+      relax_macro_stress, &F_ext, &stress_tensor,
+      has_eigenvalues ? &computed_eigenvalues : nullptr);
 
   std::cout << "\n================ DISLOCATION ANALYSIS SUMMARY ================" << std::endl;
   std::cout << "Dislocation Core Position: (" << core_x << ", " << core_y << ")" << std::endl;
