@@ -117,6 +117,12 @@ int main(int argc, char **argv) {
   bool stiffness_initial_mesh_only = false;
   std::string stiffness_initial_mesh_json = "scratch/initial_lattice.json";
 
+  // Shift / Staircase flags
+  double shift_amplitude = 2.0;
+  int shift_h_steps = 2;
+  int shift_v_steps = 2;
+  bool shift_perturb = false;
+
   // Scan all arguments for flags
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -345,8 +351,20 @@ int main(int argc, char **argv) {
       max_avalanches = std::stoi(arg.substr(13));
     } else if (arg == "--no-perturbation" || arg == "--no-perturb") {
       triangulation_perturbation = 0.0;
+      shift_perturb = false;
     } else if (arg.rfind("--perturbation=", 0) == 0) {
       triangulation_perturbation = std::stod(arg.substr(15));
+      shift_perturb = (std::abs(triangulation_perturbation) > 0.0);
+    } else if (arg.rfind("--shift-amplitude=", 0) == 0) {
+      shift_amplitude = std::stod(arg.substr(18));
+    } else if (arg.rfind("--shift-h-steps=", 0) == 0) {
+      shift_h_steps = std::stoi(arg.substr(16));
+    } else if (arg.rfind("--shift-v-steps=", 0) == 0) {
+      shift_v_steps = std::stoi(arg.substr(16));
+    } else if (arg == "--shift-perturb" || arg == "--shift-perturb=1") {
+      shift_perturb = true;
+    } else if (arg == "--shift-perturb=0") {
+      shift_perturb = false;
     } else if (arg.rfind("--noise-level=", 0) == 0) {
       noise_level = std::stod(arg.substr(14));
     } else if (arg.rfind("--noise=", 0) == 0) {
@@ -429,10 +447,30 @@ int main(int argc, char **argv) {
 
   // 1. Shifting Examples:
   //    Simulates vertical and horizontal shifts of crystal blocks with relaxation.
-  if (mode == "shift" || mode == "final_shift" || mode == "staircase") {
-    std::cout << "\n>>> Running staircase shifting tests with nx=" << nx
+  if (mode == "shift" || mode == "staircase") {
+    std::cout << "\n>>> Running staircase shifting simulation with nx=" << nx
+              << ", ny=" << ny
+              << ", amplitude=" << shift_amplitude
+              << ", h_steps=" << shift_h_steps
+              << ", v_steps=" << shift_v_steps
+              << ", remesh=" << (enable_remeshing ? "enabled" : "disabled")
+              << ", perturb=" << (shift_perturb ? "enabled" : "disabled")
+              << ", lattice=" << lattice_type
+              << ", potential_mode=" << potential_mode
+              << ", rotated=" << (stiffness_use_rotation ? "yes" : "no")
+              << " (" << stiffness_rotation_angle << " deg) <<<\n" << std::endl;
+    run_shift_staircase_simulation(
+        0, nx, ny, shift_h_steps, shift_v_steps, shift_amplitude,
+        enable_remeshing, shift_perturb, lattice_type, potential_mode,
+        stiffness_use_rotation, stiffness_rotation_angle, save_triangle_data);
+    return 0;
+  }
+  if (mode == "final_shift") {
+    std::cout << "\n>>> Running 4-configuration staircase shifting batch with nx=" << nx
               << ", ny=" << ny << " <<<\n" << std::endl;
-    run_final_shift_tests(nx, ny, 100, 100);
+    run_final_shift_tests(
+        nx, ny, shift_h_steps, shift_v_steps, lattice_type, potential_mode,
+        stiffness_use_rotation, stiffness_rotation_angle, save_triangle_data);
     return 0;
   }
 

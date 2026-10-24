@@ -1117,8 +1117,10 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   x_ref.setlength(2 * n_vars);
   map_points_to_solver_array(x_ref, square_points_ref, interior_mapping, n_vars);
 
+  const auto &pts_for_mesh = enable_remeshing ? square_points : square_points_ref;
+  const auto &x_for_mesh = enable_remeshing ? x : x_ref;
   auto [elements, active_elements] = mesher.createMesh(
-      square_points_ref, x_ref,
+      pts_for_mesh, x_for_mesh,
       Eigen::Matrix2d::Identity(), &dndx);
   double element_area = elements.empty() ? 0.0 : elements[0].getReferenceArea();
 
@@ -1203,14 +1205,33 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       lattice_constant, burgers_vector.x(), core_x, core_y,
       C11, C12, C66, poisson_ratio, unrelaxed_profile, nullptr);
 
-  // Energy minimization: either standard fixed boundary or Full Cauchy Tensor macroscopic relaxation
-  Eigen::Matrix2d F_bar = F_ext; // Starts at Identity
+  // Energy minimization: first normal relaxation, then Cauchy relaxation (if requested). No more remeshing afterwards!
   double post_energy = 0.0;
   double post_stress = 0.0;
 
+  // Step 1: Normal Relaxation of free core nodes (Fixed Dirichlet Mantle)
+  std::cout << "\n--- Step 1: Normal Relaxation of Free Nodes (Fixed Mantle) ---" << std::endl;
+  userData.third_condition_flag = false;
+  relaxation_begin_step(0);
+  relax_configuration(x, &userData, 13);
+
+  map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+  userData.points = square_points;
+
+  post_energy = 0.0;
+  stress_tensor.setZero();
+  ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor, true);
+  post_stress = stress_tensor(0, 1);
+
+  std::cout << "State 1 (Normal Relaxed Core): Energy = " << post_energy
+            << " (drop: " << (pre_energy - post_energy) << ")"
+            << ", Stress_12 = " << post_stress << std::endl;
+
+  // Step 2: Full Cauchy Tensor Macro-Stress Relaxation (if relax_macro_stress is enabled)
+  Eigen::Matrix2d F_bar = F_ext; // Starts at Identity
   if (relax_macro_stress) {
     std::cout << "\n========================================================" << std::endl;
-    std::cout << "  STARTING FULL CAUCHY TENSOR MACRO-STRESS RELAXATION" << std::endl;
+    std::cout << "  STEP 2: FULL CAUCHY TENSOR MACRO-STRESS RELAXATION" << std::endl;
     std::cout << "  Target: sigma_xx -> 0, sigma_yy -> 0, sigma_xy -> 0" << std::endl;
     std::cout << "  Tolerance: " << stress_tol << " | Max Macro Iterations: " << max_macro_iters << std::endl;
     std::cout << "========================================================" << std::endl;
@@ -1219,7 +1240,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     for (int macro_iter = 0; macro_iter < max_macro_iters; ++macro_iter) {
       // Step A: Minimize internal free nodes with current boundary positions
       userData.third_condition_flag = false;
-      relaxation_begin_step(macro_iter);
+      relaxation_begin_step(macro_iter + 1);
       relax_configuration(x, &userData, 13);
 
       map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
@@ -1358,53 +1379,11 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
         element.set_reference_mesh(square_points);
       }
     }
-  } else {
-    // Standard fixed-mantle relaxation (relax_macro_stress == false)
-    std::cout << "Minimizing energy of free nodes within R_free..." << std::endl;
-    userData.third_condition_flag = false;
-    relaxation_begin_step(0);
-    relax_configuration(x, &userData, 13);
-
-    map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-    userData.points = square_points;
-
-    post_energy = 0.0;
-    stress_tensor.setZero();
-    ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy, stress_tensor, true);
-    post_stress = stress_tensor(0, 1);
   }
 
   std::cout << "State 1 (Relaxed core): Energy = " << post_energy
             << " (drop: " << (pre_energy - post_energy) << ")"
             << ", Stress_12 = " << post_stress << std::endl;
-
-  // Optional remeshing/reconnection loop around core
-  if (enable_remeshing) {
-    std::cout << "Running remeshing/reconnection around the relaxed core..." << std::endl;
-    std::vector<int> contact_atoms;
-    int max_iterations = 100;
-    int hasChanges = 0;
-    auto [post_energy_re, stress_tensor_re, iterations] =
-        perform_remeshing_loop_reduction(
-            x, &userData, contact_atoms, fixed_nodes, F_ext, dndx, offsets,
-            original_domain_map, translation_map, domain_dims_point,
-            hasChanges, max_iterations, element_area, pbc, true);
-
-    post_energy = post_energy_re;
-    stress_tensor = stress_tensor_re;
-    post_stress = stress_tensor_re(0, 1);
-    square_points = userData.points;
-    elements = userData.elements;
-    active_elements = userData.active_elements;
-    if (!elements.empty()) {
-      element_area = elements[0].getReferenceArea();
-    }
-    for (auto &element : elements) {
-      element.set_dof_mapping(full_mapping);
-    }
-    std::cout << "Remeshing finished (" << iterations << " iterations, changes: "
-              << hasChanges << ", final energy: " << post_energy << ")" << std::endl;
-  }
 
   // Save State 1 (Relaxed state)
   int relaxed_file_id = caller_id + 1;

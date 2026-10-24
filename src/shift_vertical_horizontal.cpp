@@ -7,19 +7,24 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <set>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "../include/defects/Defectanalysis.h"
+#include "../include/experiments/common_simulation_helpers.h"
 #include "../include/geometry/DomainDimensions.h"
 #include "../include/geometry/DomainInfo.h"
 #include "../include/geometry/LatticeGenerator.h"
 #include "../include/geometry/NeighborAnalyzer.h"
 #include "../include/interatomic/inter_atomic.h"
+#include "../include/lattice_energy/EnergyFunctions.h"
+#include "../include/lattice_energy/SquareLatticeCalculator.h"
 #include "../include/lattice_energy/Strain_Energy_LatticeCalculator.h"
 #include "../include/mesh/ElementTriangle2D.h"
 #include "../include/mesh/MeshGenerator.h"
@@ -28,23 +33,6 @@
 #include "../include/optimization/LatticeOptimizer.h"
 #include "../include/output/AvalancheRecorder.h"
 #include "../include/output/configuration_saver.h"
-
-Eigen::Matrix<double, 3, 2>
-calculateShapeDerivatives(const Eigen::Vector2d &p1, const Eigen::Vector2d &p2,
-                          const Eigen::Vector2d &p3);
-
-std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
-    alglib::real_1d_array &x, const UserData *userData,
-    const std::vector<int> &contact_atoms,
-    const std::vector<int> &boundary_fixed_nodes, const Eigen::Matrix2d &F_ext,
-    const Eigen::Matrix<double, 3, 2> &dndx,
-    const std::array<double, 2> &offsets,
-    const std::vector<int> &original_domain_map,
-    const std::vector<std::tuple<double, double>> &translation_map,
-    const Point2D &domain_dims_point, int &has_changes, int max_iterations,
-    double reference_area, bool pbc, bool optimize_interior);
-
-void writeSizesToFile(int Nx, int Ny);
 
 namespace {
 
@@ -156,14 +144,19 @@ const char *shiftBoundaryTestName(ShiftBoundaryTest test) {
   return "unknown";
 }
 
-void shift_vertical_horizontal(int caller_id, int nx, int ny,
-                               int horizontal_steps = 100,
-                               int vertical_steps = 100,
-                               ShiftBoundaryTest boundary_test =
-                                   ShiftBoundaryTest::LeftBottomPositive,
-                               double amplitude_lattice_spacings = 1.0,
-                               bool remeshing_enabled = true,
-                               bool perturb_initial_triangulation = false) {
+void shift_vertical_horizontal(
+    int caller_id, int nx, int ny,
+    int horizontal_steps = 2,
+    int vertical_steps = 2,
+    ShiftBoundaryTest boundary_test = ShiftBoundaryTest::LeftBottomPositive,
+    double amplitude_lattice_spacings = 2.0,
+    bool remeshing_enabled = true,
+    bool perturb_initial_triangulation = false,
+    const std::string &lattice_type = "square",
+    int potential_mode = 3,
+    bool use_rotation = false,
+    double rotation_angle = 0.0,
+    bool save_triangle_data = false) {
   if (nx <= 0 || ny <= 0) {
     std::cerr << "Error: nx and ny must be positive integers." << std::endl;
     exit(EXIT_FAILURE);
@@ -171,27 +164,97 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
 
   writeSizesToFile(nx, ny);
 
-  std::string lattice_type = "square";
-  double h = 1.0;
+  // ==================== SETUP ENERGY POTENTIAL & OPTIMAL LATTICE PARAMETER ====================
+  std::function<double(double)> potential_func;
+  std::function<double(double)> potential_func_der;
+  std::function<double(double)> potential_func_sder;
+  double optimal_lattice_parameter = 1.0;
+  double r_cutoff = 2.5;
+
+  if (potential_mode == 3) {
+    energy_functions::set_parameters(energy_functions::current_beta, energy_functions::current_K);
+    auto ec = energy_functions::calculate_elastic_constants(
+        energy_functions::current_beta, energy_functions::current_K, lattice_type);
+    optimal_lattice_parameter = (lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
+    potential_func = square_energy;
+    potential_func_der = square_energy_der;
+    potential_func_sder = square_energy_der;
+    std::cout << "[POTENTIAL] Mode 3: Zanzotto Continuum Model (beta = " << energy_functions::current_beta
+              << ", K = " << energy_functions::current_K << " | Lattice: " << lattice_type << ")\n";
+    std::cout << "Ground-state Elastic Constants: C11=" << ec.C11 << ", C12=" << ec.C12
+              << ", C66=" << ec.C66 << ", Zener A=" << ec.Zener_A << std::endl;
+  } else if (potential_mode == 1) {
+    potential_func = lennard_jones_energy_v2;
+    potential_func_der = lennard_jones_energy_der_v2;
+    potential_func_sder = lennard_jones_energy_sder_v2;
+    r_cutoff = 2.5;
+    optimal_lattice_parameter = find_optimal_lattice_parameter(
+        potential_func, lattice_type, r_cutoff, potential_func_der, potential_func_sder);
+    std::cout << "[POTENTIAL] Mode 1: Lennard-Jones v2 (cutoff = " << r_cutoff << ")\n";
+  } else if (potential_mode == 2) {
+    potential_func = lennard_jones_energy_v3;
+    potential_func_der = lennard_jones_energy_der_v3;
+    potential_func_sder = lennard_jones_energy_sder_v3;
+    r_cutoff = 1.86602540378444;
+    optimal_lattice_parameter = find_optimal_lattice_parameter(
+        potential_func, lattice_type, r_cutoff, potential_func_der, potential_func_sder);
+    std::cout << "[POTENTIAL] Mode 2: Lennard-Jones v3 (cutoff = " << r_cutoff << ")\n";
+  } else if (potential_mode == 4) {
+    potential_func = square_energy;
+    potential_func_der = square_energy_der;
+    potential_func_sder = square_energy_sder;
+    r_cutoff = 2.5;
+    optimal_lattice_parameter = find_optimal_lattice_parameter(
+        potential_func, lattice_type, r_cutoff, potential_func_der, potential_func_sder);
+    std::cout << "[POTENTIAL] Mode 4: Square 2-Well Gaussian (cutoff = " << r_cutoff << ")\n";
+  } else {
+    std::cerr << "Unknown potential mode: " << potential_mode << std::endl;
+    exit(EXIT_FAILURE);
+  }
+
+  double lattice_constant = optimal_lattice_parameter;
+  std::cout << "Optimal lattice parameter a_0: " << std::fixed << std::setprecision(8)
+            << lattice_constant << std::endl;
+
+  // Unimodular GL(2, Z) reference element scaling trick for triangular and atomistic lattices
+  double calc_scale = (potential_mode == 3)
+      ? 1.0
+      : ((lattice_type == "triangular")
+             ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25))
+             : optimal_lattice_parameter);
+
+  double h = (potential_mode == 3) ? 1.0 : calc_scale;
   Eigen::Vector2d p1(0.0, 0.0);
   Eigen::Vector2d p2(h, 0.0);
   Eigen::Vector2d p3(0.0, h);
   Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
 
-  std::function<double(double)> potential_func = square_energy;
-  std::function<double(double)> potential_func_der = square_energy_der;
-  double optimal_lattice_parameter = 1.0;
-  double lattice_constant = optimal_lattice_parameter;
+  // ==================== GENERATE INITIAL LATTICE ====================
+  std::vector<Point2D> square_points;
+  DomainDimensions domain_dims(0.0, 0.0);
 
-  std::vector<Point2D> square_points = LatticeGenerator::generate_2d_lattice(
-      nx, ny, lattice_constant, lattice_type);
+  if (use_rotation && std::abs(rotation_angle) > 1e-6) {
+    auto [pts, dims] = LatticeGenerator::generate_rotated_fixed_lattice(
+        lattice_type, nx, ny, lattice_constant, rotation_angle);
+    square_points = pts;
+    domain_dims = dims;
+    std::cout << "[Staircase Shift] Generated rotated " << lattice_type
+              << " lattice at angle θ = " << rotation_angle << "° ("
+              << pts.size() << " points)\n";
+  } else {
+    square_points = LatticeGenerator::generate_2d_lattice(
+        nx, ny, lattice_constant, lattice_type);
+    DomainInfo domain_size = compute_domain_size(square_points);
+    domain_dims = DomainDimensions(domain_size.get_width(),
+                                   domain_size.get_height());
+  }
+
   const std::vector<Point2D> reference_points = square_points;
-
   int original_domain_size = square_points.size();
-  DomainInfo domain_size = compute_domain_size(square_points);
-  const std::array<double, 2> offsets = {lattice_constant, lattice_constant};
-  DomainDimensions domain_dims(domain_size.get_width(),
-                               domain_size.get_height());
+  const std::array<double, 2> offsets = (lattice_type == "square")
+      ? std::array<double, 2>{lattice_constant, lattice_constant}
+      : std::array<double, 2>{lattice_constant / 2.0,
+                              (std::sqrt(3.0) / 2.0) * lattice_constant};
   Point2D domain_dims_point(domain_dims.size_x, domain_dims.size_y);
   bool pbc = false;
 
@@ -200,7 +263,10 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
                                         offsets);
 
   BoundaryBox box = computeBoundaryBox(reference_points);
-  double boundary_tolerance = 0.5 * lattice_constant;
+  double boundary_tolerance = (use_rotation && std::abs(rotation_angle) > 1e-6)
+      ? (0.85 * lattice_constant)
+      : ((lattice_type == "triangular") ? (0.55 * lattice_constant)
+                                        : (0.5 * lattice_constant));
   double mid_x = 0.5 * (box.min_x + box.max_x);
   double mid_y = 0.5 * (box.min_y + box.max_y);
 
@@ -253,6 +319,10 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
   std::cout << "shift_vertical_horizontal "
             << shiftBoundaryTestName(boundary_test)
             << " boundary setup:" << std::endl;
+  std::cout << "  lattice_type: " << lattice_type
+            << " | potential_mode: " << potential_mode
+            << " | rotated: " << (use_rotation ? "yes" : "no")
+            << " (" << rotation_angle << " deg)" << std::endl;
   std::cout << "  fixed-or-prescribed nodes: " << fixed_nodes.size()
             << std::endl;
   std::cout << "  horizontal boundary loaded nodes: "
@@ -298,16 +368,41 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
 
   auto [elements, active_elements] = mesher.createMesh(
       square_points, free_dofs, Eigen::Matrix2d::Identity(), &dndx);
-  double element_area = elements.empty() ? 0.0 : elements[0].getReferenceArea();
+  double element_area = elements.empty() ? 0.5 : elements[0].getReferenceArea();
 
   for (auto &element : elements) {
     element.set_dof_mapping(full_mapping);
   }
 
-  Strain_Energy_LatticeCalculator calculator(1.0);
+  // ==================== SETUP LATTICE ENERGY CALCULATOR ====================
+  std::unique_ptr<BaseLatticeCalculator> calculator_ptr;
+  Eigen::Matrix2d C_ref;
+
+  if (potential_mode == 3) {
+    calculator_ptr = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
+    if (lattice_type == "triangular") {
+      double a2 = std::sqrt(4.0 / 3.0);
+      C_ref << a2, 0.5 * a2,
+               0.5 * a2, a2;
+    } else {
+      C_ref = Eigen::Matrix2d::Identity();
+    }
+  } else {
+    if (lattice_type == "triangular") {
+      calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
+      double a2 = std::sqrt(4.0 / 3.0);
+      C_ref << a2, 0.5 * a2,
+               0.5 * a2, a2;
+    } else {
+      calculator_ptr = std::make_unique<SquareLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
+      C_ref = Eigen::Matrix2d::Identity();
+    }
+  }
+
+  BaseLatticeCalculator &calculator = *calculator_ptr;
   Eigen::Matrix2d F_ext = Eigen::Matrix2d::Identity();
-  Eigen::Matrix2d C_I = F_ext.transpose() * F_ext;
-  double zero = calculator.calculate_energy(C_I, potential_func, 0);
+  double zero = calculator.calculate_energy(C_ref, potential_func, 0);
+  std::cout << "Reference state energy (zero): " << zero << std::endl;
 
   horizontal_steps = std::max(1, horizontal_steps);
   vertical_steps = std::max(1, vertical_steps);
@@ -358,7 +453,7 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
                               potential_func, potential_func_der, zero,
                               optimal_lattice_parameter, F_ext,
                               interior_mapping, full_mapping, active_elements,
-                              plasticity);
+                              plasticity, &potential_func_sder);
 
     double unloaded_energy = 0.0;
     double unloaded_area = 1.0;
@@ -374,9 +469,11 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
     runInSubdirectory("pre_relaxation", [&]() {
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
           &unloadedUserData, file_id, unloaded_energy, unloaded_stress, true);
-      ConfigurationSaver::saveTriangleData(&unloadedUserData, file_id,
-                                           domain_dims, offsets, full_mapping);
-      ConfigurationSaver::saveElements(elements, active_elements, file_id);
+      if (save_triangle_data) {
+        ConfigurationSaver::saveTriangleData(&unloadedUserData, file_id,
+                                             domain_dims, offsets, full_mapping);
+        ConfigurationSaver::saveElements(elements, active_elements, file_id);
+      }
 
       auto [num_dislocations_unloaded_pre, coordination_unloaded_pre] =
           DefectAnalysis::analyzeDefectsInReferenceConfig(
@@ -392,9 +489,11 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
 
     ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         &unloadedUserData, file_id, unloaded_energy, unloaded_stress, true);
-    ConfigurationSaver::saveTriangleData(&unloadedUserData, file_id,
-                                         domain_dims, offsets, full_mapping);
-    ConfigurationSaver::saveElements(elements, active_elements, file_id);
+    if (save_triangle_data) {
+      ConfigurationSaver::saveTriangleData(&unloadedUserData, file_id,
+                                           domain_dims, offsets, full_mapping);
+      ConfigurationSaver::saveElements(elements, active_elements, file_id);
+    }
 
     auto [num_dislocations_unloaded_post, coordination_unloaded_post] =
         DefectAnalysis::analyzeDefectsInReferenceConfig(
@@ -418,6 +517,7 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
   }
 
   for (int step = 0; step < total_steps; ++step) {
+    relaxation_begin_step(step);
     double horizontal_displacement = load_path[step].first;
     double vertical_displacement = load_path[step].second;
 
@@ -439,7 +539,7 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
     UserData userData(square_points, elements, calculator, potential_func,
                       potential_func_der, zero, optimal_lattice_parameter,
                       F_ext, interior_mapping, full_mapping, active_elements,
-                      plasticity);
+                      plasticity, &potential_func_sder);
 
     alglib::real_1d_array x;
     int n_vars = interior_mapping.size();
@@ -463,13 +563,15 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
     UserData preOptUserData(square_points, elements, calculator, potential_func,
                             potential_func_der, zero, optimal_lattice_parameter,
                             F_ext, interior_mapping, full_mapping,
-                            active_elements, plasticity);
+                            active_elements, plasticity, &potential_func_sder);
     runInSubdirectory("pre_relaxation", [&]() {
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
           &preOptUserData, file_id, pre_energy, pre_stress, true);
-      ConfigurationSaver::saveTriangleData(&preOptUserData, file_id,
-                                           domain_dims, offsets, full_mapping);
-      ConfigurationSaver::saveElements(elements, active_elements, file_id);
+      if (save_triangle_data) {
+        ConfigurationSaver::saveTriangleData(&preOptUserData, file_id,
+                                             domain_dims, offsets, full_mapping);
+        ConfigurationSaver::saveElements(elements, active_elements, file_id);
+      }
 
       auto [num_dislocations_pre, coordination_pre] =
           DefectAnalysis::analyzeDefectsInReferenceConfig(
@@ -496,8 +598,7 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
     }
 
     userData.third_condition_flag = false;
-    LBFGSOptimizer optimizer(13, 0.00001, 0, 0, 0);
-    optimizer.optimize(x, minimize_energy_with_triangles, &userData);
+    relax_configuration(x, &userData, 13);
 
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
 
@@ -558,12 +659,15 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
                              optimal_lattice_parameter, F_ext, interior_mapping,
-                             full_mapping, active_elements, plasticity);
+                             full_mapping, active_elements, plasticity,
+                             &potential_func_sder);
     ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         &postOptUserData, file_id, post_energy, post_stress, true);
-    ConfigurationSaver::saveTriangleData(&postOptUserData, file_id,
-                                         domain_dims, offsets, full_mapping);
-    ConfigurationSaver::saveElements(elements, active_elements, file_id);
+    if (save_triangle_data) {
+      ConfigurationSaver::saveTriangleData(&postOptUserData, file_id,
+                                           domain_dims, offsets, full_mapping);
+      ConfigurationSaver::saveElements(elements, active_elements, file_id);
+    }
 
     auto [num_dislocations_post, coordination_post] =
         DefectAnalysis::analyzeDefectsInReferenceConfig(
@@ -578,10 +682,10 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
         file_id, saving_value, pre_energy, pre_stress, post_energy, post_stress,
         pre_area, post_area, (hasChanges > 0));
 
-    std::cout << "Step " << step << "/" << (total_steps - 1)
-              << " horizontal_shift=" << horizontal_displacement
-              << " vertical_push=" << vertical_displacement
-              << " energy=" << post_energy << " stress_xy=" << post_stress
+    std::cout << "Step " << step << " | alpha = " << saving_value
+              << " | horizontal_shift = " << horizontal_displacement
+              << " | vertical_push = " << vertical_displacement
+              << " | E = " << post_energy << " | sigma = " << post_stress
               << std::endl;
 
     file_counter++;
@@ -591,8 +695,34 @@ void shift_vertical_horizontal(int caller_id, int nx, int ny,
 
 } // namespace
 
-void run_final_shift_tests(int nx, int ny, int horizontal_steps,
-                           int vertical_steps) {
+void run_shift_staircase_simulation(
+    int caller_id, int nx, int ny,
+    int horizontal_steps,
+    int vertical_steps,
+    double amplitude_lattice_spacings,
+    bool remeshing_enabled,
+    bool perturb_initial_triangulation,
+    const std::string &lattice_type,
+    int potential_mode,
+    bool use_rotation,
+    double rotation_angle,
+    bool save_triangle_data) {
+  shift_vertical_horizontal(
+      caller_id, nx, ny, horizontal_steps, vertical_steps,
+      ShiftBoundaryTest::LeftBottomPositive, amplitude_lattice_spacings,
+      remeshing_enabled, perturb_initial_triangulation,
+      lattice_type, potential_mode, use_rotation, rotation_angle,
+      save_triangle_data);
+}
+
+void run_final_shift_tests(
+    int nx, int ny, int horizontal_steps,
+    int vertical_steps,
+    const std::string &lattice_type,
+    int potential_mode,
+    bool use_rotation,
+    double rotation_angle,
+    bool save_triangle_data) {
   struct FinalShiftTest {
     int simulation_id;
     const char *folder_name;
@@ -623,7 +753,10 @@ void run_final_shift_tests(int nx, int ny, int horizontal_steps,
                                   test.boundary_test,
                                   amplitude_lattice_spacings,
                                   test.remeshing_enabled,
-                                  test.perturb_initial_triangulation);
+                                  test.perturb_initial_triangulation,
+                                  lattice_type, potential_mode,
+                                  use_rotation, rotation_angle,
+                                  save_triangle_data);
       });
     }
   });

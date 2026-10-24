@@ -61,8 +61,7 @@
 \maketitle
 
 \begin{abstract}
-When an isolated edge dislocation is introduced into a finite crystal, standard Dirichlet (frozen mantle) boundary conditions induce spurious macroscopic reaction stresses $(\bar{\sigma}_{xx}, \bar{\sigma}_{yy}, \bar{\sigma}_{xy})$ due to non-vanishing image forces and the net insertion of an atomic half-plane. This document presents the complete mathematical formulation, kinematic justification, and computational architecture of the \emph{Full Cauchy Tensor} macroscopic stress relaxation method implemented for 2D nonlinear lattice triangulation. 
-We rigorously define the cumulative macroscopic deformation gradient tensor $\bar{\mathbf{F}} \in \mathrm{GL}^+(2)$, distinguishing it from the local element-level deformation gradients $\mathbf{F}^{(e)}$. To preserve the horizontal glide line geometry without artificial crystallographic rotation, we parameterize $\bar{\mathbf{F}}$ as an upper-triangular tensor $\bar{\mathbf{F}} = \begin{pmatrix}\lambda_x & \gamma \\ 0 & \lambda_y\end{pmatrix}$ with $\bar{F}_{21} \equiv 0$, and show why the rotational gauge constraint is required to keep the Newton-Raphson stiffness nonsingular. The macroscopic residual Cauchy stress is iteratively relaxed to machine zero via a quadratic Newton-Raphson scheme driven by the exact fourth-order spatial tangent stiffness $\mathbb{C}^{\text{spatial}}(\bar{\mathbf{F}})$ computed via tensor contraction and push-forward of the internal acoustic tensor. We formulate the nested two-scale minimization algorithm, the core-centered coordinate update, and the subsequent topological Delaunay reconnection on the stress-free state.
+We rigorously define the cumulative macroscopic deformation gradient tensor $\bar{\mathbf{F}} \in \mathrm{GL}^+(2)$, distinguishing it from the local element-level deformation gradients $\mathbf{F}^{(e)}$. To preserve the horizontal glide line geometry without artificial crystallographic rotation, we parameterize $\bar{\mathbf{F}}$ as an upper-triangular tensor $\bar{\mathbf{F}} = \begin{pmatrix}\lambda_x & \gamma \\ 0 & \lambda_y\end{pmatrix}$ with $\bar{F}_{21} \equiv 0$, and show why the rotational gauge constraint is required to keep the Newton-Raphson stiffness nonsingular. The macroscopic residual Cauchy stress is iteratively relaxed to machine zero via a quadratic Newton-Raphson scheme driven by the exact fourth-order spatial tangent stiffness $\mathbb{C}^{\text{spatial}}(\bar{\mathbf{F}})$ computed via tensor contraction and push-forward of the internal acoustic tensor. We formulate the correct algorithmic sequence: topological Delaunay remeshing on the initial dislocated configuration, followed by normal core relaxation and full Cauchy tensor macroscopic stress relaxation, ensuring no disruptive trailing remeshing.
 \end{abstract}
 
 \vspace{0.5em}
@@ -361,47 +360,54 @@ This translation would misalign the core with the cylindrical relaxation window 
 \end{infobox}
 
 % ==============================================================================
-\section{Nested Two-Scale Optimization Architecture}
+\section{Algorithmic Ordering and Nested Optimization Architecture}
 % ==============================================================================
 
-The full algorithm operates as a nested two-scale loop:
-\begin{itemize}
-    \item \textbf{Inner Loop (Microscopic Relaxation)}: 
-    For a fixed outer mantle position (determined by the current $\bar{\mathbf{F}}$), L-BFGS minimizes the total energy with respect to the coordinates of the free interior atoms within $R_{\text{free}}$.
-    \item \textbf{Outer Loop (Macroscopic Newton Step)}:
-    Evaluates the volume-averaged Cauchy stress $\bar{\boldsymbol{\sigma}}$, computes $\mathbf{C}_{\text{voigt}}$, solves for $\mathbf{F}_{\text{inc}}$, and shifts the boundary positions.
-    \item \textbf{Post-Convergence (Delaunay Remeshing)}:
-    Once $\max|\bar{\sigma}_{ij}| < \text{stress\_tol}$, topological edge flips and Delaunay reconnections are tested around the core under zero macroscopic stress, accepting reconnections if and only if $\Delta E < 0$.
-\end{itemize}
+The dislocation relaxation algorithm operates in three strictly ordered phases to guarantee both topological compatibility and macroscopic zero-stress equilibrium:
+\begin{enumerate}
+    \item \textbf{Phase 0: Initial Mesh Generation (Delaunay Remeshing on Dislocated State)}:
+    If \texttt{enable\_remeshing} is active, the 2D Delaunay triangulation is constructed directly from the dislocated atom coordinates $\mathbf{x}_i^{(0)} = \mathbf{X}_i + \mathbf{u}_0(\mathbf{X}_i - \mathbf{x}_{\text{core}})$. This dynamically reconnects bonds across the displacement cut and accommodates dislocation core dilation. If remeshing is disabled, the fixed pristine lattice connectivity is used.
+    \item \textbf{Phase 1: Normal Core Relaxation (Fixed Dirichlet Mantle)}:
+    Holding the outer mantle nodes ($\|\mathbf{X}_i - \mathbf{x}_{\text{core}}\| > R_{\text{free}}$) fixed under the initial boundary conditions ($\bar{\mathbf{F}} = \mathbf{I}$), L-BFGS minimizes the energy with respect to the coordinates of the free core nodes ($\|\mathbf{X}_i - \mathbf{x}_{\text{core}}\| \le R_{\text{free}}$).
+    \item \textbf{Phase 2: Full Cauchy Tensor Macro-Stress Relaxation}:
+    If \texttt{relax\_macro\_stress} is enabled, an outer Newton loop iteratively updates the macroscopic deformation gradient $\bar{\mathbf{F}}$ using the spatial tangent stiffness $\mathbb{C}^{\text{spatial}}(\bar{\mathbf{F}})$ from the acoustic tensor. At each macro step, all coordinates are scaled relative to $\mathbf{x}_{\text{core}}$ and internal free nodes are re-relaxed until $\max|\bar{\sigma}_{ij}| < \text{stress\_tol}$.
+    \item \textbf{No Trailing Remeshing}:
+    Once the macro-stress relaxation converges, \emph{no further remeshing is performed}. Retriangulating after Cauchy relaxation would alter local element references and reintroduce spurious residual stresses, destroying the zero-stress macroscopic equilibrium.
+\end{enumerate}
 
 \begin{algorithm}[h!]
-\caption{Full Cauchy Tensor Macroscopic Stress Relaxation}
+\caption{Full Dislocation Relaxation: Remesh $\to$ Normal Relaxation $\to$ Cauchy Relaxation}
 \label{alg:macro_stress}
 \begin{algorithmic}[1]
-\Require Lattice $\{ \mathbf{X}_i \}_{i=1}^N$, Core $\mathbf{x}_{\text{core}}$, Radius $R_{\text{free}}$, Tolerance $\eta$, Max Iters $K_{\max}$
-\State Apply analytical Volterra / Stroh field: $\mathbf{x}_i \gets \mathbf{X}_i + \mathbf{u}_0(\mathbf{X}_i - \mathbf{x}_{\text{core}})$
-\State Partition nodes into free ($\le R_{\text{free}}$) and Dirichlet boundary ($> R_{\text{free}}$)
-\State Initialize macroscopic stretch: $\bar{\mathbf{F}} \gets \mathbf{I}$, converged $\gets \mathbf{false}$
-\For{$k = 0$ \textbf{to} $K_{\max} - 1$}
-    \State \textbf{Inner Step}: Relax free nodes via L-BFGS: $\mathbf{x}_{\text{free}} \gets \arg\min E(\mathbf{x}_{\text{free}} \,|\, \mathbf{x}_{\text{bound}})$
-    \State Compute volume-averaged Cauchy stress $\bar{\boldsymbol{\sigma}}$ via Eq.~\eqref{eq:macro_stress}
-    \State $\sigma_{\max} \gets \max\left( |\bar{\sigma}_{xx}|, \, |\bar{\sigma}_{yy}|, \, |\bar{\sigma}_{xy}| \right)$
-    \If{$\sigma_{\max} < \eta$}
-        \State converged $\gets \mathbf{true}$; \textbf{break}
-    \EndIf
-    \State Compute $\mathbb{C}^{\text{spatial}}(\bar{\mathbf{F}})$ via \texttt{AcousticTensor::getSpatialTangent()}
-    \State Extract $3 \times 3$ Voigt matrix $\mathbf{C}_{\text{voigt}}$ via Eq.~\eqref{eq:C_voigt}
-    \State Solve $\mathbf{C}_{\text{voigt}} \Delta\boldsymbol{\varepsilon} = -\bar{\boldsymbol{\sigma}}_{\text{voigt}}$
-    \State Clamp $\Delta\varepsilon_i \gets \mathrm{clamp}(\Delta\varepsilon_i, -0.02, 0.02)$
-    \State Construct upper-triangular $\mathbf{F}_{\text{inc}}$ via Eq.~\eqref{eq:F_inc}
-    \State Update cumulative deformation: $\bar{\mathbf{F}} \gets \mathbf{F}_{\text{inc}} \bar{\mathbf{F}}$
-    \State Update all atom positions: $\mathbf{x}_j \gets \mathbf{x}_{\text{core}} + \mathbf{F}_{\text{inc}} (\mathbf{x}_j - \mathbf{x}_{\text{core}})$
-    \State Synchronize solver coordinate vectors and update fixed boundary node pointers (\texttt{set\_reference\_mesh})
-\EndFor
-\If{enable\_remeshing}
-    \State Run Delaunay topological reconnection loop on the stress-relaxed state ($\Delta E < 0$)
+\Require Reference Lattice $\{ \mathbf{X}_i \}_{i=1}^N$, Core $\mathbf{x}_{\text{core}}$, Radius $R_{\text{free}}$, Tolerance $\eta$, Max Macro Iters $K_{\max}$, \texttt{enable\_remeshing}, \texttt{relax\_macro\_stress}
+\State Apply analytical Volterra / Stroh displacement: $\mathbf{x}_i^{(0)} \gets \mathbf{X}_i + \mathbf{u}_0(\mathbf{X}_i - \mathbf{x}_{\text{core}})$
+\State Partition nodes into free ($\|\mathbf{X}_i - \mathbf{x}_{\text{core}}\| \le R_{\text{free}}$) and Dirichlet boundary ($> R_{\text{free}}$)
+\If{\texttt{enable\_remeshing}}
+    \State Build Delaunay triangulation from dislocated positions $\mathbf{x}^{(0)}$ (with core-edge filtering)
+\Else
+    \State Build triangulation from reference lattice positions $\mathbf{X}$
 \EndIf
-\State Export relaxed state to VTK, CSV, and JSON
+\State \textbf{Phase 1 (Normal Relaxation)}: Relax free core nodes under fixed mantle: $\mathbf{x}_{\text{free}} \gets \arg\min E(\mathbf{x}_{\text{free}} \,|\, \mathbf{x}_{\text{bound}})$
+\If{\texttt{relax\_macro\_stress}}
+    \State \textbf{Phase 2 (Macro-Stress Relaxation)}: Initialize $\bar{\mathbf{F}} \gets \mathbf{I}$, converged $\gets \mathbf{false}$
+    \For{$k = 0$ \textbf{to} $K_{\max} - 1$}
+        \State Compute volume-averaged Cauchy stress $\bar{\boldsymbol{\sigma}}$ via Eq.~\eqref{eq:macro_stress}
+        \State $\sigma_{\max} \gets \max\left( |\bar{\sigma}_{xx}|, \, |\bar{\sigma}_{yy}|, \, |\bar{\sigma}_{xy}| \right)$
+        \If{$\sigma_{\max} < \eta$}
+            \State converged $\gets \mathbf{true}$; \textbf{break}
+        \EndIf
+        \State Compute $\mathbb{C}^{\text{spatial}}(\bar{\mathbf{F}})$ via \texttt{AcousticTensor::getSpatialTangent()}
+        \State Extract $3 \times 3$ Voigt matrix $\mathbf{C}_{\text{voigt}}$ via Eq.~\eqref{eq:C_voigt}
+        \State Solve $\mathbf{C}_{\text{voigt}} \Delta\boldsymbol{\varepsilon} = -\bar{\boldsymbol{\sigma}}_{\text{voigt}}$
+        \State Clamp $\Delta\varepsilon_i \gets \mathrm{clamp}(\Delta\varepsilon_i, -0.02, 0.02)$
+        \State Construct upper-triangular $\mathbf{F}_{\text{inc}}$ via Eq.~\eqref{eq:F_inc}
+        \State Update cumulative deformation: $\bar{\mathbf{F}} \gets \mathbf{F}_{\text{inc}} \bar{\mathbf{F}}$
+        \State Update all atom positions: $\mathbf{x}_j \gets \mathbf{x}_{\text{core}} + \mathbf{F}_{\text{inc}} (\mathbf{x}_j - \mathbf{x}_{\text{core}})$
+        \State Synchronize solver array and update element reference mesh
+        \State Re-relax internal free nodes: $\mathbf{x}_{\text{free}} \gets \arg\min E(\mathbf{x}_{\text{free}} \,|\, \mathbf{x}_{\text{bound}})$
+    \EndFor
+\EndIf
+\State Export converged relaxed state to VTK, CSV, and JSON (without trailing remeshing)
 \end{algorithmic}
 \end{algorithm}
 

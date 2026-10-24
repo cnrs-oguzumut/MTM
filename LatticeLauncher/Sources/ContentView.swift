@@ -242,7 +242,7 @@ struct SidebarControlsView: View {
                                 .foregroundColor(.accentColor)
                         }
                         
-                        if config.mode != .volterra {
+                        if config.mode != .volterra && config.mode != .shift {
                             HStack {
                                 Text("Random Seed:")
                                     .font(.subheadline)
@@ -271,7 +271,13 @@ struct SidebarControlsView: View {
                         Toggle("Adaptive Remeshing (Delaunay Surgery)", isOn: $config.enableRemeshing)
                             .toggleStyle(.switch)
                         
-                        if config.mode != .volterra {
+                        if config.mode == .shift {
+                            Toggle("Perturb Initial Mesh Diagonal (-1e-7)", isOn: $config.shiftPerturbMesh)
+                                .font(.caption)
+                            Text("Special staircase boundary conditions: Left & bottom edges are supported; upper-left window is shifted horizontally and lower-right window is pushed vertically in alternating steps.")
+                                .font(.caption2)
+                                .foregroundColor(.accentColor)
+                        } else if config.mode != .volterra {
                             Divider().padding(.vertical, 2)
                             
                             // Boundary Conditions Selector
@@ -385,9 +391,9 @@ struct SidebarControlsView: View {
                             .toggleStyle(.checkbox)
                             
                             if config.useRotation {
-                                if config.boundaryCondition == .fixed {
+                                if config.boundaryCondition == .fixed || config.mode == .shift {
                                     VStack(alignment: .leading, spacing: 6) {
-                                        Text("Arbitrary Continuous Rotation (Fixed BC):")
+                                        Text(config.mode == .shift ? "Arbitrary Continuous Rotation (Staircase BC):" : "Arbitrary Continuous Rotation (Fixed BC):")
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                         HStack {
@@ -398,7 +404,7 @@ struct SidebarControlsView: View {
                                             Text("°").font(.caption2)
                                         }
                                         Slider(value: $config.rotationAngle, in: 0.0...360.0, step: 0.5)
-                                        Text("Under fixed boundary conditions, the lattice can be rotated to any continuous angle θ ∈ [0, 360°].")
+                                        Text("The finite crystal block can be rotated to any continuous angle θ ∈ [0, 360°].")
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                     }
@@ -497,7 +503,7 @@ struct SidebarControlsView: View {
                                 previewManager.ny = config.ny
                                 previewManager.latticeSymmetry = config.latticeSymmetry
                                 previewManager.potentialMode = config.potentialMode
-                                previewManager.boundaryCondition = config.boundaryCondition
+                                previewManager.boundaryCondition = (config.mode == .shift) ? .fixed : config.boundaryCondition
                                 previewManager.beta = config.beta
                                 previewManager.bulkK = config.bulkK
                                 previewManager.useRotation = config.useRotation
@@ -555,8 +561,32 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
-                // 5. Loading Schedule (Shear modes only)
-                if config.mode != .volterra {
+                // 5. Loading Schedule
+                if config.mode == .shift {
+                    GroupBox(label: Label("Staircase Shift Schedule", systemImage: "stairs")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Shift Amplitude (in a₀):")
+                                    .font(.subheadline)
+                                Spacer()
+                                DoubleField(title: "2.0", value: $config.shiftAmplitude, width: 80)
+                            }
+                            HStack {
+                                Text("Horizontal Steps (per a₀):")
+                                    .font(.subheadline)
+                                Spacer()
+                                IntField(title: "2", value: $config.shiftHorizontalSteps, width: 80)
+                            }
+                            HStack {
+                                Text("Vertical Steps (per a₀):")
+                                    .font(.subheadline)
+                                Spacer()
+                                IntField(title: "2", value: $config.shiftVerticalSteps, width: 80)
+                            }
+                        }
+                        .padding(8)
+                    }
+                } else if config.mode != .volterra {
                     GroupBox(label: Label("Loading Schedule (|α|)", systemImage: "chart.line.uptrend.xyaxis")) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
@@ -583,57 +613,59 @@ struct SidebarControlsView: View {
                 }
                 
                 // 6. Stability Monitor & Eigenvalues
-                GroupBox(label: Label("Stability & Eigenvalues", systemImage: "waveform.path.ecg")) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle(config.mode == .volterra ? "Analyze Dislocation Core Stability" : "Compute Lowest Stiffness Eigenvalues", isOn: $config.enableEigenvalues)
-                            .toggleStyle(.switch)
-                        
-                        if config.enableEigenvalues {
-                            if config.mode == .volterra {
-                                HStack {
-                                    Text("Modes to compute:")
-                                    Spacer()
-                                    Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
-                                }
-                                HStack {
-                                    Text("Soft modes exported:")
-                                    Spacer()
-                                    Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
-                                }
-                                Picker("Solver", selection: $config.eigSolver) {
-                                    ForEach(EigenSolverType.allCases) { s in
-                                        Text(s.displayName).tag(s)
+                if config.mode != .shift {
+                    GroupBox(label: Label("Stability & Eigenvalues", systemImage: "waveform.path.ecg")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(config.mode == .volterra ? "Analyze Dislocation Core Stability" : "Compute Lowest Stiffness Eigenvalues", isOn: $config.enableEigenvalues)
+                                .toggleStyle(.switch)
+                            
+                            if config.enableEigenvalues {
+                                if config.mode == .volterra {
+                                    HStack {
+                                        Text("Modes to compute:")
+                                        Spacer()
+                                        Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
                                     }
-                                }
-                                Text("Computes the lowest eigenvalues and soft deformation modes of the relaxed dislocation core via Cholesky shift-invert Lanczos.")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            } else {
-                                HStack {
-                                    Text("Every N steps:")
-                                    Spacer()
-                                    IntField(title: "5", value: $config.eigEvery, width: 60)
-                                }
-                                Toggle("Compute at avalanches / stress jumps", isOn: $config.eigAtAvalanche)
-                                HStack {
-                                    Text("Modes to compute:")
-                                    Spacer()
-                                    Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
-                                }
-                                HStack {
-                                    Text("Soft modes exported:")
-                                    Spacer()
-                                    Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
-                                }
-                                Picker("Solver", selection: $config.eigSolver) {
-                                    ForEach(EigenSolverType.allCases) { s in
-                                        Text(s.displayName).tag(s)
+                                    HStack {
+                                        Text("Soft modes exported:")
+                                        Spacer()
+                                        Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
+                                    }
+                                    Picker("Solver", selection: $config.eigSolver) {
+                                        ForEach(EigenSolverType.allCases) { s in
+                                            Text(s.displayName).tag(s)
+                                        }
+                                    }
+                                    Text("Computes the lowest eigenvalues and soft deformation modes of the relaxed dislocation core via Cholesky shift-invert Lanczos.")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                } else {
+                                    HStack {
+                                        Text("Every N steps:")
+                                        Spacer()
+                                        IntField(title: "5", value: $config.eigEvery, width: 60)
+                                    }
+                                    Toggle("Compute at avalanches / stress jumps", isOn: $config.eigAtAvalanche)
+                                    HStack {
+                                        Text("Modes to compute:")
+                                        Spacer()
+                                        Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
+                                    }
+                                    HStack {
+                                        Text("Soft modes exported:")
+                                        Spacer()
+                                        Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
+                                    }
+                                    Picker("Solver", selection: $config.eigSolver) {
+                                        ForEach(EigenSolverType.allCases) { s in
+                                            Text(s.displayName).tag(s)
+                                        }
                                     }
                                 }
                             }
                         }
+                        .padding(8)
                     }
-                    .padding(8)
                 }
                 
                 // 7. Data Saving & Output Controls
@@ -643,15 +675,17 @@ struct SidebarControlsView: View {
                         Toggle("Save Surgery VTK Snapshots (--surgery-vtk)", isOn: $config.saveSurgeryVTK)
                         Toggle("Save Legacy triangle_data", isOn: $config.saveTriangleData)
                         
-                        HStack {
-                            Text("Checkpoint every N steps:")
-                            Spacer()
-                            IntField(title: "500", value: $config.checkpointInterval, width: 70)
-                        }
-                        HStack {
-                            Text("Stress drop threshold Δσ/σ:")
-                            Spacer()
-                            DoubleField(title: "0.10", value: $config.stressDropThreshold, width: 70)
+                        if config.mode != .shift && config.mode != .volterra {
+                            HStack {
+                                Text("Checkpoint every N steps:")
+                                Spacer()
+                                IntField(title: "500", value: $config.checkpointInterval, width: 70)
+                            }
+                            HStack {
+                                Text("Stress drop threshold Δσ/σ:")
+                                Spacer()
+                                DoubleField(title: "0.10", value: $config.stressDropThreshold, width: 70)
+                            }
                         }
                     }
                     .padding(8)
@@ -756,17 +790,47 @@ struct LiveStatusHeaderView: View {
             // 3. Horizontally scrollable Live Metrics Pills so they never push or clip the header
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    MetricPill(label: "Step", value: "\(runner.currentStep)")
-                    MetricPill(label: "Strain |α|", value: String(format: "%.4f", runner.currentAlpha))
-                    MetricPill(label: "Stress σ", value: String(format: "%.4f", runner.currentStress))
-                    if let lmin = runner.currentLambdaMin {
+                    if config.mode == .volterra, let root = runner.dislocationData {
+                        let activeState = root.relaxed ?? root.unrelaxed
+                        let maxMacroStress: Double = {
+                            if let ms = root.finalMacroStress {
+                                return max(abs(ms.xx), max(abs(ms.yy), abs(ms.xy)))
+                            }
+                            return abs(activeState.totalStress)
+                        }()
+                        MetricPill(
+                            label: "State",
+                            value: root.relaxed != nil ? "Relaxed" : "Unrelaxed",
+                            valueColor: root.relaxed != nil ? .green : .orange
+                        )
+                        MetricPill(
+                            label: "Total E",
+                            value: String(format: "%.4f", activeState.totalEnergy)
+                        )
+                        MetricPill(
+                            label: "E_core",
+                            value: String(format: "%.4f", activeState.coreFit.coreEnergy)
+                        )
+                        MetricPill(
+                            label: "max |σ|",
+                            value: String(format: "%.2e", maxMacroStress),
+                            valueColor: root.macroStressRelaxed ? .green : .primary
+                        )
+                    } else {
+                        MetricPill(label: "Step", value: "\(runner.currentStep)")
+                        MetricPill(label: config.mode == .shift ? "Shift (u/a₀)" : "Strain |α|", value: String(format: "%.4f", runner.currentAlpha))
+                        MetricPill(label: "Stress σ", value: String(format: "%.4f", runner.currentStress))
+                    }
+                    if let lmin = runner.currentLambdaMin ?? runner.dislocationData?.lambdaMin {
                         MetricPill(
                             label: "λ_min",
                             value: String(format: "%.2e", lmin),
                             valueColor: lmin <= 0 ? .red : .teal
                         )
                     }
-                    MetricPill(label: "Avalanches", value: "\(runner.avalancheCount)")
+                    if config.mode != .volterra {
+                        MetricPill(label: "Avalanches", value: "\(runner.avalancheCount)")
+                    }
                     MetricPill(label: "Elapsed", value: formatTime(runner.elapsedTime))
                 }
                 .padding(.vertical, 1)

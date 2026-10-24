@@ -144,17 +144,18 @@ public struct DislocationProfileChartView: View {
     
     // MARK: - Tier 1 Header
     private var tier1Header: some View {
-        HStack(spacing: 12) {
-            Picker("", selection: $plotMode) {
-                ForEach(DislocationPlotMode.allCases) { mode in
-                    Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+        HStack(spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                Picker("", selection: $plotMode) {
+                    ForEach(DislocationPlotMode.allCases) { mode in
+                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(minWidth: 340, maxWidth: 420)
-            
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             
             Picker("", selection: $stateSelection) {
                 ForEach(DislocationStateSelection.allCases) { state in
@@ -163,7 +164,7 @@ public struct DislocationProfileChartView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 195)
+            .fixedSize()
             
             exportMenu
         }
@@ -224,167 +225,8 @@ public struct DislocationProfileChartView: View {
     }
     
     private var radialEnergyOptions: some View {
-        HStack(spacing: 8) {
-            Text("Scale:")
-                .font(.caption.bold())
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .fixedSize()
-            Picker("", selection: $radialScale) {
-                ForEach(RadialXAxisScale.allCases) { s in
-                    Text(s.rawValue).tag(s)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 190)
-            
-            Spacer()
-        }
-        .font(.caption)
-    }
-    
-    private var slipEnergyOptions: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 5) {
-                Text("Atoms:")
-                    .font(.caption.bold())
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                Picker("", selection: $slipRow) {
-                    ForEach(SlipRowDisplay.allCases) { r in
-                        Text(r.shortTitle).tag(r)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 220)
-            }
-            
-            Divider().frame(height: 14)
-            
-            HStack(spacing: 5) {
-                Text("Domain:")
-                    .font(.caption.bold())
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                Picker("", selection: $slipRange) {
-                    ForEach(SlipXRange.allCases) { r in
-                        Text(r.shortTitle).tag(r)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 200)
-            }
-            
-            if slipRange == .nearCore {
-                Divider().frame(height: 14)
-                
-                HStack(spacing: 5) {
-                    Text("Span:")
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                    
-                    nearCoreSpanSelector
-                }
-            }
-            
-            Spacer()
-        }
-        .font(.caption)
-    }
-    
-    private var slipStressOptions: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 5) {
-                Text("Stress:")
-                    .font(.caption.bold())
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                Toggle("σ_xx", isOn: $showSxx).toggleStyle(.checkbox).fixedSize()
-                Toggle("σ_yy", isOn: $showSyy).toggleStyle(.checkbox).fixedSize()
-                Toggle("σ_xy", isOn: $showSxy).toggleStyle(.checkbox).fixedSize()
-                Toggle("VM", isOn: $showSVM).toggleStyle(.checkbox).fixedSize()
-            }
-            
-            Divider().frame(height: 14)
-            
-            HStack(spacing: 5) {
-                Text("Plane:")
-                    .font(.caption.bold())
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                Picker("", selection: $slipRow) {
-                    Text("Avg Plane").tag(SlipRowDisplay.average)
-                    Text("Upper").tag(SlipRowDisplay.upper)
-                    Text("Lower").tag(SlipRowDisplay.lower)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 175)
-            }
-            
-            Divider().frame(height: 14)
-            
-            HStack(spacing: 5) {
-                Text("Domain:")
-                    .font(.caption.bold())
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                Picker("", selection: $slipRange) {
-                    ForEach(SlipXRange.allCases) { r in
-                        Text(r.shortTitle).tag(r)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 200)
-            }
-            
-            if slipRange == .nearCore {
-                Divider().frame(height: 14)
-                
-                HStack(spacing: 5) {
-                    Text("Span:")
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                    
-                    nearCoreSpanSelector
-                }
-            }
-            
-            Spacer()
-        }
-        .font(.caption)
-    }
-    
-    private var radialStressOptions: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 6) {
-                Text("Stress:")
-                    .font(.caption.bold())
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                Toggle("σ_xx", isOn: $showSxx).toggleStyle(.checkbox).fixedSize()
-                Toggle("σ_yy", isOn: $showSyy).toggleStyle(.checkbox).fixedSize()
-                Toggle("σ_xy", isOn: $showSxy).toggleStyle(.checkbox).fixedSize()
-                Toggle("VM", isOn: $showSVM).toggleStyle(.checkbox).fixedSize()
-            }
-            
-            Divider().frame(height: 14)
-            
-            HStack(spacing: 6) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
                 Text("Scale:")
                     .font(.caption.bold())
                     .foregroundColor(.secondary)
@@ -399,10 +241,173 @@ public struct DislocationProfileChartView: View {
                 .labelsHidden()
                 .frame(width: 190)
             }
-            
-            Spacer()
+            .font(.caption)
         }
-        .font(.caption)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    private var slipEnergyOptions: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                HStack(spacing: 5) {
+                    Text("Atoms:")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Picker("", selection: $slipRow) {
+                        ForEach(SlipRowDisplay.allCases) { r in
+                            Text(r.shortTitle).tag(r)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+                
+                Divider().frame(height: 14)
+                
+                HStack(spacing: 5) {
+                    Text("Domain:")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Picker("", selection: $slipRange) {
+                        ForEach(SlipXRange.allCases) { r in
+                            Text(r.shortTitle).tag(r)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 200)
+                }
+                
+                if slipRange == .nearCore {
+                    Divider().frame(height: 14)
+                    
+                    HStack(spacing: 5) {
+                        Text("Span:")
+                            .font(.caption.bold())
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                        
+                        nearCoreSpanSelector
+                    }
+                }
+            }
+            .font(.caption)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    private var slipStressOptions: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                HStack(spacing: 5) {
+                    Text("Stress:")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Toggle("σ_xx", isOn: $showSxx).toggleStyle(.checkbox).fixedSize()
+                    Toggle("σ_yy", isOn: $showSyy).toggleStyle(.checkbox).fixedSize()
+                    Toggle("σ_xy", isOn: $showSxy).toggleStyle(.checkbox).fixedSize()
+                    Toggle("VM", isOn: $showSVM).toggleStyle(.checkbox).fixedSize()
+                }
+                
+                Divider().frame(height: 14)
+                
+                HStack(spacing: 5) {
+                    Text("Plane:")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Picker("", selection: $slipRow) {
+                        Text("Avg Plane").tag(SlipRowDisplay.average)
+                        Text("Upper").tag(SlipRowDisplay.upper)
+                        Text("Lower").tag(SlipRowDisplay.lower)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 175)
+                }
+                
+                Divider().frame(height: 14)
+                
+                HStack(spacing: 5) {
+                    Text("Domain:")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Picker("", selection: $slipRange) {
+                        ForEach(SlipXRange.allCases) { r in
+                            Text(r.shortTitle).tag(r)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 200)
+                }
+                
+                if slipRange == .nearCore {
+                    Divider().frame(height: 14)
+                    
+                    HStack(spacing: 5) {
+                        Text("Span:")
+                            .font(.caption.bold())
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                        
+                        nearCoreSpanSelector
+                    }
+                }
+            }
+            .font(.caption)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    private var radialStressOptions: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                HStack(spacing: 6) {
+                    Text("Stress:")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Toggle("σ_xx", isOn: $showSxx).toggleStyle(.checkbox).fixedSize()
+                    Toggle("σ_yy", isOn: $showSyy).toggleStyle(.checkbox).fixedSize()
+                    Toggle("σ_xy", isOn: $showSxy).toggleStyle(.checkbox).fixedSize()
+                    Toggle("VM", isOn: $showSVM).toggleStyle(.checkbox).fixedSize()
+                }
+                
+                Divider().frame(height: 14)
+                
+                HStack(spacing: 6) {
+                    Text("Scale:")
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Picker("", selection: $radialScale) {
+                        ForEach(RadialXAxisScale.allCases) { s in
+                            Text(s.rawValue).tag(s)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 190)
+                }
+            }
+            .font(.caption)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
     
     private var nearCoreSpanSelector: some View {
@@ -457,69 +462,71 @@ public struct DislocationProfileChartView: View {
         }()
         let isZeroStress = root.macroStressRelaxed
 
-        return HStack(spacing: 14) {
-            DislocKpiPill(
-                title: "Core Position (x_c, y_c)",
-                value: String(format: "(%.2f, %.2f)", root.coreX, root.coreY),
-                icon: "scope",
-                color: .blue
-            )
-            
-            DislocKpiPill(
-                title: "Fitted Core Energy E_core",
-                value: String(format: "%.4f", eCore),
-                subtitle: String(format: "R² = %.3f", r2),
-                icon: "atom",
-                color: .purple
-            )
-            
-            DislocKpiPill(
-                title: "Elastic Factor K",
-                value: String(format: "%.4f", kFactor),
-                subtitle: "μb²/[4π(1-ν)]",
-                icon: "function",
-                color: .orange
-            )
-            
-            DislocKpiPill(
-                title: "Core Relaxation Drop ΔE",
-                value: String(format: "%.4f", drop),
-                subtitle: String(format: "%.1f%% drop", unrelCore != 0 ? (drop / unrelCore) * 100 : 0),
-                icon: "arrow.down.forward.circle.fill",
-                color: .green
-            )
-            
-            DislocKpiPill(
-                title: "Macro Cauchy Stress",
-                value: String(format: "%.2e", maxMacroStress),
-                subtitle: isZeroStress ? "Relaxed to 0 (Full Cauchy)" : "Unrelaxed Boundary",
-                icon: isZeroStress ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
-                color: isZeroStress ? .green : .red
-            )
-            
-            if let f = root.finalF, f.count >= 2, f[0].count >= 2, f[1].count >= 2 {
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
                 DislocKpiPill(
-                    title: "Macro Stretch F",
-                    value: String(format: "λ=(%.4f, %.4f)", f[0][0], f[1][1]),
-                    subtitle: String(format: "γ=%.2e", f[0][1]),
-                    icon: "arrow.up.left.and.arrow.down.right",
-                    color: .teal
+                    title: "Core Position (x_c, y_c)",
+                    value: String(format: "(%.2f, %.2f)", root.coreX, root.coreY),
+                    icon: "scope",
+                    color: .blue
                 )
-            }
-            
-            if let lmin = root.lambdaMin {
-                let isStable = root.isStable ?? (lmin > 0)
+                
                 DislocKpiPill(
-                    title: "Core Stability λ_min",
-                    value: String(format: "%.4e", lmin),
-                    subtitle: isStable ? "Stable Core (λ > 0)" : "Unstable (λ ≤ 0)",
-                    icon: isStable ? "shield.lefthalf.filled" : "exclamationmark.shield.fill",
-                    color: isStable ? .mint : .red
+                    title: "Fitted Core Energy E_core",
+                    value: String(format: "%.4f", eCore),
+                    subtitle: String(format: "R² = %.3f", r2),
+                    icon: "atom",
+                    color: .purple
                 )
+                
+                DislocKpiPill(
+                    title: "Elastic Factor K",
+                    value: String(format: "%.4f", kFactor),
+                    subtitle: "μb²/[4π(1-ν)]",
+                    icon: "function",
+                    color: .orange
+                )
+                
+                DislocKpiPill(
+                    title: "Core Relaxation Drop ΔE",
+                    value: String(format: "%.4f", drop),
+                    subtitle: String(format: "%.1f%% drop", unrelCore != 0 ? (drop / unrelCore) * 100 : 0),
+                    icon: "arrow.down.forward.circle.fill",
+                    color: .green
+                )
+                
+                DislocKpiPill(
+                    title: "Macro Cauchy Stress",
+                    value: String(format: "%.2e", maxMacroStress),
+                    subtitle: isZeroStress ? "Relaxed to 0 (Full Cauchy)" : "Unrelaxed Boundary",
+                    icon: isZeroStress ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                    color: isZeroStress ? .green : .red
+                )
+                
+                if let f = root.finalF, f.count >= 2, f[0].count >= 2, f[1].count >= 2 {
+                    DislocKpiPill(
+                        title: "Macro Deformation F̄",
+                        value: String(format: "F̄₁₁=%.5f, F̄₂₂=%.5f", f[0][0], f[1][1]),
+                        subtitle: String(format: "F̄₁₂=%.2e", f[0][1]),
+                        icon: "arrow.up.left.and.arrow.down.right",
+                        color: .teal
+                    )
+                }
+                
+                if let lmin = root.lambdaMin {
+                    let isStable = root.isStable ?? (lmin > 0)
+                    DislocKpiPill(
+                        title: "Core Stability λ_min",
+                        value: String(format: "%.4e", lmin),
+                        subtitle: isStable ? "Stable Core (λ > 0)" : "Unstable (λ ≤ 0)",
+                        icon: isStable ? "shield.lefthalf.filled" : "exclamationmark.shield.fill",
+                        color: isStable ? .mint : .red
+                    )
+                }
             }
-            
-            Spacer()
+            .padding(.vertical, 2)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
     
     // MARK: - Chart View Dispatch
@@ -1193,20 +1200,23 @@ private struct DislocKpiPill: View {
         HStack(spacing: 8) {
             Circle()
                 .fill(color.opacity(0.15))
-                .frame(width: 32, height: 32)
-                .overlay(Image(systemName: icon).foregroundColor(color).font(.system(size: 14)))
+                .frame(width: 30, height: 30)
+                .overlay(Image(systemName: icon).foregroundColor(color).font(.system(size: 13)))
             
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
                 HStack(spacing: 4) {
                     Text(value)
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .font(.system(size: 12.5, weight: .bold, design: .monospaced))
+                        .lineLimit(1)
                     if let sub = subtitle {
                         Text("(\(sub))")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
                     }
                 }
             }
@@ -1215,5 +1225,6 @@ private struct DislocKpiPill: View {
         .padding(.vertical, 6)
         .background(Color(NSColor.quaternaryLabelColor).opacity(0.6))
         .cornerRadius(8)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }

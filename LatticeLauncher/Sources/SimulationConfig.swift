@@ -118,6 +118,12 @@ public class SimulationConfig: ObservableObject {
     @Published public var alphaEnd: Double = 1.0
     @Published public var stepSize: Double = 0.00006
     
+    // 3b. Staircase Shift Schedule (Shift mode)
+    @Published public var shiftAmplitude: Double = 2.0
+    @Published public var shiftHorizontalSteps: Int = 2
+    @Published public var shiftVerticalSteps: Int = 2
+    @Published public var shiftPerturbMesh: Bool = false
+    
     // Rotated Lattice & CSL inputs
     @Published public var useRotation: Bool = false
     @Published public var rotationAngle: Double = 0.0
@@ -219,10 +225,14 @@ public class SimulationConfig: ObservableObject {
     public var defaultRunDirName: String {
         let remeshTag = enableRemeshing ? "remesh" : "noremesh"
         let latTag = latticeSymmetry == .triangular ? "_tri" : ""
-        let bcTag = (boundaryCondition == .fixed) ? "_fixed" : ""
+        let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed) ? "_fixed" : ""
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
-        let rotTag = useRotation ? ((boundaryCondition == .fixed || mode == .volterra) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
+        let rotTag = useRotation ? ((boundaryCondition == .fixed || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
         let relaxTag = (mode == .volterra && relaxMacroStress) ? "_relax" : ""
+        if mode == .shift {
+            let pertTag = shiftPerturbMesh ? "_pert" : ""
+            return String(format: "run_shift_%dx%d_amp%.1f_%@%@%@%@%@", nx, ny, shiftAmplitude, remeshTag, pertTag, latTag, potTag, rotTag)
+        }
         return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)"
     }
     
@@ -279,7 +289,7 @@ public class SimulationConfig: ObservableObject {
             }
         }
         
-        // Loading Schedule vs Dislocation Cylinder
+        // Loading Schedule vs Dislocation Cylinder vs Staircase Shift
         if mode == .volterra {
             args.append(String(format: "--r-free=%.2f", rFree))
             args.append(exportFullMesh ? "--full-mesh" : "--circle")
@@ -288,6 +298,11 @@ public class SimulationConfig: ObservableObject {
                 args.append(String(format: "--stress-tol=%.1e", stressTol))
                 args.append("--max-macro-iters=\(maxMacroIters)")
             }
+        } else if mode == .shift {
+            args.append(String(format: "--shift-amplitude=%.4f", shiftAmplitude))
+            args.append("--shift-h-steps=\(shiftHorizontalSteps)")
+            args.append("--shift-v-steps=\(shiftVerticalSteps)")
+            args.append("--shift-perturb=\(shiftPerturbMesh ? 1 : 0)")
         } else {
             args.append(String(format: "--alpha-start=%.6f", alphaStart))
             args.append(String(format: "--alpha-end=%.6f", alphaEnd))
@@ -326,7 +341,7 @@ public class SimulationConfig: ObservableObject {
         }
         
         // Stability Monitor
-        if enableEigenvalues {
+        if enableEigenvalues && mode != .shift {
             let everyVal = (mode == .volterra) ? max(1, eigEvery) : eigEvery
             args.append("--eig-every=\(everyVal)")
             args.append("--eig-at-avalanche=\(eigAtAvalanche ? 1 : 0)")
@@ -338,12 +353,14 @@ public class SimulationConfig: ObservableObject {
         }
         
         // Boundary condition
-        args.append("--bc=\(boundaryCondition.rawValue)")
+        if mode != .shift && mode != .volterra {
+            args.append("--bc=\(boundaryCondition.rawValue)")
+        }
         
         // Rotated Crystal Orientation / CSL
         if mode != .volterra && useRotation {
             args.append("--use-rotation")
-            if boundaryCondition == .fixed {
+            if boundaryCondition == .fixed || mode == .shift {
                 args.append(String(format: "--rotation-angle=%.4f", rotationAngle))
             } else {
                 args.append("--csl-m=\(cslM)")
