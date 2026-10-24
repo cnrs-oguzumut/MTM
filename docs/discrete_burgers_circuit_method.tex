@@ -586,6 +586,24 @@ This gives us three powerful results immediately:
   \label{fig:junction}
 \end{figure}
 
+\subsection{Summary: Does Method 2 Look Only at a Single Triangle?}
+
+\textbf{No!} Method 2 combines \textbf{three nested loop sizes} that work together via Discrete Stokes' Theorem:
+
+\begin{table}[htbp]
+  \centering
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabular}{@{}lllp{6.8cm}@{}}
+    \toprule
+    \textbf{Level} & \textbf{Circuit Size} & \textbf{Formula} & \textbf{Physical Role in the Code} \\
+    \midrule
+    \textbf{Level 1} & \textbf{1 Triangle} (3 atoms) & $\bm{B}_T = \Delta\bm{n}_{01} + \Delta\bm{n}_{12} + \Delta\bm{n}_{20}$ & Elementary building block (\code{ElementBurgersMagnitude}). Because any large loop is tiled by triangles and interior edges cancel, the non-zero Burgers vector of a dislocation is concentrated in the core triangle $T^*$ where slip crosses $0.5\,a_0$. \\
+    \textbf{Level 2} & \textbf{Square Unit Cell} (4 atoms, $T_1 \cup T_2$) & $\bm{B}_{\mathrm{square}} = \bm{B}_{T_1} + \bm{B}_{T_2}$ & \textbf{Anti-noise filter:} If elastic shear causes only a shared square diagonal ($\sqrt{2}\,a_0$) to round by $\pm 1$, then $\bm{B}_{T_1} = -\bm{B}_{T_2}$ and the 4-atom square loop has $\bm{B}_{\mathrm{square}} = (0,0)$, so both cancel to zero. \\
+    \textbf{Level 3} & \textbf{Nodal 1-Ring} (5--7 triangles around atom $i$) & $\bm{B}_i^{(1\text{-ring})} = \sum_{T \ni i} \bm{B}_T$ & \textbf{Full polygon Burgers circuit around atom $i$} (\code{BurgersMagnitude} \& \code{ReferenceCoordination}). All spoke edges touching atom $i$ cancel out, leaving the closed loop of neighbor atoms around $i$. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
 % ============================================================================
 \section{Quick Guide: Which Fields to Select in ParaView}
 % ============================================================================

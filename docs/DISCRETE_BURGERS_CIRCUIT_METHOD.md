@@ -121,6 +121,14 @@ $$\mathbf{B}_i^{(1\text{-ring})} = \sum_{T \ni i} \mathbf{B}_T \in \mathbb{Z}^2,
 - **Dislocation reactions & junctions:** If two dislocations with Burgers vectors $\mathbf{B}_1$ and $\mathbf{B}_2$ react or form a junction (e.g., $\mathbf{B}_1 = (1,0)$ from the horizontal shift and $\mathbf{B}_2 = (0,1)$ from the vertical shift in `Shift / Staircase`), Discrete Stokes' Theorem automatically enforces **Frank's nodal conservation law**:
   $$\mathbf{B}_{\text{junction}} = \mathbf{B}_1 + \mathbf{B}_2 = (1, 1).$$
 
+### 4.3 Summary of the 3 Nested Loop Sizes Used in the Code
+
+| Level | Loop Size | Formula | Why We Use It |
+| :--- | :--- | :--- | :--- |
+| **Level 1: Single Triangle** | **3 atoms** ($1$ triangle $T$) | $\mathbf{B}_T = \Delta\mathbf{n}_{01} + \Delta\mathbf{n}_{12} + \Delta\mathbf{n}_{20}$ | Elementary building block (`ElementBurgersMagnitude`). Pinpoints the exact triangle containing the core. |
+| **Level 2: Square Unit Cell** | **4 atoms** ($2$ triangles $T_1 \cup T_2$ sharing a diagonal) | $\mathbf{B}_{\text{square}} = \mathbf{B}_{T_1} + \mathbf{B}_{T_2}$ | **Anti-noise filter:** If elastic shear causes *only* a shared square diagonal ($\sqrt{2}\,a_0$) to round by $\pm 1$, then $\mathbf{B}_{T_1} = -\mathbf{B}_{T_2}$ and the 4-atom square loop has $\mathbf{B}_{\text{square}} = (0,0)$, so the code cancels both to zero. |
+| **Level 3: Nodal 1-Ring Circuit** | **5–7 neighbor atoms** surrounding atom $i$ ($\bigcup_{T \ni i} T$) | $\mathbf{B}_i^{(1\text{-ring})} = \sum_{T \ni i} \mathbf{B}_T$ | **True multi-triangle Burgers circuit around atom $i$** (`BurgersMagnitude` & `ReferenceCoordination`). All spoke edges touching atom $i$ cancel out, leaving the closed polygon loop of neighbors walking around atom $i$. |
+
 ---
 
 ## 5. Implementation & VTK Output Reference
