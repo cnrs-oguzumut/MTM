@@ -143,3 +143,19 @@ The algorithm is implemented in `DefectAnalysis::computeBurgersCircuits` (`src/D
 | `BurgersVector` | `POINT_DATA` | `float` (3-vector) | $(b_{i,x}^{(1\text{-ring})}, b_{i,y}^{(1\text{-ring})}, 0)$ 1-ring Burgers vector at node $i$ |
 | `ReferenceCoordination` | `POINT_DATA` | `float` (scalar) | Burgers-filtered coordination: `6` at all nodes with $\mathbf{B}_i^{(1\text{-ring})} = \mathbf{0}$, and $5/7$ only at genuine dislocation core nodes ($\mathbf{B}_i^{(1\text{-ring})} \neq \mathbf{0}$) |
 | `NodeValence` | `POINT_DATA` | `float` (scalar) | Raw unfiltered mesh triangle count per node (preserved for mesh connectivity inspection) |
+
+---
+
+## 6. Historical Background and References
+
+1. **J. M. Burgers (1939)**, *"Some considerations on the fields of stress connected with dislocations in a regular crystal lattice,"* Proc. Kon. Ned. Akad. Wetensch. **42**, 293–325 & 378–399.
+2. **F. C. Frank (1951)**, *"Crystal dislocations — Elementary concepts and definitions,"* Philosophical Magazine **42**(331), 809–819.
+3. **J. F. Nye (1953)**, *"Some geometrical relations in dislocated crystals,"* Acta Metallurgica **1**(2), 153–162.
+4. **B. A. Bilby, R. Bullough, and E. Smith (1955)**, *"Continuous distributions of dislocations: a new application of the methods of non-Riemannian geometry,"* Proc. R. Soc. Lond. A **231**(1185), 263–273.
+5. **E. Kröner (1960)**, *"Allgemeine Kontinuumstheorie der Versetzungen und Eigenspannungen,"* Archive for Rational Mechanics and Analysis **4**, 273–334.
+6. **S. Conti and G. Zanzotto (2004)**, *"A variational model for reconstructive phase transformations in crystals, and their relation to dislocations and plasticity,"* Archive for Rational Mechanics and Analysis **173**, 69–88.
+7. **C. S. Hartley and Y. Mishin (2005)**, *"Characterization and visualization of the lattice misfit associated with dislocation cores,"* Acta Materialia **53**(5), 1313–1321.
+8. **M. P. Ariza and M. Ortiz (2005)**, *"Discrete crystal elasticity,"* Archive for Rational Mechanics and Analysis **178**(2), 179–226.
+9. **A. Stukowski and K. Albe (2010)**, *"Extracting dislocations and non-dislocation crystal defects from atomistic simulation data,"* Modelling Simul. Mater. Sci. Eng. **18**(8), 085001.
+10. **A. Stukowski, V. V. Bulatov, and A. Arsenlis (2012)**, *"Automated identification and indexing of dislocations in crystal interfaces,"* Modelling Simul. Mater. Sci. Eng. **20**(8), 085007.
+
