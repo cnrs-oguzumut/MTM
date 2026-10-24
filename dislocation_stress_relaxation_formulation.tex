@@ -62,7 +62,7 @@
 
 \begin{abstract}
 When an isolated edge dislocation is introduced into a finite crystal, standard Dirichlet (frozen mantle) boundary conditions induce spurious macroscopic reaction stresses $(\bar{\sigma}_{xx}, \bar{\sigma}_{yy}, \bar{\sigma}_{xy})$ due to non-vanishing image forces and the net insertion of an atomic half-plane. This document presents the complete mathematical formulation, kinematic justification, and computational architecture of the \emph{Full Cauchy Tensor} macroscopic stress relaxation method implemented for 2D nonlinear lattice triangulation. 
-To preserve the glide line geometry without artificial crystallographic rotation, we parameterize the macroscopic deformation gradient as an upper-triangular tensor $\mathbf{F}_{\text{ext}} = \begin{pmatrix}\lambda_x & \gamma \\ 0 & \lambda_y\end{pmatrix}$ with $(\mathbf{F}_{\text{ext}})_{21} \equiv 0$. The macroscopic residual Cauchy stress is iteratively relaxed to machine zero via a quadratic Newton-Raphson scheme driven by the exact fourth-order spatial tangent stiffness $\mathbb{C}^{\text{spatial}}(\mathbf{F}_{\text{ext}})$ computed via tensor contraction and push-forward of the internal acoustic tensor. We formulate the nested two-scale minimization algorithm, the core-centered coordinate update, and the subsequent topological Delaunay reconnection on the stress-free state.
+We rigorously define the cumulative macroscopic deformation gradient tensor $\bar{\mathbf{F}} \in \mathrm{GL}^+(2)$, distinguishing it from the local element-level deformation gradients $\mathbf{F}^{(e)}$. To preserve the horizontal glide line geometry without artificial crystallographic rotation, we parameterize $\bar{\mathbf{F}}$ as an upper-triangular tensor $\bar{\mathbf{F}} = \begin{pmatrix}\lambda_x & \gamma \\ 0 & \lambda_y\end{pmatrix}$ with $\bar{F}_{21} \equiv 0$, and show why the rotational gauge constraint is required to keep the Newton-Raphson stiffness nonsingular. The macroscopic residual Cauchy stress is iteratively relaxed to machine zero via a quadratic Newton-Raphson scheme driven by the exact fourth-order spatial tangent stiffness $\mathbb{C}^{\text{spatial}}(\bar{\mathbf{F}})$ computed via tensor contraction and push-forward of the internal acoustic tensor. We formulate the nested two-scale minimization algorithm, the core-centered coordinate update, and the subsequent topological Delaunay reconnection on the stress-free state.
 \end{abstract}
 
 \vspace{0.5em}
@@ -91,43 +91,120 @@ While the analytical displacement field $\mathbf{u}_0$ satisfies traction-free c
 Consequently, the crystal develops a macroscopic Cauchy stress tensor $\bar{\boldsymbol{\sigma}} \ne \mathbf{0}$, which distorts the core structure, shifts the apparent core energy, and creates spurious image forces that repel or attract the dislocation.
 \end{infobox}
 
-The objective of \textbf{Full Cauchy Tensor Macroscopic Stress Relaxation} is to determine the macroscopic deformation gradient $\mathbf{F}_{\text{ext}} \in \mathrm{GL}^+(2)$ such that the volume-averaged Cauchy stress tensor vanishes identically:
+The objective of \textbf{Full Cauchy Tensor Macroscopic Stress Relaxation} is to determine the macroscopic deformation gradient $\bar{\mathbf{F}} \in \mathrm{GL}^+(2)$ such that the volume-averaged Cauchy stress tensor vanishes identically:
 \begin{equation}
-\bar{\boldsymbol{\sigma}}(\mathbf{F}_{\text{ext}}) = \frac{1}{\Omega} \int_{\Omega} \boldsymbol{\sigma}(\mathbf{x}) \, \mathrm{d}\Omega \longrightarrow \mathbf{0}.
+\bar{\boldsymbol{\sigma}}(\bar{\mathbf{F}}) = \frac{1}{\Omega(\bar{\mathbf{F}})} \int_{\Omega(\bar{\mathbf{F}})} \boldsymbol{\sigma}(\mathbf{x}) \, \mathrm{d}\Omega \longrightarrow \mathbf{0}.
 \end{equation}
 
 % ==============================================================================
-\section{Kinematic Parameterization: Why Upper-Triangular \texorpdfstring{$\mathbf{F}_{\text{ext}}$}{F\_ext}?}
+\section{The Macroscopic Deformation Gradient \texorpdfstring{$\bar{\mathbf{F}}$}{F\_bar}: Definition and Kinematics}
 % ==============================================================================
 
-A naive approach to macroscopic stress relaxation applies an unconstrained affine transformation or a symmetric stretch tensor $\mathbf{F} = \mathbf{U} = \mathbf{U}^T$ (with $F_{12} = F_{21}$). However, for an edge dislocation with horizontal Burgers vector $\mathbf{b} = (b, 0)^T$, symmetric shear imposes:
-\begin{equation}
-\Delta \mathbf{F}_{\text{sym}} = \begin{pmatrix} \Delta\varepsilon_{11} & \Delta\varepsilon_{12} \\ \Delta\varepsilon_{12} & \Delta\varepsilon_{22} \end{pmatrix}.
-\end{equation}
-The off-diagonal term $(\Delta \mathbf{F})_{21} = \Delta\varepsilon_{12} \ne 0$ rotates a line originally parallel to the $x$-axis by an angle $\theta \approx \Delta\varepsilon_{12}$, creating an artificial rigid-body rotation of the slip plane:
-\begin{equation}
-y_{\text{new}} - y_{\text{core}} = \Delta\varepsilon_{12}(x - x_{\text{core}}) + (1 + \Delta\varepsilon_{22})(y - y_{\text{core}}).
-\end{equation}
-For points on the glide plane ($y = y_{\text{core}}$), $y_{\text{new}} \ne y_{\text{core}}$ whenever $x \ne x_{\text{core}}$. The slip line is artificially tilted!
+\subsection{Multiscale Definition: Average Deformation Gradient}
 
-\subsection{The Upper-Triangular Slip-Preserving Kinematics}
-
-To preserve the horizontal orientation of the slip plane ($y = \text{const}$) while permitting complete relaxation of normal strains ($\varepsilon_{xx}, \varepsilon_{yy}$) and shear strain ($\gamma_{xy}$), we restrict $\mathbf{F}_{\text{ext}}$ to the upper-triangular Borel subgroup:
-\begin{equation}
-\label{eq:F_ext}
-\mathbf{F}_{\text{ext}} = \begin{pmatrix} \lambda_x & \gamma \\ 0 & \lambda_y \end{pmatrix}, \qquad (\mathbf{F}_{\text{ext}})_{21} \equiv 0.
-\end{equation}
-This parameterization guarantees:
-\begin{itemize}
-    \item \textbf{Slip Plane Invariance}:
-    For any atom lying on the slip plane $Y = Y_{\text{core}}$, its deformed vertical coordinate is:
+In multiscale continuum mechanics and homogenization theory, a clear distinction is maintained between:
+\begin{enumerate}
+    \item \textbf{Microscopic Deformation Gradient $\mathbf{F}^{(e)}(\mathbf{X})$}:
+    The local gradient evaluated element-by-element inside each triangular simplex $e \in \mathcal{E}$:
     \begin{equation}
-    y - y_{\text{core}} = 0 \cdot (X - X_{\text{core}}) + \lambda_y (Y - Y_{\text{core}}) = 0.
+    \mathbf{F}^{(e)} = \nabla_{\mathbf{X}} \mathbf{x}^{(e)} = \mathbf{x}_e \cdot \nabla_{\mathbf{X}} \mathbf{N}^{(e)}.
     \end{equation}
-    The glide plane remains strictly horizontal and collinear with $\hat{\mathbf{e}}_1$.
-    \item \textbf{Simple Shear Glide}:
-    The off-diagonal term $\gamma$ corresponds to simple shear along the Burgers vector direction $\mathbf{b} \parallel \hat{\mathbf{e}}_1$, exactly mirroring the physical mechanism of edge dislocation glide without spurious spin.
+    Near the dislocation core, $\mathbf{F}^{(e)}$ varies wildly across atomic spacings to capture the discrete lattice dislocation core and atomic bond distortions.
+    \item \textbf{Macroscopic Deformation Gradient $\bar{\mathbf{F}}$}:
+    A single, spatially uniform $2 \times 2$ second-order tensor that describes the overall macroscopic stretch, dilation, and shear of the entire crystal cylinder relative to the initial dislocated configuration. By the average deformation theorem (Stokes' theorem in the reference configuration $\Omega_0$):
+    \begin{equation}
+    \label{eq:F_bar_def}
+    \bar{\mathbf{F}} \equiv \langle \mathbf{F} \rangle_{\Omega_0} = \frac{1}{|\Omega_0|} \int_{\Omega_0} \mathbf{F}(\mathbf{X}) \, \mathrm{d}\Omega_0 = \frac{1}{|\Omega_0|} \oint_{\partial \Omega_0} \mathbf{x} \otimes \mathbf{N}_0 \, \mathrm{d}S_0,
+    \end{equation}
+    where $\mathbf{N}_0$ is the outward reference unit normal along the domain boundary $\partial \Omega_0$.
+\end{enumerate}
+
+When an affine boundary condition $\mathbf{x}(\mathbf{X}) = \bar{\mathbf{F}} \mathbf{X}$ is applied to the boundary of a domain, the volume average $\langle \mathbf{F} \rangle$ is identically equal to $\bar{\mathbf{F}}$. In our code, $\bar{\mathbf{F}}$ is the primary macroscopic variable: it corresponds to \texttt{Eigen::Matrix2d F\_bar} in \texttt{src/experiments/dislocation\_study.cpp}, is exported as \texttt{"final\_F"} in \texttt{dislocation\_profiles.json}, and is surfaced in the GUI as the \textbf{Macro Stretch $\mathbf{F}$} KPI.
+
+\subsection{Multiplicative Accumulation Across Newton Iterations}
+
+At the start of the simulation, the analytical Volterra or Stroh displacement field $\mathbf{u}_0(\mathbf{X})$ is introduced, placing atoms at:
+\begin{equation}
+\mathbf{x}_i^{(0)} = \mathbf{X}_i + \mathbf{u}_0(\mathbf{X}_i - \mathbf{x}_{\text{core}}).
+\end{equation}
+At this initial state ($k = 0$), no macroscopic boundary adjustment has yet occurred, which corresponds to:
+\begin{equation}
+\bar{\mathbf{F}}^{(0)} = \mathbf{I} = \begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix}.
+\end{equation}
+At each outer macroscopic iteration $k$, the Newton solver computes an incremental strain $\Delta\boldsymbol{\varepsilon}^{(k)}$, which constructs an incremental deformation gradient $\mathbf{F}_{\text{inc}}^{(k)}$. The cumulative macroscopic deformation gradient $\bar{\mathbf{F}}$ updates multiplicatively:
+\begin{equation}
+\label{eq:F_bar_update}
+\bar{\mathbf{F}}^{(k+1)} = \mathbf{F}_{\text{inc}}^{(k)} \, \bar{\mathbf{F}}^{(k)} = \mathbf{F}_{\text{inc}}^{(k)} \, \mathbf{F}_{\text{inc}}^{(k-1)} \cdots \mathbf{F}_{\text{inc}}^{(0)} \, \mathbf{I}.
+\end{equation}
+All atomic coordinates $\mathbf{x}_i$ transform according to this cumulative macro-transformation centered at the core $\mathbf{x}_{\text{core}}$:
+\begin{equation}
+\mathbf{x}_i^{(k+1)} = \mathbf{x}_{\text{core}} + \bar{\mathbf{F}}^{(k+1)} \left( \mathbf{x}_i^{(0)} - \mathbf{x}_{\text{core}} \right).
+\end{equation}
+
+\subsection{Component Breakdown and Physical Meaning}
+
+In 2D Cartesian coordinates, $\bar{\mathbf{F}}$ is parameterized as:
+\begin{equation}
+\label{eq:F_bar_matrix}
+\bar{\mathbf{F}} = \begin{pmatrix} \bar{F}_{11} & \bar{F}_{12} \\ \bar{F}_{21} & \bar{F}_{22} \end{pmatrix} = \begin{pmatrix} \lambda_x & \gamma \\ 0 & \lambda_y \end{pmatrix}.
+\end{equation}
+Each entry of $\bar{\mathbf{F}}$ has a precise physical and crystallographic role:
+\begin{itemize}
+    \item $\bar{F}_{11} = \lambda_x$: 
+    \textbf{Longitudinal Stretch along the Slip Direction}. Measures the uniform expansion or compression of the crystal parallel to the Burgers vector $\mathbf{b} \parallel \hat{\mathbf{e}}_1$. Adjusting $\lambda_x$ relieves the macroscopic normal stress $\bar{\sigma}_{xx}$.
+    \item $\bar{F}_{22} = \lambda_y$: 
+    \textbf{Transverse Normal Stretch}. Measures the crystal dilation perpendicular to the slip plane. Because introducing an edge dislocation inserts an extra half-plane of atoms, the finite crystal must expand vertically (and adjust via Poisson contraction) to accommodate the extra material. Adjusting $\lambda_y$ relieves the macroscopic normal stress $\bar{\sigma}_{yy}$.
+    \item $\bar{F}_{12} = \gamma$: 
+    \textbf{Simple Shear Strain Parallel to the Glide Plane}. Relieves the macroscopic resolved shear stress $\bar{\sigma}_{xy}$. In crystalline plasticity, dislocation motion occurs via simple shear along the slip line.
+    \item $\bar{F}_{21} \equiv 0$: 
+    \textbf{Kinematic Constraint (Zero Crystallographic Tilt)}. Enforces that lines parallel to the $x$-axis (the dislocation glide line) do not undergo artificial rigid rotation relative to the Cartesian frame.
 \end{itemize}
+
+\subsection{Why \texorpdfstring{$\bar{F}_{21} \equiv 0$}{F\_21 = 0}: Slip Plane Invariance}
+
+Consider an arbitrary affine deformation centered at the core $\mathbf{x}_{\text{core}} = (x_c, y_c)^T$. The deformed vertical coordinate $y'$ of any point $(x, y)$ is:
+\begin{equation}
+y' - y_c = \bar{F}_{21}(x - x_c) + \bar{F}_{22}(y - y_c).
+\end{equation}
+For any atom lying on the dislocation slip plane ($y = y_c$):
+\begin{equation}
+y' - y_c = \bar{F}_{21}(x - x_c).
+\end{equation}
+\begin{itemize}
+    \item If $\bar{F}_{21} \ne 0$ (such as in a naive symmetric stretch where $\bar{F}_{21} = \bar{F}_{12} = \varepsilon_{12}$), then $y' - y_c = \varepsilon_{12}(x - x_c) \ne 0$. The entire slip plane is tilted at an angle $\theta \approx \bar{F}_{21} / \bar{F}_{22}$. This violates the physical boundary conditions: the cut line and the Burgers vector are no longer aligned with the grid!
+    \item If $\bar{F}_{21} \equiv 0$ (upper-triangular parameterization), then:
+    \begin{equation}
+    y' - y_c = 0 \cdot (x - x_c) + \lambda_y \cdot 0 \equiv 0 \qquad \forall x \in \mathbb{R}.
+    \end{equation}
+    The glide plane remains \textbf{strictly horizontal and invariant} at all times.
+\end{itemize}
+
+\subsection{Why Cannot \texorpdfstring{$\bar{F}_{12}$}{F\_12} and \texorpdfstring{$\bar{F}_{21}$}{F\_21} Both Be Independent?}
+
+A natural question arises: \emph{Why can we not let all 4 components of $\bar{\mathbf{F}}$ vary independently during stress relaxation?}
+
+The answer stems from the fundamental balance of angular momentum and material frame indifference:
+\begin{enumerate}
+    \item \textbf{3 Equations vs 4 Unknowns}:
+    The Cauchy stress tensor $\bar{\boldsymbol{\sigma}}$ is strictly symmetric:
+    \begin{equation}
+    \bar{\boldsymbol{\sigma}} = \begin{pmatrix} \bar{\sigma}_{xx} & \bar{\sigma}_{xy} \\ \bar{\sigma}_{xy} & \bar{\sigma}_{yy} \end{pmatrix} \implies \bar{\sigma}_{yx} \equiv \bar{\sigma}_{xy}.
+    \end{equation}
+    Therefore, setting $\bar{\boldsymbol{\sigma}} = \mathbf{0}$ yields only \textbf{3 independent scalar equations} ($\bar{\sigma}_{xx} = 0, \bar{\sigma}_{yy} = 0, \bar{\sigma}_{xy} = 0$). Solving 3 equations with 4 unconstrained variables is an underdetermined problem with an infinite family of solutions.
+    \item \textbf{The 4th Degree of Freedom is Pure Rigid Rotation}:
+    By polar decomposition, $\bar{\mathbf{F}} = \mathbf{R}(\theta)\mathbf{U}$. The right Cauchy-Green strain tensor $\mathbf{C} = \bar{\mathbf{F}}^T \bar{\mathbf{F}} = \mathbf{U}^T \mathbf{R}^T \mathbf{R} \mathbf{U} = \mathbf{U}^2$ completely filters out rigid-body rotation $\theta$. Because the strain energy $\Phi(\mathbf{C})$ and Cauchy stress are frame-indifferent (objective), a pure rigid rotation in space generates \textbf{zero stress change}:
+    \begin{equation}
+    \frac{\partial \bar{\boldsymbol{\sigma}}}{\partial \theta} \equiv \mathbf{0}.
+    \end{equation}
+    \item \textbf{Singular Tangent Matrix}:
+    If a $4 \times 4$ Newton-Raphson tangent matrix $\frac{\partial \bar{\boldsymbol{\sigma}}}{\partial \bar{\mathbf{F}}}$ were constructed, its 4th column would be identically in the nullspace:
+    \begin{equation}
+    \det\left( \frac{\partial \bar{\boldsymbol{\sigma}}}{\partial \bar{\mathbf{F}}} \right) = 0.
+    \end{equation}
+    Newton's method would fail with a division by zero or uncontrolled rotational drift.
+\end{enumerate}
+
+Fixing $\bar{F}_{21} \equiv 0$ is the unique gauge choice that eliminates this singular rotational nullspace while simultaneously preserving the horizontal orientation of the dislocation slip plane.
 
 % ==============================================================================
 \section{Macroscopic Cauchy Stress Tensor Formulation}
@@ -178,7 +255,7 @@ Due to the symmetry of $\mathbf{C}$, $\bar{\boldsymbol{\sigma}}$ is strictly sym
 \section{Instantaneous Spatial Tangent Stiffness (\texorpdfstring{$\mathbb{C}^{\text{spatial}}$}{C\_spatial})}
 % ==============================================================================
 
-To achieve true quadratic Newton convergence when solving $\bar{\boldsymbol{\sigma}}(\mathbf{F}_{\text{ext}}) = \mathbf{0}$, we require the exact derivative of Cauchy stress with respect to macroscopic strain:
+To achieve true quadratic Newton convergence when solving $\bar{\boldsymbol{\sigma}}(\bar{\mathbf{F}}) = \mathbf{0}$, we require the exact derivative of Cauchy stress with respect to macroscopic strain:
 \begin{equation}
 \mathrm{d}\bar{\boldsymbol{\sigma}} = \mathbb{C}^{\text{spatial}} : \mathrm{d}\boldsymbol{\varepsilon}.
 \end{equation}
@@ -187,15 +264,15 @@ In our code, this is evaluated directly by \texttt{AcousticTensor::getSpatialTan
 
 \subsection{Material Tangent Computation}
 
-At the current macroscopic state $\mathbf{F}_{\text{bar}} = \mathbf{F}_{\text{ext}}$, the acoustic tensor evaluates the fourth-order material tangent modulus $\mathbb{A}_{KLMN} = \frac{\partial^2 \Phi}{\partial F_{kM} \partial F_{lN}}$ using the second derivatives $\frac{\partial^2 \Phi}{\partial \mathbf{C}^2}$ calculated analytically by \texttt{BaseLatticeCalculator}.
+At the current macroscopic state $\bar{\mathbf{F}}$, the acoustic tensor evaluates the fourth-order material tangent modulus $\mathbb{A}_{KLMN} = \frac{\partial^2 \Phi}{\partial F_{kM} \partial F_{lN}}$ using the second derivatives $\frac{\partial^2 \Phi}{\partial \mathbf{C}^2}$ calculated analytically by \texttt{BaseLatticeCalculator}.
 
 \subsection{Spatial Push-Forward and Geometric Stress Term}
 
 The push-forward to the spatial configuration consists of two essential contributions:
 \begin{equation}
-\mathbb{C}_{ijkl}^{\text{spatial}} = \underbrace{\frac{1}{J} F_{iK} F_{jL} F_{kM} F_{lN} \mathbb{A}_{KLMN}}_{\text{Term 1: Material Push-Forward}} + \underbrace{\frac{1}{2}\left( \sigma_{ik}\delta_{jl} + \sigma_{jk}\delta_{il} + \sigma_{il}\delta_{jk} + \sigma_{jl}\delta_{ik} \right)}_{\text{Term 2: Geometric Cauchy Stress Term}},
+\mathbb{C}_{ijkl}^{\text{spatial}} = \underbrace{\frac{1}{J} \bar{F}_{iK} \bar{F}_{jL} \bar{F}_{kM} \bar{F}_{lN} \mathbb{A}_{KLMN}}_{\text{Term 1: Material Push-Forward}} + \underbrace{\frac{1}{2}\left( \bar{\sigma}_{ik}\delta_{jl} + \bar{\sigma}_{jk}\delta_{il} + \bar{\sigma}_{il}\delta_{jk} + \bar{\sigma}_{jl}\delta_{ik} \right)}_{\text{Term 2: Geometric Cauchy Stress Term}},
 \end{equation}
-where $J = \det(\mathbf{F}_{\text{bar}})$. The geometric stress term ensures rigorous consistency with the Jaumann rate of Cauchy stress under finite deformation.
+where $J = \det(\bar{\mathbf{F}})$. The geometric stress term ensures rigorous consistency with the Jaumann rate of Cauchy stress under finite deformation.
 
 \subsection{Voigt Matrix Representation}
 
@@ -249,11 +326,11 @@ The incremental deformation gradient $\mathbf{F}_{\text{inc}}$ is constructed di
 \end{equation}
 The cumulative macroscopic deformation gradient updates multiplicatively:
 \begin{equation}
-\mathbf{F}_{\text{bar}}^{(k+1)} = \mathbf{F}_{\text{inc}} \, \mathbf{F}_{\text{bar}}^{(k)}.
+\bar{\mathbf{F}}^{(k+1)} = \mathbf{F}_{\text{inc}} \, \bar{\mathbf{F}}^{(k)}.
 \end{equation}
-Since both $\mathbf{F}_{\text{inc}}$ and $\mathbf{F}_{\text{bar}}^{(k)}$ have vanishing $(2,1)$ components, their product satisfies:
+Since both $\mathbf{F}_{\text{inc}}$ and $\bar{\mathbf{F}}^{(k)}$ have vanishing $(2,1)$ components, their product satisfies:
 \begin{equation}
-(\mathbf{F}_{\text{bar}}^{(k+1)})_{21} = 0 \cdot F_{11} + (1 + \Delta\varepsilon_{22}) \cdot 0 \equiv 0.
+(\bar{\mathbf{F}}^{(k+1)})_{21} = 0 \cdot \bar{F}_{11} + (1 + \Delta\varepsilon_{22}) \cdot 0 \equiv 0.
 \end{equation}
 The upper-triangular structure is preserved \emph{to machine precision at all steps}.
 
@@ -278,7 +355,7 @@ This translation would misalign the core with the cylindrical relaxation window 
 The full algorithm operates as a nested two-scale loop:
 \begin{itemize}
     \item \textbf{Inner Loop (Microscopic Relaxation)}: 
-    For a fixed outer mantle position (determined by the current $\mathbf{F}_{\text{bar}}$), L-BFGS minimizes the total energy with respect to the coordinates of the free interior atoms within $R_{\text{free}}$.
+    For a fixed outer mantle position (determined by the current $\bar{\mathbf{F}}$), L-BFGS minimizes the total energy with respect to the coordinates of the free interior atoms within $R_{\text{free}}$.
     \item \textbf{Outer Loop (Macroscopic Newton Step)}:
     Evaluates the volume-averaged Cauchy stress $\bar{\boldsymbol{\sigma}}$, computes $\mathbf{C}_{\text{voigt}}$, solves for $\mathbf{F}_{\text{inc}}$, and shifts the boundary positions.
     \item \textbf{Post-Convergence (Delaunay Remeshing)}:
@@ -292,7 +369,7 @@ The full algorithm operates as a nested two-scale loop:
 \Require Lattice $\{ \mathbf{X}_i \}_{i=1}^N$, Core $\mathbf{x}_{\text{core}}$, Radius $R_{\text{free}}$, Tolerance $\eta$, Max Iters $K_{\max}$
 \State Apply analytical Volterra / Stroh field: $\mathbf{x}_i \gets \mathbf{X}_i + \mathbf{u}_0(\mathbf{X}_i - \mathbf{x}_{\text{core}})$
 \State Partition nodes into free ($\le R_{\text{free}}$) and Dirichlet boundary ($> R_{\text{free}}$)
-\State Initialize $\mathbf{F}_{\text{bar}} \gets \mathbf{I}$, converged $\gets \mathbf{false}$
+\State Initialize macroscopic stretch: $\bar{\mathbf{F}} \gets \mathbf{I}$, converged $\gets \mathbf{false}$
 \For{$k = 0$ \textbf{to} $K_{\max} - 1$}
     \State \textbf{Inner Step}: Relax free nodes via L-BFGS: $\mathbf{x}_{\text{free}} \gets \arg\min E(\mathbf{x}_{\text{free}} \,|\, \mathbf{x}_{\text{bound}})$
     \State Compute volume-averaged Cauchy stress $\bar{\boldsymbol{\sigma}}$ via Eq.~\eqref{eq:macro_stress}
@@ -300,12 +377,12 @@ The full algorithm operates as a nested two-scale loop:
     \If{$\sigma_{\max} < \eta$}
         \State converged $\gets \mathbf{true}$; \textbf{break}
     \EndIf
-    \State Compute $\mathbb{C}^{\text{spatial}}(\mathbf{F}_{\text{bar}})$ via \texttt{AcousticTensor::getSpatialTangent()}
+    \State Compute $\mathbb{C}^{\text{spatial}}(\bar{\mathbf{F}})$ via \texttt{AcousticTensor::getSpatialTangent()}
     \State Extract $3 \times 3$ Voigt matrix $\mathbf{C}_{\text{voigt}}$ via Eq.~\eqref{eq:C_voigt}
     \State Solve $\mathbf{C}_{\text{voigt}} \Delta\boldsymbol{\varepsilon} = -\bar{\boldsymbol{\sigma}}_{\text{voigt}}$
     \State Clamp $\Delta\varepsilon_i \gets \mathrm{clamp}(\Delta\varepsilon_i, -0.02, 0.02)$
     \State Construct upper-triangular $\mathbf{F}_{\text{inc}}$ via Eq.~\eqref{eq:F_inc}
-    \State Update cumulative deformation: $\mathbf{F}_{\text{bar}} \gets \mathbf{F}_{\text{inc}} \mathbf{F}_{\text{bar}}$
+    \State Update cumulative deformation: $\bar{\mathbf{F}} \gets \mathbf{F}_{\text{inc}} \bar{\mathbf{F}}$
     \State Update all atom positions: $\mathbf{x}_j \gets \mathbf{x}_{\text{core}} + \mathbf{F}_{\text{inc}} (\mathbf{x}_j - \mathbf{x}_{\text{core}})$
     \State Synchronize solver vectors and update element reference configurations
 \EndFor
@@ -324,13 +401,13 @@ The full algorithm operates as a nested two-scale loop:
 
 We illustrate the convergence behavior on a $25 \times 25$ square lattice with a central edge dislocation ($a = 1.0$, $R_{\text{free}} = 8.0$, Zanzotto continuum potential $\beta = -0.25, K = 5.0$):
 \begin{itemize}
-    \item \textbf{Step 0 (Initial unrelaxed mantle)}:
+    \item \textbf{Step 0 (Initial unrelaxed mantle, $\bar{\mathbf{F}}^{(0)} = \mathbf{I}$)}:
     \begin{align*}
     E &= 1.2041720450 \\
     \bar{\boldsymbol{\sigma}} &= \begin{pmatrix} -0.051077 & -0.000020 \\ -0.000020 & -0.045825 \end{pmatrix}, \quad \max|\bar{\sigma}| = 5.11 \times 10^{-2} \\
     \Delta\boldsymbol{\varepsilon} &= (1.97 \times 10^{-3}, \, 4.51 \times 10^{-4}, \, 3.23 \times 10^{-6})^T
     \end{align*}
-    \item \textbf{Step 1 (After 1 Newton step)}:
+    \item \textbf{Step 1 (After 1 Newton step, updated $\bar{\mathbf{F}}^{(1)}$)}:
     \begin{align*}
     E &= 1.1904803911 \quad (\Delta E = -0.01369) \\
     \bar{\boldsymbol{\sigma}} &= \begin{pmatrix} -4.68 \times 10^{-5} & -8.63 \times 10^{-6} \\ -8.63 \times 10^{-6} & -3.38 \times 10^{-5} \end{pmatrix}, \quad \max|\bar{\sigma}| = 4.69 \times 10^{-5}
@@ -367,19 +444,19 @@ The implementation spans three tightly integrated layers:
 \begin{enumerate}
     \item \textbf{C++ Physics Engine}:
     \begin{itemize}
-        \item \texttt{include/experiments/dislocation\_study.h}: Added \texttt{relax\_macro\_stress}, \texttt{stress\_tol}, \texttt{max\_macro\_iters}.
-        \item \texttt{src/experiments/dislocation\_study.cpp}: Implemented the macro-stress Newton loop, spatial tangent extraction, upper-triangular update, and core-centered coordinate scaling.
+        \item \texttt{include/experiments/dislocation\_study.h}: Added \texttt{relax\_macro\_stress}, \texttt{stress\_tol}, and \texttt{max\_macro\_iters}.
+        \item \texttt{src/experiments/dislocation\_study.cpp}: Implemented the macro-stress Newton loop, spatial tangent extraction, upper-triangular update $\bar{\mathbf{F}} \gets \mathbf{F}_{\text{inc}}\bar{\mathbf{F}}$, and core-centered coordinate scaling.
         \item \texttt{src/main.cpp}: Added CLI flags \texttt{--relax-stress=1}, \texttt{--stress-tol=1e-5}, and \texttt{--max-macro-iters=30}.
     \end{itemize}
     \item \textbf{Data Logging}:
     \begin{itemize}
-        \item \texttt{dislocation\_profiles.json}: Exports \texttt{macro\_stress\_relaxed}, \texttt{final\_F}, and \texttt{final\_macro\_stress}.
+        \item \texttt{dislocation\_profiles.json}: Exports \texttt{macro\_stress\_relaxed}, \texttt{final\_F} ($\equiv \bar{\mathbf{F}}$), and \texttt{final\_macro\_stress}.
     \end{itemize}
     \item \textbf{Lattice Launcher macOS GUI}:
     \begin{itemize}
         \item \texttt{SimulationConfig.swift}: Added toggle, fields, and automatic \texttt{\_relax} folder tagging.
         \item \texttt{ContentView.swift}: Interactive UI toggle under \emph{Mode \& Triangulation}.
-        \item \texttt{DislocationProfileChartView.swift}: Dedicated KPI pills for \textbf{Macro Cauchy Stress} (showing $\max|\sigma|$ with green/red status) and \textbf{Macro Stretch $\mathbf{F}$}.
+        \item \texttt{DislocationProfileChartView.swift}: Dedicated KPI pills for \textbf{Macro Cauchy Stress} (showing $\max|\sigma|$ with green/red status) and \textbf{Macro Stretch $\mathbf{F}$} (showing $\bar{\mathbf{F}}$).
     \end{itemize}
 \end{enumerate}
 
