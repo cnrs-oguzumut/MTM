@@ -37,6 +37,38 @@ class AdaptiveMesher;
 class DefectAnalysis {
 public:
     /**
+     * @struct BurgersCircuitResult
+     * @brief Stores element-level and node-level Discrete Burgers Circuit (Method 2) analysis
+     */
+    struct BurgersCircuitResult {
+        bool is_square_lattice = false;
+        double lattice_spacing = 1.0;
+        double lattice_angle_rad = 0.0;
+        Eigen::Matrix2d A0 = Eigen::Matrix2d::Identity();
+
+        // Indexed parallel to valid initialized elements in userData->active_elements
+        std::vector<Eigen::Vector2i> element_burgers_int;
+        std::vector<Eigen::Vector2d> element_burgers_vec;
+        std::vector<double> element_burgers_mag;
+
+        // Indexed by original node index [0 .. points.size()-1]
+        std::vector<Eigen::Vector2i> nodal_burgers_int;
+        std::vector<Eigen::Vector2d> nodal_burgers_vec;
+        std::vector<double> nodal_burgers_mag;
+        std::vector<int> filtered_coordination;
+
+        int num_dislocations = 0;
+    };
+
+    /**
+     * @brief Compute Discrete Burgers Circuits (Method 2) on all active triangles and 1-ring nodal neighborhoods
+     * 
+     * @param userData Simulation state (current or reference configuration)
+     * @return BurgersCircuitResult containing element & nodal Burgers vectors, magnitudes, and filtered coordination
+     */
+    static BurgersCircuitResult computeBurgersCircuits(const UserData* userData);
+
+    /**
      * @brief Analyze defects in the reference configuration
      * 
      * This function:

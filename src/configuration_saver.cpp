@@ -1,4 +1,5 @@
 #include "../include/output/configuration_saver.h"
+#include "../include/defects/Defectanalysis.h"
 #include "../include/reductions/LagrangeReduction.h"
 #include "../include/geometry/DomainDimensions.h"
 #include <cstring>
@@ -912,6 +913,42 @@ void ConfigurationSaver::writeToVTKFile(
     }
     file.write(reinterpret_cast<const char*>(elem_cauchy_buf.data()), elem_cauchy_buf.size() * sizeof(float));
     file << "\n";
+
+    // Compute Method 2 Discrete Burgers Circuits on current mesh
+    DefectAnalysis::BurgersCircuitResult burgers =
+        DefectAnalysis::computeBurgersCircuits(userData);
+
+    // Element Burgers Magnitude (in units of a0)
+    file << "SCALARS ElementBurgersMagnitude float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_burgers_mag_buf;
+    elem_burgers_mag_buf.reserve(valid_elements);
+    for (int i = 0; i < valid_elements; ++i) {
+        double val = (i < static_cast<int>(burgers.element_burgers_mag.size()))
+                         ? burgers.element_burgers_mag[i]
+                         : 0.0;
+        elem_burgers_mag_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_burgers_mag_buf.data()),
+               elem_burgers_mag_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element Burgers Vector (bx, by, 0 in units of a0)
+    file << "VECTORS ElementBurgersVector float\n";
+    std::vector<float> elem_burgers_vec_buf;
+    elem_burgers_vec_buf.reserve(valid_elements * 3);
+    for (int i = 0; i < valid_elements; ++i) {
+        Eigen::Vector2d bvec =
+            (i < static_cast<int>(burgers.element_burgers_vec.size()))
+                ? burgers.element_burgers_vec[i]
+                : Eigen::Vector2d::Zero();
+        elem_burgers_vec_buf.push_back(vtk_swap_float(static_cast<float>(bvec.x())));
+        elem_burgers_vec_buf.push_back(vtk_swap_float(static_cast<float>(bvec.y())));
+        elem_burgers_vec_buf.push_back(0.0f);
+    }
+    file.write(reinterpret_cast<const char*>(elem_burgers_vec_buf.data()),
+               elem_burgers_vec_buf.size() * sizeof(float));
+    file << "\n";
     
     // --- Write Point Data (Per-Node Values) ---
     file << "\nPOINT_DATA " << extended_point_count << "\n";
@@ -960,8 +997,20 @@ void ConfigurationSaver::writeToVTKFile(
     file.write(reinterpret_cast<const char*>(valence_buf.data()), valence_buf.size() * sizeof(float));
     file << "\n";
     
-    // Reference Coordination - from defect analysis (if provided)
-    if (has_coordination) {
+    // Reference Coordination - from Method 2 Burgers-filtered defect analysis
+    {
+        if (!has_coordination) {
+            extended_coordination.assign(extended_point_count, 6);
+            for (const auto& entry : node_map) {
+                int original_idx = entry.first.index;
+                int extended_idx = entry.second;
+                if (original_idx >= 0 &&
+                    original_idx < static_cast<int>(burgers.filtered_coordination.size())) {
+                    extended_coordination[extended_idx] =
+                        burgers.filtered_coordination[original_idx];
+                }
+            }
+        }
         file << "SCALARS ReferenceCoordination float 1\n";
         file << "LOOKUP_TABLE default\n";
         std::vector<float> coord_buf;
@@ -971,8 +1020,47 @@ void ConfigurationSaver::writeToVTKFile(
         }
         file.write(reinterpret_cast<const char*>(coord_buf.data()), coord_buf.size() * sizeof(float));
         file << "\n";
-        std::cout << "  Included ReferenceCoordination field from defect analysis" << std::endl;
     }
+
+    // Nodal 1-Ring Burgers Magnitude (in units of a0)
+    std::vector<double> extended_burgers_mag(extended_point_count, 0.0);
+    std::vector<Eigen::Vector2d> extended_burgers_vec(extended_point_count,
+                                                      Eigen::Vector2d::Zero());
+    for (const auto& entry : node_map) {
+        int original_idx = entry.first.index;
+        int extended_idx = entry.second;
+        if (original_idx >= 0 &&
+            original_idx < static_cast<int>(burgers.nodal_burgers_mag.size()) &&
+            extended_idx >= 0 && extended_idx < extended_point_count) {
+            extended_burgers_mag[extended_idx] =
+                burgers.nodal_burgers_mag[original_idx];
+            extended_burgers_vec[extended_idx] =
+                burgers.nodal_burgers_vec[original_idx];
+        }
+    }
+
+    file << "SCALARS BurgersMagnitude float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> nodal_burgers_mag_buf;
+    nodal_burgers_mag_buf.reserve(extended_point_count);
+    for (double val : extended_burgers_mag) {
+        nodal_burgers_mag_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(nodal_burgers_mag_buf.data()),
+               nodal_burgers_mag_buf.size() * sizeof(float));
+    file << "\n";
+
+    file << "VECTORS BurgersVector float\n";
+    std::vector<float> nodal_burgers_vec_buf;
+    nodal_burgers_vec_buf.reserve(extended_point_count * 3);
+    for (const auto& bvec : extended_burgers_vec) {
+        nodal_burgers_vec_buf.push_back(vtk_swap_float(static_cast<float>(bvec.x())));
+        nodal_burgers_vec_buf.push_back(vtk_swap_float(static_cast<float>(bvec.y())));
+        nodal_burgers_vec_buf.push_back(0.0f);
+    }
+    file.write(reinterpret_cast<const char*>(nodal_burgers_vec_buf.data()),
+               nodal_burgers_vec_buf.size() * sizeof(float));
+    file << "\n";
 
     // Nodal Cauchy Stress Tensor
     file << "TENSORS NodalCauchyStress float\n";
@@ -1229,11 +1317,47 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
     std::vector<int32_t> type_buf(valid_elements, vtk_swap_int(5));
     file.write(reinterpret_cast<const char*>(type_buf.data()), type_buf.size() * sizeof(int32_t));
     file << "\n";
+
+    // Compute Method 2 Discrete Burgers Circuits on reference mesh
+    DefectAnalysis::BurgersCircuitResult burgers =
+        DefectAnalysis::computeBurgersCircuits(userData);
+
+    // --- Write Cell Data (Element Burgers Vectors) ---
+    file << "\nCELL_DATA " << valid_elements << "\n";
+    file << "SCALARS ElementBurgersMagnitude float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_burgers_mag_buf;
+    elem_burgers_mag_buf.reserve(valid_elements);
+    for (int i = 0; i < valid_elements; ++i) {
+        double val = (i < static_cast<int>(burgers.element_burgers_mag.size()))
+                         ? burgers.element_burgers_mag[i]
+                         : 0.0;
+        elem_burgers_mag_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_burgers_mag_buf.data()),
+               elem_burgers_mag_buf.size() * sizeof(float));
+    file << "\n";
+
+    file << "VECTORS ElementBurgersVector float\n";
+    std::vector<float> elem_burgers_vec_buf;
+    elem_burgers_vec_buf.reserve(valid_elements * 3);
+    for (int i = 0; i < valid_elements; ++i) {
+        Eigen::Vector2d bvec =
+            (i < static_cast<int>(burgers.element_burgers_vec.size()))
+                ? burgers.element_burgers_vec[i]
+                : Eigen::Vector2d::Zero();
+        elem_burgers_vec_buf.push_back(vtk_swap_float(static_cast<float>(bvec.x())));
+        elem_burgers_vec_buf.push_back(vtk_swap_float(static_cast<float>(bvec.y())));
+        elem_burgers_vec_buf.push_back(0.0f);
+    }
+    file.write(reinterpret_cast<const char*>(elem_burgers_vec_buf.data()),
+               elem_burgers_vec_buf.size() * sizeof(float));
+    file << "\n";
     
-    // --- Write Point Data (Per-Node Values) - ONLY NodeValence ---
+    // --- Write Point Data (Per-Node Values) ---
     file << "\nPOINT_DATA " << extended_point_count << "\n";
     
-    // Number of Elements per Node (Valence/Coordination)
+    // Number of Elements per Node (Raw Valence/Coordination)
     file << "SCALARS NodeValence float 1\n";
     file << "LOOKUP_TABLE default\n";
     std::vector<float> valence_buf;
@@ -1243,20 +1367,74 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
     }
     file.write(reinterpret_cast<const char*>(valence_buf.data()), valence_buf.size() * sizeof(float));
     file << "\n";
+
+    // Burgers-Filtered Reference Coordination
+    std::vector<int> extended_ref_coord(extended_point_count, 6);
+    std::vector<double> extended_burgers_mag(extended_point_count, 0.0);
+    std::vector<Eigen::Vector2d> extended_burgers_vec(extended_point_count,
+                                                      Eigen::Vector2d::Zero());
+    for (const auto& entry : node_map) {
+        int original_idx = entry.first.index;
+        int extended_idx = entry.second;
+        if (original_idx >= 0 &&
+            original_idx < static_cast<int>(burgers.filtered_coordination.size()) &&
+            extended_idx >= 0 && extended_idx < extended_point_count) {
+            extended_ref_coord[extended_idx] =
+                burgers.filtered_coordination[original_idx];
+            extended_burgers_mag[extended_idx] =
+                burgers.nodal_burgers_mag[original_idx];
+            extended_burgers_vec[extended_idx] =
+                burgers.nodal_burgers_vec[original_idx];
+        }
+    }
+
+    file << "SCALARS ReferenceCoordination float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> ref_coord_buf;
+    ref_coord_buf.reserve(extended_point_count);
+    for (int val : extended_ref_coord) {
+        ref_coord_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(ref_coord_buf.data()),
+               ref_coord_buf.size() * sizeof(float));
+    file << "\n";
+
+    file << "SCALARS BurgersMagnitude float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> nodal_burgers_mag_buf;
+    nodal_burgers_mag_buf.reserve(extended_point_count);
+    for (double val : extended_burgers_mag) {
+        nodal_burgers_mag_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(nodal_burgers_mag_buf.data()),
+               nodal_burgers_mag_buf.size() * sizeof(float));
+    file << "\n";
+
+    file << "VECTORS BurgersVector float\n";
+    std::vector<float> nodal_burgers_vec_buf;
+    nodal_burgers_vec_buf.reserve(extended_point_count * 3);
+    for (const auto& bvec : extended_burgers_vec) {
+        nodal_burgers_vec_buf.push_back(vtk_swap_float(static_cast<float>(bvec.x())));
+        nodal_burgers_vec_buf.push_back(vtk_swap_float(static_cast<float>(bvec.y())));
+        nodal_burgers_vec_buf.push_back(0.0f);
+    }
+    file.write(reinterpret_cast<const char*>(nodal_burgers_vec_buf.data()),
+               nodal_burgers_vec_buf.size() * sizeof(float));
+    file << "\n";
     file.close();
     std::cout << "Saved defect analysis VTK file (binary): " << filename.str() << std::endl;
     
-    // Print statistics
+    // Print Burgers-filtered coordination statistics
     std::map<int, int> valence_histogram;
-    for (int val : node_count) {
+    for (int val : burgers.filtered_coordination) {
         valence_histogram[val]++;
     }
     
-    std::cout << "Coordination number statistics:" << std::endl;
+    std::cout << "Burgers-filtered coordination statistics:" << std::endl;
     for (const auto& pair : valence_histogram) {
         std::cout << "  Coord " << pair.first << ": " << pair.second << " nodes";
         if (pair.first == 5 || pair.first == 7) {
-            std::cout << " ← Defect!";
+            std::cout << " ← Defect (B != 0)!";
         }
         std::cout << std::endl;
     }
