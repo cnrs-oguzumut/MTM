@@ -726,6 +726,7 @@ void example_1_conti_zanzotto_loading(
     elements = restart_chk->elements;
     active_elements = restart_chk->active_elements;
     for (auto &element : elements) {
+      element.set_shape_derivatives(dndx);
       element.set_reference_mesh(square_points_ref);
       element.set_dof_mapping(full_mapping);
       element.setExternalDeformation(restart_chk->F_ext);
@@ -1331,7 +1332,24 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
     path = "checkpoints/latest.chk";
   }
 
-  double h = (potential_mode == 1) ? 0.6872044091828517 : ((potential_mode == 2) ? 0.996407146941421 : 1.0);
+  double optimal_lattice_parameter = 1.0;
+  if (potential_mode == 3) {
+    optimal_lattice_parameter = (lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
+  } else if (potential_mode == 1) {
+    optimal_lattice_parameter = find_optimal_lattice_parameter(
+        lennard_jones_energy_v2, lattice_type, 2.5, lennard_jones_energy_der_v2, lennard_jones_energy_sder_v2);
+  } else if (potential_mode == 2) {
+    optimal_lattice_parameter = find_optimal_lattice_parameter(
+        lennard_jones_energy_v3, lattice_type, 1.86602540378444, lennard_jones_energy_der_v3, lennard_jones_energy_sder_v3);
+  } else if (potential_mode == 4) {
+    optimal_lattice_parameter = find_optimal_lattice_parameter(
+        square_energy, lattice_type, 2.5, square_energy_der, square_energy_sder);
+  }
+
+  double calc_scale = (potential_mode == 3)
+      ? 1.0
+      : ((lattice_type == "triangular") ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25)) : optimal_lattice_parameter);
+  double h = (potential_mode == 3) ? 1.0 : calc_scale;
   Eigen::Vector2d p1(0.0, 0.0);
   Eigen::Vector2d p2(h, 0.0);
   Eigen::Vector2d p3(0.0, h);
