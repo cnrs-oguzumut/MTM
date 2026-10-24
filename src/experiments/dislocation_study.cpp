@@ -952,29 +952,24 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     eq_lat.printSummary();
     optimal_lattice_parameter = eq_lat.lattice_parameter;
 
+    // NOTE: Lagrange reduction (GL(2, Z)) in the minimization operates on the integer reference grid Z^2.
+    // We ALWAYS use SquareLatticeCalculator over Z^2. For triangular lattice, calc_scale = a_0 / (4/3)^{1/4}
+    // with reference metric C_ref = [[sqrt(4/3), 0.5*sqrt(4/3)], [0.5*sqrt(4/3), sqrt(4/3)]].
+    // This avoids double-applying the triangular distortion and ensures GL(2, Z) symmetry.
+    double calc_scale = optimal_lattice_parameter;
     if (lattice_type == "triangular") {
-      calculator_ptr = std::make_unique<TriangularLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
-    } else {
-      calculator_ptr = std::make_unique<SquareLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
+      calc_scale = optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25);
     }
+    calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
   }
   lattice_constant = optimal_lattice_parameter;
   BaseLatticeCalculator &calculator = *calculator_ptr;
 
-  // Reference triangle shape derivatives
+  // Reference triangle shape derivatives: ALWAYS standard square reference triangle (p1=(0,0), p2=(h,0), p3=(0,h))
+  // because Lagrange reduction (GL(2, Z)) operates strictly on the integer reference grid Z^2.
   Eigen::Vector2d p1(0.0, 0.0);
   Eigen::Vector2d p2(h, 0.0);
   Eigen::Vector2d p3(0.0, h);
-  if (potential_mode != 3) {
-    if (lattice_type == "triangular") {
-      p2 = Eigen::Vector2d(h * lattice_constant, 0.0);
-      p3 = Eigen::Vector2d(h * 0.5 * lattice_constant,
-                           h * (std::sqrt(3.0) / 2.0) * lattice_constant);
-    } else {
-      p2 = Eigen::Vector2d(h * lattice_constant, 0.0);
-      p3 = Eigen::Vector2d(0.0, h * lattice_constant);
-    }
-  }
   Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
 
   // Generate pristine reference lattice
@@ -1015,8 +1010,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   DislocationSolutionParams disloc_params =
       (potential_mode == 3)
           ? DislocationSolutionParams::fromCurrentZanzottoPotential(lattice_type)
-          : DislocationSolutionParams::fromAtomisticPotential(
-                calculator, potential_func_der, potential_func_sder, lattice_type);
+          : DislocationSolutionParams::fromPotentialMode(potential_mode, lattice_type);
 
   std::cout << "\n=== DISLOCATION CYLINDER RELAXATION ("
             << (lattice_type == "triangular" ? "VOLTERRA / TRIANGULAR" : "STROH / SQUARE")
@@ -1049,10 +1043,13 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
               << ", C66=" << C66 << ", Zener A=" << ec.Zener_A
               << " | Poisson ratio nu=" << poisson_ratio << std::endl;
   } else {
-    // For 2D triangular close-packed central-force lattice (Lennard-Jones):
-    // Cauchy relations hold: C11 = 3*C12, C66 = C12, Zener A = 1.0, nu = 0.25
-    poisson_ratio = 0.25;
-    std::cout << "Interatomic Mode " << potential_mode << " on triangular lattice (isotropic A=1.0, Poisson ratio nu=0.25)" << std::endl;
+    C11 = disloc_params.C11;
+    C12 = disloc_params.C12;
+    C66 = disloc_params.C66;
+    poisson_ratio = disloc_params.poisson_ratio;
+    std::cout << "Ground-state Elastic Constants: C11=" << C11 << ", C12=" << C12
+              << ", C66=" << C66 << ", Zener A=" << disloc_params.Zener_A
+              << " | Poisson ratio nu=" << poisson_ratio << std::endl;
   }
 
   for (size_t i = 0; i < square_points.size(); ++i) {
@@ -1116,7 +1113,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
 
   // Setup energy calculation
   Eigen::Matrix2d C_ref = Eigen::Matrix2d::Identity();
-  if (lattice_type == "triangular" && potential_mode == 3) {
+  if (lattice_type == "triangular") {
     double a2 = std::sqrt(4.0 / 3.0);
     C_ref << a2, 0.5 * a2, 0.5 * a2, a2;
   }

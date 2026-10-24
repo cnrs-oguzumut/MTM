@@ -72,18 +72,25 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
         unique_triangle_tolerance);
   } else {
     // Reject triangles with overly long diagonals/edges in non-periodic
-    // remeshing, scaled by the actual nearest-neighbor distance in square_points.
-    double min_dist = 1e9;
+    // remeshing, scaled by the median nearest-neighbor distance in square_points
+    // to be robust against localized core/cut atom pairs.
     int check_n = std::min(100, static_cast<int>(square_points.size()));
+    std::vector<double> nn_dists;
+    nn_dists.reserve(check_n);
     for (int i = 0; i < check_n; ++i) {
-      for (int j = i + 1; j < check_n; ++j) {
+      double d_i = 1e9;
+      for (int j = 0; j < check_n; ++j) {
+        if (i == j) continue;
         double d = (square_points[i].coord - square_points[j].coord).norm();
-        if (d > 1e-4 && d < min_dist) {
-          min_dist = d;
+        if (d > 1e-4 && d < d_i) {
+          d_i = d;
         }
       }
+      if (d_i < 1e8) nn_dists.push_back(d_i);
     }
-    double max_edge = (min_dist < 1e8) ? (min_dist * (std::sqrt(2.0) + 0.35)) : (std::sqrt(2.0) + 0.1);
+    std::sort(nn_dists.begin(), nn_dists.end());
+    double median_nn = nn_dists.empty() ? 1.0 : nn_dists[nn_dists.size() / 2];
+    double max_edge = median_nn * (std::sqrt(2.0) + 0.35);
     unique_triangles = MeshGenerator::select_unique_connected_triangles(
         points_used, triangulation, original_domain_map, square_points.size(),
         unique_triangle_tolerance, max_edge);
