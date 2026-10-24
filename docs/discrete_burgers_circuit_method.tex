@@ -3,302 +3,609 @@
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
-\usepackage[margin=2.5cm]{geometry}
+\usepackage[margin=2.2cm]{geometry}
 \usepackage{amsmath,amssymb,amsthm,mathtools}
 \usepackage{bm}
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{xcolor}
-\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,positioning,decorations.markings,backgrounds}
 \usepackage{enumitem}
-\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=blue!60!black,urlcolor=blue!60!black]{hyperref}
 
-\lstdefinestyle{cpp}{
-  language=C++,
-  basicstyle=\ttfamily\footnotesize,
-  keywordstyle=\color{blue!60!black}\bfseries,
-  commentstyle=\color{green!40!black}\itshape,
-  stringstyle=\color{red!50!black},
-  showstringspaces=false,
-  breaklines=true,
-  frame=single,
-  framerule=0.3pt,
-  rulecolor=\color{black!30},
-  backgroundcolor=\color{black!3},
-  xleftmargin=1em,
-  framexleftmargin=0.5em,
-  columns=fullflexible,
-  keepspaces=true
-}
-\lstset{style=cpp}
 \setlength{\emergencystretch}{3em}
+\setlength{\parskip}{4pt}
 
-\newtheorem{proposition}{Proposition}
-\theoremstyle{remark}
-\newtheorem*{remark}{Remark}
+\definecolor{atomblue}{RGB}{41,128,185}
+\definecolor{defectred}{RGB}{211,47,47}
+\definecolor{defectblue}{RGB}{25,118,210}
+\definecolor{okgreen}{RGB}{46,125,50}
+\definecolor{warnorange}{RGB}{230,81,0}
+\definecolor{boxbg}{RGB}{245,248,252}
+\definecolor{boxframe}{RGB}{180,200,225}
 
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\Z}{\mathbb{Z}}
 \newcommand{\T}{^{\mathsf T}}
 \newcommand{\code}[1]{\texttt{#1}}
 
-\title{Discrete Burgers Circuit Dislocation Analysis (Method 2)\\[4pt]
-\large Theoretical Formulation and Implementation in the MTM Lattice-Triangulation Code}
-\author{Technical Note}
+\newenvironment{keyidea}[1][Key Physical Idea]{%
+  \par\medskip\noindent
+  \begin{tikzpicture}
+    \node[draw=boxframe,fill=boxbg,rounded corners=4pt,inner sep=10pt,text width=\dimexpr\textwidth-22pt\relax] (box) \bgroup
+    \textbf{\textcolor{blue!60!black}{#1.}}\par\smallskip
+}{%
+    \egroup;
+  \end{tikzpicture}\par\medskip
+}
+
+\title{\textbf{Understanding Method 2: The Discrete Burgers Circuit}\\[6pt]
+\large A Pedagogical, Illustrated Guide to Dislocation Detection in the MTM Code}
+\author{MTM Lattice-Triangulation Documentation}
 \date{October 2026}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-In 2D nonlinear finite-element and atomistic crystal plasticity simulations on Delaunay
-triangulations, topological vertex valence (\code{NodeValence} / \code{ReferenceCoordination},
-counting triangles incident to each atom) works on six-fold triangular lattices ($p=6$)
-where every elementary triangle is equilateral, but breaks down on four-fold square lattices
-($p=4$). Because each $a_0 \times a_0$ square unit cell is split by a diagonal of length
-$\sqrt{2}\,a_0$ chosen between two degenerate orientations (\code{/} and \code{\textbackslash}),
-any boundary between \code{/} and \code{\textbackslash} diagonal domains produces vertices of
-triangle valence $5$ and $7$ in a $100\%$ defect-free crystal. This note presents the
-theoretical formulation and implementation of \textbf{Method 2 (Discrete Burgers Circuit)},
-a discrete exterior calculus formulation of Nye's dislocation density tensor
-$\bm{\alpha} = -\operatorname{Curl}(\bm{F}_e^{-1})$. By projecting directed mesh edges onto
-the ideal Bravais lattice as an anti-symmetric $\Z^2$-valued $1$-cochain $\Delta\bm{n}_{ab}$
-and taking its discrete exterior derivative $\bm{B}_T = (d\Delta\bm{n})_T$ around each
-counter-clockwise triangle $T$, Method 2 guarantees $\bm{B}_T \equiv \bm{0}$ on every
-defect-free crystal configuration (regardless of \code{/} vs.\ \code{\textbackslash} diagonal
-switches or integer surface steps), satisfies Discrete Stokes' Theorem identically across arbitrary
-patches and dislocation junctions, and localizes dislocation cores to single elementary triangles.
+\noindent
+Why does counting triangles around each atom (\code{NodeValence} and \code{ReferenceCoordination})
+show $5/7$ dislocations inside a \textbf{perfectly undeformed square crystal}? And how can we detect
+true dislocations, dipoles, and junctions reliably whether remeshing is turned on or off?
+This guide explains \textbf{Method 2 (the Discrete Burgers Circuit)} from scratch using plain
+physical intuition, worked numerical examples, and six visual diagrams.
 \end{abstract}
 
 \tableofcontents
+\newpage
 
-\section{Why Topological Triangle Valence Fails on Square Lattices}
+% ============================================================================
+\section{The Puzzle: Why Does \code{NodeValence} Show Fake Dislocations in a Perfect Square Lattice?}
+% ============================================================================
 
-Let $\mathcal{T} = (\mathcal{V}, \mathcal{E}, \mathcal{F})$ be a Delaunay triangulation of
-$N$ atoms with deformed positions $\{\bm{y}_i\}_{i=1}^N \subset \R^2$. The topological
-triangle coordination number of vertex $i \in \mathcal{V}$ is the number of incident triangles:
-\begin{equation}
-  z_i^{\mathrm{tri}} = \#\{T \in \mathcal{F} : i \in T\}.
-\end{equation}
-In a 2D triangular (hexagonal) Bravais lattice ($p=6$) with lattice spacing $a_0$, each bulk
-atom has $6$ nearest neighbors at distance $a_0$, every elementary triangle is equilateral
-with side lengths $(a_0, a_0, a_0)$, and $z_i^{\mathrm{tri}} = 6$ everywhere in a defect-free
-crystal. An isolated edge dislocation corresponds to a $5/7$ coordination dipole ($z_i^{\mathrm{tri}}=5$
-adjacent to $z_j^{\mathrm{tri}}=7$).
+In ParaView, the simplest way to look for crystal defects in a 2D triangulated mesh is to count
+how many triangles touch each atom. In our code, this number is called \code{NodeValence} (or
+\code{ReferenceCoordination}).
 
-In a 2D square Bravais lattice $\Z^2 a_0$ ($p=4$), however, each atom has only \textbf{four}
-nearest neighbors at distance $a_0$ and \textbf{four} second-nearest neighbors at distance
-$\sqrt{2}\,a_0$. Every elementary $a_0 \times a_0$ square plaquette is cocircular (its four
-vertices lie on a circle of diameter $\sqrt{2}\,a_0$) and must be split into two right-angled
-isosceles triangles of side lengths $(a_0, a_0, \sqrt{2}\,a_0)$ by inserting either:
+\subsection{Why Triangle Counting Works on a Triangular Lattice}
+In a 2D \textbf{triangular (hexagonal) lattice}, every atom is surrounded by $6$ nearest neighbors at
+the exact same distance $a_0$. All triangles in the mesh are equilateral triangles with side lengths
+$(a_0, a_0, a_0)$. Therefore:
 \begin{itemize}[noitemsep]
-  \item the \textbf{positive diagonal} (\code{/}) connecting $(m,n) \leftrightarrow (m+1,n+1)$, or
-  \item the \textbf{negative diagonal} (\code{\textbackslash}) connecting $(m+1,n) \leftrightarrow (m,n+1)$.
+  \item Every atom in a perfect triangular crystal is touched by \textbf{6 triangles}.
+  \item If an atom is touched by \textbf{5} or \textbf{7} triangles, there is genuinely an extra or
+        missing half-plane of atoms (a true dislocation core).
 \end{itemize}
-At any interior atom $i$, the four surrounding square cells always contribute $4$ axis-aligned
-nearest-neighbor bonds, plus $d_i \in \{0, 1, 2, 3, 4\}$ diagonal bonds of length $\sqrt{2}\,a_0$
-that happen to touch atom $i$. Hence the triangle valence at atom $i$ is:
+
+\subsection{Why Triangle Counting Fails on a Square Lattice}
+Now consider a 2D \textbf{square lattice} with grid spacing $a_0 = 1$. Each atom has only \textbf{4
+nearest neighbors} (up, down, left, right at distance $1$). To build a triangular finite-element
+mesh, every $1 \times 1$ square cell must be cut in half by a \textbf{diagonal edge} of length
+$\sqrt{2} \approx 1.414$.
+
+Here is the catch: every square has \textbf{two equally valid diagonals} of the exact same length
+$\sqrt{2}$:
+\begin{itemize}[noitemsep]
+  \item the \textbf{forward slash} diagonal (\code{/}), or
+  \item the \textbf{backslash} diagonal (\code{\textbackslash}).
+\end{itemize}
+Because both diagonals have the exact same length $\sqrt{2}$, tiny floating-point rounding ($10^{-15}$)
+during Delaunay triangulation or remeshing will flip some squares from \code{/} to \code{\textbackslash}
+\textbf{even when every single atom sits at its exact perfect square lattice position!}
+
+Look at Figure~\ref{fig:diagonal_flip} to see what happens to the number of triangles touching each
+atom when just \textbf{one single square} in a perfect grid has a flipped diagonal:
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.95, >=Stealth]
+    % --- Panel (a): Uniform / diagonals ---
+    \begin{scope}[xshift=0cm]
+      \node[font=\bfseries\small, align=center] at (1.5, 3.45) {(a) Uniform \code{/} Diagonals\\[-2pt]\footnotesize (Perfect Square Lattice)};
+      % Grid edges
+      \foreach \x in {0,1,2,3} {
+        \draw[gray!70, thick] (\x,0) -- (\x,3);
+      }
+      \foreach \y in {0,1,2,3} {
+        \draw[gray!70, thick] (0,\y) -- (3,\y);
+      }
+      % Uniform / diagonals
+      \foreach \x in {0,1,2} {
+        \foreach \y in {0,1,2} {
+          \draw[gray!60, dashed, thick] (\x,\y) -- (\x+1,\y+1);
+        }
+      }
+      % Highlight central 4 nodes
+      \foreach \x in {0,1,2,3} {
+        \foreach \y in {0,1,2,3} {
+          \fill[gray!50] (\x,\y) circle (2.2pt);
+        }
+      }
+      \foreach \x/\y in {1/1, 2/1, 1/2, 2/2} {
+        \fill[okgreen] (\x,\y) circle (4.2pt);
+        \node[white, font=\bfseries\scriptsize] at (\x,\y) {6};
+      }
+      \node[font=\footnotesize, align=center, text=okgreen!90!black] at (1.5, -0.45) {Every interior atom touches\\4 grid edges + 2 diagonals = \textbf{6 triangles}};
+    \end{scope}
+
+    % --- Panel (b): One flipped \ diagonal ---
+    \begin{scope}[xshift=4.6cm]
+      \node[font=\bfseries\small, align=center] at (1.5, 3.45) {(b) One Flipped \code{\textbackslash} Diagonal\\[-2pt]\footnotesize (Exact Same Atomic Positions!)};
+      % Highlight center square
+      \fill[orange!12] (1,1) rectangle (2,2);
+      % Grid edges
+      \foreach \x in {0,1,2,3} {
+        \draw[gray!70, thick] (\x,0) -- (\x,3);
+      }
+      \foreach \y in {0,1,2,3} {
+        \draw[gray!70, thick] (0,\y) -- (3,\y);
+      }
+      % Diagonals: all / except center (1,1)-(2,2) which is \
+      \foreach \x in {0,1,2} {
+        \foreach \y in {0,1,2} {
+          \ifnum\x=1
+            \ifnum\y=1
+              \draw[warnorange, very thick] (1,2) -- (2,1);
+            \else
+              \draw[gray!60, dashed, thick] (\x,\y) -- (\x+1,\y+1);
+            \fi
+          \else
+            \draw[gray!60, dashed, thick] (\x,\y) -- (\x+1,\y+1);
+          \fi
+        }
+      }
+      \foreach \x in {0,1,2,3} {
+        \foreach \y in {0,1,2,3} {
+          \fill[gray!50] (\x,\y) circle (2.2pt);
+        }
+      }
+      % (1,1) and (2,2) lost a diagonal -> valence 5
+      \fill[defectblue] (1,1) circle (4.5pt);
+      \node[white, font=\bfseries\scriptsize] at (1,1) {5};
+      \fill[defectblue] (2,2) circle (4.5pt);
+      \node[white, font=\bfseries\scriptsize] at (2,2) {5};
+      % (1,2) and (2,1) gained a diagonal -> valence 7
+      \fill[defectred] (1,2) circle (4.5pt);
+      \node[white, font=\bfseries\scriptsize] at (1,2) {7};
+      \fill[defectred] (2,1) circle (4.5pt);
+      \node[white, font=\bfseries\scriptsize] at (2,1) {7};
+
+      \node[font=\footnotesize, align=center, text=defectred!90!black] at (1.5, -0.45) {Flipping \textbf{one} diagonal creates \textbf{two fake $5/7$ pairs}\\even though \textbf{no atom has moved at all!}};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{\textbf{Why \code{NodeValence} fails on a square lattice.} In both (a) and (b), every atom sits at its exact undeformed square grid position $(m,n) \in \Z^2$. Simply flipping the middle diagonal from \code{/} to \code{\textbackslash} changes the triangle count at the four corners from $(6,6,6,6)$ to $(5,7,5,7)$.}
+  \label{fig:diagonal_flip}
+\end{figure}
+
+In general, any interior atom $i$ in a square lattice is surrounded by $4$ squares. It always touches
+the $4$ horizontal/vertical grid edges, plus anywhere from $d_i \in \{0, 1, 2, 3, 4\}$ diagonals:
 \begin{equation}
-  z_i^{\mathrm{tri}} = 4 + d_i \in \{4, 5, 6, 7, 8\}.
+  \text{Triangle Valence at Atom } i \;=\; 4 + d_i \;\in\; \{4, 5, 6, 7, 8\}.
 \end{equation}
-Whenever floating-point roundoff or minuscule elastic strain causes adjacent square cells to
-switch between \code{/} and \code{\textbackslash} diagonals, $d_i$ takes values $1$ and $3$,
-producing $z_i^{\mathrm{tri}} = 5$ and $7$ in a completely defect-free square lattice.
+Whenever a simulation creates regions with \code{/} diagonals next to regions with \code{\textbackslash}
+diagonals, the boundary between those regions lights up with fake $5$s and $7$s!
 
-\section{Continuum vs.\ Discrete Multiplicative Plasticity (\texorpdfstring{$\bm{F} = \bm{F}_e \bm{F}_p$}{F = Fe Fp})}
+\begin{keyidea}[Why We Need a Geometry-Aware Method]
+Counting triangles only looks at \textbf{graph connectivity} (how many mesh lines meet at a point)
+and ignores \textbf{where the atoms actually are in space}. To know if a dislocation is truly present,
+we must measure the \textbf{Burgers vector} around a closed loop of atoms.
+\end{keyidea}
 
-\subsection{Kr\"oner--Bilby Decomposition and Nye's Dislocation Tensor}
+% ============================================================================
+\section{First Clarifying \texorpdfstring{$\bm{F} = \bm{F}_e \bm{F}_p$}{F = Fe Fp}: Elastic vs.\ Plastic Distortion}
+% ============================================================================
 
-In the Mesoscopic Tensorial Model (MTM) on a fixed reference triangulation, the total element
-deformation gradient $\bm{F} = \nabla\bm{y}$ is decomposed multiplicatively as
+Before introducing Method 2, let us clarify the fundamental continuum formula
 \begin{equation}
-  \bm{F} = \bm{F}_e \bm{F}_p,
+  \bm{F} = \bm{F}_e \bm{F}_p
 \end{equation}
-where $\bm{F}_p \in \mathrm{GL}(2,\Z)$ is the lattice-invariant plastic slip obtained via
-Lagrange reduction $\bm{C}_{\mathrm{red}} = \bm{M}\T \bm{C} \bm{M}$ with $\bm{M} = \bm{F}_p^{-1} \in \mathrm{SL}(2,\Z)$
-($\bm{C} = \bm{F}\T \bm{F}$), and $\bm{F}_e = \bm{F}\bm{F}_p^{-1} = \bm{F}\bm{M}$ is the
-\textbf{elastic distortion tensor}.
+and why remeshing changes how we use it.
 
-Pulling back an infinitesimal deformed line element $d\bm{y}$ by $\bm{F}_e^{-1}$ yields the
-local elastic lattice differential:
-\begin{equation}
-  d\bm{\xi} = \bm{F}_e^{-1}\,d\bm{y}.
-\end{equation}
-In a compatible (defect-free) crystal, $d\bm{\xi}$ is an exact differential ($\operatorname{Curl}(\bm{F}_e^{-1}) = \bm{0}$).
-Around a dislocation core, $d\bm{\xi}$ is no longer closed, and its circulation around a
-counter-clockwise contour $\mathcal{C} = \partial\Omega$ defines the true continuum Burgers vector:
-\begin{equation}
-  \bm{b}(\mathcal{C}) = -\oint_{\mathcal{C}} \bm{F}_e^{-1}\,d\bm{y}
-  = -\int_{\Omega} \operatorname{Curl}(\bm{F}_e^{-1})\,dA,
-  \label{eq:continuum_burgers}
-\end{equation}
-where $\bm{\alpha} = -\operatorname{Curl}(\bm{F}_e^{-1})$ is \textbf{Nye's dislocation density tensor}.
-
-\subsection{Effect of Topological Remeshing on \texorpdfstring{$\bm{F}_p$}{Fp}}
-
-When adaptive Delaunay remeshing (\code{AdaptiveMesher}) is enabled in the MTM code, topological
-edge flips reconnect atoms to their \emph{new} physical neighbors after each plastic slip event
- and reset the element reference configuration. Consequently, in a region where a dislocation has
-already glided through and left a slipped perfect crystal behind, the remeshed element deformation
-gradients satisfy $\bm{F}_T \approx \bm{I}$ ($\bm{M}_T = \bm{I}$): the plastic slip $\bm{F}_p$ has
-been absorbed into the \textbf{graph connectivity} of the mesh.
-
-Method 2 evaluates the discrete counterpart of Eq.~\eqref{eq:continuum_burgers} directly on the
-directed edges of the current triangulation $\mathcal{T}$, making it invariant to whether plastic
-slip was accommodated by $\bm{M}_T \in \mathrm{SL}(2,\Z)$ or by Delaunay reconnection.
-
-\section{Discrete Exterior Calculus Formulation of Method 2}
-
-\subsection{Reference Frame Pull-Back and Automatic Bravais Basis \texorpdfstring{$\bm{A}_0$}{A0}}
-
-For each vertex $a$ of an active triangle $T \in \mathcal{F}$ with node index $n_a$ and periodic
-translation vector $\bm{t}_a$, we first pull back the position by the macroscopic external
-deformation gradient $\bm{F}_{\mathrm{ext}}$:
-\begin{equation}
-  \bm{x}_a = \bm{F}_{\mathrm{ext}}^{-1}\,\bm{y}_{n_a} + \bm{t}_a \in \R^2.
-\end{equation}
-Each triangle $T = (0, 1, 2)$ is oriented counter-clockwise in the reference frame so that
-$(\bm{x}_1 - \bm{x}_0) \times (\bm{x}_2 - \bm{x}_0) > 0$.
-
-The ideal Bravais lattice basis matrix $\bm{A}_0 \in \R^{2\times 2}$ of the crystal is defined as
-\begin{equation}
-  \bm{A}_0 = a_0\,\bm{R}(\theta_0)\,\bm{B}_{\mathrm{lat}}, \qquad
-  \bm{R}(\theta_0) = \begin{pmatrix} \cos\theta_0 & -\sin\theta_0 \\ \sin\theta_0 & \cos\theta_0 \end{pmatrix},
-\end{equation}
-where the primitive dimensionless basis $\bm{B}_{\mathrm{lat}}$ is
-\begin{equation}
-  \bm{B}_{\mathrm{lat}}^{\mathrm{square}} = \begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix} \quad (p=4),
-  \qquad
-  \bm{B}_{\mathrm{lat}}^{\mathrm{triangular}} = \begin{pmatrix} 1 & 1/2 \\ 0 & \sqrt{3}/2 \end{pmatrix} \quad (p=6).
-\end{equation}
-The parameters $(p, a_0, \theta_0)$ are extracted automatically from $\mathcal{T}$:
-\begin{enumerate}[noitemsep]
-  \item For each triangle $T$ with sorted edge lengths $L_1(T) \le L_2(T) \le L_3(T)$, the median
-        ratio $\operatorname{median}_T(L_3/L_1)$ separates triangular lattices ($\approx 1.0 < 1.20$,
-        $p=6$) from square lattices ($\approx \sqrt{2} \approx 1.414 > 1.20$, $p=4$).
-  \item The lattice constant $a_0$ is taken from \code{userData->ideal\_lattice\_parameter} (with
-        fallback to $\operatorname{median}_T(L_1)$).
-  \item The global crystal orientation angle $\theta_0 \in (-\pi/p, \pi/p]$ is computed from all
-        nearest-neighbor edges ($L_{ab} \in [0.75\,a_0, 1.22\,a_0]$) via the $p$-fold bond-orientational
-        order parameter:
-        \begin{equation}
-          Z_p = \sum_{(a,b) \in \mathcal{E}_{\mathrm{NN}}} e^{i p \phi_{ab}}, \qquad
-          \theta_0 = \frac{1}{p}\operatorname{atan2}(\operatorname{Im} Z_p, \operatorname{Re} Z_p).
-        \end{equation}
-\end{enumerate}
-
-\subsection{Canonical Anti-Symmetric Lattice Step \texorpdfstring{$1$}{1}-Cochain \texorpdfstring{$\Delta\bm{n}_{ab}$}{Delta n\_ab}}
-
-On every directed edge $e_{ab} = (a \to b) \in \mathcal{E}$, we map the relative vector
-$\bm{x}_b - \bm{x}_a$ into the ideal Bravais basis and round to the nearest integer lattice vector
-$\Delta\bm{n}_{ab} \in \Z^2$. To ensure that $\Delta\bm{n}$ is a strict \textbf{algebraic $1$-cochain}
-($\Delta\bm{n}_{ba} \equiv -\Delta\bm{n}_{ab}$ even when a component lies near a half-integer tie
-$\pm 0.5$), we canonicalize the edge direction using the lexicographical order
-$(n_a, x_a, y_a) \prec (n_b, x_b, y_b)$:
-\begin{equation}
-  \Delta\bm{n}_{ab} =
-  \begin{cases}
-    \operatorname{round}\!\left(\bm{A}_0^{-1}(\bm{x}_b - \bm{x}_a)\right) & \text{if } a \prec b, \\[4pt]
-    -\operatorname{round}\!\left(\bm{A}_0^{-1}(\bm{x}_a - \bm{x}_b)\right) & \text{if } b \prec a.
-  \end{cases}
-  \label{eq:canonical_step}
-\end{equation}
-
-\subsection{Elementary Triangle Burgers Circuit (\texorpdfstring{$2$}{2}-Cochain \texorpdfstring{$\bm{B}_T$}{B\_T})}
-
-For each counter-clockwise triangle $T = (0, 1, 2) \in \mathcal{F}$ (excluding non-physical outer
-boundary slivers with $L_3(T) > 2.15\,a_0$), the discrete exterior derivative $d\Delta\bm{n}$
-around $\partial T$ defines the integer Burgers vector of triangle $T$:
-\begin{equation}
-  \bm{B}_T = (d\Delta\bm{n})(T) = \Delta\bm{n}_{01} + \Delta\bm{n}_{12} + \Delta\bm{n}_{20} \in \Z^2,
-  \label{eq:triangle_burgers}
-\end{equation}
-and the dimensionless physical Burgers vector (in units of $a_0$):
-\begin{equation}
-  \bm{b}_T = \frac{1}{a_0}\bm{A}_0 \bm{B}_T \in \R^2, \qquad b_T = \|\bm{b}_T\|_2.
-\end{equation}
-
-\begin{proposition}[Exact Vanishing on Defect-Free Square and Triangular Lattices]
-Let $\Omega \subset \mathcal{T}$ be any defect-free crystal region in which each atom $a \in \Omega$
-is displaced from an integer Bravais site $\bm{m}_a \in \Z^2$ by an elastic displacement $\bm{u}_a$
-($\bm{x}_a = \bm{A}_0 \bm{m}_a + \bm{u}_a$) satisfying the elastic compatibility bound
-$\|\bm{A}_0^{-1}(\bm{u}_b - \bm{u}_a)\|_\infty < \tfrac{1}{2}$ on every edge $(a,b)$ in $\Omega$.
-Then $\bm{B}_T \equiv (0,0)\T$ for every triangle $T \subset \Omega$, regardless of whether square
-diagonals are oriented as \code{/} or \code{\textbackslash} or whether boundaries contain integer
-surface steps.
-\end{proposition}
-\begin{proof}
-Since $\|\bm{A}_0^{-1}(\bm{u}_b - \bm{u}_a)\|_\infty < \tfrac{1}{2}$, Eq.~\eqref{eq:canonical_step}
-evaluates to the exact lattice difference $\Delta\bm{n}_{ab} = \bm{m}_b - \bm{m}_a = (d\bm{m})_{ab}$.
-Because $\Delta\bm{n} = d\bm{m}$ is an exact $1$-coboundary and $d^2 \equiv 0$, summing around
-any triangle $T = (0,1,2)$ yields
-\[
-  \bm{B}_T = (\bm{m}_1 - \bm{m}_0) + (\bm{m}_2 - \bm{m}_1) + (\bm{m}_0 - \bm{m}_2) \equiv \bm{0}. \qedhere
-\]
-\end{proof}
-
-\subsection{Discrete Stokes' Theorem, Plaquette Cancellation, and Junctions}
-
-\begin{proposition}[Discrete Stokes' Theorem and Frank's Rule]
-For any patch of triangles $\Omega = \bigcup_{k=1}^M T_k \subset \mathcal{F}$ with counter-clockwise
-outer boundary loop $\partial\Omega$, the circulation of $\Delta\bm{n}$ around $\partial\Omega$
-equals the exact integer sum of elementary triangle Burgers vectors inside $\Omega$:
-\begin{equation}
-  \bm{B}(\partial\Omega) \equiv \oint_{\partial\Omega} \Delta\bm{n}_{ab}
-  = \sum_{T \subset \Omega} \bm{B}_T \in \Z^2.
-  \label{eq:discrete_stokes}
-\end{equation}
-\end{proposition}
-\begin{proof}
-Every interior edge shared by two triangles $T_1, T_2 \subset \Omega$ is traversed once as $a \to b$
-and once as $b \to a$. By Eq.~\eqref{eq:canonical_step}, $\Delta\bm{n}_{ab} + \Delta\bm{n}_{ba} \equiv \bm{0}$
-in exact integer arithmetic, leaving only the outer boundary edges $\partial\Omega$.
-\end{proof}
-
-Two key consequences follow directly from Proposition~2:
+Suppose we take a single square cell of atoms and shear the top row to the right by \textbf{one full
+lattice spacing} $a_0$ (Figure~\ref{fig:FeFp}):
 \begin{enumerate}
-  \item \textbf{Unit-Cell Plaquette Cancellation Across Shared Square Diagonals:}
-        In a square lattice, two triangles $T_1, T_2$ sharing a diagonal edge of length
-        $L_{\mathrm{shared}} \approx \sqrt{2}\,a_0 > 1.15\,a_0$ form a single $4$-atom unit-cell
-        plaquette $Q = T_1 \cup T_2$ containing no interior atoms. If only the shared internal
-        diagonal edge crosses a rounding threshold under elastic shear while the four outer
-        unit-cell bonds remain compatible, then $\bm{B}(Q) = \bm{B}_{T_1} + \bm{B}_{T_2} = \bm{0}$
-        with $\bm{B}_{T_1} = -\bm{B}_{T_2} \neq \bm{0}$. Cancelling such opposite pairs
-        ($\bm{B}_{T_1} = \bm{B}_{T_2} = \bm{0}$) removes single-diagonal elastic rounding artifacts
-        while leaving $\sum_{T \subset \Omega} \bm{B}_T$ invariant on every larger circuit.
-  \item \textbf{Nodal $1$-Ring Circuits and Dislocation Junctions:}
-        Summing $\bm{B}_T$ over the $1$-ring $\Omega_i = \bigcup_{T \ni i} T$ of each atom $i$ yields
-        the nodal $1$-ring Burgers vector:
-        \begin{equation}
-          \bm{B}_i^{(1\text{-ring})} = \sum_{T \ni i} \bm{B}_T \in \Z^2, \qquad
-          \bm{b}_i^{(1\text{-ring})} = \frac{1}{a_0}\bm{A}_0 \bm{B}_i^{(1\text{-ring})}.
-        \end{equation}
-        When two dislocations with Burgers vectors $\bm{B}_1$ and $\bm{B}_2$ intersect or react to
-        form a junction (e.g.\ $\bm{B}_1 = (1,0)\T$ and $\bm{B}_2 = (0,1)\T$ in \code{Shift / Staircase}),
-        Eq.~\eqref{eq:discrete_stokes} automatically enforces Frank's conservation rule
-        $\bm{B}_{\mathrm{junction}} = \bm{B}_1 + \bm{B}_2 = (1,1)\T$.
+  \item \textbf{Total deformation gradient $\bm{F}$:} Compared to who each atom was originally connected to at $t=0$, the cell has been sheared by $\gamma = 1$:
+        \[
+          \bm{F} = \begin{pmatrix} 1 & 1 \\ 0 & 1 \end{pmatrix}.
+        \]
+  \item \textbf{Plastic slip $\bm{F}_p$:} Because shifting a crystal by exactly $1$ full lattice spacing brings the atoms right back onto the ideal square grid, this shear costs \textbf{zero energy}. It is a pure lattice-invariant plastic slip:
+        \[
+          \bm{F}_p = \begin{pmatrix} 1 & 1 \\ 0 & 1 \end{pmatrix} \in \mathrm{SL}(2,\Z), \qquad \bm{M} = \bm{F}_p^{-1} = \begin{pmatrix} 1 & -1 \\ 0 & 1 \end{pmatrix},
+        \]
+        where $\bm{M}$ is the integer matrix found by \textbf{Lagrange reduction} in our code!
+  \item \textbf{Elastic distortion $\bm{F}_e$:} Once we strip away the integer plastic slip $\bm{F}_p$, what remains is the true elastic stretch/rotation of the crystal bonds:
+        \[
+          \bm{F}_e = \bm{F} \bm{F}_p^{-1} = \bm{F} \bm{M} = \begin{pmatrix} 1 & 1 \\ 0 & 1 \end{pmatrix} \begin{pmatrix} 1 & -1 \\ 0 & 1 \end{pmatrix} = \begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix} = \bm{I}.
+        \]
+        Because $\bm{F}_e = \bm{I}$, the crystal is stress-free!
 \end{enumerate}
 
-\section{Summary of Exported ParaView VTK Fields}
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.65, >=Stealth]
+    % Panel (a): Initial cell
+    \begin{scope}[xshift=0cm]
+      \node[font=\bfseries\small, align=center] at (0.75, 2.15) {(a) Undeformed Cell\\[-2pt]\footnotesize $\bm{F} = \bm{I}$};
+      \fill[blue!6] (0,0) -- (1.5,0) -- (1.5,1.5) -- (0,1.5) -- cycle;
+      \draw[thick, gray!80] (0,0) rectangle (1.5,1.5);
+      \draw[dashed, gray!70, thick] (0,0) -- (1.5,1.5);
+      \foreach \x/\y/\lbl in {0/0/A, 1.5/0/B, 0/1.5/D, 1.5/1.5/C} {
+        \fill[atomblue] (\x,\y) circle (3pt);
+      }
+      \node[below left, font=\footnotesize] at (0,0) {$A$};
+      \node[below right, font=\footnotesize] at (1.5,0) {$B$};
+      \node[above left, font=\footnotesize] at (0,1.5) {$D$};
+      \node[above right, font=\footnotesize] at (1.5,1.5) {$C$};
+    \end{scope}
 
-Table~\ref{tab:vtk_fields} lists the VTK fields written by \code{ConfigurationSaver::writeToVTKFile}
-and \code{ConfigurationSaver::writeToVTK\_DefectAnalysis}.
+    % Panel (b): Sheared WITHOUT remeshing
+    \begin{scope}[xshift=3.4cm]
+      \node[font=\bfseries\small, align=center] at (1.5, 2.15) {(b) Sheared by $+1\,a_0$ (No Remesh)\\[-2pt]\footnotesize $\bm{F}=\begin{psmallmatrix}1&1\\0&1\end{psmallmatrix},\;\bm{F}_p=\begin{psmallmatrix}1&1\\0&1\end{psmallmatrix},\;\bm{F}_e=\bm{I}$};
+      \fill[orange!10] (0,0) -- (1.5,0) -- (3.0,1.5) -- (1.5,1.5) -- cycle;
+      \draw[thick, warnorange] (0,0) -- (1.5,0) -- (3.0,1.5) -- (1.5,1.5) -- cycle;
+      \draw[dashed, warnorange, thick] (0,0) -- (3.0,1.5);
+      \draw[->, defectred, thick] (0.2, 1.65) -- (1.3, 1.65) node[midway, above, font=\scriptsize] {$+1\,a_0$};
+      \foreach \x/\y in {0/0, 1.5/0, 1.5/1.5, 3.0/1.5} {
+        \fill[atomblue] (\x,\y) circle (3pt);
+      }
+      \node[below left, font=\footnotesize] at (0,0) {$A$};
+      \node[below right, font=\footnotesize] at (1.5,0) {$B$};
+      \node[above left, font=\footnotesize] at (1.5,1.5) {$D$};
+      \node[above right, font=\footnotesize] at (3.0,1.5) {$C$};
+      \node[font=\scriptsize, align=center, text=warnorange!90!black] at (1.5, -0.5) {Mesh still connects $A$ to $D$:\\slip $\bm{F}_p$ is stored inside $\bm{F}$};
+    \end{scope}
+
+    % Panel (c): AFTER remeshing
+    \begin{scope}[xshift=7.6cm]
+      \node[font=\bfseries\small, align=center] at (1.1, 2.15) {(c) After Delaunay Remeshing\\[-2pt]\footnotesize $\bm{F}_{\mathrm{new}} = \bm{I},\;\bm{M}_{\mathrm{new}} = \bm{I}$};
+      \fill[okgreen!10] (0,0) -- (1.5,0) -- (1.5,1.5) -- (0,1.5) -- cycle;
+      \draw[thick, okgreen] (0,0) rectangle (1.5,1.5);
+      \draw[dashed, okgreen, thick] (0,0) -- (1.5,1.5);
+      \draw[dotted, gray!60, thick] (1.5,0) -- (3.0,0) -- (3.0,1.5) -- (1.5,1.5);
+      \foreach \x/\y in {0/0, 1.5/0, 0/1.5, 1.5/1.5, 3.0/1.5} {
+        \fill[atomblue] (\x,\y) circle (3pt);
+      }
+      \node[below left, font=\footnotesize] at (0,0) {$A$};
+      \node[below right, font=\footnotesize] at (1.5,0) {$B$};
+      \node[above left, font=\footnotesize] at (0,1.5) {$D_{\mathrm{left}}$};
+      \node[above, font=\footnotesize] at (1.5,1.5) {$D$};
+      \node[above right, font=\footnotesize] at (3.0,1.5) {$C$};
+      \node[font=\scriptsize, align=center, text=okgreen!90!black] at (1.3, -0.5) {Mesh reconnects $B$ to $D$:\\$\bm{F}_{\mathrm{new}}=\bm{I}$ (slip absorbed by remesh!)};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{\textbf{How $\bm{F} = \bm{F}_e \bm{F}_p$ works before and after remeshing.} Without remeshing (b), the triangle remembers its original partners, so the plastic slip $\bm{F}_p$ is visible inside $\bm{F}$. Once Delaunay remeshing reconnects atoms to their new neighbors (c), the new triangle has $\bm{F}_{\mathrm{new}} = \bm{I}$.}
+  \label{fig:FeFp}
+\end{figure}
+
+Now look at Panel (c) of Figure~\ref{fig:FeFp}: \textbf{when remeshing is turned ON}, the code
+reconnects atom $B$ directly to atom $D$ (which is now right above $B$) and resets the reference
+triangle! So on the new mesh, $\bm{F}_{\mathrm{new}} = \bm{I}$ and $\bm{M}_{\mathrm{new}} = \bm{I}$.
+That is why we cannot simply look for jumps in $\bm{M}$ when remeshing is enabled---remeshing has
+already absorbed $\bm{M}$ into the new mesh connections!
+
+Instead, we can measure the elastic lattice step \textbf{directly from the bond vectors of the
+current mesh}. That is \textbf{Method 2}.
+
+% ============================================================================
+\section{Method 2 Explained Step-by-Step: The Discrete Burgers Circuit}
+% ============================================================================
+
+In textbook physics, how do you find out if a region of crystal contains a dislocation?
+You walk around a closed loop of atoms (a \textbf{Burgers circuit}), counting how many ideal
+lattice steps (\emph{right, up, left, down}) you take from atom to atom.
+\begin{itemize}[noitemsep]
+  \item If you end up back at $(0,0)$ in the ideal grid, \textbf{there is no dislocation inside the loop}.
+  \item If your step count fails to close by $\bm{B} \neq (0,0)$, \textbf{there is a dislocation with Burgers vector $\bm{B}$ inside the loop!}
+\end{itemize}
+
+Method 2 applies this exact textbook idea to the \textbf{smallest possible closed loop in our mesh:
+every single triangle $T$!}
+
+\subsection{Step 1: Measure Each Directed Triangle Edge in Lattice Units}
+Take any triangle $T = (A, B, C)$ oriented counter-clockwise. It has three directed edges:
+$A \to B$, $B \to C$, and $C \to A$.
+For an edge from atom $a$ at position $\bm{x}_a$ to atom $b$ at position $\bm{x}_b$:
+\begin{equation}
+  \text{Continuous bond vector in lattice units:}\qquad
+  \bm{s}_{ab} = \bm{A}_0^{-1}(\bm{x}_b - \bm{x}_a),
+\end{equation}
+where $\bm{A}_0$ is the ideal lattice basis matrix:
+\begin{itemize}[noitemsep]
+  \item For an unrotated square lattice with spacing $a_0 = 1$, $\bm{A}_0 = \begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix}$, so $\bm{s}_{ab} = \bm{x}_b - \bm{x}_a$ is simply $(\Delta x, \Delta y)$ in units of $a_0$!
+  \item For a triangular lattice, $\bm{A}_0 = a_0 \begin{pmatrix} 1 & 1/2 \\ 0 & \sqrt{3}/2 \end{pmatrix}$ converts $(\Delta x, \Delta y)$ into steps along the $0^\circ$ and $60^\circ$ crystal axes.
+\end{itemize}
+
+\subsection{Step 2: Round Each Bond Vector to the Nearest Ideal Integer Step \texorpdfstring{$\Delta\bm{n}_{ab}$}{Delta n\_ab}}
+Even if the crystal is elastically stretched or sheared by $10\%$ or $20\%$, a bond that is supposed
+to be $(1, 0)$ might have $\bm{s}_{ab} = (1.08, -0.05)$. When we round each component to the nearest
+integer, we recover the \textbf{ideal integer lattice step}:
+\begin{equation}
+  \Delta\bm{n}_{ab} = \operatorname{round}(\bm{s}_{ab}) =
+  \begin{pmatrix} \operatorname{round}(s_{ab,x}) \\[2pt] \operatorname{round}(s_{ab,y}) \end{pmatrix} \in \Z^2.
+  \label{eq:round_step}
+\end{equation}
+For example, $\operatorname{round}(1.08, -0.05) = (1, 0)$.
+
+\subsection{Step 3: Sum the Three Integer Steps Around the Triangle}
+Now walk counter-clockwise around the three edges of triangle $T = (A \to B \to C \to A)$ and add
+the three integer step vectors together:
+\begin{equation}
+  \boxed{\;\bm{B}_T \;=\; \Delta\bm{n}_{AB} + \Delta\bm{n}_{BC} + \Delta\bm{n}_{CA} \;\in\; \Z^2.\;}
+  \label{eq:BT_def}
+\end{equation}
+This integer vector $\bm{B}_T = (B_{T,x}, B_{T,y})$ is the \textbf{Discrete Burgers Vector of triangle $T$}.
+
+\subsection{Worked Example 1: Why \code{/} and \code{\textbackslash} Diagonals ALWAYS Give \texorpdfstring{$\bm{B}_T = (0,0)$}{B\_T = (0,0)}}
+
+Let us test Eq.~\eqref{eq:BT_def} on a square lattice with \code{/} vs.\ \code{\textbackslash}
+diagonals (Figure~\ref{fig:worked_perfect}):
+\begin{itemize}
+  \item \textbf{Case (a) --- Triangle with a \code{/} diagonal:}
+        Vertices at $A=(0,0)$, $B=(1,0)$, $C=(1,1)$.
+        \begin{align*}
+          A \to B: &\quad \Delta\bm{n}_{AB} = (1,0) - (0,0) = (+1,\; 0) \\
+          B \to C: &\quad \Delta\bm{n}_{BC} = (1,1) - (1,0) = (\;0, +1) \\
+          C \to A: &\quad \Delta\bm{n}_{CA} = (0,0) - (1,1) = (-1, -1) \quad\text{(the \code{/} diagonal!)}
+        \end{align*}
+        Add them up:
+        \[
+          \bm{B}_T = (+1, 0) + (0, +1) + (-1, -1) = \bm{(0, 0)}.
+        \]
+  \item \textbf{Case (b) --- Triangle with a flipped \code{\textbackslash} diagonal:}
+        Vertices at $A=(0,0)$, $B=(1,0)$, $D=(0,1)$.
+        \begin{align*}
+          A \to B: &\quad \Delta\bm{n}_{AB} = (1,0) - (0,0) = (+1,\; 0) \\
+          B \to D: &\quad \Delta\bm{n}_{BD} = (0,1) - (1,0) = (-1, +1) \quad\text{(the \code{\textbackslash} diagonal!)} \\
+          D \to A: &\quad \Delta\bm{n}_{DA} = (0,0) - (0,1) = (\;0, -1)
+        \end{align*}
+        Add them up:
+        \[
+          \bm{B}_T = (+1, 0) + (-1, +1) + (0, -1) = \bm{(0, 0)}.
+        \]
+\end{itemize}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=2.2, >=Stealth]
+    % Panel (a): / diagonal triangle
+    \begin{scope}[xshift=0cm]
+      \node[font=\bfseries\small] at (0.6, 1.55) {(a) Triangle with \code{/} Diagonal};
+      \fill[okgreen!10] (0,0) -- (1.4,0) -- (1.4,1.2) -- cycle;
+      \draw[->, very thick, atomblue] (0,0) -- (1.32,0) node[midway, below, font=\footnotesize] {$\Delta\bm{n}_{AB} = (+1,0)$};
+      \draw[->, very thick, atomblue] (1.4,0) -- (1.4,1.12) node[midway, right, font=\footnotesize] {$\Delta\bm{n}_{BC} = (0,+1)$};
+      \draw[->, very thick, okgreen] (1.4,1.2) -- (0.07,0.06) node[midway, above left, font=\footnotesize] {$\Delta\bm{n}_{CA} = (-1,-1)$};
+      \fill[black] (0,0) circle (2.2pt) node[below left, font=\small] {$A(0,0)$};
+      \fill[black] (1.4,0) circle (2.2pt) node[below right, font=\small] {$B(1,0)$};
+      \fill[black] (1.4,1.2) circle (2.2pt) node[above right, font=\small] {$C(1,1)$};
+      \node[font=\footnotesize\bfseries, text=okgreen!80!black] at (0.95, 0.38) {$\bm{B}_T = (0,0)$};
+    \end{scope}
+
+    % Panel (b): \ diagonal triangle
+    \begin{scope}[xshift=3.4cm]
+      \node[font=\bfseries\small] at (0.6, 1.55) {(b) Triangle with Flipped \code{\textbackslash} Diagonal};
+      \fill[okgreen!10] (0,0) -- (1.4,0) -- (0,1.2) -- cycle;
+      \draw[->, very thick, atomblue] (0,0) -- (1.32,0) node[midway, below, font=\footnotesize] {$\Delta\bm{n}_{AB} = (+1,0)$};
+      \draw[->, very thick, warnorange] (1.4,0) -- (0.07,1.14) node[midway, above right, font=\footnotesize] {$\Delta\bm{n}_{BD} = (-1,+1)$};
+      \draw[->, very thick, atomblue] (0,1.2) -- (0,0.08) node[midway, left, font=\footnotesize] {$\Delta\bm{n}_{DA} = (0,-1)$};
+      \fill[black] (0,0) circle (2.2pt) node[below left, font=\small] {$A(0,0)$};
+      \fill[black] (1.4,0) circle (2.2pt) node[below right, font=\small] {$B(1,0)$};
+      \fill[black] (0,1.2) circle (2.2pt) node[above left, font=\small] {$D(0,1)$};
+      \node[font=\footnotesize\bfseries, text=okgreen!80!black] at (0.45, 0.38) {$\bm{B}_T = (0,0)$};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{\textbf{Why diagonal flips never create false dislocations in Method 2.} Because a \code{/} diagonal is recognized as the integer vector $(+1,+1)$ and a \code{\textbackslash} diagonal is recognized as $(-1,+1)$, the vector sum of the three edges around the triangle is $\bm{B}_T = (0,0)$ in \textbf{both} cases!}
+  \label{fig:worked_perfect}
+\end{figure}
+
+Look at Figure~\ref{fig:worked_perfect}: because Method 2 knows that a diagonal edge has integer step
+$(\pm 1, \pm 1)$ instead of treating it like a $(1,0)$ nearest-neighbor bond, \textbf{every triangle
+in a perfect or elastically deformed square lattice has $\bm{B}_T = (0,0)$, regardless of how its
+diagonals are connected!}
+
+\subsection{Worked Example 2: What Happens at a Real Dislocation Core?}
+
+Now let us see what happens when there \textbf{is} a real edge dislocation inside the crystal!
+Suppose the bottom row has an extra atom squeezed in (an extra vertical half-plane of atoms, i.e.\
+an edge dislocation with Burgers vector $\bm{B} = (+1, 0)$).
+
+Look at the core triangle $T^* = (A \to B \to C \to A)$ right at the tip of the extra half-plane in
+Figure~\ref{fig:worked_core}:
+\begin{enumerate}
+  \item Along the bottom edge $A \to B$: atom $B$ is one grid spacing to the right of $A$ (slightly compressed to $\Delta x = 0.85$), which rounds to
+        \[
+          \Delta\bm{n}_{AB} = \operatorname{round}(0.85,\; 0.0) = (+1,\; 0).
+        \]
+  \item Along the right edge $B \to C$: atom $C$ on the upper row sits at $\Delta x = -0.42$ to the left of $B$ and $\Delta y = +1.0$ up. Because $|-0.42| < 0.5$, it rounds to a pure vertical step:
+        \[
+          \Delta\bm{n}_{BC} = \operatorname{round}(-0.42,\; +1.0) = (0,\; +1).
+        \]
+  \item Along the left edge $C \to A$: going from $C$ back down to $A$ has $\Delta x = -0.43$ and $\Delta y = -1.0$. Because $|-0.43| < 0.5$, it \emph{also} rounds to a pure vertical step:
+        \[
+          \Delta\bm{n}_{CA} = \operatorname{round}(-0.43,\; -1.0) = (0,\; -1).
+        \]
+\end{enumerate}
+Now add the three integer steps around the core triangle $T^*$:
+\begin{equation}
+  \bm{B}_{T^*} = \Delta\bm{n}_{AB} + \Delta\bm{n}_{BC} + \Delta\bm{n}_{CA}
+  = (+1, 0) + (0, +1) + (0, -1) = \bm{(+1, 0)} \neq (0,0)!
+\end{equation}
+Bingo! The core triangle $T^*$ immediately lights up with $\bm{B}_{T^*} = (+1, 0)$, pinpointing the
+exact location and the exact Burgers vector of the dislocation!
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=2.3, >=Stealth]
+    % Surrounding crystal grid lines (faint)
+    \draw[gray!40, thick] (-1.0, 0) -- (0, 0);
+    \draw[gray!40, thick] (1.0, 0) -- (2.0, 0);
+    \draw[gray!40, thick] (-0.7, 1.1) -- (0.5, 1.1) -- (1.7, 1.1);
+    \draw[gray!40, thick] (-1.0, 0) -- (-0.7, 1.1);
+    \draw[gray!40, thick] (2.0, 0) -- (1.7, 1.1);
+    \draw[gray!40, dashed] (-1.0, 0) -- (0.5, 1.1);
+    \draw[gray!40, dashed] (2.0, 0) -- (0.5, 1.1);
+
+    % Core triangle T*
+    \fill[defectred!15] (0,0) -- (1.0,0) -- (0.5,1.1) -- cycle;
+    \draw[->, very thick, defectred] (0,0) -- (0.93,0) node[midway, below, font=\footnotesize\bfseries] {$\Delta\bm{n}_{AB} = (+1,0)$};
+    \draw[->, very thick, atomblue] (1.0,0) -- (0.53,1.04) node[midway, right=3pt, font=\footnotesize] {$\begin{aligned}\bm{s}_{BC}&=(-0.42,+1)\\[-2pt]\Delta\bm{n}_{BC}&=(0,+1)\end{aligned}$};
+    \draw[->, very thick, atomblue] (0.5,1.1) -- (0.03,0.06) node[midway, left=3pt, font=\footnotesize] {$\begin{aligned}\bm{s}_{CA}&=(-0.43,-1)\\[-2pt]\Delta\bm{n}_{CA}&=(0,-1)\end{aligned}$};
+
+    % Extra half-plane symbol (perp)
+    \node[font=\Large\bfseries, text=defectred] at (0.5, 0.42) {$\perp$};
+    \node[font=\scriptsize\bfseries, text=defectred] at (0.5, 0.18) {$\bm{B}_{T^*} = (+1,0)$};
+
+    % Atoms
+    \foreach \x/\y in {-1.0/0, 2.0/0, -0.7/1.1, 1.7/1.1} {
+      \fill[gray!60] (\x,\y) circle (2.2pt);
+    }
+    \fill[defectred] (0,0) circle (2.8pt) node[below left, font=\small\bfseries] {$A$};
+    \fill[defectred] (1.0,0) circle (2.8pt) node[below right, font=\small\bfseries] {$B$};
+    \fill[defectred] (0.5,1.1) circle (2.8pt) node[above, font=\small\bfseries] {$C$};
+  \end{tikzpicture}
+  \caption{\textbf{How Method 2 detects a true edge dislocation core.} At the tip of an extra half-plane of atoms between $A$ and $B$, the bottom bond $A \to B$ takes $+1$ horizontal lattice step, whereas both upward/downward bonds $B \to C$ and $C \to A$ have horizontal components $< 0.5\,a_0$ and round to $0$ horizontal steps. Their sum around $T^*$ is $\bm{B}_{T^*} = (+1,0) \neq (0,0)$.}
+  \label{fig:worked_core}
+\end{figure}
+
+% ============================================================================
+\section{How Bigger Loops Work Automatically: Cancellation of Interior Edges}
+% ============================================================================
+
+What if we want the Burgers circuit around a \textbf{whole group of triangles}---for example, the
+\textbf{1-ring of triangles surrounding an atom $i$}, or a region containing a \textbf{dislocation
+junction}?
+
+Here is the most beautiful property of Method 2: \textbf{you never have to trace outer loops by hand!
+You just add $\bm{B}_T$ of the triangles inside the region.}
+
+Why? Look at Figure~\ref{fig:stokes}(a), where two adjacent triangles $T_1$ and $T_2$ share an
+interior edge between atoms $A$ and $B$:
+\begin{itemize}[noitemsep]
+  \item When we walk counter-clockwise around $T_1$, we cross the shared edge from $A \to B$, adding $+\Delta\bm{n}_{AB}$.
+  \item When we walk counter-clockwise around $T_2$, we cross the \textbf{exact same edge in the opposite direction} $B \to A$, adding $\Delta\bm{n}_{BA} = -\Delta\bm{n}_{AB}$.
+\end{itemize}
+When we add $\bm{B}_{T_1} + \bm{B}_{T_2}$, the shared interior edge $+\Delta\bm{n}_{AB} - \Delta\bm{n}_{AB} = (0,0)$
+\textbf{cancels out in exact integer arithmetic!}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.9, >=Stealth]
+    % Panel (a): Two triangles sharing an edge
+    \begin{scope}[xshift=0cm]
+      \node[font=\bfseries\small, align=center] at (1.0, 2.05) {(a) Two Triangles Sharing an Edge\\[-2pt]\footnotesize $\bm{B}_{T_1} + \bm{B}_{T_2} = \text{Outer 4-Atom Loop}$};
+      \fill[blue!6] (0,0) -- (1.8,0) -- (1.8,1.5) -- (0,1.5) -- cycle;
+      % Outer edges
+      \draw[->, thick, atomblue] (0,0) -- (1.7,0);
+      \draw[->, thick, atomblue] (1.8,0) -- (1.8,1.4);
+      \draw[->, thick, atomblue] (1.8,1.5) -- (0.1,1.5);
+      \draw[->, thick, atomblue] (0,1.5) -- (0,0.1);
+      % Shared diagonal with two opposite arrows
+      \draw[->, very thick, defectred] (1.72, 1.38) -- (0.15, 0.08) node[midway, above left=-2pt, font=\scriptsize] {$-\Delta\bm{n}_{AB}$};
+      \draw[->, very thick, okgreen] (0.08, 0.12) -- (1.65, 1.42) node[midway, below right=-2pt, font=\scriptsize] {$+\Delta\bm{n}_{AB}$};
+
+      \node[font=\footnotesize\bfseries] at (1.3, 0.35) {$T_1$};
+      \node[font=\footnotesize\bfseries] at (0.5, 1.15) {$T_2$};
+      \fill[black] (0,0) circle (2.2pt) node[below left, font=\footnotesize] {$A$};
+      \fill[black] (1.8,0) circle (2.2pt) node[below right, font=\footnotesize] {$C$};
+      \fill[black] (1.8,1.5) circle (2.2pt) node[above right, font=\footnotesize] {$B$};
+      \fill[black] (0,1.5) circle (2.2pt) node[above left, font=\footnotesize] {$D$};
+      \node[font=\scriptsize, align=center] at (0.9, -0.45) {Shared edge traversed once as $A\to B$\\and once as $B\to A$: \textbf{cancels to $0$!}};
+    \end{scope}
+
+    % Panel (b): 1-ring around node i
+    \begin{scope}[xshift=3.8cm]
+      \node[font=\bfseries\small, align=center] at (1.1, 2.05) {(b) Nodal 1-Ring Circuit Around Atom $i$\\[-2pt]\footnotesize $\bm{B}_i^{(1\text{-ring})} = \sum_{T \ni i} \bm{B}_T$};
+      \coordinate (O) at (1.1, 0.75);
+      \coordinate (P1) at (2.1, 0.75);
+      \coordinate (P2) at (1.6, 1.55);
+      \coordinate (P3) at (0.6, 1.55);
+      \coordinate (P4) at (0.1, 0.75);
+      \coordinate (P5) at (0.6, -0.05);
+      \coordinate (P6) at (1.6, -0.05);
+
+      \fill[okgreen!8] (P1) -- (P2) -- (P3) -- (P4) -- (P5) -- (P6) -- cycle;
+      % Outer loop arrows
+      \draw[->, very thick, atomblue] (P1) -- (P2);
+      \draw[->, very thick, atomblue] (P2) -- (P3);
+      \draw[->, very thick, atomblue] (P3) -- (P4);
+      \draw[->, very thick, atomblue] (P4) -- (P5);
+      \draw[->, very thick, atomblue] (P5) -- (P6);
+      \draw[->, very thick, atomblue] (P6) -- (P1);
+      % Spokes (cancelled interior edges)
+      \foreach \p in {P1,P2,P3,P4,P5,P6} {
+        \draw[dashed, gray!70, thick] (O) -- (\p);
+        \fill[atomblue] (\p) circle (2.2pt);
+      }
+      \fill[defectred] (O) circle (3.2pt) node[above right=1pt, font=\footnotesize\bfseries] {$i$};
+      \node[font=\scriptsize, align=center] at (1.1, -0.45) {All dashed interior spokes cancel;\\only the outer blue polygon remains!};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{\textbf{Discrete Stokes' Theorem in action.} Because every shared interior edge is crossed in opposite directions by its two adjacent triangles, summing $\bm{B}_T$ over any patch of triangles automatically equals the closed Burgers circuit around the outer boundary of that patch.}
+  \label{fig:stokes}
+\end{figure}
+
+This gives us three powerful results immediately:
+\begin{enumerate}
+  \item \textbf{Unit-Cell Square Plaquette Filter (Figure~\ref{fig:stokes}a):}
+        In a square lattice, the diagonal $A \leftrightarrow B$ has length $\sqrt{2}\,a_0 \approx 1.414\,a_0$, which is longer than the four outer sides of the square ($1.0\,a_0$). If strong elastic shear causes \emph{only} that internal diagonal to round by $\pm 1$ while the four outer edges of the square are still perfect, then $T_1$ gets $+\bm{B}$ and $T_2$ gets $-\bm{B}$, so their sum on the 4-atom square is $\bm{B}_{T_1} + \bm{B}_{T_2} = (0,0)$. The code automatically detects when two triangles sharing a diagonal edge ($L > 1.15\,a_0$) have $\bm{B}_{T_1} + \bm{B}_{T_2} = (0,0)$ and cancels that pair to zero!
+  \item \textbf{Nodal 1-Ring Burgers Vector (Figure~\ref{fig:stokes}b):}
+        For every atom $i$, summing $\bm{B}_T$ over all triangles touching atom $i$,
+        \begin{equation}
+          \bm{B}_i^{(1\text{-ring})} = \sum_{T \ni i} \bm{B}_T,
+        \end{equation}
+        gives the exact Burgers circuit around the 1-ring polygon of neighbors of atom $i$!
+        \begin{itemize}[noitemsep]
+          \item If $\bm{B}_i^{(1\text{-ring})} = (0,0)$, atom $i$ is in a defect-free crystal environment, so we set \code{ReferenceCoordination} $= 6$.
+          \item If $\bm{B}_i^{(1\text{-ring})} \neq (0,0)$, atom $i$ sits directly on a true dislocation core, and we preserve its $5/7$ defect label!
+        \end{itemize}
+  \item \textbf{Dislocation Junctions (Frank's Rule, Figure~\ref{fig:junction}):}
+        What if a horizontal edge dislocation $\bm{B}_1 = (+1, 0)$ (gliding in from the left boundary in \code{Shift / Staircase}) collides with a vertical edge dislocation $\bm{B}_2 = (0, +1)$ (gliding up from the bottom boundary) to form a \textbf{dislocation junction}?
+        By Discrete Stokes' Theorem, any circuit enclosing the junction automatically sums the Burgers vectors of the reacting dislocations:
+        \begin{equation}
+          \bm{B}_{\mathrm{junction}} = \sum_{T \subset \Omega_{\mathrm{junction}}} \bm{B}_T = \bm{B}_1 + \bm{B}_2 = (+1, 0) + (0, +1) = (+1, +1),
+        \end{equation}
+        with magnitude $\|\bm{b}_{\mathrm{junction}}\|_2 = \sqrt{1^2 + 1^2} = \sqrt{2} \approx 1.414\,a_0$!
+\end{enumerate}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[scale=1.6, >=Stealth]
+    \draw[dashed, very thick, atomblue, postaction={decorate, decoration={markings, mark=at position 0.15 with {\arrow{Stealth}}, mark=at position 0.65 with {\arrow{Stealth}}}}]
+      (0,0) circle (1.55cm);
+    \node[font=\footnotesize\bfseries, text=atomblue] at (0, 1.85) {Outer Burgers Circuit $\partial\Omega$: $\bm{B}(\partial\Omega) = \bm{B}_1 + \bm{B}_2 = (+1, +1)$};
+
+    % Two reacting cores merging
+    \draw[->, very thick, defectblue] (-2.4, 0) -- (-0.45, 0) node[midway, above, font=\footnotesize\bfseries] {$\bm{B}_1 = (+1,0)$};
+    \draw[->, very thick, okgreen] (0, -2.2) -- (0, -0.45) node[midway, right, font=\footnotesize\bfseries] {$\bm{B}_2 = (0,+1)$};
+
+    \fill[defectred!20, draw=defectred, very thick] (-0.4,-0.35) -- (0.45,-0.35) -- (0,0.45) -- cycle;
+    \node[font=\bfseries, text=defectred] at (0, -0.05) {$\perp$};
+    \node[right=6pt, font=\footnotesize\bfseries, text=defectred] at (0.35, 0.1) {$\bm{B}_{\mathrm{junction}} = (+1,+1)$};
+  \end{tikzpicture}
+  \caption{\textbf{Why Method 2 works automatically at dislocation junctions.} When a horizontal dislocation $\bm{B}_1 = (+1,0)$ and a vertical dislocation $\bm{B}_2 = (0,+1)$ meet at a junction, summing $\bm{B}_T$ over the junction triangles automatically obeys Frank's rule $\bm{B}_{\mathrm{junction}} = \bm{B}_1 + \bm{B}_2 = (+1,+1)$.}
+  \label{fig:junction}
+\end{figure}
+
+% ============================================================================
+\section{Quick Guide: Which Fields to Select in ParaView}
+% ============================================================================
+
+When you open \code{vtk\_output/configuration\_XXXXX.vtk} or \code{vtk\_defects/defects\_XXXXX.vtk}
+in ParaView, you now have the following fields available in the coloring dropdown:
 
 \begin{table}[htbp]
   \centering
-  \caption{Method 2 Discrete Burgers Circuit fields exported to binary VTK files.}
-  \label{tab:vtk_fields}
-  \vspace{4pt}
-  \begin{tabular}{@{}lllp{7.2cm}@{}}
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabular}{@{}llp{8.2cm}@{}}
     \toprule
-    \textbf{VTK Field Name} & \textbf{Section} & \textbf{Type} & \textbf{Physical Meaning} \\
+    \textbf{ParaView Field Name} & \textbf{Data Type} & \textbf{What It Shows \& When to Use It} \\
     \midrule
-    \code{ElementBurgersMagnitude} & \code{CELL\_DATA} & \code{float} & $\|\bm{b}_T\|_2$ per triangle in units of $a_0$ ($0$ in perfect crystal, $1$ at elementary dislocation core) \\
-    \code{ElementBurgersVector} & \code{CELL\_DATA} & \code{float[3]} & $(b_{T,x}, b_{T,y}, 0)$ per triangle in units of $a_0$ \\
-    \code{BurgersMagnitude} & \code{POINT\_DATA} & \code{float} & $\|\bm{b}_i^{(1\text{-ring})}\|_2$ around the $1$-ring of atom $i$ \\
-    \code{BurgersVector} & \code{POINT\_DATA} & \code{float[3]} & $(b_{i,x}^{(1\text{-ring})}, b_{i,y}^{(1\text{-ring})}, 0)$ around the $1$-ring of atom $i$ \\
-    \code{ReferenceCoordination} & \code{POINT\_DATA} & \code{float} & Burgers-filtered coordination ($6$ whenever $\bm{B}_i^{(1\text{-ring})}=\bm{0}$; $5/7$ only at $\bm{B}_i^{(1\text{-ring})}\neq\bm{0}$ cores) \\
-    \code{NodeValence} & \code{POINT\_DATA} & \code{float} & Unfiltered mesh triangle valence $z_i^{\mathrm{tri}}$ \\
+    \code{ReferenceCoordination} & Point Scalar & \textbf{Best drop-in replacement for old coordination plots:} equals \code{6} everywhere in a defect-free crystal (zero fake $5/7$s!) and shows \code{5} or \code{7} \emph{only} at true dislocation cores where $\bm{B}_i^{(1\text{-ring})} \neq \bm{0}$. \\
+    \code{BurgersMagnitude} & Point Scalar & Magnitude $\|\bm{b}_i^{(1\text{-ring})}\|_2$ around each atom ($0$ in perfect crystal, $1$ at an elementary dislocation core, $\sqrt{2}$ at a $(1,1)$ junction). \\
+    \code{BurgersVector} & Point Vector & 2D vector $(b_{i,x}, b_{i,y}, 0)$ at each atom---use with ParaView's \textbf{Glyph} filter (Arrows) to see the exact slip direction of each dislocation! \\
+    \code{ElementBurgersMagnitude} & Cell Scalar & Magnitude $\|\bm{b}_T\|_2$ on each individual triangle $T$---pinpoints the exact core triangle containing the dislocation. \\
+    \code{ElementBurgersVector} & Cell Vector & 2D vector $(b_{T,x}, b_{T,y}, 0)$ on each triangle $T$. \\
+    \code{NodeValence} & Point Scalar & Raw unfiltered triangle count (kept only so you can still inspect the raw Delaunay mesh connectivity if desired). \\
     \bottomrule
   \end{tabular}
 \end{table}
