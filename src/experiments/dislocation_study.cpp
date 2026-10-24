@@ -965,8 +965,13 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   lattice_constant = optimal_lattice_parameter;
   BaseLatticeCalculator &calculator = *calculator_ptr;
 
+  double calc_scale = (potential_mode == 3)
+      ? 1.0
+      : ((lattice_type == "triangular") ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25)) : optimal_lattice_parameter);
+  h = (potential_mode == 3) ? 1.0 : calc_scale;
+
   // Reference triangle shape derivatives: ALWAYS standard square reference triangle (p1=(0,0), p2=(h,0), p3=(0,h))
-  // because Lagrange reduction (GL(2, Z)) operates strictly on the integer reference grid Z^2.
+  // with leg length h matching reference element scale so that undeformed physical elements evaluate to C_ref
   Eigen::Vector2d p1(0.0, 0.0);
   Eigen::Vector2d p2(h, 0.0);
   Eigen::Vector2d p3(0.0, h);
@@ -1067,7 +1072,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
 
   std::vector<int> fixed_nodes;
   int solver_idx = 0;
-  double r_free_dist = R_free * h;
+  double r_free_dist = R_free * lattice_constant;
   for (size_t i = 0; i < square_points.size(); ++i) {
     double dist = (square_points_ref[i].coord - dislocation_core).norm();
     if (dist <= r_free_dist) {
@@ -1241,12 +1246,22 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       }
 
       // Step C: Compute instantaneous spatial tangent stiffness via AcousticTensor
-      Eigen::Matrix2d C_bar = F_bar.transpose() * F_bar;
-      lagrange::Result red_res = lagrange::reduce(C_bar);
+      // For triangular lattice, the reference state mapping Z^2 to equilateral triangles
+      // is F0 = (4/3)^{1/4} * [[1, 0.5], [0, sqrt(3)/2]]. The total deformation gradient
+      // relative to Z^2 is F_tot = F_bar * F0, ensuring C_tot = C_ref at F_bar = I.
+      Eigen::Matrix2d F0 = Eigen::Matrix2d::Identity();
+      if (lattice_type == "triangular") {
+        double s = std::pow(4.0 / 3.0, 0.25);
+        F0 << s, 0.5 * s,
+              0.0, s * std::sqrt(3.0) / 2.0;
+      }
+      Eigen::Matrix2d F_tot = F_bar * F0;
+      Eigen::Matrix2d C_tot = F_tot.transpose() * F_tot;
+      lagrange::Result red_res = lagrange::reduce(C_tot);
       Eigen::Matrix2d Z = red_res.m_matrix;
       double normalisation = calculator.getUnitCellArea();
 
-      AcousticTensor acoustic_tensor(F_bar, red_res.C_reduced, Z);
+      AcousticTensor acoustic_tensor(F_tot, red_res.C_reduced, Z);
       acoustic_tensor.computeEnergyDerivatives(
           calculator, potential_func_der, potential_func_sder, normalisation);
 
@@ -1289,7 +1304,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       }
 
       // Step F: Apply relaxation factor and safeguard maximum strain increment per macro step
-      double alpha_relax = 1.0;
+      double alpha_relax = 0.5;
       Eigen::Vector3d eps_corr = alpha_relax * delta_eps;
       double max_dE = 0.02;
       for (int ii = 0; ii < 3; ++ii) {
