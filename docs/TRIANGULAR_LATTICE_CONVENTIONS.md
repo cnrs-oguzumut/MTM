@@ -125,9 +125,9 @@ accepted these boundary slivers. Under Volterra displacement step cuts, these sl
 In `AdaptiveMesher::generateMesh`:
 ```cpp
 bool is_triangular = (offsets[0] > 1e-6 && std::abs(offsets[1] / offsets[0] - std::sqrt(3.0)) < 0.25);
-double max_edge = is_triangular ? (median_nn * 1.35) : (median_nn * (std::sqrt(2.0) + 0.35));
+double max_edge = is_triangular ? (median_nn * 1.65) : (median_nn * (std::sqrt(2.0) + 0.35));
 ```
-$1.35 a_0$ cleanly accepts equilateral edges ($1.0 a_0$) and cleanly rejects boundary slivers ($1.732 a_0$).
+$1.65 a_0$ safely preserves all dilated dislocation core triangles ($\le 1.58 a_0$) while cleanly rejecting outer boundary slivers ($a_0 \sqrt{3} \approx 1.732 a_0$).
 
 ---
 

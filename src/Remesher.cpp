@@ -91,7 +91,10 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
     std::sort(nn_dists.begin(), nn_dists.end());
     double median_nn = nn_dists.empty() ? 1.0 : nn_dists[nn_dists.size() / 2];
     bool is_triangular = (offsets[0] > 1e-6 && std::abs(offsets[1] / offsets[0] - std::sqrt(3.0)) < 0.25);
-    double max_edge = is_triangular ? (median_nn * 1.35) : (median_nn * (std::sqrt(2.0) + 0.35));
+    // For triangular lattices, core dilated edges span up to ~1.58 a0, while boundary slivers
+    // span across second-nearest neighbors (sqrt(3) a0 ≈ 1.732 a0). Using 1.65 * median_nn
+    // preserves all core triangles while cleanly filtering out boundary slivers.
+    double max_edge = is_triangular ? (median_nn * 1.65) : (median_nn * (std::sqrt(2.0) + 0.35));
     unique_triangles = MeshGenerator::select_unique_connected_triangles(
         points_used, triangulation, original_domain_map, square_points.size(),
         unique_triangle_tolerance, max_edge);

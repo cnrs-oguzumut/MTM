@@ -42,13 +42,13 @@ These rules document essential conventions and known pitfalls in this repository
 ---
 
 ## 4. Adaptive Delaunay Mesh Edge Filtering (`max_edge`)
-- **Principle:** In non-periodic meshes, Delaunay circumcircles can span across rows to connect second-nearest neighbors ($a_0 \sqrt{3} \approx 1.732 a_0$), creating artificial boundary slivers that collapse under displacement cuts.
+- **Principle:** In non-periodic meshes, Delaunay circumcircles can span across rows to connect second-nearest neighbors ($a_0 \sqrt{3} \approx 1.732 a_0$), creating artificial boundary slivers that collapse under displacement cuts. Conversely, dislocation core dilation expands atomic bonds to $\sim 1.45 - 1.58 a_0$.
 - **Rule:** In `AdaptiveMesher::generateMesh` ([`src/Remesher.cpp`](file:///Users/usalman/programming/FEM_2D/factorized/lattice_triangulation/src/Remesher.cpp)), separate square and triangular thresholds:
   ```cpp
   bool is_triangular = (offsets[0] > 1e-6 && std::abs(offsets[1] / offsets[0] - std::sqrt(3.0)) < 0.25);
-  double max_edge = is_triangular ? (median_nn * 1.35) : (median_nn * (std::sqrt(2.0) + 0.35));
+  double max_edge = is_triangular ? (median_nn * 1.65) : (median_nn * (std::sqrt(2.0) + 0.35));
   ```
-  $1.35 a_0$ accepts equilateral edges ($1.0 a_0$) while cleanly rejecting boundary slivers ($1.732 a_0$).
+  $1.65 a_0$ preserves all dilated dislocation core elements ($\le 1.58 a_0$) while cleanly rejecting artificial boundary slivers ($\ge 1.732 a_0$).
 
 ---
 
