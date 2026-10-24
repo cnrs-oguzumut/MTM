@@ -1027,9 +1027,9 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   // - Stroh (Eqs. A14-A15) for square lattice
   Eigen::Vector2d burgers_vector(lattice_constant, 0.0);
 
-  // Compute ground-state elastic constants for the selected potential
-  double C11 = 21.728397, C12 = 18.273383, C66 = 6.075140;
-  double poisson_ratio = 0.25;
+  // Dynamically computed ground-state elastic constants for the selected potential
+  double C11 = 0.0, C12 = 0.0, C66 = 0.0;
+  double poisson_ratio = 0.0;
 
   if (potential_mode == 3) {
     auto ec = energy_functions::calculate_elastic_constants(beta, bulk_K, lattice_type);
