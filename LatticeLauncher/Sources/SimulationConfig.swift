@@ -205,16 +205,28 @@ public class SimulationConfig: ObservableObject {
             return hardcodedDefault
         }
         
-        // 5. Fallback to user Documents
-        return "\(FileManager.default.homeDirectoryForCurrentUser.path)/Documents/LatticeRuns"
+        // 5. Fallback to user Documents (auto-create for standalone .app / .dmg users)
+        let docsFallback = "\(FileManager.default.homeDirectoryForCurrentUser.path)/Documents/LatticeRuns"
+        try? FileManager.default.createDirectory(atPath: "\(docsFallback)/scratch", withIntermediateDirectories: true)
+        return docsFallback
+    }
+    
+    public static func detectBinaryPath(projectRoot: String? = nil) -> String {
+        let root = projectRoot ?? detectProjectRoot()
+        let path1 = "\(root)/build/lattice_triangulation"
+        let path2 = "\(root)/lattice_triangulation"
+        let bundledPath1 = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/lattice_triangulation").path
+        let bundledPath2 = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("lattice_triangulation").path ?? ""
+        
+        if FileManager.default.fileExists(atPath: path1) { return path1 }
+        if FileManager.default.fileExists(atPath: path2) { return path2 }
+        if FileManager.default.fileExists(atPath: bundledPath1) { return bundledPath1 }
+        if !bundledPath2.isEmpty && FileManager.default.fileExists(atPath: bundledPath2) { return bundledPath2 }
+        return bundledPath1
     }
     
     public var binaryPath: String {
-        let path1 = "\(projectRoot)/build/lattice_triangulation"
-        let path2 = "\(projectRoot)/lattice_triangulation"
-        if FileManager.default.fileExists(atPath: path1) { return path1 }
-        if FileManager.default.fileExists(atPath: path2) { return path2 }
-        return path1
+        return SimulationConfig.detectBinaryPath(projectRoot: projectRoot)
     }
     
     public init() {

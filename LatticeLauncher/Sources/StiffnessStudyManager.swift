@@ -265,7 +265,7 @@ public class StiffnessStudyManager: ObservableObject {
     public func generateInitialMeshPreview() {
         guard !isGeneratingPreview else { return }
         let root = SimulationConfig.detectProjectRoot()
-        let binary = "\(root)/build/lattice_triangulation"
+        let binary = SimulationConfig.detectBinaryPath(projectRoot: root)
         guard FileManager.default.fileExists(atPath: binary) else {
             statusMessage = "Binary not found at \(binary). Build project first."
             return
@@ -333,7 +333,7 @@ public class StiffnessStudyManager: ObservableObject {
         guard !isRunning else { return }
         
         let root = SimulationConfig.detectProjectRoot()
-        let binary = "\(root)/build/lattice_triangulation"
+        let binary = SimulationConfig.detectBinaryPath(projectRoot: root)
         guard FileManager.default.fileExists(atPath: binary) else {
             statusMessage = "Binary not found at \(binary). Build project first."
             return
@@ -695,7 +695,7 @@ public class StiffnessStudyManager: ObservableObject {
     public func computeFullScaleAtAlpha(_ alpha: Double) {
         guard !isRunning && !isComputingFullScale else { return }
         let root = SimulationConfig.detectProjectRoot()
-        let binary = "\(root)/build/lattice_triangulation"
+        let binary = SimulationConfig.detectBinaryPath(projectRoot: root)
         guard FileManager.default.fileExists(atPath: binary) else { return }
         
         let scratchDir = "\(root)/scratch"

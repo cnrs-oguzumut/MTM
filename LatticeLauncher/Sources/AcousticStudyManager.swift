@@ -416,7 +416,7 @@ public class AcousticStudyManager: ObservableObject {
     public func computeElasticConstantsFast() {
         // Quick native evaluation for Zanzotto or background CLI query
         let root = SimulationConfig.detectProjectRoot()
-        let binary = "\(root)/build/lattice_triangulation"
+        let binary = SimulationConfig.detectBinaryPath(projectRoot: root)
         
         guard FileManager.default.fileExists(atPath: binary) else {
             // Fallback native calculation
@@ -547,12 +547,13 @@ public class AcousticStudyManager: ObservableObject {
         guard !isRunning else { return }
         
         let root = SimulationConfig.detectProjectRoot()
-        let binary = "\(root)/build/lattice_triangulation"
+        let binary = SimulationConfig.detectBinaryPath(projectRoot: root)
         guard FileManager.default.fileExists(atPath: binary) else {
             statusMessage = "Binary not found at \(binary). Build project first."
             return
         }
         
+        try? FileManager.default.createDirectory(atPath: "\(root)/scratch", withIntermediateDirectories: true)
         let datOut = "\(root)/scratch/acoustic_study_gui.dat"
         let jsonOut = "\(root)/scratch/acoustic_study_gui.json"
         let csvOut = "\(root)/scratch/energy_path_gui.csv"
