@@ -47,7 +47,7 @@ void single_dislocation_study(int caller_id, int nx, int ny,
   // ==================== SETUP ENERGY POTENTIAL ====================
   std::function<double(double)> potential_func = square_energy;
   std::function<double(double)> potential_func_der = square_energy_der;
-  std::function<double(double)> potential_func_sder = square_energy_der;
+  std::function<double(double)> potential_func_sder = square_energy_sder;
 
   // ==================== DETERMINE OPTIMAL LATTICE PARAMETER ============
   double symmetry_constantx =
@@ -938,14 +938,29 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     optimal_lattice_parameter = symmetry_constantx;
     potential_func = square_energy;
     potential_func_der = square_energy_der;
-    potential_func_sder = square_energy_der;
+    potential_func_sder = square_energy_sder;
     calculator_ptr = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
   } else {
-    // Atomistic pair potential: mode 1 = LJ v2, mode 2 = LJ v3
-    double r_cutoff = (potential_mode == 1) ? 2.5 : 1.86602540378444;
-    potential_func = (potential_mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
-    potential_func_der = (potential_mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
-    potential_func_sder = (potential_mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+    // Atomistic pair potential: mode 1 = LJ v2, mode 2 = LJ v3, mode 4 = Square (2-Well Gauss)
+    if (potential_mode == 1) {
+      r_cutoff = 2.5;
+      potential_func = lennard_jones_energy_v2;
+      potential_func_der = lennard_jones_energy_der_v2;
+      potential_func_sder = lennard_jones_energy_sder_v2;
+    } else if (potential_mode == 2) {
+      r_cutoff = 1.86602540378444;
+      potential_func = lennard_jones_energy_v3;
+      potential_func_der = lennard_jones_energy_der_v3;
+      potential_func_sder = lennard_jones_energy_sder_v3;
+    } else if (potential_mode == 4) {
+      r_cutoff = 2.5;
+      potential_func = square_energy;
+      potential_func_der = square_energy_der;
+      potential_func_sder = square_energy_sder;
+    } else {
+      std::cerr << "Unknown potential mode: " << potential_mode << std::endl;
+      exit(EXIT_FAILURE);
+    }
 
     EquilibriumLatticeResult eq_lat = compute_equilibrium_lattice_parameter(
         potential_func, potential_func_der, potential_func_sder, lattice_type, r_cutoff);
@@ -964,7 +979,6 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   h = (potential_mode == 3) ? 1.0 : calc_scale;
 
   if (potential_mode != 3) {
-    double r_cutoff = (potential_mode == 1) ? 2.5 : 1.86602540378444;
     calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
   }
   BaseLatticeCalculator &calculator = *calculator_ptr;

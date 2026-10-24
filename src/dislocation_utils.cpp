@@ -113,13 +113,30 @@ DislocationSolutionParams DislocationSolutionParams::fromPotentialMode(
         return fromCurrentZanzottoPotential(lattice);
     }
 
-    double r_cutoff = (potential_mode == 1) ? 2.5 : 1.86602540378444;
-    std::function<double(double)> pot =
-        (potential_mode == 1) ? lennard_jones_energy_v2 : lennard_jones_energy_v3;
-    std::function<double(double)> dpot =
-        (potential_mode == 1) ? lennard_jones_energy_der_v2 : lennard_jones_energy_der_v3;
-    std::function<double(double)> d2pot =
-        (potential_mode == 1) ? lennard_jones_energy_sder_v2 : lennard_jones_energy_sder_v3;
+    double r_cutoff = 2.5;
+    std::function<double(double)> pot;
+    std::function<double(double)> dpot;
+    std::function<double(double)> d2pot;
+
+    if (potential_mode == 1) {
+        r_cutoff = 2.5;
+        pot = lennard_jones_energy_v2;
+        dpot = lennard_jones_energy_der_v2;
+        d2pot = lennard_jones_energy_sder_v2;
+    } else if (potential_mode == 2) {
+        r_cutoff = 1.86602540378444;
+        pot = lennard_jones_energy_v3;
+        dpot = lennard_jones_energy_der_v3;
+        d2pot = lennard_jones_energy_sder_v3;
+    } else if (potential_mode == 4) {
+        r_cutoff = 2.5;
+        pot = square_energy;
+        dpot = square_energy_der;
+        d2pot = square_energy_sder;
+    } else {
+        std::cerr << "Unknown potential mode: " << potential_mode << std::endl;
+        exit(EXIT_FAILURE);
+    }
 
     double scale = find_optimal_lattice_parameter(pot, lattice, r_cutoff, dpot, d2pot);
 
