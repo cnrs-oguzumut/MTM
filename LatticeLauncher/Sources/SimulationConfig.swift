@@ -162,8 +162,8 @@ public class SimulationConfig: ObservableObject {
     @Published public var eigSolver: EigenSolverType = .fast
     
     // 6. Data Saving & Output Controls
-    @Published public var traceInnerIterations: Bool = true
-    @Published public var saveSurgeryVTK: Bool = true
+    @Published public var traceInnerIterations: Bool = false
+    @Published public var saveSurgeryVTK: Bool = false
     @Published public var saveTriangleData: Bool = false
     @Published public var checkpointInterval: Int = 500
     @Published public var stressDropThreshold: Double = 0.10
