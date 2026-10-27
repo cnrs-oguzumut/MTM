@@ -148,7 +148,7 @@ public struct PathEnergyChartView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(BlueHour.controlSurface)
             
             Divider()
             
@@ -217,7 +217,7 @@ public struct PathEnergyChartView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.85))
+            .background(BlueHour.controlSurface.opacity(0.85))
             
             Divider()
             
@@ -272,7 +272,7 @@ public struct PathEnergyChartView: View {
                 }
             }
         }
-        .background(Color(NSColor.textBackgroundColor))
+        .background(BlueHour.canvasBackground)
     }
     
     // MARK: - Subtitle
@@ -356,7 +356,7 @@ public struct PathEnergyChartView: View {
         // Plot Area Frame
         var bgPath = Path()
         bgPath.addRect(CGRect(x: marginL, y: marginT, width: plotW, height: plotH))
-        context.fill(bgPath, with: .color(Color(NSColor.textBackgroundColor)))
+        context.fill(bgPath, with: .color(BlueHour.canvasBackground))
         context.stroke(bgPath, with: .color(Color.secondary.opacity(0.2)), lineWidth: 1)
         
         // Horizontal grid lines (Energy) - Safe count
@@ -515,7 +515,7 @@ public struct PathEnergyChartView: View {
         // Plot Area Frame
         var bgPath = Path()
         bgPath.addRect(CGRect(x: marginL, y: marginT, width: plotW, height: plotH))
-        context.fill(bgPath, with: .color(Color(NSColor.textBackgroundColor)))
+        context.fill(bgPath, with: .color(BlueHour.canvasBackground))
         context.stroke(bgPath, with: .color(Color.secondary.opacity(0.2)), lineWidth: 1)
         
         // Zero Line for Loss of Ellipticity

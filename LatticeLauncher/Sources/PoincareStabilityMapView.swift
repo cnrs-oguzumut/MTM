@@ -93,7 +93,7 @@ public struct PoincareStabilityMapView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(BlueHour.controlSurface)
             
             // =========================================================================
             // 1B. ENERGY COLOR SCALE & PERCENTILE FILTER TOOLBAR (When Energy Φ(C) is active)
@@ -216,7 +216,7 @@ public struct PoincareStabilityMapView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(Color(NSColor.controlBackgroundColor).opacity(0.95))
+                .background(BlueHour.controlSurface.opacity(0.95))
             }
             
             Divider()
@@ -231,7 +231,7 @@ public struct PoincareStabilityMapView: View {
                 
                 ZStack {
                     // Dark Canvas Backdrop
-                    Color(NSColor.underPageBackgroundColor)
+                    BlueHour.canvasBackground
                         .edgesIgnoringSafeArea(.all)
                     
                     Canvas { context, size in
@@ -320,7 +320,7 @@ public struct PoincareStabilityMapView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(BlueHour.controlSurface)
         }
     }
     
@@ -340,7 +340,7 @@ public struct PoincareStabilityMapView: View {
         let diskRect = CGRect(x: center.x - diskRadius, y: center.y - diskRadius, width: diskRadius * 2, height: diskRadius * 2)
         let diskPath = Path(ellipseIn: diskRect)
         
-        context.fill(diskPath, with: .color(Color(NSColor.textBackgroundColor).opacity(0.85)))
+        context.fill(diskPath, with: .color(BlueHour.canvasBackground.opacity(0.85)))
         
         // Concentric Hyperbolic Circles: r = tanh(t/2) for t = 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4
         let tValues: [(t: Double, showLabel: Bool)] = [

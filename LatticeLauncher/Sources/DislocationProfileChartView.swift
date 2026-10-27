@@ -113,7 +113,7 @@ public struct DislocationProfileChartView: View {
                 kpiBar(root: root)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                    .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                    .background(BlueHour.controlSurface.opacity(0.5))
                 
                 Divider()
                 
@@ -125,7 +125,7 @@ public struct DislocationProfileChartView: View {
                 emptyStateView
             }
         }
-        .background(Color(NSColor.textBackgroundColor))
+        .background(BlueHour.canvasBackground)
         .onAppear {
             runner.pollDislocationProfiles()
         }
@@ -139,7 +139,7 @@ public struct DislocationProfileChartView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(BlueHour.windowBackground)
     }
     
     // MARK: - Tier 1 Header
@@ -197,7 +197,7 @@ public struct DislocationProfileChartView: View {
             .font(.caption.weight(.medium))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(BlueHour.controlSurface)
             .cornerRadius(5)
             .overlay(
                 RoundedRectangle(cornerRadius: 5)
@@ -425,7 +425,7 @@ public struct DislocationProfileChartView: View {
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(Color(NSColor.controlBackgroundColor))
+                .background(BlueHour.controlSurface)
                 .cornerRadius(4)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
@@ -872,7 +872,7 @@ public struct DislocationProfileChartView: View {
                         .font(.caption2.bold())
                         .foregroundColor(.red)
                         .padding(2)
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.8))
+                        .background(BlueHour.controlSurface.opacity(0.8))
                 }
             
             if let hx = hoveredX {
@@ -1223,7 +1223,7 @@ private struct DislocKpiPill: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color(NSColor.quaternaryLabelColor).opacity(0.6))
+        .background(BlueHour.pillSurface.opacity(0.6))
         .cornerRadius(8)
         .fixedSize(horizontal: true, vertical: false)
     }

@@ -194,7 +194,7 @@ public struct AcousticInstabilityModeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(BlueHour.controlSurface)
             
             Divider()
             
@@ -300,7 +300,7 @@ public struct AcousticInstabilityModeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.85))
+            .background(BlueHour.controlSurface.opacity(0.85))
             
             Divider()
             
@@ -330,7 +330,7 @@ public struct AcousticInstabilityModeView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
+                        .background(BlueHour.controlSurface.opacity(0.35))
                         
                         GeometryReader { geo in
                             ZStack {
@@ -387,7 +387,7 @@ public struct AcousticInstabilityModeView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                        .background(BlueHour.controlSurface.opacity(0.5))
                     }
                     .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
                     
@@ -423,7 +423,7 @@ public struct AcousticInstabilityModeView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
+                        .background(BlueHour.controlSurface.opacity(0.35))
                         
                         GeometryReader { geo in
                             Canvas { ctx, size in
@@ -463,7 +463,7 @@ public struct AcousticInstabilityModeView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                        .background(BlueHour.controlSurface.opacity(0.5))
                     }
                     .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -482,7 +482,7 @@ public struct AcousticInstabilityModeView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(NSColor.textBackgroundColor))
+        .background(BlueHour.canvasBackground)
     }
     
     // MARK: - Mode Analysis Resolution (Exact C++ Quadratic Form + Fallback for Legacy JSON)

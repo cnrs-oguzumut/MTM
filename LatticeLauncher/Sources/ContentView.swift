@@ -71,20 +71,21 @@ struct ContentView: View {
                 // Active Lattice Badge
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(config.latticeSymmetry == .square ? Color.blue : Color.orange)
+                        .fill(config.latticeSymmetry == .square ? BlueHour.mist : BlueHour.ice)
                         .frame(width: 8, height: 8)
                     Text(config.latticeSymmetry == .square ? "Square" : "Triangular")
                         .font(.caption.bold())
-                        .foregroundColor(.secondary)
+                        .foregroundColor(BlueHour.ice)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
-                .background(Color(NSColor.controlBackgroundColor), in: Capsule())
+                .background(BlueHour.pillSurface, in: Capsule())
+                .overlay(Capsule().strokeBorder(BlueHour.border, lineWidth: 1))
                 .fixedSize()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(Color(NSColor.windowBackgroundColor))
+            .background(BlueHour.windowBackground)
             
             Divider()
             
@@ -101,7 +102,7 @@ struct ContentView: View {
                         LiveStatusHeaderView(config: config, displayTab: $displayTab)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
-                            .background(Color(NSColor.controlBackgroundColor))
+                            .background(BlueHour.controlSurface)
                         
                         Divider()
                         
@@ -128,7 +129,7 @@ struct ContentView: View {
                         BottomActionBar(config: config)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 12)
-                            .background(Color(NSColor.windowBackgroundColor))
+                            .background(BlueHour.windowBackground)
                     }
                     .frame(minWidth: 580)
                 }
@@ -745,7 +746,7 @@ struct SidebarControlsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
         }
-        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+        .background(BlueHour.sidebarBackground)
     }
 }
 
@@ -775,11 +776,13 @@ struct LiveStatusHeaderView: View {
                     .frame(width: 8, height: 8)
                 Text(shortStatusLabel)
                     .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(BlueHour.ice)
                     .lineLimit(1)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(Color(NSColor.quaternaryLabelColor).opacity(0.6))
+            .background(BlueHour.pillSurface)
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(BlueHour.border, lineWidth: 1))
             .cornerRadius(6)
             .fixedSize()
             .help(runner.status.label)
@@ -869,20 +872,21 @@ struct LiveStatusHeaderView: View {
 struct MetricPill: View {
     let label: String
     let value: String
-    var valueColor: Color = .primary
+    var valueColor: Color = BlueHour.ice
     
     var body: some View {
         VStack(spacing: 1) {
             Text(label)
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(BlueHour.mist)
             Text(value)
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundColor(valueColor)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color(NSColor.quaternaryLabelColor))
+        .background(BlueHour.pillSurface)
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(BlueHour.border, lineWidth: 1))
         .cornerRadius(6)
         .lineLimit(1)
         .fixedSize()
@@ -905,7 +909,7 @@ struct TerminalView: View {
             // Search & Tools Bar
             HStack {
                 Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
+                    .foregroundColor(BlueHour.mist)
                 TextField("Filter output...", text: $filterText)
                     .textFieldStyle(.plain)
                     .frame(maxWidth: 220)
@@ -918,11 +922,11 @@ struct TerminalView: View {
                 
                 Text("\(logLines.count) lines")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(BlueHour.mist)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(BlueHour.controlSurface)
             
             Divider()
             
@@ -933,14 +937,14 @@ struct TerminalView: View {
                         ForEach(filteredLines) { msg in
                             Text(msg.text)
                                 .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(msg.isError ? Color.red : Color(NSColor.textColor))
+                                .foregroundColor(msg.isError ? Color.red : BlueHour.ice)
                                 .textSelection(.enabled)
                                 .id(msg.id)
                         }
                     }
                     .padding(8)
                 }
-                .background(Color(NSColor.textBackgroundColor))
+                .background(BlueHour.canvasBackground)
                 .onChange(of: logLines.count) { _ in
                     if autoScroll, let last = filteredLines.last {
                         proxy.scrollTo(last.id, anchor: .bottom)

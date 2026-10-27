@@ -105,7 +105,7 @@ public struct InitialLatticeVisualizerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(NSColor.underPageBackgroundColor))
+            .background(BlueHour.canvasBackground)
         }
         .onAppear {
             if manager.initialMeshData == nil {
@@ -242,7 +242,7 @@ public struct InitialLatticeVisualizerView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
         }
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(BlueHour.controlSurface)
     }
     
     // MARK: - Canvas Rendering View

@@ -384,6 +384,7 @@ public struct AcousticStudyView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
                 }
+                .background(BlueHour.sidebarBackground)
                 
                 Divider()
                 
@@ -437,7 +438,7 @@ public struct AcousticStudyView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(Color(NSColor.controlBackgroundColor))
+                .background(BlueHour.controlSurface)
             }
             .frame(minWidth: 360, idealWidth: 390, maxWidth: 440)
             
@@ -570,7 +571,7 @@ public struct AcousticStudyView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .background(Color(NSColor.controlBackgroundColor))
+                .background(BlueHour.controlSurface)
                 
                 Divider()
                 
@@ -629,7 +630,7 @@ public struct AcousticStudyView: View {
                         }
                     }
                     .frame(height: 160)
-                    .background(Color(NSColor.textBackgroundColor))
+                    .background(BlueHour.canvasBackground)
                 }
             }
         }
@@ -834,7 +835,7 @@ struct ElasticConstantsCard: View {
                     .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(8)
-                    .background(Color(NSColor.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+                    .background(BlueHour.canvasBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
             }
             .padding(6)
         }

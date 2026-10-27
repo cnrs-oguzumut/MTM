@@ -264,7 +264,7 @@ struct StressStrainChartView: View {
                             }
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(Color(NSColor.controlBackgroundColor))
+                            .background(BlueHour.controlSurface)
                             .cornerRadius(4)
                             .lineLimit(1)
                             .fixedSize()
@@ -279,7 +279,7 @@ struct StressStrainChartView: View {
                             }
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(Color(NSColor.controlBackgroundColor))
+                            .background(BlueHour.controlSurface)
                             .cornerRadius(4)
                             .lineLimit(1)
                             .fixedSize()
@@ -291,7 +291,7 @@ struct StressStrainChartView: View {
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(Color(NSColor.controlBackgroundColor))
+                            .background(BlueHour.controlSurface)
                             .cornerRadius(4)
                             .lineLimit(1)
                             .fixedSize()
@@ -306,7 +306,7 @@ struct StressStrainChartView: View {
                         .foregroundColor(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
-                        .background(Color(NSColor.controlBackgroundColor))
+                        .background(BlueHour.controlSurface)
                         .cornerRadius(4)
                         .lineLimit(1)
                         .fixedSize()
@@ -337,7 +337,7 @@ struct StressStrainChartView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.85))
+            .background(BlueHour.controlSurface.opacity(0.85))
             
             Divider()
             
@@ -359,7 +359,7 @@ struct StressStrainChartView: View {
                         .frame(maxWidth: 440)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(NSColor.textBackgroundColor))
+                .background(BlueHour.canvasBackground)
             } else if runner.curvePoints.isEmpty {
                 VStack(spacing: 14) {
                     Image(systemName: "chart.xyaxis.line")
@@ -375,7 +375,7 @@ struct StressStrainChartView: View {
                         .frame(maxWidth: 420)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(NSColor.textBackgroundColor))
+                .background(BlueHour.canvasBackground)
             } else {
                 Chart {
                     if chartMode == .eigenvalue {
@@ -478,7 +478,7 @@ struct StressStrainChartView: View {
                                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                                     .foregroundColor(.orange)
                                     .padding(2)
-                                    .background(Color(NSColor.windowBackgroundColor).opacity(0.8))
+                                    .background(BlueHour.windowBackground.opacity(0.8))
                             }
                         }
                         
@@ -547,7 +547,7 @@ struct StressStrainChartView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
                 .padding(.bottom, 8)
-                .background(Color(NSColor.textBackgroundColor))
+                .background(BlueHour.canvasBackground)
                 
                 // Hovered point details bar
                 if chartMode == .eigenvalue, let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha) {
@@ -570,7 +570,7 @@ struct StressStrainChartView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
-                    .background(Color(NSColor.controlBackgroundColor))
+                    .background(BlueHour.controlSurface)
                 } else if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
                     HStack(spacing: 20) {
                         Text("Step: \(pt.iteration)")
@@ -591,7 +591,7 @@ struct StressStrainChartView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
-                    .background(Color(NSColor.controlBackgroundColor))
+                    .background(BlueHour.controlSurface)
                 }
             }
         }

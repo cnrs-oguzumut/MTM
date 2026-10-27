@@ -326,7 +326,7 @@ public struct StiffnessModeInspectorView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(BlueHour.controlSurface)
             
             Divider()
             
@@ -455,7 +455,7 @@ public struct StiffnessModeInspectorView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(Color(NSColor.controlBackgroundColor).opacity(0.85))
+            .background(BlueHour.controlSurface.opacity(0.85))
             
             Divider()
             
@@ -554,7 +554,7 @@ public struct StiffnessModeInspectorView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
+                        .background(BlueHour.controlSurface.opacity(0.35))
                         
                         ZStack(alignment: .top) {
                             GeometryReader { _ in
@@ -622,7 +622,7 @@ public struct StiffnessModeInspectorView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                        .background(BlueHour.controlSurface.opacity(0.5))
                     }
                     .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
                     
@@ -646,7 +646,7 @@ public struct StiffnessModeInspectorView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.35))
+                        .background(BlueHour.controlSurface.opacity(0.35))
                         
                         GeometryReader { geo in
                             Canvas { ctx, size in
@@ -713,7 +713,7 @@ public struct StiffnessModeInspectorView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                        .background(BlueHour.controlSurface.opacity(0.5))
                     }
                     .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -732,7 +732,7 @@ public struct StiffnessModeInspectorView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(NSColor.textBackgroundColor))
+        .background(BlueHour.canvasBackground)
         .onReceive(animTimer) { _ in
             if isAnimating {
                 animPhase += 0.16

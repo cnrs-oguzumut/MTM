@@ -342,6 +342,7 @@ public struct StiffnessStudyView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(14)
                 }
+                .background(BlueHour.sidebarBackground)
                 
                 Divider()
                 
@@ -389,7 +390,7 @@ public struct StiffnessStudyView: View {
                     }
                 }
                 .padding(12)
-                .background(Color(NSColor.controlBackgroundColor))
+                .background(BlueHour.controlSurface)
             }
             .frame(minWidth: 350, idealWidth: 380, maxWidth: 430)
             
@@ -462,7 +463,7 @@ public struct StiffnessStudyView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .background(Color(NSColor.controlBackgroundColor))
+                .background(BlueHour.controlSurface)
                 
                 Divider()
                 
@@ -840,7 +841,7 @@ struct StiffnessChartView: View {
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
-                    .background(Color(NSColor.windowBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
+                    .background(BlueHour.windowBackground.opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
                     .position(x: min(padLeft + pw - 35, ptPos.x + 36), y: max(padTop + 14, ptPos.y - 12))
             }
             if acNeg != 0.0 {
@@ -850,7 +851,7 @@ struct StiffnessChartView: View {
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
-                    .background(Color(NSColor.windowBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
+                    .background(BlueHour.windowBackground.opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
                     .position(x: max(padLeft + 35, ptNeg.x - 36), y: max(padTop + 14, ptNeg.y - 12))
             }
             
@@ -918,7 +919,7 @@ struct StiffnessChartView: View {
                 .foregroundColor(.secondary)
         }
         .padding(8)
-        .background(Color(NSColor.controlBackgroundColor).opacity(0.95), in: RoundedRectangle(cornerRadius: 6))
+        .background(BlueHour.controlSurface.opacity(0.95), in: RoundedRectangle(cornerRadius: 6))
         .shadow(radius: 3)
     }
     
@@ -1338,7 +1339,7 @@ struct StiffnessEnergyChartView: View {
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
-                    .background(Color(NSColor.windowBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
+                    .background(BlueHour.windowBackground.opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
                     .position(x: min(padLeft + pw - 35, ptPos.x + 36), y: padTop + 18)
             }
             if acNeg != 0.0 {
@@ -1348,7 +1349,7 @@ struct StiffnessEnergyChartView: View {
                     .foregroundColor(.red)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
-                    .background(Color(NSColor.windowBackgroundColor).opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
+                    .background(BlueHour.windowBackground.opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
                     .position(x: max(padLeft + 35, ptNeg.x - 36), y: padTop + 18)
             }
             
@@ -1412,7 +1413,7 @@ struct StiffnessEnergyChartView: View {
                 .foregroundColor(hovered.is_stable ? .green : .red)
         }
         .padding(8)
-        .background(Color(NSColor.controlBackgroundColor).opacity(0.95), in: RoundedRectangle(cornerRadius: 6))
+        .background(BlueHour.controlSurface.opacity(0.95), in: RoundedRectangle(cornerRadius: 6))
         .shadow(radius: 3)
     }
     
@@ -1626,7 +1627,7 @@ struct StiffnessLogView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(BlueHour.controlSurface)
             
             Divider()
             
@@ -1640,7 +1641,7 @@ struct StiffnessLogView: View {
                 }
                 .padding(10)
             }
-            .background(Color(NSColor.textBackgroundColor))
+            .background(BlueHour.canvasBackground)
         }
     }
 }
