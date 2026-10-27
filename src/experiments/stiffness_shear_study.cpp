@@ -10,6 +10,7 @@
 
 #include "../../include/interatomic/inter_atomic.h"
 #include "../../include/geometry/LatticeGenerator.h"
+#include "../../include/geometry/MacroscopicGeometry.h"
 #include "../../include/mesh/MeshGenerator.h"
 #include "../../include/mesh/Remesher.h"
 #include "../../include/mesh/ElementTriangle2D.h"
@@ -42,6 +43,8 @@ static void exportInitialMeshJSON(
     const std::vector<ElementTriangle2D>& elements,
     const std::vector<size_t>& active_elements,
     const std::vector<std::pair<int, int>>& full_mapping,
+    const std::vector<int>& node_bc_role,
+    const std::vector<Eigen::Vector2d>& node_bc_velocity,
     const std::unique_ptr<BaseLatticeCalculator>& calc,
     const std::function<double(double)>& pot_func,
     const std::function<double(double)>& deriv_func,
@@ -58,8 +61,8 @@ static void exportInitialMeshJSON(
         return;
     }
 
-    const double box_Lx = domain_dims.size_x + offsets[0];
-    const double box_Ly = domain_dims.size_y + offsets[1];
+    const double box_Lx = domain_dims.size_x + (pbc ? offsets[0] : 0.0);
+    const double box_Ly = domain_dims.size_y + (pbc ? offsets[1] : 0.0);
     const int total_nodes = static_cast<int>(points_ref.size());
 
     out << "{\n";
@@ -84,10 +87,16 @@ static void exportInitialMeshJSON(
         if (i < static_cast<int>(full_mapping.size())) {
             is_bnd = (full_mapping[i].second == -1);
         }
+        int role = (i < static_cast<int>(node_bc_role.size())) ? node_bc_role[i] : (is_bnd ? 1 : 0);
+        double vx = (i < static_cast<int>(node_bc_velocity.size())) ? node_bc_velocity[i].x() : 0.0;
+        double vy = (i < static_cast<int>(node_bc_velocity.size())) ? node_bc_velocity[i].y() : 0.0;
         out << "    {\"id\": " << i
             << ", \"x\": " << std::fixed << std::setprecision(6) << points_ref[i].coord.x()
             << ", \"y\": " << points_ref[i].coord.y()
-            << ", \"is_boundary\": " << (is_bnd ? "true" : "false") << "}"
+            << ", \"is_boundary\": " << (is_bnd ? "true" : "false")
+            << ", \"bc_role\": " << role
+            << ", \"bc_vx\": " << vx
+            << ", \"bc_vy\": " << vy << "}"
             << (i + 1 < total_nodes ? ",\n" : "\n");
     }
     out << "  ],\n";
@@ -358,7 +367,15 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     double zero_energy = calc->calculate_energy(C_ref, pot_func, 0.0);
 
     int study_ny = config.ny;
-    const bool pbc = (config.bc == "periodic" || config.bc == "Periodic" || config.bc == "pbc" || config.bc == "PBC");
+    MacroscopicGeometryConfig macro_geom;
+    bool has_custom_geom = false;
+    if (!config.geometry_json.empty()) {
+        if (MacroscopicGeometryConfig::loadFromJSON(config.geometry_json, macro_geom) && macro_geom.enabled) {
+            has_custom_geom = true;
+        }
+    }
+    const bool pbc = !has_custom_geom &&
+        (config.bc == "periodic" || config.bc == "Periodic" || config.bc == "pbc" || config.bc == "PBC");
     if (config.lattice_type == "triangular" && (study_ny % 2 != 0)) {
         study_ny++;
         std::cout << "  [INFO] Enforcing even ny for triangular lattice: adjusted from "
@@ -411,7 +428,9 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                 config.lattice_type, config.nx, study_ny, a_0, config.rotation_angle);
             points_ref = pts;
             domain_dims = dims;
-            offsets = {0.0, 0.0};
+            offsets = (config.lattice_type == "square")
+                ? std::array<double, 2>{a_0, a_0}
+                : std::array<double, 2>{a_0 / 2.0, (std::sqrt(3.0) / 2.0) * a_0};
         }
     } else {
         points_ref = LatticeGenerator::generate_2d_lattice(
@@ -422,13 +441,36 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             ? std::array<double, 2>{a_0, a_0}
             : std::array<double, 2>{a_0 / 2.0, (std::sqrt(3.0) / 2.0) * a_0};
     }
+
+    if (has_custom_geom) {
+        points_ref = macro_geom.carveLatticePoints(points_ref, a_0);
+    }
+
     const int total_nodes = static_cast<int>(points_ref.size());
 
     auto [original_domain_map, translation_map] =
         MeshGenerator::create_domain_maps(total_nodes, domain_dims, offsets);
 
-    auto [interior_mapping, full_mapping] =
-        create_dof_mapping_original(points_ref, 0.25 * a_0, pbc);
+    std::vector<std::pair<int, int>> interior_mapping;
+    std::vector<std::pair<int, int>> full_mapping;
+    std::vector<int> node_bc_role;
+    std::vector<Eigen::Vector2d> node_bc_velocity;
+
+    if (has_custom_geom) {
+        macro_geom.buildBoundaryDOFs(points_ref, interior_mapping, full_mapping,
+                                     node_bc_role, node_bc_velocity);
+    } else {
+        std::tie(interior_mapping, full_mapping) =
+            create_dof_mapping_original(points_ref, 0.25 * a_0, pbc);
+        node_bc_role.resize(total_nodes, 0);
+        node_bc_velocity.resize(total_nodes, Eigen::Vector2d::Zero());
+        for (int i = 0; i < total_nodes; ++i) {
+            if (i < static_cast<int>(full_mapping.size()) && full_mapping[i].second == -1) {
+                node_bc_role[i] = 2;
+                node_bc_velocity[i] = Eigen::Vector2d(points_ref[i].coord.y(), 0.0);
+            }
+        }
+    }
 
     const int free_nodes = static_cast<int>(interior_mapping.size());
     const int total_dofs = 2 * free_nodes;
@@ -437,6 +479,11 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
                           translation_map, full_mapping, 1e-6, pbc);
     mesher.setUsePeriodicCopies(pbc);
+    if (has_custom_geom) {
+        AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &points_ref);
+    } else {
+        AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
+    }
 
     alglib::real_1d_array x0;
     x0.setlength(total_dofs);
@@ -453,6 +500,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
 
     auto [elements, active_elements] =
         mesher.createMesh(points_ref, x0, Eigen::Matrix2d::Identity(), manual_dndx);
+    AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
 
     for (auto &elem : elements) {
         elem.set_dof_mapping(full_mapping);
@@ -468,9 +516,9 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     if (!config.initial_mesh_json.empty()) {
         exportInitialMeshJSON(
             config.initial_mesh_json, config, points_ref, domain_dims, offsets,
-            elements, active_elements, full_mapping, calc, pot_func, pot_der,
-            zero_energy, normalisation, actual_theta_deg, actual_m, actual_n,
-            actual_sigma, is_csl_active, pbc);
+            elements, active_elements, full_mapping, node_bc_role, node_bc_velocity,
+            calc, pot_func, pot_der, zero_energy, normalisation, actual_theta_deg,
+            actual_m, actual_n, actual_sigma, is_csl_active, pbc);
     }
 
     if (config.initial_mesh_only) {

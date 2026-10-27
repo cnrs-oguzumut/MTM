@@ -1,9 +1,21 @@
 #include "../include/mesh/Remesher.h"
 #include "../include/geometry/DomainDimensions.h"
 #include "../include/geometry/LatticeGenerator.h"
+#include "../include/geometry/MacroscopicGeometry.h"
 #include "../include/mesh/ElementTriangle2D.h"
 #include "../include/mesh/MeshGenerator.h"
 #include "../include/mesh/Triangle.h"
+
+namespace {
+const MacroscopicGeometryConfig* g_active_geometry_filter = nullptr;
+const std::vector<Point2D>* g_active_geometry_ref_points = nullptr;
+} // namespace
+
+void AdaptiveMesher::setGlobalGeometryFilter(const MacroscopicGeometryConfig* geom,
+                                             const std::vector<Point2D>* ref_points) {
+  g_active_geometry_filter = geom;
+  g_active_geometry_ref_points = ref_points;
+}
 
 /**
  * Constructor for AdaptiveMesher
@@ -98,6 +110,26 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
     unique_triangles = MeshGenerator::select_unique_connected_triangles(
         points_used, triangulation, original_domain_map, square_points.size(),
         unique_triangle_tolerance, max_edge);
+
+    if (g_active_geometry_filter != nullptr && g_active_geometry_filter->enabled) {
+      const std::vector<Point2D>& check_pts =
+          (g_active_geometry_ref_points != nullptr &&
+           g_active_geometry_ref_points->size() == square_points.size())
+              ? *g_active_geometry_ref_points
+              : square_points;
+      std::vector<Triangle> filtered_tris;
+      filtered_tris.reserve(unique_triangles.size());
+      for (const auto& tri : unique_triangles) {
+        int i0 = original_domain_map[tri.vertex_indices[0]];
+        int i1 = original_domain_map[tri.vertex_indices[1]];
+        int i2 = original_domain_map[tri.vertex_indices[2]];
+        if (!g_active_geometry_filter->shouldRejectTriangle(
+                check_pts[i0].coord, check_pts[i1].coord, check_pts[i2].coord)) {
+          filtered_tris.push_back(tri);
+        }
+      }
+      unique_triangles = std::move(filtered_tris);
+    }
   }
 
   // Create new finite elements

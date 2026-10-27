@@ -5,12 +5,18 @@ public struct InitialMeshNode: Codable, Identifiable {
     public var x: Double
     public var y: Double
     public var is_boundary: Bool?
+    public var bc_role: Int?
+    public var bc_vx: Double?
+    public var bc_vy: Double?
     
-    public init(id: Int, x: Double, y: Double, is_boundary: Bool? = false) {
+    public init(id: Int, x: Double, y: Double, is_boundary: Bool? = false, bc_role: Int? = nil, bc_vx: Double? = nil, bc_vy: Double? = nil) {
         self.id = id
         self.x = x
         self.y = y
         self.is_boundary = is_boundary
+        self.bc_role = bc_role
+        self.bc_vx = bc_vx
+        self.bc_vy = bc_vy
     }
 }
 

@@ -1054,51 +1054,39 @@ std::pair<std::vector<Point2D>, DomainDimensions> LatticeGenerator::generate_rot
     double cos_th = std::cos(theta);
     double sin_th = std::sin(theta);
 
+    // Rotated crystal basis vectors
+    double a1_x = a * cos_th;
+    double a1_y = a * sin_th;
+    double a2_x = (lattice_type == "triangular") ? a * (0.5 * cos_th - 0.5 * sqrt3 * sin_th) : (-a * sin_th);
+    double a2_y = (lattice_type == "triangular") ? a * (0.5 * sin_th + 0.5 * sqrt3 * cos_th) : (a * cos_th);
+    double d_min = (lattice_type == "triangular") ? (a * sqrt3 * 0.5) : a;
+
+    // Centered at box midpoint
     double cx = size_x * 0.5;
     double cy = size_y * 0.5;
-
-    // Search range in crystal lattice coordinates to cover the bounding circle
-    double max_dim = std::max(size_x, size_y);
-    int margin = static_cast<int>(std::ceil(max_dim / a)) + 4;
+    double r_box = std::hypot(cx, cy);
+    // Integer span sufficient to strictly cover the bounding circumscribed disk
+    int n_span = static_cast<int>(std::ceil(r_box / d_min)) + 4;
 
     std::vector<Point2D> points;
     double tol = 1e-5;
 
-    if (lattice_type == "square") {
-        for (int i = -margin; i <= margin + nx; ++i) {
-            for (int j = -margin; j <= margin + ny; ++j) {
-                double px = i * a - cx;
-                double py = j * a - cy;
-                double rx = cos_th * px - sin_th * py + cx;
-                double ry = sin_th * px + cos_th * py + cy;
+    for (int i = -n_span; i <= n_span; ++i) {
+        for (int j = -n_span; j <= n_span; ++j) {
+            double rx = cx + i * a1_x + j * a2_x;
+            double ry = cy + i * a1_y + j * a2_y;
 
-                if (rx >= -tol && rx <= size_x + tol && ry >= -tol && ry <= size_y + tol) {
-                    rx = std::max(0.0, std::min(size_x, rx));
-                    ry = std::max(0.0, std::min(size_y, ry));
-                    points.push_back(Point2D(rx, ry));
-                }
-            }
-        }
-    } else { // triangular
-        for (int i = -margin; i <= margin + nx; ++i) {
-            for (int j = -margin; j <= margin + ny; ++j) {
-                double px = (i + 0.5 * j) * a - cx;
-                double py = (j * sqrt3 * 0.5) * a - cy;
-                double rx = cos_th * px - sin_th * py + cx;
-                double ry = sin_th * px + cos_th * py + cy;
-
-                if (rx >= -tol && rx <= size_x + tol && ry >= -tol && ry <= size_y + tol) {
-                    rx = std::max(0.0, std::min(size_x, rx));
-                    ry = std::max(0.0, std::min(size_y, ry));
-                    points.push_back(Point2D(rx, ry));
-                }
+            if (rx >= -tol && rx <= size_x + tol && ry >= -tol && ry <= size_y + tol) {
+                rx = std::max(0.0, std::min(size_x, rx));
+                ry = std::max(0.0, std::min(size_y, ry));
+                points.push_back(Point2D(rx, ry));
             }
         }
     }
 
     std::cout << "[Fixed Rotated] Generated " << points.size() << " points for "
               << lattice_type << " lattice at θ=" << rotation_angle_degrees << "° in box "
-              << size_x << " x " << size_y << std::endl;
+              << size_x << " x " << size_y << " (100% full fill)" << std::endl;
 
     return {points, DomainDimensions(size_x, size_y)};
 }

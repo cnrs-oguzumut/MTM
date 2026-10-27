@@ -1,5 +1,6 @@
 #include "../../include/experiments/experiment_includes.h"
 #include "../../include/experiments/stability_monitor.h"
+#include "../../include/geometry/MacroscopicGeometry.h"
 
 void memory(int caller_id, int nx, int ny, int restart_iteration) {
   // Restart simulation from a saved iteration
@@ -468,9 +469,18 @@ void example_1_conti_zanzotto_loading(
     int csl_ky,
     double rotation_angle,
     const std::string& bc,
-    int potential_mode) {
+    int potential_mode,
+    const std::string& geometry_json) {
 
-  bool pbc = (bc == "periodic" || bc == "Periodic" || bc == "pbc" || bc == "PBC");
+  MacroscopicGeometryConfig macro_geom;
+  bool has_custom_geom = false;
+  if (!geometry_json.empty()) {
+    if (MacroscopicGeometryConfig::loadFromJSON(geometry_json, macro_geom) && macro_geom.enabled) {
+      has_custom_geom = true;
+    }
+  }
+
+  bool pbc = !has_custom_geom && (bc == "periodic" || bc == "Periodic" || bc == "pbc" || bc == "PBC");
 
   // Parameters for lattice
   if (nx <= 0 || ny <= 0) {
@@ -613,7 +623,10 @@ void example_1_conti_zanzotto_loading(
       square_points = pts;
       square_points_ref = pts;
       domain_dims = dims;
-      offsets = {0.0, 0.0};
+      offsets = (lattice_type == "square")
+          ? std::array<double, 2>{lattice_constant, lattice_constant}
+          : std::array<double, 2>{lattice_constant / 2.0,
+                                  (sqrt(3.0) / 2.0) * lattice_constant};
       theta_rot = rotation_angle;
       std::cout << "[Fixed BC] Generated rotated " << lattice_type << " lattice with arbitrary angle θ="
                 << rotation_angle << "°: " << pts.size() << " points ("
@@ -633,6 +646,11 @@ void example_1_conti_zanzotto_loading(
                                 (sqrt(3.0) / 2.0) * lattice_constant};
   }
 
+  if (has_custom_geom) {
+    square_points = macro_geom.carveLatticePoints(square_points, lattice_constant);
+    square_points_ref = square_points;
+  }
+
   int original_domain_size = square_points.size();
   std::cout << "Generated lattice with " << original_domain_size << " points"
             << std::endl;
@@ -649,8 +667,18 @@ void example_1_conti_zanzotto_loading(
                                         offsets);
 
   // Boundary conditions
-  auto [interior_mapping, full_mapping] =
-      create_dof_mapping_original(square_points, 0.25 * lattice_constant, pbc);
+  std::vector<std::pair<int, int>> interior_mapping;
+  std::vector<std::pair<int, int>> full_mapping;
+  std::vector<int> node_bc_role;
+  std::vector<Eigen::Vector2d> node_bc_velocity;
+
+  if (has_custom_geom) {
+    macro_geom.buildBoundaryDOFs(square_points, interior_mapping, full_mapping,
+                                 node_bc_role, node_bc_velocity);
+  } else {
+    std::tie(interior_mapping, full_mapping) =
+        create_dof_mapping_original(square_points, 0.25 * lattice_constant, pbc);
+  }
   // auto [interior_mapping, full_mapping] =
   // create_dof_mapping_original(square_points, lattice_constant, pbc);
 
@@ -735,8 +763,14 @@ void example_1_conti_zanzotto_loading(
     std::cout << "[RESTART] Loaded " << square_points.size() << " nodes, "
               << elements.size() << " elements (" << active_elements.size() << " active)" << std::endl;
   } else {
+    if (has_custom_geom) {
+      AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &square_points_ref);
+    } else {
+      AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
+    }
     auto [mesh_elems, mesh_act_elems] = mesher.createMesh(
         square_points, free_dofs, Eigen::Matrix2d::Identity(), &dndx);
+    AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
     elements = std::move(mesh_elems);
     active_elements = std::move(mesh_act_elems);
     for (auto &element : elements) {
@@ -831,8 +865,12 @@ void example_1_conti_zanzotto_loading(
     Eigen::Matrix2d dF_ext;
     dF_ext << 1.0, step_size, 0.0, 1.0;
 
-    // Apply initial noise (only for first iteration of a fresh run)
-    if (i == 0 && restart_chk == nullptr) {
+    if (has_custom_geom) {
+      F_ext = macro_geom.computeMacroscopicF(alpha);
+      macro_geom.applyLoadStep(
+          square_points, square_points_ref, node_bc_role, node_bc_velocity,
+          alpha, step_size, (i == 0 && restart_chk == nullptr), seed, noise_level);
+    } else if (i == 0 && restart_chk == nullptr) {
       if (noise_level > 0.0) {
         // Use deterministic seed so both positive and negative runs share the exact same initial noise
         std::mt19937 gen(seed);
@@ -877,7 +915,7 @@ void example_1_conti_zanzotto_loading(
 
     ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
                                                  stress_tensor, true);
-    pre_stress = stress_tensor(0, 1);
+    pre_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor) : stress_tensor(0, 1);
     pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     std::cout << "Pre-optimization - Energy: " << pre_energy
@@ -960,7 +998,7 @@ void example_1_conti_zanzotto_loading(
     stress_tensor.setZero();
     ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy,
                                                  stress_tensor, true);
-    post_stress = stress_tensor(0, 1);
+    post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor) : stress_tensor(0, 1);
     post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     std::cout << "Post-optimization - Energy: " << post_energy
@@ -976,7 +1014,19 @@ void example_1_conti_zanzotto_loading(
     // bool shouldRemesh2 =
     //     change_info.has_changed && post_energy < post_energy_previous;
 
-    bool shouldRemesh = enable_remeshing && (post_energy < post_energy_previous || i == 0);
+    // Topological trigger: attempt a Delaunay reconnection at EVERY load step.
+    // The previous gate (post_energy < post_energy_previous) compared energies
+    // at two DIFFERENT load levels: under strain control the loading increment
+    // (~ sigma * d_alpha * V) almost always exceeds the energy released by a
+    // local slip, so remeshing was effectively only attempted at i == 0.
+    // perform_remeshing_loop_reduction() now exits immediately (no relaxation)
+    // when the Delaunay connectivity of the current configuration is unchanged,
+    // so this costs only one triangulation per step when nothing happens.
+    bool shouldRemesh = enable_remeshing;
+    if (const char *gate = std::getenv("MTM_REMESH_GATE")) {
+      if (std::string(gate) == "energy") // legacy gate, for A/B comparison only
+        shouldRemesh = enable_remeshing && (post_energy < post_energy_previous || i == 0);
+    }
     int remesh_iterations = 0;
 
     // Debug output
@@ -1011,7 +1061,7 @@ void example_1_conti_zanzotto_loading(
 
       remesh_iterations = iterations;
       post_energy = post_energy_re;
-      post_stress = stress_tensor_re(0, 1);
+      post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor_re) : stress_tensor_re(0, 1);
 
       // ============================================
       // SYNC LOCAL VARIABLES WITH USERDATA
@@ -1295,7 +1345,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                int csl_ky,
                                                double rotation_angle,
                                                const std::string& bc,
-                                               int potential_mode) {
+                                               int potential_mode,
+                                               const std::string& geometry_json) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1317,7 +1368,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    csl_ky,
                                    rotation_angle,
                                    bc,
-                                   potential_mode);
+                                   potential_mode,
+                                   geometry_json);
 }
 
 void restart_zanzotto_simulation(const std::string& checkpoint_path,

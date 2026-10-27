@@ -116,6 +116,7 @@ int main(int argc, char **argv) {
   int stiffness_csl_ky = 1;
   bool stiffness_initial_mesh_only = false;
   std::string stiffness_initial_mesh_json = "scratch/initial_lattice.json";
+  std::string geometry_json = "";
 
   // Shift / Staircase flags
   double shift_amplitude = 2.0;
@@ -151,6 +152,10 @@ int main(int argc, char **argv) {
       run_stiffness_study = true;
     } else if (arg.rfind("--initial-mesh-json=", 0) == 0) {
       stiffness_initial_mesh_json = arg.substr(20);
+    } else if (arg.rfind("--geometry-json=", 0) == 0) {
+      geometry_json = arg.substr(16);
+    } else if (arg.rfind("--geometry=", 0) == 0) {
+      geometry_json = arg.substr(11);
     } else if (arg == "--use-rotation" || arg == "--rotated") {
       stiffness_use_rotation = true;
     } else if (arg.rfind("--rotation-angle=", 0) == 0) {
@@ -554,6 +559,7 @@ int main(int argc, char **argv) {
     stiff_cfg.csl_ky = stiffness_csl_ky;
     stiff_cfg.initial_mesh_only = stiffness_initial_mesh_only;
     stiff_cfg.initial_mesh_json = stiffness_initial_mesh_json;
+    stiff_cfg.geometry_json = geometry_json;
 
     runStiffnessShearStudy(stiff_cfg);
     return 0;
@@ -571,10 +577,10 @@ int main(int argc, char **argv) {
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
     example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode, geometry_json);
   } else {
     example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode, geometry_json);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

@@ -35,6 +35,7 @@ struct StiffnessShearConfig {
     int csl_ky = 1;                      // Supercell replication multiplier along y
     bool initial_mesh_only = false;      // If true, only generate initial mesh and export JSON (fast preview)
     std::string initial_mesh_json = "scratch/initial_lattice.json";
+    std::string geometry_json = "";      // Optional macroscopic geometry & boundary conditions JSON
 };
 
 struct StiffnessShearPoint {

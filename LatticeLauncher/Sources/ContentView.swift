@@ -18,6 +18,7 @@ enum AppNavigationTab: String, CaseIterable, Identifiable {
 
 enum MainDisplayTab: String, CaseIterable, Identifiable {
     case curve = "Curve"
+    case geometryStudio = "Geometry & BCs"
     case initialMesh = "Initial Mesh"
     case terminal = "Terminal Log"
     
@@ -27,6 +28,8 @@ enum MainDisplayTab: String, CaseIterable, Identifiable {
         switch self {
         case .curve:
             return mode == .volterra ? "Dislocation Profiles" : "Stress–Strain Curve"
+        case .geometryStudio:
+            return "Macroscopic Geometry & BC Studio"
         case .initialMesh:
             return "Initial Mesh"
         case .terminal:
@@ -37,6 +40,7 @@ enum MainDisplayTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .curve: return "chart.xyaxis.line"
+        case .geometryStudio: return "skew"
         case .initialMesh: return "square.stack.3d.down.right.fill"
         case .terminal: return "terminal"
         }
@@ -106,13 +110,21 @@ struct ContentView: View {
                         
                         Divider()
                         
-                        // Main Content View: Live Curve, Initial Mesh, or Terminal
+                        // Main Content View: Live Curve, Geometry Studio, Initial Mesh, or Terminal
                         if displayTab == .curve {
                             if config.mode == .volterra {
                                 DislocationProfileChartView()
                             } else {
                                 StressStrainChartView()
                             }
+                        } else if displayTab == .geometryStudio {
+                            GeometryBuilderView(
+                                config: config,
+                                previewManager: previewManager,
+                                onSwitchToCarvedMesh: {
+                                    displayTab = .initialMesh
+                                }
+                            )
                         } else if displayTab == .initialMesh {
                             InitialLatticeVisualizerView(manager: previewManager)
                         } else {
@@ -282,20 +294,153 @@ struct SidebarControlsView: View {
                             Divider().padding(.vertical, 2)
                             
                             // Boundary Conditions Selector
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Boundary Condition:")
-                                    .font(.subheadline)
-                                Picker("Boundary Condition", selection: $config.boundaryCondition) {
-                                    ForEach(BoundaryConditionMode.allCases) { bc in
-                                        Text(bc.displayName).tag(bc)
+                            if config.geometryConfig.enabled {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("Boundary Condition:")
+                                            .font(.subheadline)
+                                        Spacer()
+                                        HStack(spacing: 4) {
+                                            Circle().fill(Color(red: 0.31, green: 0.85, blue: 0.78)).frame(width: 6, height: 6)
+                                            Text("Managed by Geometry Studio")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(BlueHour.ice)
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(BlueHour.pillSurface, in: RoundedRectangle(cornerRadius: 5))
                                     }
+                                    Text("Global PBC is disabled. Surface boundary conditions (Free, Fixed, Driven, Affine) are configured per-region in the Geometry & BC Studio below.")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
                                 }
-                                .pickerStyle(.segmented)
+                            } else {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Boundary Condition:")
+                                        .font(.subheadline)
+                                    Picker("Boundary Condition", selection: $config.boundaryCondition) {
+                                        ForEach(BoundaryConditionMode.allCases) { bc in
+                                            Text(bc.displayName).tag(bc)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                }
                             }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
+                }
+                
+                if config.mode != .volterra && config.mode != .shift {
+                    // 2b. Macroscopic Geometry & Regional Boundary Conditions Studio
+                    GroupBox(label: Label("Macroscopic Geometry & BCs", systemImage: "skew")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: Binding(
+                                get: { config.geometryConfig.enabled },
+                                set: { enabled in
+                                    config.geometryConfig.enabled = enabled
+                                    if enabled {
+                                        config.boundaryCondition = .fixed
+                                        if config.alphaStart > 0.01 {
+                                            config.alphaStart = 0.0
+                                            config.alphaEnd = 0.15
+                                            config.stepSize = 0.001
+                                        }
+                                    }
+                                }
+                            )) {
+                                Text("Carve Macroscopic Shape & Custom BCs")
+                                    .font(.caption.bold())
+                            }
+                            .toggleStyle(.switch)
+                            
+                            if config.geometryConfig.enabled {
+                                // Preset quick-selector
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Engineering Specimen Presets:")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 5) {
+                                            ForEach(GeometryEngineeringPreset.allCases) { preset in
+                                                let isSel = (config.geometryConfig.preset_name == preset.rawValue)
+                                                Button(action: {
+                                                    config.geometryConfig.applyPreset(preset)
+                                                }) {
+                                                    Text(preset.title)
+                                                        .font(.system(size: 10, weight: isSel ? .bold : .medium))
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .tint(isSel ? BlueHour.accent : nil)
+                                                .controlSize(.mini)
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                HStack(spacing: 8) {
+                                    Label(config.geometryConfig.outer_shape.displayName, systemImage: config.geometryConfig.outer_shape.icon)
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundColor(BlueHour.ice)
+                                    Text("• \(config.geometryConfig.cutouts.count) cutout(s)")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(BlueHour.mist)
+                                    Text("• \(config.geometryConfig.boundary_rules.count) BC rule(s)")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(BlueHour.mist)
+                                }
+                                
+                                Text("Discrete \(config.latticeSymmetry.displayName) unit cell size a₀ is strictly preserved.")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            HStack(spacing: 8) {
+                                Button(action: {
+                                    if !config.geometryConfig.enabled {
+                                        config.geometryConfig.enabled = true
+                                        config.boundaryCondition = .fixed
+                                    }
+                                    displayTab = .geometryStudio
+                                }) {
+                                    Label("Open Geometry Studio", systemImage: "slider.horizontal.below.square.and.square.filled")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                
+                                if config.geometryConfig.enabled {
+                                    Button(action: {
+                                        let root = SimulationConfig.detectProjectRoot()
+                                        let scratchDir = "\(root)/scratch"
+                                        try? FileManager.default.createDirectory(atPath: scratchDir, withIntermediateDirectories: true)
+                                        let geomPath = "\(scratchDir)/geometry_config.json"
+                                        try? config.geometryConfig.writeJSON(to: geomPath)
+                                        
+                                        previewManager.nx = config.nx
+                                        previewManager.ny = config.ny
+                                        previewManager.latticeSymmetry = config.latticeSymmetry
+                                        previewManager.potentialMode = config.potentialMode
+                                        previewManager.boundaryCondition = .fixed
+                                        previewManager.beta = config.beta
+                                        previewManager.bulkK = config.bulkK
+                                        previewManager.useRotation = config.useRotation
+                                        previewManager.rotationAngle = config.rotationAngle
+                                        previewManager.geometryJSONPath = geomPath
+                                        previewManager.generateInitialMeshPreview()
+                                        displayTab = .initialMesh
+                                    }) {
+                                        Label("Carved Mesh", systemImage: "eye.fill")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    }
                 }
                 
                 // 3. Lattice & Potential Model
@@ -392,9 +537,11 @@ struct SidebarControlsView: View {
                             .toggleStyle(.checkbox)
                             
                             if config.useRotation {
-                                if config.boundaryCondition == .fixed || config.mode == .shift {
+                                if config.boundaryCondition == .fixed || config.geometryConfig.enabled || config.mode == .shift {
                                     VStack(alignment: .leading, spacing: 6) {
-                                        Text(config.mode == .shift ? "Arbitrary Continuous Rotation (Staircase BC):" : "Arbitrary Continuous Rotation (Fixed BC):")
+                                        Text(config.geometryConfig.enabled
+                                             ? "Arbitrary Continuous Rotation (Finite Specimen in Geometry Studio):"
+                                             : (config.mode == .shift ? "Arbitrary Continuous Rotation (Staircase BC):" : "Arbitrary Continuous Rotation (Fixed BC):"))
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                         HStack {
@@ -504,7 +651,7 @@ struct SidebarControlsView: View {
                                 previewManager.ny = config.ny
                                 previewManager.latticeSymmetry = config.latticeSymmetry
                                 previewManager.potentialMode = config.potentialMode
-                                previewManager.boundaryCondition = (config.mode == .shift) ? .fixed : config.boundaryCondition
+                                previewManager.boundaryCondition = (config.mode == .shift || config.geometryConfig.enabled) ? .fixed : config.boundaryCondition
                                 previewManager.beta = config.beta
                                 previewManager.bulkK = config.bulkK
                                 previewManager.useRotation = config.useRotation
@@ -513,6 +660,16 @@ struct SidebarControlsView: View {
                                 previewManager.cslN = config.cslN
                                 previewManager.cslKx = config.cslKx
                                 previewManager.cslKy = config.cslKy
+                                if config.geometryConfig.enabled {
+                                    let root = SimulationConfig.detectProjectRoot()
+                                    let scratchDir = "\(root)/scratch"
+                                    try? FileManager.default.createDirectory(atPath: scratchDir, withIntermediateDirectories: true)
+                                    let geomPath = "\(scratchDir)/geometry_config.json"
+                                    try? config.geometryConfig.writeJSON(to: geomPath)
+                                    previewManager.geometryJSONPath = geomPath
+                                } else {
+                                    previewManager.geometryJSONPath = ""
+                                }
                                 previewManager.generateInitialMeshPreview()
                                 displayTab = .initialMesh
                             }) {

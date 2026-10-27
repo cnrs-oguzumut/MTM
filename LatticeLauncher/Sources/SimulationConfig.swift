@@ -178,6 +178,9 @@ public class SimulationConfig: ObservableObject {
     @Published public var customOutputDirectory: String = ""
     @Published public var useCustomDirectory: Bool = false
     
+    // 9. Macroscopic Geometry & Boundary Condition Studio
+    @Published public var geometryConfig: MacroscopicGeometryConfigModel = MacroscopicGeometryConfigModel()
+    
     public static func detectProjectRoot() -> String {
         let hardcodedDefault = "/Users/usalman/programming/FEM_2D/factorized/lattice_triangulation"
         let bundleURL = Bundle.main.bundleURL
@@ -239,13 +242,14 @@ public class SimulationConfig: ObservableObject {
         let latTag = latticeSymmetry == .triangular ? "_tri" : ""
         let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed) ? "_fixed" : ""
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
-        let rotTag = useRotation ? ((boundaryCondition == .fixed || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
+        let rotTag = useRotation ? ((boundaryCondition == .fixed || geometryConfig.enabled || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
         let relaxTag = (mode == .volterra && relaxMacroStress) ? "_relax" : ""
+        let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? "_\(geometryConfig.preset_name)" : ""
         if mode == .shift {
             let pertTag = shiftPerturbMesh ? "_pert" : ""
             return String(format: "run_shift_%dx%d_amp%.1f_%@%@%@%@%@", nx, ny, shiftAmplitude, remeshTag, pertTag, latTag, potTag, rotTag)
         }
-        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)"
+        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)"
     }
     
     public var targetDirectory: String {
@@ -364,15 +368,32 @@ public class SimulationConfig: ObservableObject {
             args.append("--eig-every=0")
         }
         
-        // Boundary condition
+        // Boundary condition & Macroscopic Geometry Studio
         if mode != .shift && mode != .volterra {
-            args.append("--bc=\(boundaryCondition.rawValue)")
+            if geometryConfig.enabled {
+                args.append("--bc=fixed")
+                let scratchDir = "\(projectRoot)/scratch"
+                try? FileManager.default.createDirectory(atPath: scratchDir, withIntermediateDirectories: true)
+                let scratchGeomPath = "\(scratchDir)/geometry_config.json"
+                _ = try? geometryConfig.writeJSON(to: scratchGeomPath)
+                
+                let targetDir = targetDirectory
+                try? FileManager.default.createDirectory(atPath: targetDir, withIntermediateDirectories: true)
+                let runGeomPath = "\(targetDir)/geometry_config.json"
+                if (try? geometryConfig.writeJSON(to: runGeomPath)) != nil {
+                    args.append("--geometry-json=\(runGeomPath)")
+                } else {
+                    args.append("--geometry-json=\(scratchGeomPath)")
+                }
+            } else {
+                args.append("--bc=\(boundaryCondition.rawValue)")
+            }
         }
         
         // Rotated Crystal Orientation / CSL
         if mode != .volterra && useRotation {
             args.append("--use-rotation")
-            if boundaryCondition == .fixed || mode == .shift {
+            if boundaryCondition == .fixed || geometryConfig.enabled || mode == .shift {
                 args.append(String(format: "--rotation-angle=%.4f", rotationAngle))
             } else {
                 args.append("--csl-m=\(cslM)")

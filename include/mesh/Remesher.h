@@ -15,6 +15,7 @@
 // Forward declarations
 class Triangle;
 class ElementTriangle2D;
+struct MacroscopicGeometryConfig;
 
 /**
  * AdaptiveMesher - A class for generating and updating finite element meshes
@@ -182,6 +183,9 @@ public:
      * @param tolerance New tolerance value
      */
     void setUniqueTriangleTolerance(double tolerance) { unique_triangle_tolerance = tolerance; }
+
+    static void setGlobalGeometryFilter(const MacroscopicGeometryConfig* geom,
+                                        const std::vector<Point2D>* ref_points = nullptr);
 
 private:
     Point2D domain_dims;

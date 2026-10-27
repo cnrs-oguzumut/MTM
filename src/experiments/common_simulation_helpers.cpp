@@ -25,6 +25,40 @@ bool hasConnectivityChanged(const std::vector<ElementTriangle2D> &old_elements,
   return false;
 }
 
+// Order-independent topological comparison: compares the SET of active
+// triangles (as sorted node-index triplets). Robust to element re-ordering
+// (std::sort by first node is not stable for ties), so it only reports a change
+// when the Delaunay connectivity of the current configuration truly differs.
+static bool hasTopologyChanged(const std::vector<ElementTriangle2D> &old_elements,
+                               const std::vector<ElementTriangle2D> &new_elements,
+                               const std::vector<size_t> &old_active,
+                               const std::vector<size_t> &new_active) {
+  if (old_active.size() != new_active.size()) return true;
+  auto key_set = [](const std::vector<ElementTriangle2D> &elems,
+                    const std::vector<size_t> &active) {
+    std::vector<std::array<int, 3>> keys;
+    keys.reserve(active.size());
+    for (size_t idx : active) {
+      std::array<int, 3> k = {static_cast<int>(elems[idx].getNodeIndex(0)),
+                              static_cast<int>(elems[idx].getNodeIndex(1)),
+                              static_cast<int>(elems[idx].getNodeIndex(2))};
+      std::sort(k.begin(), k.end());
+      keys.push_back(k);
+    }
+    std::sort(keys.begin(), keys.end());
+    return keys;
+  };
+  auto ko = key_set(old_elements, old_active);
+  auto kn = key_set(new_elements, new_active);
+  std::vector<std::array<int, 3>> diff;
+  std::set_symmetric_difference(ko.begin(), ko.end(), kn.begin(), kn.end(),
+                                std::back_inserter(diff));
+  std::cout << "[RemeshTopo] old_active=" << old_active.size()
+            << " new_active=" << new_active.size()
+            << " differing_triangles=" << diff.size() << std::endl;
+  return !diff.empty();
+}
+
 std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     alglib::real_1d_array &x, const UserData *userData,
     const std::vector<int> &contact_atoms,
@@ -122,6 +156,25 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       element.set_dof_mapping(full_mapping);
     }
 
+    // === TOPOLOGICAL TRIGGER ===
+    // If the Delaunay triangulation of the current configuration is identical
+    // to the existing mesh, there is nothing to reconnect: stop immediately
+    // (avoids accepting round-off ΔE ~ 1e-13 as a "successful" remesh pass).
+    const bool topo_changed =
+        hasTopologyChanged(old_elements, elements, old_active_elements, active_elements);
+    if (!topo_changed) {
+      std::cout << "Delaunay connectivity unchanged -> no reconnection needed (pass "
+                << mesh_iteration << ")" << std::endl;
+      elements = old_elements;
+      active_elements = old_active_elements;
+      final_energy = energy_old;
+      stress_tensor = stress_old;
+      has_changes = (accepted_remesh_count > 0) ? 1 : 0;
+      should_remesh = false;
+      mesh_iteration++;
+      break;
+    }
+
     UserData newUserData(square_points, elements, userData->calculator,
                          potential_func, potential_func_der, zero,
                          ideal_lattice_parameter, F_ext, interior_mapping,
@@ -209,7 +262,12 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       ConfigurationSaver::writeToVTKFile(ss_rel.str(), square_points, elements, &newUserData_after, true, {}, 0.0);
     }
 
-    if (energy_change >= 0) {
+    // Accept energy-neutral reconnections: with Lagrange reduction a Delaunay
+    // flip between lattice-equivalent cells is (ideally) energy-neutral, so a
+    // strict ΔE < 0 test would reject valid flips due to L-BFGS round-off.
+    // Only genuine energy increases (beyond a relative tolerance) are rejected.
+    const double remesh_energy_tol = 1e-8 * std::max(1.0, std::abs(energy_old));
+    if (energy_change > remesh_energy_tol) {
       std::cout << "⚠️  REJECTING remesh - energy increased!" << std::endl;
       std::cout << "    Restoring previous state..." << std::endl;
 

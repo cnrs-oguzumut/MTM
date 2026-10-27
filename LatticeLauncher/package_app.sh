@@ -164,6 +164,10 @@ if [ -f "${ROOT_DIR}/docs/discrete_burgers_circuit_method.pdf" ]; then
     cp "${ROOT_DIR}/docs/discrete_burgers_circuit_method.pdf" "${DMG_STAGING}/Discrete_Burgers_Circuit_Guide.pdf"
 fi
 
-hdiutil create -volname "Lattice Launcher" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH"
+if command -v hdiutil >/dev/null 2>&1; then
+    hdiutil create -volname "Lattice Launcher" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" || true
+    if [ -f "$DMG_PATH" ]; then
+        echo "Created standalone DMG installer: ${DMG_PATH}"
+    fi
+fi
 rm -rf "$DMG_STAGING"
-echo "Created standalone DMG installer: ${DMG_PATH}"

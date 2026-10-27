@@ -212,6 +212,7 @@ public class StiffnessStudyManager: ObservableObject {
     // Initial Lattice Mesh Data
     @Published public var initialMeshData: InitialMeshModel? = nil
     @Published public var isGeneratingPreview: Bool = false
+    @Published public var geometryJSONPath: String = ""
     
     // Process State
     @Published public var isRunning: Bool = false
@@ -303,6 +304,10 @@ public class StiffnessStudyManager: ObservableObject {
             } else {
                 args.append("--rotation-angle=\(rotationAngle)")
             }
+        }
+        
+        if !geometryJSONPath.isEmpty {
+            args.append("--geometry-json=\(geometryJSONPath)")
         }
         
         p.arguments = args

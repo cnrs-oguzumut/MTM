@@ -33,6 +33,7 @@ public struct InitialLatticeVisualizerView: View {
     @State private var showElementLabels: Bool = false
     @State private var highlightCrossing: Bool = true
     @State private var showDomainBorders: Bool = true
+    @State private var showBCVectors: Bool = true
     @State private var nodeScale: Double = 1.0
     
     // Pan & Zoom
@@ -110,6 +111,13 @@ public struct InitialLatticeVisualizerView: View {
         .onAppear {
             if manager.initialMeshData == nil {
                 manager.generateInitialMeshPreview()
+            } else if manager.initialMeshData?.bc == "fixed" {
+                viewMode = .primary
+            }
+        }
+        .onChange(of: manager.initialMeshData?.bc) { newBC in
+            if newBC == "fixed" {
+                viewMode = .primary
             }
         }
     }
@@ -167,6 +175,7 @@ public struct InitialLatticeVisualizerView: View {
                     Toggle("Element ID Numbers", isOn: $showElementLabels)
                     Toggle("Highlight Boundary Crossing", isOn: $highlightCrossing)
                     Toggle("Domain Box Borders", isOn: $showDomainBorders)
+                    Toggle("Show Driven BC Arrows", isOn: $showBCVectors)
                 } label: {
                     Label("Layers", systemImage: "square.3.layers.3d")
                         .font(.caption)
@@ -222,6 +231,9 @@ public struct InitialLatticeVisualizerView: View {
                 
                 // Lattice Info Badge
                 if let mesh = mesh {
+                    let freeCount = mesh.primary_nodes.filter { ($0.bc_role ?? ($0.is_boundary == true ? 1 : 0)) == 0 }.count
+                    let fixedCount = mesh.primary_nodes.filter { ($0.bc_role ?? ($0.is_boundary == true ? 1 : 0)) == 1 }.count
+                    let drivenCount = mesh.primary_nodes.filter { ($0.bc_role ?? 0) == 2 }.count
                     HStack(spacing: 6) {
                         Text("\(mesh.lattice_type.capitalized) | θ=\(String(format: "%.2f°", mesh.rotation_angle))")
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -229,7 +241,7 @@ public struct InitialLatticeVisualizerView: View {
                             Text("Σ=\(mesh.sigma) (m=\(mesh.m), n=\(mesh.n))")
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                         }
-                        Text("Box: \(String(format: "%.2f×%.2f", mesh.Lx, mesh.Ly)) | \(mesh.num_primary_nodes) atoms | \(mesh.num_elements) elements")
+                        Text("\(mesh.num_primary_nodes) atoms (\(freeCount) Free, \(fixedCount) Fixed, \(drivenCount) Driven) | \(mesh.num_elements) elements")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(.secondary)
                     }
@@ -419,11 +431,38 @@ public struct InitialLatticeVisualizerView: View {
                     for node in mesh.primary_nodes {
                         let pt = mapPoint(node.x, node.y)
                         let circleRect = CGRect(x: pt.x - r, y: pt.y - r, width: 2 * r, height: 2 * r)
-                        let isBnd = (node.is_boundary == true)
+                        let role = node.bc_role ?? ((node.is_boundary == true) ? 1 : 0)
                         
-                        let fillCol = isBnd ? Color.red : Color.blue
+                        let fillCol: Color = {
+                            if role == 2 { return Color(red: 0.31, green: 0.80, blue: 0.77) } // Driven Cyan
+                            if role == 1 { return Color(red: 1.00, green: 0.42, blue: 0.42) } // Fixed Coral Red
+                            return Color.blue // Free Interior/Surface
+                        }()
                         ctx.fill(Path(ellipseIn: circleRect), with: .color(fillCol))
                         ctx.stroke(Path(ellipseIn: circleRect), with: .color(Color.white), lineWidth: 0.8)
+                        
+                        // Draw velocity arrow for Driven nodes
+                        if showBCVectors && role == 2 {
+                            let vx = node.bc_vx ?? 0.0
+                            let vy = node.bc_vy ?? 0.0
+                            let mag = hypot(vx, vy)
+                            if mag > 1e-8 {
+                                let arrowLen: CGFloat = min(22.0, max(9.0, CGFloat(scale) * 0.7))
+                                let ux = CGFloat(vx / mag)
+                                let uy = -CGFloat(vy / mag)
+                                let tip = CGPoint(x: pt.x + ux * arrowLen, y: pt.y + uy * arrowLen)
+                                var vPath = Path()
+                                vPath.move(to: pt)
+                                vPath.addLine(to: tip)
+                                let headLen: CGFloat = 4.5
+                                let angle = atan2(uy, ux)
+                                vPath.move(to: tip)
+                                vPath.addLine(to: CGPoint(x: tip.x - headLen * cos(angle - 0.5), y: tip.y - headLen * sin(angle - 0.5)))
+                                vPath.move(to: tip)
+                                vPath.addLine(to: CGPoint(x: tip.x - headLen * cos(angle + 0.5), y: tip.y - headLen * sin(angle + 0.5)))
+                                ctx.stroke(vPath, with: .color(Color(red: 0.31, green: 0.80, blue: 0.77)), lineWidth: 1.3)
+                            }
+                        }
                         
                         if showNodeLabels && zoomScale >= 1.5 {
                             let label = Text("\(node.id)")
