@@ -593,7 +593,9 @@ void MacroscopicGeometryConfig::updateIndenterContactKinematics(
         if (points_ref[i].coord.y() >= y_cutoff) {
             auto contact = evaluateIndenterContact(current_points[i].coord, alpha, 1e-5);
             if (contact.in_contact) {
-                current_points[i].coord = contact.surface_point;
+                // Place atom 0.5e-5 inside the 1e-5 detection band (on the exact surface)
+                // so re-evaluating at the same alpha never drops contact due to roundoff.
+                current_points[i].coord = contact.surface_point - 0.5e-5 * contact.normal;
                 node_bc_role[i] = 1; // Pinned on indenter surface
                 direct_contact.push_back(static_cast<int>(i));
             }

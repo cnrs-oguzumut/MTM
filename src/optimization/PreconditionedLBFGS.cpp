@@ -245,10 +245,9 @@ FastStiffnessAssembler::assembleStiffness(const alglib::real_1d_array &x,
       }
   }
 
-  // Add 2x2 nodal Hessian blocks for active RepulsivePenalty indenter contacts
+  // Add 2x2 nodal Hessian blocks for active indenter contacts on free DOFs
   if (userData->macro_geom_ptr != nullptr &&
-      userData->macro_geom_ptr->isIndenterActive() &&
-      userData->macro_geom_ptr->indenter.contact_mode == IndenterContactMode::RepulsivePenalty) {
+      userData->macro_geom_ptr->isIndenterActive()) {
     const int n = n_nodes_;
     for (int i = 0; i < n; ++i) {
       int dof_idx = userData->interior_mapping[i].second;

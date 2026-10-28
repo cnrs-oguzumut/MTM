@@ -438,18 +438,20 @@ public class ProcessRunner: ObservableObject {
     }
     
     private func parseMetrics(from line: String) {
-        // Parse step progress: "Step 00120 | alpha = 0.1472 | E = -1234.56 | sigma = 0.281"
+        // Parse step progress: "Step   42/1250 | alpha = 0.033600 | E = 1.47195e-01 | stress = 1.86084e+00 | mesh: unchanged (39204 tris) | 0.04s"
         if line.contains("Step") || line.contains("step") {
-            let parts = line.components(separatedBy: CharacterSet(charactersIn: ",| \t"))
+            let parts = line
+                .components(separatedBy: CharacterSet(charactersIn: ",| \t=/"))
+                .filter { !$0.isEmpty }
             for (idx, p) in parts.enumerated() {
                 if p.lowercased() == "step" && idx + 1 < parts.count, let s = Int(parts[idx + 1]) {
                     self.currentStep = s
                 }
-                if p.lowercased().contains("alpha") && idx + 1 < parts.count, let a = Double(parts[idx + 1].replacingOccurrences(of: "=", with: "")) {
+                if p.lowercased() == "alpha" && idx + 1 < parts.count, let a = Double(parts[idx + 1]) {
                     self.currentAlpha = a
                 }
-                if (p.lowercased().contains("sigma") || p.lowercased().contains("stress")) && idx + 1 < parts.count,
-                   let val = Double(parts[idx + 1].replacingOccurrences(of: "=", with: "")) {
+                if (p.lowercased() == "sigma" || p.lowercased() == "stress") && idx + 1 < parts.count,
+                   let val = Double(parts[idx + 1]) {
                     self.currentStress = val
                 }
             }

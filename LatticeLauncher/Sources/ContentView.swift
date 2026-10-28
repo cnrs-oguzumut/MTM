@@ -1073,6 +1073,24 @@ struct TerminalView: View {
         return logLines.filter { $0.text.localizedCaseInsensitiveContains(filterText) }
     }
     
+    private func colorForLine(_ msg: LogMessage) -> Color {
+        if msg.isError { return Color.red }
+        let t = msg.text
+        if t.contains("[AVALANCHE") || t.contains("⚡") {
+            return Color.orange
+        }
+        if t.contains("[Remesh") || t.contains("↻") || t.contains("mesh: remeshed") {
+            return Color.cyan
+        }
+        if t.contains("[VTK Snapshot]") || t.contains("💾") {
+            return Color.green
+        }
+        if t.contains("[Triangulation]") || t.contains("[MacroscopicGeometry]") || t.contains("[POTENTIAL]") || t.contains("[Setup]") {
+            return Color.yellow.opacity(0.9)
+        }
+        return BlueHour.ice
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Search & Tools Bar
@@ -1105,8 +1123,8 @@ struct TerminalView: View {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(filteredLines) { msg in
                             Text(msg.text)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(msg.isError ? Color.red : BlueHour.ice)
+                                .font(.system(size: 11, weight: (msg.text.contains("[AVALANCHE") || msg.text.contains("[Triangulation]")) ? .semibold : .regular, design: .monospaced))
+                                .foregroundColor(colorForLine(msg))
                                 .textSelection(.enabled)
                                 .id(msg.id)
                         }

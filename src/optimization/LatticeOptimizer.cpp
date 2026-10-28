@@ -315,20 +315,24 @@ std::vector<size_t> initialize_active_elements(
     std::vector<bool> is_dof;
     std::vector<size_t> active_elements;
     bool is_initialized = false;
+    const bool verbose_mesh = (std::getenv("MTM_VERBOSE_MESH") != nullptr);
     
-    // === DEBUGGING ===
-    std::cout << "[DEBUG] is_initialized: " << (is_initialized ? "true" : "false") << std::endl;
+    if (verbose_mesh) {
+        std::cout << "[DEBUG] is_initialized: " << (is_initialized ? "true" : "false") << std::endl;
+    }
     
     // Initialize only on first call
     if (!is_initialized) {
-        // === DEBUGGING ===
-        std::cout << "[DEBUG] Initializing static data structures..." << std::endl;
+        if (verbose_mesh) {
+            std::cout << "[DEBUG] Initializing static data structures..." << std::endl;
+        }
         
         // Create DOF lookup array
         is_dof.resize(num_points, false);
         
-        // === DEBUGGING ===
-        std::cout << "[DEBUG] Resized is_dof vector to " << is_dof.size() << std::endl;
+        if (verbose_mesh) {
+            std::cout << "[DEBUG] Resized is_dof vector to " << is_dof.size() << std::endl;
+        }
         
         for (const auto& mapping : full_mapping) {
             if (mapping.second != -1) {
@@ -343,8 +347,9 @@ std::vector<size_t> initialize_active_elements(
             }
         }
         
-        // === DEBUGGING ===
-        std::cout << "[DEBUG] Filtering active elements..." << std::endl;
+        if (verbose_mesh) {
+            std::cout << "[DEBUG] Filtering active elements..." << std::endl;
+        }
         
         // Pre-filter elements that have at least one DOF node
         active_elements.clear();
@@ -376,14 +381,17 @@ std::vector<size_t> initialize_active_elements(
         }
         
         is_initialized = true;
-        std::cout << "Active elements: " << active_elements.size() << " out of "
-                  << elements.size() << " ("
-                  << (100.0 * active_elements.size() / elements.size()) << "%)" << std::endl;
+        if (verbose_mesh) {
+            std::cout << "Active elements: " << active_elements.size() << " out of "
+                      << elements.size() << " ("
+                      << (100.0 * active_elements.size() / elements.size()) << "%)" << std::endl;
+        }
     }
     
-    // === DEBUGGING ===
-    std::cout << "[DEBUG] Starting computation with " << active_elements.size()
-              << " active elements" << std::endl;
+    if (verbose_mesh) {
+        std::cout << "[DEBUG] Starting computation with " << active_elements.size()
+                  << " active elements" << std::endl;
+    }
               
     // Return a reference to the static vector
     return active_elements;
@@ -605,8 +613,7 @@ void minimize_energy_with_triangles(
 
     func = total_energy;
 
-    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->isIndenterActive() &&
-        userData->macro_geom_ptr->indenter.contact_mode == IndenterContactMode::RepulsivePenalty) {
+    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->isIndenterActive()) {
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(
             x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
@@ -810,8 +817,7 @@ void minimize_energy_with_triangles_noreduction(
     // Set energy result
     func = total_energy;
 
-    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->isIndenterActive() &&
-        userData->macro_geom_ptr->indenter.contact_mode == IndenterContactMode::RepulsivePenalty) {
+    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->isIndenterActive()) {
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(
             x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;

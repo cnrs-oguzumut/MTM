@@ -279,8 +279,10 @@ file << "A " << std::fixed << std::setprecision(16)
     double min_energy = *std::min_element(nodal_energy.begin(), nodal_energy.end());
     double max_energy = *std::max_element(nodal_energy.begin(), nodal_energy.end());
     
-    std::cout << "Nodal stress range: [" << min_stress << ", " << max_stress << "]" << std::endl;
-    std::cout << "Nodal energy range: [" << min_energy << ", " << max_energy << "]" << std::endl;
+    if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+        std::cout << "Nodal stress range: [" << min_stress << ", " << max_stress << "]" << std::endl;
+        std::cout << "Nodal energy range: [" << min_energy << ", " << max_energy << "]" << std::endl;
+    }
 
     // NOTE: Writing profiles/row_*_iter_*.dat is disabled to eliminate redundant file clutter.
     // Line cuts across any defect plane or crystal direction can be computed directly from vtk_output/
@@ -504,8 +506,7 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
         }
 
         if (userData != nullptr && userData->macro_geom_ptr != nullptr &&
-            userData->macro_geom_ptr->isIndenterActive() &&
-            userData->macro_geom_ptr->indenter.contact_mode == IndenterContactMode::RepulsivePenalty) {
+            userData->macro_geom_ptr->isIndenterActive()) {
             total_energy += userData->macro_geom_ptr->computeIndenterPenaltyEnergy(
                 points, userData->current_alpha);
         }
@@ -656,8 +657,10 @@ void ConfigurationSaver::writeToVTKFile(
         }
     }
     
-    std::cout << "Original points: " << original_points_count 
-              << ", Extended points: " << extended_point_count << std::endl;
+    if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+        std::cout << "Original points: " << original_points_count 
+                  << ", Extended points: " << extended_point_count << std::endl;
+    }
     
     // Prepare arrays for extended point coordinates
     std::vector<Eigen::Vector2d> extended_points(extended_point_count);
@@ -1105,7 +1108,9 @@ void ConfigurationSaver::writeToVTKFile(
     file << "\n";
 
     file.close();
-    std::cout << "Saved VTK file (binary): " << full_filepath << std::endl;
+    if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+        std::cout << "Saved VTK file (binary): " << full_filepath << std::endl;
+    }
 }
 
 
@@ -1220,8 +1225,10 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
         }
     }
     
-    std::cout << "Defect analysis - Original points: " << original_points_count 
-              << ", Extended points: " << extended_point_count << std::endl;
+    if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+        std::cout << "Defect analysis - Original points: " << original_points_count 
+                  << ", Extended points: " << extended_point_count << std::endl;
+    }
     
     // Prepare arrays for extended point coordinates
     std::vector<Eigen::Vector2d> extended_points(extended_point_count);
@@ -1455,21 +1462,23 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
                nodal_burgers_vec_buf.size() * sizeof(float));
     file << "\n";
     file.close();
-    std::cout << "Saved defect analysis VTK file (binary): " << filename.str() << std::endl;
-    
-    // Print Burgers-filtered coordination statistics
-    std::map<int, int> valence_histogram;
-    for (int val : burgers.filtered_coordination) {
-        valence_histogram[val]++;
-    }
-    
-    std::cout << "Burgers-filtered coordination statistics:" << std::endl;
-    for (const auto& pair : valence_histogram) {
-        std::cout << "  Coord " << pair.first << ": " << pair.second << " nodes";
-        if (pair.first == 5 || pair.first == 7) {
-            std::cout << " ← Defect (B != 0)!";
+    if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+        std::cout << "Saved defect analysis VTK file (binary): " << filename.str() << std::endl;
+        
+        // Print Burgers-filtered coordination statistics
+        std::map<int, int> valence_histogram;
+        for (int val : burgers.filtered_coordination) {
+            valence_histogram[val]++;
         }
-        std::cout << std::endl;
+        
+        std::cout << "Burgers-filtered coordination statistics:" << std::endl;
+        for (const auto& pair : valence_histogram) {
+            std::cout << "  Coord " << pair.first << ": " << pair.second << " nodes";
+            if (pair.first == 5 || pair.first == 7) {
+                std::cout << " ← Defect (B != 0)!";
+            }
+            std::cout << std::endl;
+        }
     }
 }
 
@@ -1864,9 +1873,11 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
     }
 
     file.close();
-    std::cout << "[CHECKPOINT] Saved checkpoint to " << filename
-              << " (" << data.points.size() << " nodes, "
-              << data.active_elements.size() << " elements)" << std::endl;
+    if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+        std::cout << "[CHECKPOINT] Saved checkpoint to " << filename
+                  << " (" << data.points.size() << " nodes, "
+                  << data.active_elements.size() << " elements)" << std::endl;
+    }
 }
 
 bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointData& data,

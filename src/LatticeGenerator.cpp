@@ -87,9 +87,11 @@ std::vector<Point2D> LatticeGenerator::create_periodic_copies(
         }
     }
     
-    std::cout << "Created " << all_points.size() << " points (including "
-              << original_points.size() << " original points and "
-              << all_points.size() - original_points.size() << " periodic copies)" << std::endl;
+    if (std::getenv("MTM_VERBOSE_MESH") != nullptr) {
+        std::cout << "Created " << all_points.size() << " points (including "
+                  << original_points.size() << " original points and "
+                  << all_points.size() - original_points.size() << " periodic copies)" << std::endl;
+    }
     
     return all_points;
 }

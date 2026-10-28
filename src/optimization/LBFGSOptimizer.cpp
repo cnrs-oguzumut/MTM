@@ -34,8 +34,10 @@ void LBFGSOptimizer::optimize(
     // Get results
     alglib::minlbfgsresults(state, x, rep);
 
-    std::cout << "Optimization completed: iterations=" << rep.iterationscount 
-              << ", termination type=" << rep.terminationtype << std::endl;
+    if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+        std::cout << "Optimization completed: iterations=" << rep.iterationscount 
+                  << ", termination type=" << rep.terminationtype << std::endl;
+    }
 }
 
 void LBFGSOptimizer::createState(alglib::real_1d_array& x) {

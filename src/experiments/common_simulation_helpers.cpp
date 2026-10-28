@@ -45,20 +45,25 @@ static std::vector<std::array<int, 3>> getTopologyKeySet(
   return keys;
 }
 
-static bool hasTopologyChanged(const std::vector<ElementTriangle2D> &old_elements,
-                               const std::vector<ElementTriangle2D> &new_elements,
-                               const std::vector<size_t> &old_active,
-                               const std::vector<size_t> &new_active) {
-  if (old_active.size() != new_active.size()) return true;
+static int countTopologyChanges(const std::vector<ElementTriangle2D> &old_elements,
+                                const std::vector<ElementTriangle2D> &new_elements,
+                                const std::vector<size_t> &old_active,
+                                const std::vector<size_t> &new_active) {
   auto ko = getTopologyKeySet(old_elements, old_active);
   auto kn = getTopologyKeySet(new_elements, new_active);
   std::vector<std::array<int, 3>> diff;
   std::set_symmetric_difference(ko.begin(), ko.end(), kn.begin(), kn.end(),
                                 std::back_inserter(diff));
-  std::cout << "[RemeshTopo] old_active=" << old_active.size()
-            << " new_active=" << new_active.size()
-            << " differing_triangles=" << diff.size() << std::endl;
-  return !diff.empty();
+  if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+    std::cout << "[RemeshTopo] old_active=" << old_active.size()
+              << " new_active=" << new_active.size()
+              << " differing_triangles=" << diff.size() << std::endl;
+  }
+  if (diff.empty() && old_active.size() != new_active.size()) {
+    return static_cast<int>(std::abs(static_cast<long>(new_active.size()) -
+                                     static_cast<long>(old_active.size())));
+  }
+  return static_cast<int>((diff.size() + 1) / 2);
 }
 
 std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
@@ -94,14 +99,10 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
   double ideal_lattice_parameter = userData->ideal_lattice_parameter;
   double plasticity;
 
-  std::cout << "REMESHING STARTED " << std::endl;
-
   std::set<std::vector<std::array<int, 3>>> visited_topologies;
   visited_topologies.insert(getTopologyKeySet(elements, active_elements));
 
   while (should_remesh && mesh_iteration < max_iterations) {
-    std::cout << "REMESHING iteration: " << mesh_iteration << std::endl;
-
     // === SAVE OLD MESH STATE ===
     std::vector<ElementTriangle2D> old_elements = elements;
     std::vector<size_t> old_active_elements = active_elements;
@@ -124,9 +125,6 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     Eigen::Matrix2d stress_old;
     ConfigurationSaver::calculateEnergyAndStress(&oldUserData, energy_old,
                                                  stress_old, true);
-
-    std::cout << "Energy of OLD state: " << std::scientific
-              << std::setprecision(8) << energy_old << std::endl;
 
     std::string current_remesh_phase = "REMESH_PASS_" + std::to_string(mesh_iteration + 1);
     AvalancheRecorder::instance().setPhase(current_remesh_phase);
@@ -167,32 +165,32 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     // If the Delaunay triangulation of the current configuration is identical
     // to the existing mesh, there is nothing to reconnect: stop immediately
     // (avoids accepting round-off ΔE ~ 1e-13 as a "successful" remesh pass).
-    const bool topo_changed =
-        hasTopologyChanged(old_elements, elements, old_active_elements, active_elements);
-    if (!topo_changed) {
-      std::cout << "Delaunay connectivity unchanged -> no reconnection needed (pass "
-                << mesh_iteration << ")" << std::endl;
+    const int changed_tris =
+        countTopologyChanges(old_elements, elements, old_active_elements, active_elements);
+    if (changed_tris == 0) {
       elements = old_elements;
       active_elements = old_active_elements;
       final_energy = energy_old;
       stress_tensor = stress_old;
       has_changes = (accepted_remesh_count > 0) ? 1 : 0;
       should_remesh = false;
-      mesh_iteration++;
+      if (accepted_remesh_count > 1) {
+        std::cout << "  ✓ [Remesh Cascade] Stabilized after " << accepted_remesh_count
+                  << " passes (" << active_elements.size() << " active triangles)" << std::endl;
+      }
       break;
     }
 
     auto current_topo_key = getTopologyKeySet(elements, active_elements);
     if (visited_topologies.count(current_topo_key)) {
-      std::cout << "Cycle detected: Delaunay topology already visited in this cascade -> terminating remesh loop (pass "
-                << mesh_iteration << ")" << std::endl;
+      std::cout << "  ↻ [Remesh Pass " << (mesh_iteration + 1)
+                << "] Cycle detected (topology already visited) -> stopping cascade" << std::endl;
       elements = old_elements;
       active_elements = old_active_elements;
       final_energy = energy_old;
       stress_tensor = stress_old;
       has_changes = (accepted_remesh_count > 0) ? 1 : 0;
       should_remesh = false;
-      mesh_iteration++;
       break;
     }
     visited_topologies.insert(current_topo_key);
@@ -211,9 +209,6 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     ConfigurationSaver::calculateEnergyAndStress(&newUserData, energy_reconnected,
                                                  stress_reconnected, true);
     double delta_E_topo = energy_reconnected - energy_old;
-    std::cout << "Energy of RECONNECTED state (pure topology change): " << std::scientific
-              << std::setprecision(8) << energy_reconnected
-              << " (ΔE_topo = " << delta_E_topo << ")" << std::endl;
 
     AvalancheRecorder::instance().recordStep(
         AvalancheEventType::AFTER_REMESH, -1, energy_reconnected, stress_reconnected(0, 1), 0.0,
@@ -231,7 +226,6 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     }
 
     // === OPTIMIZE ON NEW MESH ===
-    std::cout << "Optimization in REMESHING loop" << std::endl;
     if (optimize_interior)
       relax_configuration(x, &newUserData, 13);
 
@@ -257,27 +251,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     // COMPARE OLD vs NEW
     // ============================================
     double energy_change = energy_new - energy_old;
-    double energy_change_percent =
-        (energy_old != 0.0) ? (energy_change / std::abs(energy_old)) * 100.0
-                            : 0.0;
 
-    std::cout << "\n┌─────────────────────────────────────────────────────┐"
-              << std::endl;
-    std::cout << "│  REMESH ENERGY COMPARISON (Iteration " << std::setw(3)
-              << mesh_iteration << ")       │" << std::endl;
-    std::cout << "├─────────────────────────────────────────────────────┤"
-              << std::endl;
-    std::cout << "│  Energy OLD:     " << std::setw(24) << std::scientific
-              << std::setprecision(8) << energy_old << "  │" << std::endl;
-    std::cout << "│  Energy NEW:     " << std::setw(24) << std::scientific
-              << std::setprecision(8) << energy_new << "  │" << std::endl;
-    std::cout << "│  Change (ΔE):    " << std::setw(24) << std::scientific
-              << std::setprecision(8) << energy_change << "  │" << std::endl;
-    std::cout << "│  Change (%):     " << std::setw(23) << std::fixed
-              << std::setprecision(6) << energy_change_percent << "%  │"
-              << std::endl;
-    std::cout << "└─────────────────────────────────────────────────────┘\n"
-              << std::endl;
     if (AvalancheRecorder::instance().isSurgeryVTKEnabled()) {
       int load_step = AvalancheRecorder::instance().currentLoadStep();
       const std::string &dir = AvalancheRecorder::instance().getSurgeryVTKDir();
@@ -297,9 +271,13 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     //    to track multi-slip dislocation avalanche relaxation.
     const double cascade_energy_threshold = 1e-6 * std::max(1.0, std::abs(energy_old));
     const double remesh_energy_tol = 1e-8 * std::max(1.0, std::abs(energy_old));
+    std::cout << "  ↻ [Remesh Pass " << (mesh_iteration + 1) << "] Delaunay reconnected "
+              << changed_tris << " tris | E: " << std::scientific << std::setprecision(5)
+              << energy_old << " -> " << energy_new
+              << " (ΔE_topo=" << std::showpos << std::setprecision(2) << delta_E_topo
+              << ", ΔE_rel=" << energy_change << std::noshowpos << ") -> ";
     if (energy_change > remesh_energy_tol) {
-      std::cout << "⚠️  REJECTING remesh - energy increased!" << std::endl;
-      std::cout << "    Restoring previous state..." << std::endl;
+      std::cout << "REJECTED (restored previous mesh)" << std::endl;
 
       AvalancheRecorder::instance().recordStep(
           AvalancheEventType::REMESH_REJECTED, -1, energy_old, stress_old(0, 1), 0.0,
@@ -319,14 +297,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       should_remesh = false;
       has_changes = (accepted_remesh_count > 0) ? 1 : 0;
 
-      if (accepted_remesh_count > 0) {
-        std::cout << "✓ Kept previous accepted state (" << accepted_remesh_count
-                  << " remesh iterations succeeded)" << std::endl;
-      }
-
     } else if (energy_change >= -cascade_energy_threshold) {
-      std::cout << "✓ ACCEPTING energy-neutral reconnection (ΔE = " << energy_change
-                << ") - terminating cascade loop" << std::endl;
+      std::cout << "ACCEPTED (neutral)" << std::endl;
 
       AvalancheRecorder::instance().recordStep(
           AvalancheEventType::REMESH_ACCEPTED, -1, energy_new, stress_new(0, 1), 0.0,
@@ -339,8 +311,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       should_remesh = false;
 
     } else {
-      std::cout << "✓ ACCEPTING plastic remesh - energy decreased significantly (ΔE = "
-                << energy_change << ")" << std::endl;
+      std::cout << "ACCEPTED (plastic relaxation)" << std::endl;
 
       AvalancheRecorder::instance().recordStep(
           AvalancheEventType::REMESH_ACCEPTED, -1, energy_new, stress_new(0, 1), 0.0,
@@ -359,7 +330,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     mesh_iteration++;
   }
 
-  return {final_energy, stress_tensor, mesh_iteration};
+  return {final_energy, stress_tensor, accepted_remesh_count > 0 ? accepted_remesh_count : -mesh_iteration};
 }
 
 // Final calculation if loop completes without breaking

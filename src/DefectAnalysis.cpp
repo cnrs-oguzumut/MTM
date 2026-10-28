@@ -296,8 +296,11 @@ DefectAnalysis::analyzeDefectsInReferenceConfig(
     const std::vector<std::tuple<double, double>> &translation_map,
     const Point2D &domain_dims_point, double element_area, bool pbc,
     bool reduction) {
-  std::cout << "\n=== Analyzing defects in reference configuration (Method 2: Discrete Burgers Circuit) ==="
-            << std::endl;
+  const bool verbose_log = (std::getenv("MTM_VERBOSE_LOG") != nullptr);
+  if (verbose_log) {
+    std::cout << "\n=== Analyzing defects in reference configuration (Method 2: Discrete Burgers Circuit) ==="
+              << std::endl;
+  }
 
   // 1. COPY the current points (don't modify originals!)
   std::vector<Point2D> reference_points = userData->points;
@@ -306,8 +309,10 @@ DefectAnalysis::analyzeDefectsInReferenceConfig(
   Eigen::Matrix2d F_ext_inv = userData->F_external.inverse();
   transformToReferenceConfig(reference_points, F_ext_inv);
 
-  std::cout << "Transformed " << reference_points.size()
-            << " points to reference configuration" << std::endl;
+  if (verbose_log) {
+    std::cout << "Transformed " << reference_points.size()
+              << " points to reference configuration" << std::endl;
+  }
 
   // 3. Map to solver array
   alglib::real_1d_array x_ref;
@@ -326,8 +331,10 @@ DefectAnalysis::analyzeDefectsInReferenceConfig(
       F_identity, // Identity because we're in reference config
       &dndx);
 
-  std::cout << "Created " << ref_elements.size()
-            << " elements in reference configuration" << std::endl;
+  if (verbose_log) {
+    std::cout << "Created " << ref_elements.size()
+              << " elements in reference configuration" << std::endl;
+  }
 
   // 5. Create temporary UserData for reference config
   UserData refUserData(reference_points, ref_elements, userData->calculator,
@@ -346,13 +353,15 @@ DefectAnalysis::analyzeDefectsInReferenceConfig(
   ConfigurationSaver::writeToVTK_DefectAnalysis(reference_points, ref_elements,
                                                 &refUserData, file_id);
 
-  std::cout << "Saved reference configuration VTK to file " << file_id
-            << std::endl;
-  std::cout << "Found " << burgers.num_dislocations
-            << " dislocations via Method 2 (Discrete Burgers Circuit, lattice="
-            << (burgers.is_square_lattice ? "square" : "triangular")
-            << ", a0=" << burgers.lattice_spacing << ")" << std::endl;
-  std::cout << "=== Reference configuration analysis complete ===" << std::endl;
+  if (verbose_log) {
+    std::cout << "Saved reference configuration VTK to file " << file_id
+              << std::endl;
+    std::cout << "Found " << burgers.num_dislocations
+              << " dislocations via Method 2 (Discrete Burgers Circuit, lattice="
+              << (burgers.is_square_lattice ? "square" : "triangular")
+              << ", a0=" << burgers.lattice_spacing << ")" << std::endl;
+    std::cout << "=== Reference configuration analysis complete ===" << std::endl;
+  }
 
   return std::make_pair(burgers.num_dislocations,
                         burgers.filtered_coordination);

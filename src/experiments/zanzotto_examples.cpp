@@ -575,9 +575,9 @@ void example_1_conti_zanzotto_loading(
 
   // Calculate shape function derivatives for reference element
   Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
-
-  std::cout << "Reference element shape derivatives (dN/dx):" << std::endl;
-  std::cout << dndx << std::endl;
+  if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+    std::cout << "Reference element shape derivatives (dN/dx):\n" << dndx << std::endl;
+  }
 
   // ==================== GENERATE INITIAL LATTICE ====================
   std::vector<Point2D> square_points;
@@ -653,14 +653,6 @@ void example_1_conti_zanzotto_loading(
   }
 
   int original_domain_size = square_points.size();
-  std::cout << "Generated lattice with " << original_domain_size << " points"
-            << std::endl;
-  std::cout << "PBC offsets: [" << offsets[0] << ", " << offsets[1] << "]"
-            << std::endl;
-  std::cout << "domain_size.get_width(): " << domain_dims.size_x
-            << std::endl;
-  std::cout << "domain_size.get_height(): " << domain_dims.size_y
-            << std::endl;
 
   // Setup triangulation variables and domain maps
   auto [original_domain_map, translation_map] =
@@ -682,15 +674,6 @@ void example_1_conti_zanzotto_loading(
     std::tie(interior_mapping, full_mapping) =
         create_dof_mapping_original(square_points, 0.25 * lattice_constant, pbc);
   }
-  // auto [interior_mapping, full_mapping] =
-  // create_dof_mapping_original(square_points, lattice_constant, pbc);
-
-  // auto [interior_mapping, full_mapping] =
-  // create_dof_mapping_with_radius(square_points, 90, pbc);
-
-  std::cout << "interior_mapping.size(): " << interior_mapping.size()
-            << std::endl;
-  std::cout << "full_mapping.size(): " << full_mapping.size() << std::endl;
 
   Point2D domain_dims_point(domain_dims.size_x, domain_dims.size_y);
 
@@ -782,7 +765,13 @@ void example_1_conti_zanzotto_loading(
   }
   double element_area = elements.empty() ? 0.5 : elements[0].getReferenceArea();
 
-  std::cout << "Created " << elements.size() << " element triangles"
+  std::cout << "[Triangulation] Initial Delaunay mesh: " << original_domain_size
+            << " atoms (" << std::fixed << std::setprecision(1) << domain_dims.size_x
+            << " x " << domain_dims.size_y << std::defaultfloat << std::setprecision(6)
+            << ") -> " << elements.size()
+            << " triangles (" << active_elements.size() << " active) | Free nodes: "
+            << interior_mapping.size() << "/" << full_mapping.size()
+            << " | Remeshing: " << (enable_remeshing ? "ENABLED" : "DISABLED")
             << std::endl;
 
   // Setup energy calculation
@@ -854,9 +843,13 @@ void example_1_conti_zanzotto_loading(
   int avalanche_counter = 0;
 
   // Process each alpha value
+  const int total_steps = static_cast<int>(alpha_values.size()) - 1;
+  const bool verbose_log = (std::getenv("MTM_VERBOSE_LOG") != nullptr);
   for (size_t i = 0; i < alpha_values.size(); i++) {
     double alpha = alpha_values[i];
-    std::cout << "\n=== Processing alpha = " << alpha << " ===" << std::endl;
+    if (verbose_log) {
+      std::cout << "\n=== Processing alpha = " << alpha << " ===" << std::endl;
+    }
     relaxation_begin_step(static_cast<int>(i));
     double pre_area = 1.0;
     double post_area = 1.0;
@@ -883,6 +876,7 @@ void example_1_conti_zanzotto_loading(
             square_points, square_points_ref, baseline_node_bc_role, node_bc_role, indenter_contacts, alpha);
         macro_geom.rebuildBoundaryDOFs(node_bc_role, interior_mapping, full_mapping);
         for (auto &elem : elements) {
+          elem.set_reference_mesh(square_points);
           elem.set_dof_mapping(full_mapping);
         }
         active_elements = initialize_active_elements(elements, full_mapping, square_points.size());
@@ -892,15 +886,14 @@ void example_1_conti_zanzotto_loading(
         // Use deterministic seed so both positive and negative runs share the exact same initial noise
         std::mt19937 gen(seed);
         std::normal_distribution<double> noise_dist(0.0, noise_level);
-        std::cout << "Seeded initial noise generator with seed: " << seed
-                  << " (noise amplitude σ = " << noise_level << ")" << std::endl;
+        std::cout << "[Setup] Seeded initial thermal/positional noise (seed = " << seed
+                  << ", σ = " << noise_level << ")" << std::endl;
 
         for (size_t j = 0; j < square_points.size(); j++) {
           Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
           square_points[j].coord = F_ext * square_points[j].coord + noise;
         }
       } else {
-        std::cout << "Initial noise disabled (noise amplitude σ = " << noise_level << ")" << std::endl;
         for (size_t j = 0; j < square_points.size(); j++) {
           square_points[j].coord = F_ext * square_points[j].coord;
         }
@@ -939,8 +932,10 @@ void example_1_conti_zanzotto_loading(
     pre_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
     pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
-    std::cout << "Pre-optimization - Energy: " << pre_energy
-              << ", Stress: " << pre_stress << std::endl;
+    if (verbose_log) {
+      std::cout << "Pre-optimization - Energy: " << pre_energy
+                << ", Stress: " << pre_stress << std::endl;
+    }
 
     // Start in-memory trace for this load step
     AvalancheRecorder::instance().startLoadStep(static_cast<int>(i));
@@ -956,9 +951,6 @@ void example_1_conti_zanzotto_loading(
     }
 
     // ==================== CACHE PRE-OPTIMIZATION STATE IN RAM ====================
-    // Cache the pre-avalanche state in memory (~2MB) instead of writing to disk.
-    // Files are written to disk ONLY when an avalanche (or i == 0) is confirmed,
-    // avoiding disk churn and subsequent file deletions during elastic steps.
     std::vector<Point2D> pre_points = square_points;
     std::vector<ElementTriangle2D> pre_elements = elements;
     std::vector<size_t> pre_active_elements = active_elements;
@@ -968,48 +960,16 @@ void example_1_conti_zanzotto_loading(
     double pre_stress_val = pre_stress;
 
     // ==================== RUN OPTIMIZATION ====================
-    // NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
-    // std::vector<Point2D> points_before_copy = square_points;
-    // analyzer.setKNearestSearch(4);
-    // analyzer.setDebugMode(false);
-
-    // auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
-
     auto wall_start = std::chrono::high_resolution_clock::now();
-    clock_t cpu_start = clock();
 
     userData.third_condition_flag = false;
     relax_configuration(x, &userData, 13);
 
     auto wall_end = std::chrono::high_resolution_clock::now();
-    clock_t cpu_end = clock();
-
     double wall_time =
         std::chrono::duration<double>(wall_end - wall_start).count();
-    double cpu_time = (double)(cpu_end - cpu_start) / CLOCKS_PER_SEC;
-    std::cout << "Optimization wall-clock time: " << wall_time << " seconds\n";
-    std::cout << "Optimization CPU time: " << cpu_time << " seconds\n";
-    std::cout << "Optimization Ratio: " << cpu_time / wall_time << "\n";
 
     map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-
-    // auto neighbors_after = analyzer.buildNeighbors(square_points);
-
-    // auto change_info = NeighborAnalyzer::compareNeighborsWithTolerance(
-    //     points_before_copy, square_points, neighbors_before, neighbors_after,
-    //     0.135);
-
-    // if (change_info.has_changed) {
-    //   std::cout << "✗ Neighbor connectivity CHANGED" << std::endl;
-    //   std::cout << "  → Nodes affected: " << change_info.total_nodes_changed
-    //             << std::endl;
-    //   std::cout << "  → Connections added: "
-    //             << change_info.total_connections_added << std::endl;
-    //   std::cout << "  → Connections removed: "
-    //             << change_info.total_connections_removed << std::endl;
-    // } else {
-    //   std::cout << "✓ Neighbor connectivity UNCHANGED" << std::endl;
-    // }
 
     int hasChanges = 0;
 
@@ -1022,27 +982,11 @@ void example_1_conti_zanzotto_loading(
     post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
     post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
-    std::cout << "Post-optimization - Energy: " << post_energy
-              << ", Stress: " << post_stress << std::endl;
-    std::cout << "Energy change: " << (post_energy - pre_energy)
-              << ", Stress change: " << (post_stress - pre_stress) << std::endl;
-
     AvalancheRecorder::instance().recordStep(
         AvalancheEventType::LBFGS_CONVERGED, -1, post_energy, post_stress, 0.0,
         elements.size(), 0, "initial continuous relaxation converged");
 
     // ==================== REMESHING DECISION ====================
-    // bool shouldRemesh2 =
-    //     change_info.has_changed && post_energy < post_energy_previous;
-
-    // Topological trigger: attempt a Delaunay reconnection at EVERY load step.
-    // The previous gate (post_energy < post_energy_previous) compared energies
-    // at two DIFFERENT load levels: under strain control the loading increment
-    // (~ sigma * d_alpha * V) almost always exceeds the energy released by a
-    // local slip, so remeshing was effectively only attempted at i == 0.
-    // perform_remeshing_loop_reduction() now exits immediately (no relaxation)
-    // when the Delaunay connectivity of the current configuration is unchanged,
-    // so this costs only one triangulation per step when nothing happens.
     bool shouldRemesh = enable_remeshing;
     if (const char *gate = std::getenv("MTM_REMESH_GATE")) {
       if (std::string(gate) == "energy") // legacy gate, for A/B comparison only
@@ -1050,26 +994,8 @@ void example_1_conti_zanzotto_loading(
     }
     int remesh_iterations = 0;
 
-    // Debug output
-    std::cout << "=== REMESH DECISION ===" << std::endl;
-    std::cout << "  enable_remeshing = " << enable_remeshing << std::endl;
-    std::cout << "  i = " << i << std::endl;
-    std::cout << "  pre_energy = " << std::scientific << pre_energy
-              << std::endl;
-
-    std::cout << "  post_energy = " << std::scientific << post_energy
-              << std::endl;
-    std::cout << "  post_energy_previous = " << std::scientific
-              << post_energy_previous << std::endl;
-    std::cout << "  difference = " << (post_energy - post_energy_previous)
-              << std::endl;
-    std::cout << "  post_energy < post_energy_previous? "
-              << (post_energy < post_energy_previous) << std::endl;
-    std::cout << "  shouldRemesh = " << shouldRemesh << std::endl;
-
     if (shouldRemesh) {
-      std::cout << "REMESHING STARTS" << std::endl;
-
+      auto remesh_start = std::chrono::high_resolution_clock::now();
       std::vector<int> contact_atoms = indenter_contacts;
       std::vector<int> boundary_fixed_nodes;
       int max_iterations = 50;
@@ -1080,15 +1006,9 @@ void example_1_conti_zanzotto_loading(
               offsets, original_domain_map, translation_map, domain_dims_point,
               hasChanges, max_iterations, element_area, pbc, true);
 
-      remesh_iterations = iterations;
-      post_energy = post_energy_re;
-      post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor_re(0, 1);
+      auto remesh_end = std::chrono::high_resolution_clock::now();
+      wall_time += std::chrono::duration<double>(remesh_end - remesh_start).count();
 
-      // ============================================
-      // SYNC LOCAL VARIABLES WITH USERDATA
-      // (Not strictly necessary since UserData uses references,
-      //  but explicit for clarity)
-      // ============================================
       square_points = userData.points;
       elements = userData.elements;
       active_elements = userData.active_elements;
@@ -1098,19 +1018,72 @@ void example_1_conti_zanzotto_loading(
         element_area = elements[0].getReferenceArea();
       }
 
-      if (hasChanges) {
-        std::cout << "✓ Remeshing accepted - energy decreased" << std::endl;
-      } else {
-        std::cout << "⚠️ Remeshing rejected - original mesh kept" << std::endl;
+      // If KinematicProjection is active and remeshing occurred, update the active contact set
+      // in case plastic pile-up brought new surface atoms into contact during the avalanche
+      if (hasChanges > 0 && has_custom_geom && macro_geom.isIndenterActive() &&
+          macro_geom.indenter.contact_mode == IndenterContactMode::KinematicProjection) {
+        size_t prev_contact_count = indenter_contacts.size();
+        macro_geom.updateIndenterContactKinematics(
+            square_points, square_points_ref, baseline_node_bc_role, node_bc_role, indenter_contacts, alpha);
+        if (indenter_contacts.size() != prev_contact_count) {
+          macro_geom.rebuildBoundaryDOFs(node_bc_role, interior_mapping, full_mapping);
+          for (auto &element : elements) {
+            element.set_reference_mesh(square_points);
+            element.set_dof_mapping(full_mapping);
+          }
+          active_elements = initialize_active_elements(elements, full_mapping, square_points.size());
+          UserData activeSetUserData(square_points, elements, calculator, potential_func,
+                                     potential_func_der, zero, optimal_lattice_parameter,
+                                     F_ext, interior_mapping, full_mapping, active_elements,
+                                     plasticity);
+          activeSetUserData.second_derivative_function = &potential_func_sder;
+          activeSetUserData.macro_geom_ptr = &macro_geom;
+          activeSetUserData.current_alpha = alpha;
+
+          n_vars = interior_mapping.size();
+          x.setlength(2 * n_vars);
+          map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
+          relax_configuration(x, &activeSetUserData, 13);
+          map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+
+          ConfigurationSaver::calculateEnergyAndStress(&activeSetUserData, post_energy_re,
+                                                       stress_tensor_re, true);
+        }
       }
 
-      std::cout << "Final energy: " << post_energy
-                << ", stress: " << post_stress << std::endl;
+      remesh_iterations = std::abs(iterations);
+      post_energy = post_energy_re;
+      post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor_re(0, 1);
 
       // Update DOF mapping
       for (auto &element : elements) {
+        element.set_reference_mesh(square_points);
         element.set_dof_mapping(full_mapping);
       }
+    }
+
+    // ==================== CONCISE PER-STEP SUMMARY ====================
+    {
+      std::stringstream mesh_status;
+      if (!enable_remeshing) {
+        mesh_status << "fixed (" << active_elements.size() << " tris)";
+      } else if (hasChanges > 0) {
+        mesh_status << "remeshed (" << remesh_iterations
+                    << (remesh_iterations == 1 ? " pass, " : " passes, ")
+                    << active_elements.size() << " tris)";
+      } else if (remesh_iterations > 0) {
+        mesh_status << "trial rejected (kept " << active_elements.size() << " tris)";
+      } else {
+        mesh_status << "unchanged (" << active_elements.size() << " tris)";
+      }
+
+      std::cout << "Step " << std::setw(4) << i << "/" << total_steps
+                << " | alpha = " << std::fixed << std::setprecision(6) << alpha
+                << " | E = " << std::scientific << std::setprecision(5) << post_energy
+                << " | stress = " << std::scientific << std::setprecision(5) << post_stress
+                << " | mesh: " << mesh_status.str()
+                << " | " << std::fixed << std::setprecision(2) << wall_time << "s"
+                << std::endl;
     }
 
     // ==================== CHECK FOR STRESS DROP ====================
@@ -1152,19 +1125,6 @@ void example_1_conti_zanzotto_loading(
     }
     post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
 
-    std::cout << "=== DROP EVALUATION (i = " << i << ") ===" << std::endl;
-    std::cout << "  post_energy: " << post_energy
-              << " vs prev: " << post_energy_previous
-              << " -> energy_dropped: " << energy_dropped
-              << " (fractional drop: " << (fractional_energy_drop * 100.0) << "%)" << std::endl;
-    std::cout << "  |post_stress|: " << std::abs(post_stress)
-              << " vs prev: " << std::abs(post_stress_previous)
-              << " -> stress_dropped: " << stress_dropped
-              << " (fractional drop: " << (fractional_stress_drop * 100.0) << "%)" << std::endl;
-    std::cout << "  remesh_iterations: " << remesh_iterations
-              << " (hasChanges: " << hasChanges << ")" << std::endl;
-    std::cout << "  stress_drop_detected: " << stress_drop_detected << std::endl;
-
     // Log fractional drops to separate CSV for investigation
     static std::ofstream frac_file;
     static std::filesystem::path frac_dir;
@@ -1189,10 +1149,6 @@ void example_1_conti_zanzotto_loading(
     frac_file.flush();
 
     if (stress_drop_detected || i == 0) {
-      std::cout << "=== STRESS DROP DETECTED ===" << std::endl;
-      std::cout << "Energy dropped from " << post_energy_previous << " to "
-                << post_energy << std::endl;
-
       // 1) Write PRE-avalanche state from cached RAM copy
       int pre_file_id = caller_id + file_counter;
       file_counter++;
@@ -1243,9 +1199,6 @@ void example_1_conti_zanzotto_loading(
           pre_file_id, true, coordination_pre, pre_saving_value);
       ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
 
-      std::cout << "PRE-avalanche saved as file " << pre_file_id
-                << " at load=" << pre_saving_value << std::endl;
-
       // 2) Write POST-avalanche state
       int post_file_id = caller_id + file_counter;
       file_counter++;
@@ -1286,8 +1239,22 @@ void example_1_conti_zanzotto_loading(
           post_file_id, true, coordination_post, pre_saving_value);
       ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
 
-      std::cout << "POST-avalanche saved as file " << post_file_id
-                << " at load=" << pre_saving_value << std::endl;
+      if (i == 0) {
+        std::cout << "  💾 [VTK Snapshot] Initial state saved -> VTK #"
+                  << std::setw(5) << std::setfill('0') << pre_file_id << " & #"
+                  << std::setw(5) << std::setfill('0') << post_file_id << std::setfill(' ')
+                  << " (dislocations: " << num_dislocations_post << ")" << std::endl;
+      } else {
+        std::cout << "  ⚡ [AVALANCHE #" << avalanche_counter << "] Stress dropped "
+                  << std::fixed << std::setprecision(1) << (fractional_stress_drop * 100.0) << "% ("
+                  << std::scientific << std::setprecision(3) << post_stress_previous
+                  << " -> " << post_stress << "), ΔE = "
+                  << std::showpos << (post_energy - post_energy_previous) << std::noshowpos
+                  << " | Dislocations: " << num_dislocations_pre << " -> " << num_dislocations_post
+                  << " | Saved VTK #" << std::setw(5) << std::setfill('0') << pre_file_id
+                  << " (pre) & #" << std::setw(5) << std::setfill('0') << post_file_id
+                  << std::setfill(' ') << " (post)" << std::endl;
+      }
 
       AvalancheRecorder::instance().recordStep(
           AvalancheEventType::AVALANCHE_COMPLETE, -1, post_energy, post_stress, 0.0,
@@ -1331,8 +1298,11 @@ void example_1_conti_zanzotto_loading(
             periodic_file_id, true, coordination_post, alpha);
         ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
 
-        std::cout << "[PERIODIC VTK] Step " << (i + 1) << " (alpha=" << alpha
-                  << ") saved to VTK file " << periodic_file_id << std::endl;
+        std::cout << "  💾 [VTK Snapshot] Step " << (i + 1)
+                  << " (alpha = " << std::fixed << std::setprecision(6) << alpha
+                  << ") -> VTK #" << std::setw(5) << std::setfill('0') << periodic_file_id
+                  << std::setfill(' ') << " (dislocations: " << num_dislocations_post << ")"
+                  << std::endl;
       }
 
       // Elastic step: periodically save single-file checkpoint
@@ -1354,8 +1324,6 @@ void example_1_conti_zanzotto_loading(
     }
 
     // ==================== STABILITY MONITOR (optional) ====================
-    // pre_elements is the mesh of the previous POST state; at an avalanche the PRE file
-    // written above has id caller_id + file_counter - 2.
     stability_monitor.end_of_step(static_cast<int>(i), alpha, post_stress, postOptUserData,
                                   stress_drop_detected, pre_elements,
                                   pre_active_elements, caller_id + file_counter - 2);
@@ -1367,10 +1335,6 @@ void example_1_conti_zanzotto_loading(
 
     post_energy_previous = post_energy;
     post_stress_previous = post_stress;
-
-    std::cout << "Iteration " << i
-              << " ended: setting post_energy_previous = " << post_energy
-              << ", post_stress_previous = " << post_stress << std::endl;
 
     if (stress_drop_detected || i == 0) {
       avalanche_counter++;

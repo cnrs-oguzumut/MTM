@@ -764,8 +764,11 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     
     // First, collect all triangles that meet our connection criteria
     std::vector<Triangle> connected_triangles;
-    std::cout << "Original domain size: " << original_domain_size << std::endl;
-    std::cout << "duplicated_triangles size: " << duplicated_triangles.size() << std::endl;
+    const bool verbose_mesh = (std::getenv("MTM_VERBOSE_MESH") != nullptr);
+    if (verbose_mesh) {
+        std::cout << "Original domain size: " << original_domain_size << std::endl;
+        std::cout << "duplicated_triangles size: " << duplicated_triangles.size() << std::endl;
+    }
 
     connected_triangles.clear();
     
@@ -786,8 +789,10 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
         }
     }
     
-    std::cout << "Connected triangles before cross domain boundaries filtering: " 
-              << connected_triangles.size() << std::endl;
+    if (verbose_mesh) {
+        std::cout << "Connected triangles before cross domain boundaries filtering: " 
+                  << connected_triangles.size() << std::endl;
+    }
 
     // Process triangles that cross domain boundaries
     for (const auto& tri : duplicated_triangles) {
@@ -820,7 +825,9 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
         }
     }
     
-    std::cout << "Connected triangles before uniqueness and quality filtering: " << connected_triangles.size() << std::endl;
+    if (verbose_mesh) {
+        std::cout << "Connected triangles before uniqueness and quality filtering: " << connected_triangles.size() << std::endl;
+    }
     
     // Helper function to calculate domain priority (higher is better)
     auto calculate_priority = [&](const Triangle& tri) -> int {
@@ -859,7 +866,7 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
     
     // Check if edge length filtering is enabled
     bool filter_by_edge_length = (max_edge_length > 0.0);
-    if (filter_by_edge_length) {
+    if (filter_by_edge_length && verbose_mesh) {
         std::cout << "Edge length filtering enabled with max length: " << max_edge_length << std::endl;
     }
     
@@ -925,11 +932,13 @@ std::vector<Triangle> MeshGenerator::select_unique_connected_triangles(
         selected_triangles.push_back(pair.second.first);
     }
     
-    std::cout << "Triangles after uniqueness filtering: " << selected_triangles.size() << std::endl;
-    std::cout << "Rejected triangles with small/negative Jacobians: " << rejected_by_jacobian << std::endl;
-    
-    if (filter_by_edge_length) {
-        std::cout << "Rejected triangles with edges exceeding max length: " << rejected_by_edge_length << std::endl;
+    if (verbose_mesh) {
+        std::cout << "Triangles after uniqueness filtering: " << selected_triangles.size() << std::endl;
+        std::cout << "Rejected triangles with small/negative Jacobians: " << rejected_by_jacobian << std::endl;
+        
+        if (filter_by_edge_length) {
+            std::cout << "Rejected triangles with edges exceeding max length: " << rejected_by_edge_length << std::endl;
+        }
     }
     
     return selected_triangles;
