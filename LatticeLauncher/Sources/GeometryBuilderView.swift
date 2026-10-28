@@ -530,6 +530,17 @@ public struct GeometryBuilderView: View {
         let fixedColor = Color(red: 1.0, green: 0.42, blue: 0.42)
         
         for rule in config.geometryConfig.boundary_rules where rule.enabled {
+            if rule.region == .customBox {
+                let bx = originX + CGFloat(rule.box_x_min) * boxW
+                let by = originY + CGFloat(1.0 - rule.box_y_max) * boxH
+                let bw = CGFloat(max(0.01, rule.box_x_max - rule.box_x_min)) * boxW
+                let bh = CGFloat(max(0.01, rule.box_y_max - rule.box_y_min)) * boxH
+                let rect = CGRect(x: bx, y: by, width: bw, height: bh)
+                let col = (rule.kind == .fixed) ? fixedColor : (rule.kind == .free ? Color.gray : drivenColor)
+                ctx.fill(Path(rect), with: .color(col.opacity(0.12)))
+                ctx.stroke(Path(rect), with: .color(col.opacity(0.85)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+
             if rule.kind == .fixed {
                 // Draw subtle clamped hash marks along fixed edge
                 let count = 7
@@ -1135,6 +1146,23 @@ public struct GeometryBuilderView: View {
                                     .font(.caption2)
                             }
                             .buttonStyle(.borderless)
+                        }
+
+                        if rule.region == .customBox {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Custom Box Bounds in [0, 1]:").font(.caption2).foregroundColor(BlueHour.ice)
+                                HStack(spacing: 6) {
+                                    Text("X:").font(.caption2.bold())
+                                    DoubleField(title: "0.0", value: $rule.box_x_min, width: 44)
+                                    Text("→").font(.caption2).foregroundColor(.secondary)
+                                    DoubleField(title: "1.0", value: $rule.box_x_max, width: 44)
+                                    
+                                    Text("Y:").font(.caption2.bold())
+                                    DoubleField(title: "0.0", value: $rule.box_y_min, width: 44)
+                                    Text("→").font(.caption2).foregroundColor(.secondary)
+                                    DoubleField(title: "1.0", value: $rule.box_y_max, width: 44)
+                                }
+                            }
                         }
                         
                         if rule.kind == .prescribed {
