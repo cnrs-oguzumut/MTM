@@ -29,27 +29,29 @@ bool hasConnectivityChanged(const std::vector<ElementTriangle2D> &old_elements,
 // triangles (as sorted node-index triplets). Robust to element re-ordering
 // (std::sort by first node is not stable for ties), so it only reports a change
 // when the Delaunay connectivity of the current configuration truly differs.
+static std::vector<std::array<int, 3>> getTopologyKeySet(
+    const std::vector<ElementTriangle2D> &elems,
+    const std::vector<size_t> &active) {
+  std::vector<std::array<int, 3>> keys;
+  keys.reserve(active.size());
+  for (size_t idx : active) {
+    std::array<int, 3> k = {static_cast<int>(elems[idx].getNodeIndex(0)),
+                            static_cast<int>(elems[idx].getNodeIndex(1)),
+                            static_cast<int>(elems[idx].getNodeIndex(2))};
+    std::sort(k.begin(), k.end());
+    keys.push_back(k);
+  }
+  std::sort(keys.begin(), keys.end());
+  return keys;
+}
+
 static bool hasTopologyChanged(const std::vector<ElementTriangle2D> &old_elements,
                                const std::vector<ElementTriangle2D> &new_elements,
                                const std::vector<size_t> &old_active,
                                const std::vector<size_t> &new_active) {
   if (old_active.size() != new_active.size()) return true;
-  auto key_set = [](const std::vector<ElementTriangle2D> &elems,
-                    const std::vector<size_t> &active) {
-    std::vector<std::array<int, 3>> keys;
-    keys.reserve(active.size());
-    for (size_t idx : active) {
-      std::array<int, 3> k = {static_cast<int>(elems[idx].getNodeIndex(0)),
-                              static_cast<int>(elems[idx].getNodeIndex(1)),
-                              static_cast<int>(elems[idx].getNodeIndex(2))};
-      std::sort(k.begin(), k.end());
-      keys.push_back(k);
-    }
-    std::sort(keys.begin(), keys.end());
-    return keys;
-  };
-  auto ko = key_set(old_elements, old_active);
-  auto kn = key_set(new_elements, new_active);
+  auto ko = getTopologyKeySet(old_elements, old_active);
+  auto kn = getTopologyKeySet(new_elements, new_active);
   std::vector<std::array<int, 3>> diff;
   std::set_symmetric_difference(ko.begin(), ko.end(), kn.begin(), kn.end(),
                                 std::back_inserter(diff));
@@ -94,6 +96,9 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
 
   std::cout << "REMESHING STARTED " << std::endl;
 
+  std::set<std::vector<std::array<int, 3>>> visited_topologies;
+  visited_topologies.insert(getTopologyKeySet(elements, active_elements));
+
   while (should_remesh && mesh_iteration < max_iterations) {
     std::cout << "REMESHING iteration: " << mesh_iteration << std::endl;
 
@@ -112,6 +117,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
                          ideal_lattice_parameter, F_ext, interior_mapping,
                          full_mapping, active_elements, plasticity,
                          userData->second_derivative_function);
+    oldUserData.macro_geom_ptr = userData->macro_geom_ptr;
+    oldUserData.current_alpha = userData->current_alpha;
 
     double energy_old = 0.0;
     Eigen::Matrix2d stress_old;
@@ -175,11 +182,28 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       break;
     }
 
+    auto current_topo_key = getTopologyKeySet(elements, active_elements);
+    if (visited_topologies.count(current_topo_key)) {
+      std::cout << "Cycle detected: Delaunay topology already visited in this cascade -> terminating remesh loop (pass "
+                << mesh_iteration << ")" << std::endl;
+      elements = old_elements;
+      active_elements = old_active_elements;
+      final_energy = energy_old;
+      stress_tensor = stress_old;
+      has_changes = (accepted_remesh_count > 0) ? 1 : 0;
+      should_remesh = false;
+      mesh_iteration++;
+      break;
+    }
+    visited_topologies.insert(current_topo_key);
+
     UserData newUserData(square_points, elements, userData->calculator,
                          potential_func, potential_func_der, zero,
                          ideal_lattice_parameter, F_ext, interior_mapping,
                          full_mapping, active_elements, plasticity,
                          userData->second_derivative_function);
+    newUserData.macro_geom_ptr = userData->macro_geom_ptr;
+    newUserData.current_alpha = userData->current_alpha;
 
     // Evaluate immediate post-reconnection energy (coordinates x frozen)
     double energy_reconnected = 0.0;
@@ -221,6 +245,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
                                ideal_lattice_parameter, F_ext, interior_mapping,
                                full_mapping, active_elements, plasticity,
                                userData->second_derivative_function);
+    newUserData_after.macro_geom_ptr = userData->macro_geom_ptr;
+    newUserData_after.current_alpha = userData->current_alpha;
 
     double energy_new = 0.0;
     Eigen::Matrix2d stress_new;
@@ -262,10 +288,14 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       ConfigurationSaver::writeToVTKFile(ss_rel.str(), square_points, elements, &newUserData_after, true, {}, 0.0);
     }
 
-    // Accept energy-neutral reconnections: with Lagrange reduction a Delaunay
-    // flip between lattice-equivalent cells is (ideally) energy-neutral, so a
-    // strict ΔE < 0 test would reject valid flips due to L-BFGS round-off.
-    // Only genuine energy increases (beyond a relative tolerance) are rejected.
+    // Energy acceptance & cascade continuation:
+    // 1) Genuine energy increase (> remesh_energy_tol) -> REJECT and restore previous state.
+    // 2) Energy neutral reconnection (within [-cascade_threshold, +remesh_energy_tol]) -> ACCEPT, but
+    //    TERMINATE the cascade loop (should_remesh = false) to prevent infinite chatter on
+    //    degenerate/co-circular lattice diagonals (e.g. square lattice).
+    // 3) Significant energy drop (< -cascade_threshold) -> ACCEPT and CONTINUE cascade loop
+    //    to track multi-slip dislocation avalanche relaxation.
+    const double cascade_energy_threshold = 1e-6 * std::max(1.0, std::abs(energy_old));
     const double remesh_energy_tol = 1e-8 * std::max(1.0, std::abs(energy_old));
     if (energy_change > remesh_energy_tol) {
       std::cout << "⚠️  REJECTING remesh - energy increased!" << std::endl;
@@ -294,8 +324,23 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
                   << " remesh iterations succeeded)" << std::endl;
       }
 
+    } else if (energy_change >= -cascade_energy_threshold) {
+      std::cout << "✓ ACCEPTING energy-neutral reconnection (ΔE = " << energy_change
+                << ") - terminating cascade loop" << std::endl;
+
+      AvalancheRecorder::instance().recordStep(
+          AvalancheEventType::REMESH_ACCEPTED, -1, energy_new, stress_new(0, 1), 0.0,
+          elements.size(), 0, "remesh accepted: energy neutral");
+
+      final_energy = energy_new;
+      stress_tensor = stress_new;
+      has_changes = 1;
+      accepted_remesh_count++;
+      should_remesh = false;
+
     } else {
-      std::cout << "✓ ACCEPTING remesh - energy decreased" << std::endl;
+      std::cout << "✓ ACCEPTING plastic remesh - energy decreased significantly (ΔE = "
+                << energy_change << ")" << std::endl;
 
       AvalancheRecorder::instance().recordStep(
           AvalancheEventType::REMESH_ACCEPTED, -1, energy_new, stress_new(0, 1), 0.0,
@@ -307,8 +352,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       has_changes = 1;
       accepted_remesh_count++;
 
-      // Continue to see if we can improve further
-      // (or set should_remesh = false if you only want one successful remesh)
+      // Continue cascade loop to see if further plastic relaxation occurs
+      should_remesh = true;
     }
 
     mesh_iteration++;
@@ -476,6 +521,9 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
   TriangularLatticeCalculator calculator(ideal_lattice_parameter);
 
   std::cout << "REMESHING STARTED " << std::endl;
+
+  std::set<std::vector<std::array<int, 3>>> visited_topologies;
+  visited_topologies.insert(getTopologyKeySet(elements, active_elements));
 
   while (should_remesh && mesh_iteration < max_iterations) {
     std::cout << "REMESHING iteration: " << mesh_iteration << std::endl;

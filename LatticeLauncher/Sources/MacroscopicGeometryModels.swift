@@ -242,6 +242,77 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
     }
 }
 
+public enum IndenterShapeModel: String, CaseIterable, Codable, Identifiable {
+    case cylinder = "cylinder"
+    case flatPunch = "flat_punch"
+    case wedge = "wedge"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .cylinder: return "Cylindrical Tip (2D Circular)"
+        case .flatPunch: return "Flat Punch Tip"
+        case .wedge: return "Wedge / Berkovich Tip"
+        }
+    }
+}
+
+public enum IndenterContactModeModel: String, CaseIterable, Codable, Identifiable {
+    case kinematic = "kinematic"
+    case penalty = "penalty"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .kinematic: return "Kinematic Projection (Option A - Hard)"
+        case .penalty: return "Repulsive Penalty (Option B - Soft)"
+        }
+    }
+    public var shortBadge: String {
+        switch self {
+        case .kinematic: return "HARD"
+        case .penalty: return "PENALTY"
+        }
+    }
+}
+
+public struct IndenterConfigModel: Codable, Equatable {
+    public var enabled: Bool = false
+    public var shape: IndenterShapeModel = .cylinder
+    public var contact_mode: IndenterContactModeModel = .kinematic
+    public var cx: Double = 0.50
+    public var radius_a0: Double = 25.0
+    public var max_depth_a0: Double = 5.0
+    public var cushion_subsurface: Bool = true
+    public var cushion_offset_a0: Double = 0.20
+    public var penalty_stiffness: Double = 100.0
+    public var wedge_half_angle_deg: Double = 70.3
+    
+    public init(
+        enabled: Bool = false,
+        shape: IndenterShapeModel = .cylinder,
+        contact_mode: IndenterContactModeModel = .kinematic,
+        cx: Double = 0.50,
+        radius_a0: Double = 25.0,
+        max_depth_a0: Double = 5.0,
+        cushion_subsurface: Bool = true,
+        cushion_offset_a0: Double = 0.20,
+        penalty_stiffness: Double = 100.0,
+        wedge_half_angle_deg: Double = 70.3
+    ) {
+        self.enabled = enabled
+        self.shape = shape
+        self.contact_mode = contact_mode
+        self.cx = cx
+        self.radius_a0 = radius_a0
+        self.max_depth_a0 = max_depth_a0
+        self.cushion_subsurface = cushion_subsurface
+        self.cushion_offset_a0 = cushion_offset_a0
+        self.penalty_stiffness = penalty_stiffness
+        self.wedge_half_angle_deg = wedge_half_angle_deg
+    }
+}
+
 public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
     case plateWithHoleTension = "plate_hole_tension"
     case plateWithHoleShear = "plate_hole_shear"
@@ -250,6 +321,7 @@ public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
     case preCrackedSlab = "pre_cracked_mode1"
     case tiltedEllipseTension = "tilted_ellipse_tension"
     case porousVoidArray = "porous_void_array"
+    case nanoIndentation = "nano_indentation"
     
     public var id: String { rawValue }
     public var title: String {
@@ -261,6 +333,7 @@ public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
         case .preCrackedSlab: return "Pre-Cracked Mode-I Fracture Slab"
         case .tiltedEllipseTension: return "Tilted 45° Elliptical Slot (Tension)"
         case .porousVoidArray: return "Porous 2×2 Void Metamaterial (Shear)"
+        case .nanoIndentation: return "Nanoindentation on Crystal Substrate"
         }
     }
     public var subtitle: String {
@@ -279,6 +352,8 @@ public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
             return "Inclined elliptical cavity (45°) inducing mixed-mode shear & tensile dislocation emission."
         case .porousVoidArray:
             return "2×2 periodic-like pattern of circular cavities subject to macroscopic shear."
+        case .nanoIndentation:
+            return "Rigid cylindrical tip (R=25 a₀) penetrating top surface, clamped base, traction-free sides, P-δ curve."
         }
     }
 }
@@ -307,12 +382,15 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
     ]
+    public var indenter: IndenterConfigModel = IndenterConfigModel()
     public var primary_stress_component: String = "auto"
     
     public init() {}
     
     public mutating func applyPreset(_ preset: GeometryEngineeringPreset) {
+        self.enabled = true
         self.preset_name = preset.rawValue
+        self.indenter.enabled = false
         switch preset {
         case .plateWithHoleTension:
             outer_shape = .rectangle
@@ -398,6 +476,26 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0)
             ]
             primary_stress_component = "sigma_xy"
+            
+        case .nanoIndentation:
+            outer_shape = .rectangle
+            cutouts = []
+            boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.5, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5)
+            ]
+            indenter.enabled = true
+            indenter.shape = .cylinder
+            indenter.contact_mode = .kinematic
+            indenter.cx = 0.50
+            indenter.radius_a0 = 25.0
+            indenter.max_depth_a0 = 5.0
+            indenter.cushion_subsurface = true
+            indenter.cushion_offset_a0 = 0.20
+            indenter.penalty_stiffness = 100.0
+            primary_stress_component = "indentation_load"
         }
     }
     
@@ -524,6 +622,17 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 case .fixed: role = 1
                 case .prescribed, .affine: role = 2
                 }
+            }
+        }
+        if indenter.enabled {
+            let rNorm = indenter.radius_a0 * a0x
+            let cx = indenter.cx
+            let cy = 1.0 + rNorm
+            let dx = xHat - cx
+            let dy = yHat - cy
+            let dist = sqrt(dx * dx + dy * dy)
+            if dist <= rNorm + 1.25 * a0y && yHat >= 1.0 - 2.5 * a0y {
+                role = 2 // Contact zone highlight
             }
         }
         return role

@@ -165,6 +165,7 @@ public class SimulationConfig: ObservableObject {
     @Published public var traceInnerIterations: Bool = false
     @Published public var saveSurgeryVTK: Bool = false
     @Published public var saveTriangleData: Bool = false
+    @Published public var saveVTKInterval: Int = 50
     @Published public var checkpointInterval: Int = 500
     @Published public var stressDropThreshold: Double = 0.10
     @Published public var maxAvalanches: Int = 0
@@ -350,6 +351,12 @@ public class SimulationConfig: ObservableObject {
             args.append("--save-triangle-data=1")
         } else {
             args.append("--no-triangle-data")
+        }
+        
+        if saveVTKInterval > 0 {
+            args.append("--save-vtk-every=\(saveVTKInterval)")
+        } else {
+            args.append("--save-vtk-every=0")
         }
         
         if maxAvalanches > 0 {

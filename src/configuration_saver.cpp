@@ -2,6 +2,7 @@
 #include "../include/defects/Defectanalysis.h"
 #include "../include/reductions/LagrangeReduction.h"
 #include "../include/geometry/DomainDimensions.h"
+#include "../include/geometry/MacroscopicGeometry.h"
 #include <cstring>
 #include <cstdint>
 
@@ -497,6 +498,13 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
         if (total_area > 0.0) {
             total_stress /= total_area; // Normalize to get average stress
         }
+
+        if (userData != nullptr && userData->macro_geom_ptr != nullptr &&
+            userData->macro_geom_ptr->isIndenterActive() &&
+            userData->macro_geom_ptr->indenter.contact_mode == IndenterContactMode::RepulsivePenalty) {
+            total_energy += userData->macro_geom_ptr->computeIndenterPenaltyEnergy(
+                points, userData->current_alpha);
+        }
     }
 
 void ConfigurationSaver::logEnergyAndStress(
@@ -698,8 +706,20 @@ void ConfigurationSaver::writeToVTKFile(
     std::vector<double> nodal_cauchy_yy(extended_point_count, 0.0);
     std::vector<int> node_count(extended_point_count, 0);
 
-    // Loop over active elements to calculate and store values
-    for (size_t elem_idx : userData->active_elements) {
+    // Determine whether to export all elements (for complete specimen visualization)
+    // or only active elements (e.g. cylinder core subset in dislocation studies)
+    const bool export_all_elements = (userData == nullptr || (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->enabled));
+    
+    std::vector<size_t> element_indices;
+    if (export_all_elements) {
+        element_indices.resize(elements.size());
+        std::iota(element_indices.begin(), element_indices.end(), 0);
+    } else {
+        element_indices = userData->active_elements;
+    }
+
+    // Loop over elements to calculate and store values
+    for (size_t elem_idx : element_indices) {
         if (elem_idx >= elements.size()) continue;
         
         const auto& element = elements[elem_idx];
@@ -767,7 +787,7 @@ void ConfigurationSaver::writeToVTKFile(
     
     // Calculate reference unit cell area (mean area per atom)
     double total_ref_area = 0.0;
-    for (size_t elem_idx : userData->active_elements) {
+    for (size_t elem_idx : element_indices) {
         if (elem_idx < elements.size() && elements[elem_idx].isInitialized()) {
             total_ref_area += elements[elem_idx].getReferenceArea();
         }
@@ -832,7 +852,7 @@ void ConfigurationSaver::writeToVTKFile(
     
     // Count valid elements
     int valid_elements = 0;
-    for (size_t elem_idx : userData->active_elements) {
+    for (size_t elem_idx : element_indices) {
         if (elem_idx < elements.size() && elements[elem_idx].isInitialized()) {
             valid_elements++;
         }
@@ -843,7 +863,7 @@ void ConfigurationSaver::writeToVTKFile(
     std::vector<int32_t> cell_buf;
     cell_buf.reserve(valid_elements * 4);
     int32_t three_swapped = vtk_swap_int(3);
-    for (size_t elem_idx : userData->active_elements) {
+    for (size_t elem_idx : element_indices) {
         if (elem_idx >= elements.size() || !elements[elem_idx].isInitialized()) continue;
         const auto& element = elements[elem_idx];
         cell_buf.push_back(three_swapped);
@@ -1222,8 +1242,17 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
     // Initialize nodal coordination number array
     std::vector<int> node_count(extended_point_count, 0);
 
-    // Loop over active elements to count coordination numbers
-    for (size_t elem_idx : userData->active_elements) {
+    const bool export_all_elements = (userData == nullptr || (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->enabled));
+    std::vector<size_t> element_indices;
+    if (export_all_elements) {
+        element_indices.resize(elements.size());
+        std::iota(element_indices.begin(), element_indices.end(), 0);
+    } else {
+        element_indices = userData->active_elements;
+    }
+
+    // Loop over elements to count coordination numbers
+    for (size_t elem_idx : element_indices) {
         if (elem_idx >= elements.size()) continue;
         
         const auto& element = elements[elem_idx];
@@ -1286,7 +1315,7 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
     
     // Count valid elements
     int valid_elements = 0;
-    for (size_t elem_idx : userData->active_elements) {
+    for (size_t elem_idx : element_indices) {
         if (elem_idx < elements.size() && elements[elem_idx].isInitialized()) {
             valid_elements++;
         }
@@ -1297,7 +1326,7 @@ void ConfigurationSaver::writeToVTK_DefectAnalysis(
     std::vector<int32_t> cell_buf;
     cell_buf.reserve(valid_elements * 4);
     int32_t three_swapped = vtk_swap_int(3);
-    for (size_t elem_idx : userData->active_elements) {
+    for (size_t elem_idx : element_indices) {
         if (elem_idx >= elements.size() || !elements[elem_idx].isInitialized()) continue;
         const auto& element = elements[elem_idx];
         cell_buf.push_back(three_swapped);

@@ -9,6 +9,8 @@
 #include "Point2D.h"
 #include "DomainDimensions.h"
 
+struct UserData;
+
 enum class OuterDomainShapeType {
     Rectangle = 0,
     Dogbone = 1,
@@ -67,6 +69,49 @@ enum class BoundaryRegionType {
     CustomBox = 6
 };
 
+enum class IndenterShapeType {
+    Cylinder = 0,   // Spherical / Cylindrical 2D indenter
+    FlatPunch = 1,  // Flat punch indenter
+    Wedge = 2       // 2D Wedge / Berkovich cross-section
+};
+
+enum class IndenterContactMode {
+    KinematicProjection = 0, // Option A: Hard projection onto indenter profile + Dirichlet constraint
+    RepulsivePenalty = 1     // Option B: Smooth harmonic penalty potential
+};
+
+struct IndenterConfig {
+    bool enabled = false;
+    IndenterShapeType shape = IndenterShapeType::Cylinder;
+    IndenterContactMode contact_mode = IndenterContactMode::KinematicProjection;
+
+    // Normalized horizontal tip center in [0, 1]
+    double cx = 0.50;
+
+    // Radius in units of lattice spacing a_0 (e.g. 25.0)
+    double radius_a0 = 25.0;
+
+    // Maximum indentation stroke delta_max in units of a_0 (e.g. 5.0)
+    double max_depth_a0 = 5.0;
+
+    // Sub-surface cushion flag to prevent inverted elements (Option A)
+    bool cushion_subsurface = true;
+    double cushion_offset_a0 = 0.20;
+
+    // Penalty stiffness k_c for Option B (energy units / a0^2)
+    double penalty_stiffness = 100.0;
+
+    // Wedge half-angle in degrees (for IndenterShapeType::Wedge)
+    double wedge_half_angle_deg = 70.3;
+
+    // Cached physical parameters computed during bounds setup
+    double physical_radius = 25.0;
+    double physical_max_depth = 5.0;
+    double physical_cx = 50.0;
+    double physical_y_top = 100.0;
+    double physical_cushion_offset = 0.20;
+};
+
 enum class BoundaryConditionKind {
     FreeSurface = 0,            // Unconstrained DOF (natural traction-free boundary)
     FixedClamped = 1,           // Clamped u = 0
@@ -116,8 +161,11 @@ struct MacroscopicGeometryConfig {
     // or Fixed/Driven rules take precedence over FreeSurface)
     std::vector<BoundaryZoneRule> boundary_rules;
 
+    // Nanoindenter Contact Tool configuration
+    IndenterConfig indenter;
+
     // Primary macroscopic stress component to log in Stress-Strain curves:
-    // "auto", "sigma_xy", "sigma_yy", "sigma_xx", "von_mises", "hydrostatic"
+    // "auto", "sigma_xy", "sigma_yy", "sigma_xx", "von_mises", "hydrostatic", "indentation_load"
     std::string primary_stress_component = "auto";
 
     // Cached physical bounding box of the uncarved reference crystal
@@ -174,7 +222,32 @@ struct MacroscopicGeometryConfig {
     Eigen::Matrix2d computeMacroscopicF(double alpha) const;
 
     // Extract the conjugate scalar stress component for logging and avalanche detection
-    double extractPrimaryStress(const Eigen::Matrix2d& stress_tensor) const;
+    double extractPrimaryStress(const Eigen::Matrix2d& stress_tensor,
+                                const std::vector<Point2D>* current_points = nullptr,
+                                double alpha = 0.0,
+                                const UserData* userData = nullptr,
+                                const std::vector<int>* contact_atoms = nullptr) const;
+
+    // Nanoindenter contact helpers
+    bool isIndenterActive() const { return enabled && indenter.enabled; }
+    void setupIndenterBounds(double lattice_a0);
+    Eigen::Vector2d getIndenterPosition(double alpha) const;
+    double computeIndenterPenaltyEnergy(const std::vector<Point2D>& points, double alpha) const;
+    double accumulateIndenterPenalty(const std::vector<Point2D>& points,
+                                     const std::vector<std::pair<int, int>>& interior_mapping,
+                                     alglib::real_1d_array& grad,
+                                     double alpha) const;
+    double computeIndenterVerticalForce(const std::vector<Point2D>& points, double alpha) const;
+    void updateIndenterContactKinematics(std::vector<Point2D>& current_points,
+                                        const std::vector<Point2D>& points_ref,
+                                        std::vector<int>& node_bc_role,
+                                        std::vector<int>& out_contact_atoms,
+                                        double alpha) const;
+    void rebuildBoundaryDOFs(const std::vector<int>& node_bc_role,
+                             std::vector<std::pair<int, int>>& interior_mapping,
+                             std::vector<std::pair<int, int>>& full_mapping) const;
+    double computeKinematicContactForce(const UserData* userData,
+                                        const std::vector<int>& contact_atoms) const;
 };
 
 #endif // MACROSCOPIC_GEOMETRY_H

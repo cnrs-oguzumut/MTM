@@ -73,6 +73,7 @@ int main(int argc, char **argv) {
   double stress_drop_threshold = 0.10;
   bool save_triangle_data = false;
   int max_avalanches = 0;
+  int save_vtk_every = 0;
   double triangulation_perturbation = -1e-7; // default for negative loading
   double beta = -0.25;
   double bulk_K = 5.0;
@@ -342,6 +343,10 @@ int main(int argc, char **argv) {
       checkpoint_interval = std::stoi(arg.substr(22));
     } else if (arg.rfind("--chk-interval=", 0) == 0) {
       checkpoint_interval = std::stoi(arg.substr(15));
+    } else if (arg.rfind("--save-vtk-every=", 0) == 0) {
+      save_vtk_every = std::stoi(arg.substr(17));
+    } else if (arg.rfind("--vtk-interval=", 0) == 0) {
+      save_vtk_every = std::stoi(arg.substr(15));
     } else if (arg.rfind("--stress-drop-threshold=", 0) == 0) {
       stress_drop_threshold = std::stod(arg.substr(24));
     } else if (arg.rfind("--stress-drop=", 0) == 0) {
@@ -434,6 +439,7 @@ int main(int argc, char **argv) {
   else std::cout << "disabled (avalanches only)";
   std::cout << " | stress_drop_threshold=" << (stress_drop_threshold * 100.0) << "%"
             << " | triangle_data=" << (save_triangle_data ? "enabled" : "disabled")
+            << " | save_vtk_every=" << (save_vtk_every > 0 ? std::to_string(save_vtk_every) + " steps" : "avalanches only")
             << std::endl;
   if (stability_options.enabled()) {
     std::cout << "Stability monitor: every " << stability_options.every << " steps"
@@ -577,10 +583,10 @@ int main(int argc, char **argv) {
   //    Configure loading schedule once; automatically negated for negative loading
   if (mode == "positive") {
     example_1_conti_zanzotto_loading(0, nx, ny, alpha_start, alpha_end, step_size, 0.0, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode, geometry_json);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode, geometry_json, save_vtk_every);
   } else {
     example_1_conti_zanzotto_loading(0, nx, ny, -alpha_start, -alpha_end, -step_size, triangulation_perturbation, seed, enable_remeshing, nullptr, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, noise_level,
-                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode, geometry_json);
+                                     stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky, stiffness_rotation_angle, stiffness_bc, potential_mode, geometry_json, save_vtk_every);
   }
 
   // 9. Zanzotto Continuous Loading (Triangular Lattice):

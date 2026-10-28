@@ -572,12 +572,14 @@ struct StressStrainChartView: View {
                     .padding(.vertical, 6)
                     .background(BlueHour.controlSurface)
                 } else if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
+                    let isIndentation = (runner.activeConfig?.geometryConfig.indenter.enabled == true ||
+                                         runner.activeConfig?.geometryConfig.primary_stress_component == "indentation_load")
                     HStack(spacing: 20) {
                         Text("Step: \(pt.iteration)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text("Strain α: \(String(format: "%.6f", pt.alpha))")
+                        Text(isIndentation ? "Depth δ: \(String(format: "%.4f", pt.alpha))" : "Strain α: \(String(format: "%.6f", pt.alpha))")
                             .font(.system(size: 11, design: .monospaced))
-                        Text("Stress σ: \(String(format: "%.6f", pt.postStress))")
+                        Text(isIndentation ? "Load P: \(String(format: "%.4f", pt.postStress))" : "Stress σ: \(String(format: "%.6f", pt.postStress))")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.blue)
                         Text("Energy E: \(String(format: "%.6e", pt.postEnergy))")

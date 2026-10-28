@@ -1,4 +1,7 @@
 #include "../include/geometry/MacroscopicGeometry.h"
+#include "../include/optimization/LatticeOptimizer.h"
+#include "../include/mesh/ElementTriangle2D.h"
+#include <unordered_set>
 
 #include <fstream>
 #include <sstream>
@@ -290,10 +293,252 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
         out_config.boundary_rules.push_back(r);
     }
 
+    // Parse indenter object if present
+    std::string indenter_raw = extractRawValue(json, "indenter");
+    if (!indenter_raw.empty()) {
+        out_config.indenter.enabled = extractBool(indenter_raw, "enabled", false);
+        std::string shape_str = extractString(indenter_raw, "shape", "cylinder");
+        if (shape_str == "flat_punch" || shape_str == "flatPunch") {
+            out_config.indenter.shape = IndenterShapeType::FlatPunch;
+        } else if (shape_str == "wedge" || shape_str == "Wedge") {
+            out_config.indenter.shape = IndenterShapeType::Wedge;
+        } else {
+            out_config.indenter.shape = IndenterShapeType::Cylinder;
+        }
+
+        std::string mode_str = extractString(indenter_raw, "contact_mode", "kinematic");
+        if (mode_str == "penalty" || mode_str == "repulsive_penalty" || mode_str == "RepulsivePenalty") {
+            out_config.indenter.contact_mode = IndenterContactMode::RepulsivePenalty;
+        } else {
+            out_config.indenter.contact_mode = IndenterContactMode::KinematicProjection;
+        }
+
+        out_config.indenter.cx = extractDouble(indenter_raw, "cx", 0.50);
+        out_config.indenter.radius_a0 = extractDouble(indenter_raw, "radius_a0", 25.0);
+        out_config.indenter.max_depth_a0 = extractDouble(indenter_raw, "max_depth_a0", 5.0);
+        out_config.indenter.cushion_subsurface = extractBool(indenter_raw, "cushion_subsurface", true);
+        out_config.indenter.cushion_offset_a0 = extractDouble(indenter_raw, "cushion_offset_a0", 0.20);
+        out_config.indenter.penalty_stiffness = extractDouble(indenter_raw, "penalty_stiffness", 100.0);
+        out_config.indenter.wedge_half_angle_deg = extractDouble(indenter_raw, "wedge_half_angle_deg", 70.3);
+    }
+
     std::cout << "[MacroscopicGeometry] Loaded '" << out_config.preset_name << "' from " << filepath
               << " (" << out_config.cutouts.size() << " cutouts, "
-              << out_config.boundary_rules.size() << " boundary rules)\n";
+              << out_config.boundary_rules.size() << " boundary rules, indenter: "
+              << (out_config.indenter.enabled ? (out_config.indenter.contact_mode == IndenterContactMode::RepulsivePenalty ? "PENALTY" : "KINEMATIC") : "OFF")
+              << ")\n";
     return true;
+}
+
+void MacroscopicGeometryConfig::setupIndenterBounds(double lattice_a0) {
+    a0 = (lattice_a0 > 1e-8) ? lattice_a0 : 1.0;
+    indenter.physical_radius = std::max(1e-4, indenter.radius_a0 * a0);
+    indenter.physical_max_depth = std::max(0.0, indenter.max_depth_a0 * a0);
+    indenter.physical_cx = x_min + indenter.cx * Lx;
+    indenter.physical_y_top = y_min + Ly;
+    indenter.physical_cushion_offset = std::max(0.0, indenter.cushion_offset_a0 * a0);
+}
+
+Eigen::Vector2d MacroscopicGeometryConfig::getIndenterPosition(double alpha) const {
+    double depth = std::max(0.0, alpha) * indenter.physical_max_depth;
+    double y_center = indenter.physical_y_top + indenter.physical_radius - depth;
+    return Eigen::Vector2d(indenter.physical_cx, y_center);
+}
+
+double MacroscopicGeometryConfig::computeIndenterPenaltyEnergy(
+    const std::vector<Point2D>& points, double alpha) const {
+    if (!isIndenterActive()) return 0.0;
+    Eigen::Vector2d c = getIndenterPosition(alpha);
+    double R = indenter.physical_radius;
+    double kc = indenter.penalty_stiffness;
+    double total_energy = 0.0;
+
+    for (const auto& pt : points) {
+        if (pt.coord.y() < c.y()) {
+            double d = (pt.coord - c).norm();
+            if (d < R) {
+                double penetration = R - d;
+                total_energy += 0.5 * kc * penetration * penetration;
+            }
+        }
+    }
+    return total_energy;
+}
+
+double MacroscopicGeometryConfig::accumulateIndenterPenalty(
+    const std::vector<Point2D>& points,
+    const std::vector<std::pair<int, int>>& interior_mapping,
+    alglib::real_1d_array& grad,
+    double alpha) const {
+    if (!isIndenterActive()) return 0.0;
+    Eigen::Vector2d c = getIndenterPosition(alpha);
+    double R = indenter.physical_radius;
+    double kc = indenter.penalty_stiffness;
+    const int n_vars = static_cast<int>(interior_mapping.size());
+    double total_energy = 0.0;
+
+    for (int i = 0; i < n_vars; ++i) {
+        int pt_idx = interior_mapping[i].first;
+        int dof_idx = interior_mapping[i].second;
+        const auto& p = points[pt_idx].coord;
+        if (p.y() < c.y()) {
+            Eigen::Vector2d diff = p - c;
+            double d = diff.norm();
+            if (d < R && d > 1e-12) {
+                double penetration = R - d;
+                total_energy += 0.5 * kc * penetration * penetration;
+                // Conservative force: F = -grad(E) -> dE/dx = -F = -kc * penetration * (diff / d)
+                Eigen::Vector2d dE_dx = -kc * penetration * (diff / d);
+                grad[dof_idx] += dE_dx.x();
+                grad[n_vars + dof_idx] += dE_dx.y();
+            }
+        }
+    }
+    return total_energy;
+}
+
+double MacroscopicGeometryConfig::computeIndenterVerticalForce(
+    const std::vector<Point2D>& points, double alpha) const {
+    if (!isIndenterActive()) return 0.0;
+    Eigen::Vector2d c = getIndenterPosition(alpha);
+    double R = indenter.physical_radius;
+    double kc = indenter.penalty_stiffness;
+    double total_Fy = 0.0;
+
+    for (const auto& pt : points) {
+        if (pt.coord.y() < c.y()) {
+            Eigen::Vector2d diff = pt.coord - c;
+            double d = diff.norm();
+            if (d < R && d > 1e-12) {
+                double penetration = R - d;
+                // Upward normal component exerted by substrate on indenter:
+                double unit_y = -diff.y() / d; // positive when atom is below indenter center
+                total_Fy += kc * penetration * unit_y;
+            }
+        }
+    }
+    return total_Fy;
+}
+
+void MacroscopicGeometryConfig::updateIndenterContactKinematics(
+    std::vector<Point2D>& current_points,
+    const std::vector<Point2D>& points_ref,
+    std::vector<int>& node_bc_role,
+    std::vector<int>& out_contact_atoms,
+    double alpha) const {
+    out_contact_atoms.clear();
+    if (!isIndenterActive()) return;
+
+    // Reset nodes in the top indenter contact zone (upper 60% of specimen) back to free before re-detecting contact at new depth
+    for (size_t i = 0; i < current_points.size(); ++i) {
+        if (points_ref[i].coord.y() >= y_min + 0.4 * Ly) {
+            node_bc_role[i] = 0;
+        }
+    }
+
+    Eigen::Vector2d c = getIndenterPosition(alpha);
+    double R = indenter.physical_radius;
+    double cushion_R = R + indenter.physical_cushion_offset;
+
+    std::vector<int> direct_contact;
+    for (size_t i = 0; i < current_points.size(); ++i) {
+        if (points_ref[i].coord.y() >= y_min + 0.4 * Ly) {
+            double d = (current_points[i].coord - c).norm();
+            if (d <= R + 1e-5) {
+                direct_contact.push_back(static_cast<int>(i));
+            }
+        }
+    }
+
+    for (int idx : direct_contact) {
+        Eigen::Vector2d diff = current_points[idx].coord - c;
+        double d = diff.norm();
+        if (d > 1e-12) {
+            current_points[idx].coord = c + (diff / d) * R;
+        } else {
+            current_points[idx].coord = c - Eigen::Vector2d(0.0, R);
+        }
+        node_bc_role[idx] = 1; // Pinned on indenter surface
+    }
+
+    std::vector<int> cushion_contact;
+    if (indenter.cushion_subsurface && !direct_contact.empty()) {
+        double horiz_tol = 1.25 * a0;
+        double vert_tol = 1.25 * a0;
+        for (int c_idx : direct_contact) {
+            const auto& c_pt = current_points[c_idx].coord;
+            for (size_t i = 0; i < current_points.size(); ++i) {
+                if (static_cast<int>(i) == c_idx || node_bc_role[i] == 1) continue;
+                double dx = std::abs(current_points[i].coord.x() - c_pt.x());
+                double dy = c_pt.y() - current_points[i].coord.y();
+                if (dx <= horiz_tol && dy > 0.0 && dy <= vert_tol) {
+                    double d = (current_points[i].coord - c).norm();
+                    if (d < cushion_R && d > 1e-12) {
+                        // Smoothly nudge subsurface atom downward to avoid triangle inversion,
+                        // but leave node_bc_role = 0 so it remains a free degree of freedom during L-BFGS
+                        current_points[i].coord = c + ((current_points[i].coord - c) / d) * cushion_R;
+                    }
+                }
+            }
+        }
+    }
+
+    out_contact_atoms = direct_contact;
+    std::sort(out_contact_atoms.begin(), out_contact_atoms.end());
+    out_contact_atoms.erase(std::unique(out_contact_atoms.begin(), out_contact_atoms.end()), out_contact_atoms.end());
+}
+
+void MacroscopicGeometryConfig::rebuildBoundaryDOFs(
+    const std::vector<int>& node_bc_role,
+    std::vector<std::pair<int, int>>& interior_mapping,
+    std::vector<std::pair<int, int>>& full_mapping) const {
+    const size_t n_pts = node_bc_role.size();
+    interior_mapping.clear();
+    full_mapping.clear();
+    int next_solver_idx = 0;
+    for (size_t i = 0; i < n_pts; ++i) {
+        if (node_bc_role[i] == 0) {
+            interior_mapping.emplace_back(static_cast<int>(i), next_solver_idx);
+            full_mapping.emplace_back(static_cast<int>(i), next_solver_idx);
+            ++next_solver_idx;
+        } else {
+            full_mapping.emplace_back(static_cast<int>(i), -1);
+        }
+    }
+}
+
+double MacroscopicGeometryConfig::computeKinematicContactForce(
+    const UserData* userData,
+    const std::vector<int>& contact_atoms) const {
+    if (!userData || contact_atoms.empty()) return 0.0;
+    const double normalisation = userData->calculator.getUnitCellArea();
+    std::unordered_set<int> contact_set(contact_atoms.begin(), contact_atoms.end());
+    double total_contact_Fy = 0.0;
+
+    for (size_t elem_idx : userData->active_elements) {
+        const auto& elem = userData->elements[elem_idx];
+        int i0 = elem.getNodeIndex(0);
+        int i1 = elem.getNodeIndex(1);
+        int i2 = elem.getNodeIndex(2);
+        bool touches_contact = (contact_set.count(i0) || contact_set.count(i1) || contact_set.count(i2));
+        if (!touches_contact) continue;
+
+        const Eigen::Matrix2d& F = elem.getDeformationGradient();
+        Eigen::Matrix2d C = elem.getMetricTensor();
+        auto result = lagrange::reduce(C);
+        Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
+            result.C_reduced, userData->derivative_function) / normalisation;
+        Eigen::Matrix2d P_stress = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+
+        auto nodal_forces = elem.calculate_nodal_forces(P_stress);
+        // Reaction force exerted by crystal substrate UPWARD onto indenter tip:
+        // Downward indentation induces negative dE/dy on contact nodes,
+        // so upward contact reaction force is -nodal_forces[...].y()
+        if (contact_set.count(i0)) total_contact_Fy -= nodal_forces[0].y();
+        if (contact_set.count(i1)) total_contact_Fy -= nodal_forces[1].y();
+        if (contact_set.count(i2)) total_contact_Fy -= nodal_forces[2].y();
+    }
+    return std::max(0.0, total_contact_Fy);
 }
 
 void MacroscopicGeometryConfig::setPhysicalBoundsFromPoints(
@@ -320,6 +565,7 @@ void MacroscopicGeometryConfig::setPhysicalBoundsFromPoints(
     y_min = min_y;
     Lx = std::max(1e-8, max_x - min_x);
     Ly = std::max(1e-8, max_y - min_y);
+    setupIndenterBounds(lattice_a0);
 }
 
 bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double margin_phys) const {
@@ -756,8 +1002,15 @@ void MacroscopicGeometryConfig::applyLoadStep(
             : Eigen::Vector2d::Zero();
 
         if (node_bc_role[j] == 1) {
-            // Fixed / Clamped node: stays strictly at reference position X_0
-            current_points[j].coord = points_ref[j].coord;
+            // Fixed / Clamped node: stays strictly at reference position X_0.
+            // When an indenter is active, only true clamped specimen boundary nodes
+            // (e.g. bottom clamped base) must stay at X_0.
+            // Upper solid nodes that were in dynamic indenter contact must NEVER be reset to X_0!
+            if (isIndenterActive() && points_ref[j].coord.y() >= y_min + 0.4 * Ly) {
+                // Keep current deformed position from prior steps
+            } else {
+                current_points[j].coord = points_ref[j].coord;
+            }
         } else if (node_bc_role[j] == 2) {
             // Driven / Prescribed node: exact boundary trajectory X_0 + alpha * v_j
             current_points[j].coord = points_ref[j].coord + alpha * node_bc_velocity[j];
@@ -774,8 +1027,23 @@ void MacroscopicGeometryConfig::applyLoadStep(
     }
 }
 
-double MacroscopicGeometryConfig::extractPrimaryStress(const Eigen::Matrix2d& stress_tensor) const {
+double MacroscopicGeometryConfig::extractPrimaryStress(
+    const Eigen::Matrix2d& stress_tensor,
+    const std::vector<Point2D>* current_points,
+    double alpha,
+    const UserData* userData,
+    const std::vector<int>* contact_atoms) const {
     if (!enabled) return stress_tensor(0, 1);
+
+    if (primary_stress_component == "indentation_load" || isIndenterActive()) {
+        if (indenter.contact_mode == IndenterContactMode::KinematicProjection) {
+            if (userData != nullptr && contact_atoms != nullptr) {
+                return computeKinematicContactForce(userData, *contact_atoms);
+            }
+        } else if (current_points != nullptr) {
+            return computeIndenterVerticalForce(*current_points, alpha);
+        }
+    }
 
     if (primary_stress_component == "sigma_yy") return stress_tensor(1, 1);
     if (primary_stress_component == "sigma_xx") return stress_tensor(0, 0);

@@ -352,7 +352,7 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
 
       std::vector<int> contact_atoms;
       std::vector<int> boundary_fixed_nodes;
-      int max_iterations = 1000;
+      int max_iterations = 50;
 
       auto [post_energy_re, stress_tensor_re, iterations] =
           perform_remeshing_loop_reduction(
@@ -470,7 +470,8 @@ void example_1_conti_zanzotto_loading(
     double rotation_angle,
     const std::string& bc,
     int potential_mode,
-    const std::string& geometry_json) {
+    const std::string& geometry_json,
+    int save_vtk_every) {
 
   MacroscopicGeometryConfig macro_geom;
   bool has_custom_geom = false;
@@ -670,11 +671,13 @@ void example_1_conti_zanzotto_loading(
   std::vector<std::pair<int, int>> interior_mapping;
   std::vector<std::pair<int, int>> full_mapping;
   std::vector<int> node_bc_role;
+  std::vector<int> baseline_node_bc_role;
   std::vector<Eigen::Vector2d> node_bc_velocity;
 
   if (has_custom_geom) {
     macro_geom.buildBoundaryDOFs(square_points, interior_mapping, full_mapping,
                                  node_bc_role, node_bc_velocity);
+    baseline_node_bc_role = node_bc_role;
   } else {
     std::tie(interior_mapping, full_mapping) =
         create_dof_mapping_original(square_points, 0.25 * lattice_constant, pbc);
@@ -865,11 +868,25 @@ void example_1_conti_zanzotto_loading(
     Eigen::Matrix2d dF_ext;
     dF_ext << 1.0, step_size, 0.0, 1.0;
 
+    std::vector<int> indenter_contacts;
     if (has_custom_geom) {
+      if (macro_geom.isIndenterActive()) {
+        node_bc_role = baseline_node_bc_role;
+      }
       F_ext = macro_geom.computeMacroscopicF(alpha);
       macro_geom.applyLoadStep(
-          square_points, square_points_ref, node_bc_role, node_bc_velocity,
+          square_points, square_points_ref, baseline_node_bc_role, node_bc_velocity,
           alpha, step_size, (i == 0 && restart_chk == nullptr), seed, noise_level);
+      if (macro_geom.isIndenterActive() &&
+          macro_geom.indenter.contact_mode == IndenterContactMode::KinematicProjection) {
+        macro_geom.updateIndenterContactKinematics(
+            square_points, square_points_ref, node_bc_role, indenter_contacts, alpha);
+        macro_geom.rebuildBoundaryDOFs(node_bc_role, interior_mapping, full_mapping);
+        for (auto &elem : elements) {
+          elem.set_dof_mapping(full_mapping);
+        }
+        active_elements = initialize_active_elements(elements, full_mapping, square_points.size());
+      }
     } else if (i == 0 && restart_chk == nullptr) {
       if (noise_level > 0.0) {
         // Use deterministic seed so both positive and negative runs share the exact same initial noise
@@ -901,6 +918,10 @@ void example_1_conti_zanzotto_loading(
                       F_ext, interior_mapping, full_mapping, active_elements,
                       plasticity);
     userData.second_derivative_function = &potential_func_sder;
+    if (has_custom_geom) {
+      userData.macro_geom_ptr = &macro_geom;
+      userData.current_alpha = alpha;
+    }
 
     // ==================== PREPARE OPTIMIZATION ====================
     alglib::real_1d_array x;
@@ -915,7 +936,7 @@ void example_1_conti_zanzotto_loading(
 
     ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
                                                  stress_tensor, true);
-    pre_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor) : stress_tensor(0, 1);
+    pre_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
     pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     std::cout << "Pre-optimization - Energy: " << pre_energy
@@ -998,7 +1019,7 @@ void example_1_conti_zanzotto_loading(
     stress_tensor.setZero();
     ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy,
                                                  stress_tensor, true);
-    post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor) : stress_tensor(0, 1);
+    post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
     post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     std::cout << "Post-optimization - Energy: " << post_energy
@@ -1049,9 +1070,9 @@ void example_1_conti_zanzotto_loading(
     if (shouldRemesh) {
       std::cout << "REMESHING STARTS" << std::endl;
 
-      std::vector<int> contact_atoms;
+      std::vector<int> contact_atoms = indenter_contacts;
       std::vector<int> boundary_fixed_nodes;
-      int max_iterations = 1000;
+      int max_iterations = 50;
 
       auto [post_energy_re, stress_tensor_re, iterations] =
           perform_remeshing_loop_reduction(
@@ -1061,7 +1082,7 @@ void example_1_conti_zanzotto_loading(
 
       remesh_iterations = iterations;
       post_energy = post_energy_re;
-      post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor_re) : stress_tensor_re(0, 1);
+      post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor_re(0, 1);
 
       // ============================================
       // SYNC LOCAL VARIABLES WITH USERDATA
@@ -1100,11 +1121,11 @@ void example_1_conti_zanzotto_loading(
     // Option 2: Fractional drops (for output / investigation)
     double fractional_energy_drop = 0.0;
     double fractional_stress_drop = 0.0;
-    if (std::abs(post_energy_previous) > 1e-12) {
+    if (std::abs(post_energy_previous) > 1e-4) {
       fractional_energy_drop =
           (post_energy_previous - post_energy) / std::abs(post_energy_previous);
     }
-    if (std::abs(post_stress_previous) > 1e-12) {
+    if (std::abs(post_stress_previous) > 1e-4) {
       fractional_stress_drop =
           (std::abs(post_stress_previous) - std::abs(post_stress)) /
           std::abs(post_stress_previous);
@@ -1125,6 +1146,10 @@ void example_1_conti_zanzotto_loading(
                              optimal_lattice_parameter, F_ext, interior_mapping,
                              full_mapping, active_elements, plasticity);
     postOptUserData.second_derivative_function = &potential_func_sder;
+    if (has_custom_geom) {
+      postOptUserData.macro_geom_ptr = &macro_geom;
+      postOptUserData.current_alpha = alpha;
+    }
     post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
 
     std::cout << "=== DROP EVALUATION (i = " << i << ") ===" << std::endl;
@@ -1178,6 +1203,10 @@ void example_1_conti_zanzotto_loading(
                               interior_mapping, full_mapping,
                               pre_active_elements, plasticity);
       preOptUserData.second_derivative_function = &potential_func_sder;
+      if (has_custom_geom) {
+        preOptUserData.macro_geom_ptr = &macro_geom;
+        preOptUserData.current_alpha = pre_saving_value;
+      }
 
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
           &preOptUserData, pre_file_id, pre_energy_val, pre_stress_val, true);
@@ -1275,7 +1304,35 @@ void example_1_conti_zanzotto_loading(
         AvalancheRecorder::instance().discard();
       }
 
-      // Elastic step: no VTK or defect churn, but periodically save single-file checkpoint
+      bool is_periodic_vtk = (save_vtk_every > 0 && (i + 1) % save_vtk_every == 0);
+      if (is_periodic_vtk) {
+        int periodic_file_id = caller_id + file_counter;
+        file_counter++;
+
+        ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+            &postOptUserData, periodic_file_id, post_energy, post_stress, true);
+        if (save_triangle_data) {
+          ConfigurationSaver::saveTriangleData(&postOptUserData, periodic_file_id,
+                                               domain_dims, offsets, full_mapping);
+          ConfigurationSaver::saveElements(elements, active_elements, periodic_file_id);
+        }
+
+        auto [num_dislocations_post, coordination_post] =
+            DefectAnalysis::analyzeDefectsInReferenceConfig(
+                &postOptUserData, periodic_file_id, dndx, offsets,
+                original_domain_map, translation_map, domain_dims_point,
+                element_area, pbc, true);
+
+        ConfigurationSaver::writeToVTK(
+            postOptUserData.points, postOptUserData.elements, &postOptUserData,
+            periodic_file_id, true, coordination_post, alpha);
+        ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
+
+        std::cout << "[PERIODIC VTK] Step " << (i + 1) << " (alpha=" << alpha
+                  << ") saved to VTK file " << periodic_file_id << std::endl;
+      }
+
+      // Elastic step: periodically save single-file checkpoint
       if (checkpoint_interval > 0 && (i + 1) % checkpoint_interval == 0) {
         ConfigurationSaver::CheckpointData chk_periodic;
         chk_periodic.nx = nx; chk_periodic.ny = ny;
@@ -1350,7 +1407,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                                double rotation_angle,
                                                const std::string& bc,
                                                int potential_mode,
-                                               const std::string& geometry_json) {
+                                               const std::string& geometry_json,
+                                               int save_vtk_every) {
   example_1_conti_zanzotto_loading(caller_id, nx, ny,
                                    /*alpha_min=*/alpha_min,
                                    /*alpha_max=*/alpha_max,
@@ -1373,7 +1431,8 @@ void example_1_conti_zanzotto_negative_loading(int caller_id, int nx, int ny,
                                    rotation_angle,
                                    bc,
                                    potential_mode,
-                                   geometry_json);
+                                   geometry_json,
+                                   save_vtk_every);
 }
 
 void restart_zanzotto_simulation(const std::string& checkpoint_path,

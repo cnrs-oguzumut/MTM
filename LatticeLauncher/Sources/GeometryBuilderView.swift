@@ -55,6 +55,7 @@ public struct GeometryBuilderView: View {
                         crystalLatticeCard
                         presetsCard
                         outerDomainCard
+                        nanoindenterCard
                         cutoutsCard
                         boundaryConditionsCard
                     }
@@ -162,9 +163,12 @@ public struct GeometryBuilderView: View {
     
     // MARK: - Interactive Canvas
     private func interactiveCanvas(size: CGSize) -> some View {
-        let pad: CGFloat = 44.0
-        let availW = max(100.0, size.width - 2 * pad)
-        let availH = max(100.0, size.height - 2 * pad)
+        let isIndenterActive = config.geometryConfig.indenter.enabled
+        let padSide: CGFloat = 44.0
+        let padTop: CGFloat = isIndenterActive ? 75.0 : 44.0
+        let padBottom: CGFloat = 44.0
+        let availW = max(100.0, size.width - 2 * padSide)
+        let availH = max(100.0, size.height - (padTop + padBottom))
         let aspect = (config.latticeSymmetry == .triangular)
             ? (Double(config.nx) / (Double(config.ny) * sqrt(3.0) / 2.0))
             : (Double(config.nx) / Double(max(1, config.ny)))
@@ -178,7 +182,7 @@ public struct GeometryBuilderView: View {
             boxH = availW / CGFloat(max(0.2, aspect))
         }
         let originX = (size.width - boxW) * 0.5
-        let originY = (size.height - boxH) * 0.5
+        let originY = padTop + (availH - boxH) * 0.5
         
         func toScreen(_ xHat: Double, _ yHat: Double) -> CGPoint {
             CGPoint(
@@ -297,6 +301,11 @@ public struct GeometryBuilderView: View {
                         ctx.fill(Path(ellipseIn: hRect), with: .color(BlueHour.ice))
                         ctx.stroke(Path(ellipseIn: hRect), with: .color(BlueHour.abyss), lineWidth: 1.5)
                     }
+                }
+                
+                // 8. Nanoindenter Tip Visual Preview
+                if config.geometryConfig.indenter.enabled {
+                    drawNanoindenterTip(ctx: &ctx, toScreen: toScreen, boxW: boxW, boxH: boxH)
                 }
             }
             .gesture(
@@ -748,6 +757,14 @@ public struct GeometryBuilderView: View {
                 Circle().fill(Color(red: 0.31, green: 0.85, blue: 0.78)).frame(width: 8, height: 8)
                 Text("Driven Prescribed Grip Atoms Δu(α)")
                     .font(.caption2)
+            }
+            if config.geometryConfig.indenter.enabled {
+                HStack(spacing: 5) {
+                    Circle().strokeBorder(Color(red: 1.0, green: 0.82, blue: 0.22), lineWidth: 1.5).frame(width: 8, height: 8)
+                    Text("Rigid Indenter Tip (R=\(Int(config.geometryConfig.indenter.radius_a0))a₀)")
+                        .font(.caption2)
+                        .foregroundColor(Color(red: 1.0, green: 0.82, blue: 0.22))
+                }
             }
             Spacer()
             Text("Discrete MTM Lattice: unit-cell spacing a₀ is invariant")
@@ -1243,5 +1260,195 @@ public struct GeometryBuilderView: View {
         previewManager.cslKx = config.cslKx
         previewManager.cslKy = config.cslKy
         previewManager.generateInitialMeshPreview()
+    }
+    
+    private var nanoindenterCard: some View {
+        NanoindenterCardView(config: config)
+    }
+    
+    private func drawNanoindenterTip(ctx: inout GraphicsContext, toScreen: (Double, Double) -> CGPoint, boxW: CGFloat, boxH: CGFloat) {
+        let indenter = config.geometryConfig.indenter
+        let cx = indenter.cx
+        let isTri = (config.latticeSymmetry == .triangular)
+        let sqrt3 = sqrt(3.0)
+        let Ly = isTri ? (Double(config.ny) * sqrt3 * 0.5) : Double(config.ny)
+        let Lx = Double(config.nx)
+        
+        let rxNorm = indenter.radius_a0 / max(1.0, Lx)
+        let rx = CGFloat(rxNorm) * boxW
+        let ry = rx
+        let contactPt = toScreen(cx, 1.0)
+        
+        let depthNormY = indenter.max_depth_a0 / max(1.0, Ly)
+        let depthPx = CGFloat(depthNormY) * boxH
+        
+        let goldFill = Color(red: 1.0, green: 0.82, blue: 0.22).opacity(0.22)
+        let goldStroke = Color(red: 1.0, green: 0.82, blue: 0.22)
+        let cyanDash = Color(red: 0.31, green: 0.85, blue: 0.78).opacity(0.85)
+        
+        switch indenter.shape {
+        case .cylinder:
+            let circleRect = CGRect(x: contactPt.x - rx, y: contactPt.y - 2 * ry, width: 2 * rx, height: 2 * ry)
+            var tipPath = Path()
+            tipPath.addEllipse(in: circleRect)
+            ctx.fill(tipPath, with: .color(goldFill))
+            ctx.stroke(tipPath, with: .color(goldStroke), lineWidth: 2.2)
+            
+            if depthPx > 1 {
+                let strokeRect = CGRect(x: contactPt.x - rx, y: contactPt.y - 2 * ry + depthPx, width: 2 * rx, height: 2 * ry)
+                var strokePath = Path()
+                strokePath.addEllipse(in: strokeRect)
+                ctx.stroke(strokePath, with: .color(cyanDash), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+            
+            let arrowTop = contactPt.y - min(ry * 1.3, 50.0)
+            let arrowBottom = contactPt.y - min(ry * 0.15, 8.0)
+            var arrowPath = Path()
+            arrowPath.move(to: CGPoint(x: contactPt.x, y: arrowTop))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x, y: arrowBottom))
+            arrowPath.move(to: CGPoint(x: contactPt.x - 5, y: arrowBottom - 7))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x, y: arrowBottom))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x + 5, y: arrowBottom - 7))
+            ctx.stroke(arrowPath, with: .color(goldStroke), style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
+            
+        case .flatPunch:
+            let h = min(22.0, max(12.0, ry * 0.5))
+            let barRect = CGRect(x: contactPt.x - rx, y: contactPt.y - h, width: 2 * rx, height: h)
+            let tipPath = Path(roundedRect: barRect, cornerRadius: 3)
+            ctx.fill(tipPath, with: .color(goldFill))
+            ctx.stroke(tipPath, with: .color(goldStroke), lineWidth: 2.2)
+            
+            if depthPx > 1 {
+                let strokeRect = CGRect(x: contactPt.x - rx, y: contactPt.y - h + depthPx, width: 2 * rx, height: h)
+                let strokePath = Path(roundedRect: strokeRect, cornerRadius: 3)
+                ctx.stroke(strokePath, with: .color(cyanDash), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+            
+            var arrowPath = Path()
+            arrowPath.move(to: CGPoint(x: contactPt.x, y: contactPt.y - h - 16))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x, y: contactPt.y - h + 2))
+            arrowPath.move(to: CGPoint(x: contactPt.x - 5, y: contactPt.y - h - 5))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x, y: contactPt.y - h + 2))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x + 5, y: contactPt.y - h - 5))
+            ctx.stroke(arrowPath, with: .color(goldStroke), style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
+            
+        case .wedge:
+            let h = min(50.0, max(20.0, ry))
+            var tipPath = Path()
+            tipPath.move(to: contactPt)
+            tipPath.addLine(to: CGPoint(x: contactPt.x - rx, y: contactPt.y - h))
+            tipPath.addLine(to: CGPoint(x: contactPt.x + rx, y: contactPt.y - h))
+            tipPath.closeSubpath()
+            ctx.fill(tipPath, with: .color(goldFill))
+            ctx.stroke(tipPath, with: .color(goldStroke), lineWidth: 2.2)
+            
+            if depthPx > 1 {
+                var strokePath = Path()
+                strokePath.move(to: CGPoint(x: contactPt.x, y: contactPt.y + depthPx))
+                strokePath.addLine(to: CGPoint(x: contactPt.x - rx, y: contactPt.y - h + depthPx))
+                strokePath.addLine(to: CGPoint(x: contactPt.x + rx, y: contactPt.y - h + depthPx))
+                strokePath.closeSubpath()
+                ctx.stroke(strokePath, with: .color(cyanDash), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+        }
+    }
+}
+
+// MARK: - Nanoindenter Card View
+struct NanoindenterCardView: View {
+    @ObservedObject var config: SimulationConfig
+    
+    var body: some View {
+        GroupBox(label: Label("Nanoindenter Contact Tool", systemImage: "arrow.down.to.line.compact")) {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Enable Nanoindenter Tool", isOn: $config.geometryConfig.indenter.enabled)
+                    .font(.caption.bold())
+                    .onChange(of: config.geometryConfig.indenter.enabled) { enabled in
+                        if enabled {
+                            config.geometryConfig.enabled = true
+                            config.geometryConfig.primary_stress_component = "indentation_load"
+                        }
+                    }
+                
+                if config.geometryConfig.indenter.enabled {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Tip Shape", selection: $config.geometryConfig.indenter.shape) {
+                            ForEach(IndenterShapeModel.allCases) { s in
+                                Text(s.displayName).tag(s)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        
+                        Picker("Contact Enforcement", selection: $config.geometryConfig.indenter.contact_mode) {
+                            ForEach(IndenterContactModeModel.allCases) { m in
+                                Text(m.displayName).tag(m)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        
+                        if config.geometryConfig.indenter.contact_mode == .penalty {
+                            HStack {
+                                Text("Penalty Stiffness kc:")
+                                    .font(.caption2.bold())
+                                Spacer()
+                                DoubleField(title: "100.0", value: $config.geometryConfig.indenter.penalty_stiffness, width: 60)
+                            }
+                        }
+                        
+                        HStack {
+                            Text("Tip Radius R (in a₀):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            DoubleField(title: "25.0", value: $config.geometryConfig.indenter.radius_a0, width: 60)
+                        }
+                        
+                        HStack {
+                            Text("Indenter Center X:")
+                                .font(.caption2.bold())
+                            Spacer()
+                            Slider(value: $config.geometryConfig.indenter.cx, in: 0.1...0.9)
+                                .frame(width: 80)
+                            DoubleField(title: "0.50", value: $config.geometryConfig.indenter.cx, width: 50)
+                        }
+                        
+                        HStack {
+                            Text("Max Depth δ_max (in a₀):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            DoubleField(title: "5.0", value: $config.geometryConfig.indenter.max_depth_a0, width: 60)
+                        }
+                        
+                        Toggle("Subsurface Cushion Buffer", isOn: $config.geometryConfig.indenter.cushion_subsurface)
+                            .font(.caption2)
+                        
+                        if config.geometryConfig.indenter.cushion_subsurface {
+                            HStack {
+                                Text("Cushion Offset (in a₀):")
+                                    .font(.caption2)
+                                Spacer()
+                                DoubleField(title: "0.20", value: $config.geometryConfig.indenter.cushion_offset_a0, width: 60)
+                            }
+                        }
+                        
+                        Divider()
+                        
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Save VTK every N steps:")
+                                    .font(.caption2.bold())
+                                Text("Snapshots for defect nucleation")
+                                    .font(.system(size: 8.5))
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            IntField(title: "50", value: $config.saveVTKInterval, width: 60)
+                        }
+                    }
+                    .padding(6)
+                    .background(BlueHour.midnight.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+            .padding(6)
+        }
     }
 }

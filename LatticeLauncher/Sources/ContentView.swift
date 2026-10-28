@@ -765,6 +765,13 @@ struct SidebarControlsView: View {
                                 Spacer()
                                 DoubleField(title: "0.00006", value: $config.stepSize, width: 90)
                             }
+                            Divider()
+                            HStack {
+                                Text("Save VTK every N steps:")
+                                    .font(.subheadline)
+                                Spacer()
+                                IntField(title: "50", value: $config.saveVTKInterval, width: 70)
+                            }
                         }
                         .padding(8)
                     }
@@ -834,6 +841,11 @@ struct SidebarControlsView: View {
                         Toggle("Save Legacy triangle_data", isOn: $config.saveTriangleData)
                         
                         if config.mode != .shift && config.mode != .volterra {
+                            HStack {
+                                Text("Save VTK every N steps:")
+                                Spacer()
+                                IntField(title: "50", value: $config.saveVTKInterval, width: 70)
+                            }
                             HStack {
                                 Text("Checkpoint every N steps:")
                                 Spacer()

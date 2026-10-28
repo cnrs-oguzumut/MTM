@@ -22,6 +22,8 @@
 
 
 #include "src/optimization.h" // This path is relative to ALGLIB_DIR
+struct MacroscopicGeometryConfig;
+
 // UserData structure for optimization
 struct UserData {
     std::vector<Point2D>& points;
@@ -40,6 +42,8 @@ struct UserData {
     // Second derivative of the pair potential, needed only by the stiffness
     // preconditioner for lattice-sum calculators (Strain_Energy ignores it).
     const std::function<double(double)>* second_derivative_function = nullptr;
+    const MacroscopicGeometryConfig* macro_geom_ptr = nullptr;
+    double current_alpha = 0.0;
 
     
     UserData(std::vector<Point2D>& pts,
