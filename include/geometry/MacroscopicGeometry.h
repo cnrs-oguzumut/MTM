@@ -175,6 +175,12 @@ struct MacroscopicGeometryConfig {
     double Ly = 100.0;
     double a0 = 1.0;
 
+    // Cached physical bounding box of the carved solid crystal
+    double carved_x_min = 0.0;
+    double carved_x_max = 100.0;
+    double carved_y_min = 0.0;
+    double carved_y_max = 100.0;
+
     // Load from JSON file
     static bool loadFromJSON(const std::string& filepath, MacroscopicGeometryConfig& out_config);
 
@@ -228,18 +234,30 @@ struct MacroscopicGeometryConfig {
                                 const UserData* userData = nullptr,
                                 const std::vector<int>* contact_atoms = nullptr) const;
 
+    struct IndenterPointContact {
+        bool in_contact = false;
+        double penetration = 0.0;
+        Eigen::Vector2d surface_point = Eigen::Vector2d::Zero();
+        Eigen::Vector2d normal = Eigen::Vector2d(0.0, -1.0); // Outward from indenter into substrate
+        Eigen::Matrix2d hessian = Eigen::Matrix2d::Zero();   // 2x2 nodal Hessian of penalty energy
+    };
+
     // Nanoindenter contact helpers
     bool isIndenterActive() const { return enabled && indenter.enabled; }
-    void setupIndenterBounds(double lattice_a0);
+    void setupIndenterBounds(double lattice_a0, const std::vector<Point2D>* carved_points = nullptr);
     Eigen::Vector2d getIndenterPosition(double alpha) const;
+    IndenterPointContact evaluateIndenterContact(const Eigen::Vector2d& p,
+                                                 double alpha,
+                                                 double extra_margin = 0.0) const;
     double computeIndenterPenaltyEnergy(const std::vector<Point2D>& points, double alpha) const;
-    double accumulateIndenterPenalty(const std::vector<Point2D>& points,
+    double accumulateIndenterPenalty(const alglib::real_1d_array& x,
                                      const std::vector<std::pair<int, int>>& interior_mapping,
                                      alglib::real_1d_array& grad,
                                      double alpha) const;
     double computeIndenterVerticalForce(const std::vector<Point2D>& points, double alpha) const;
     void updateIndenterContactKinematics(std::vector<Point2D>& current_points,
                                         const std::vector<Point2D>& points_ref,
+                                        const std::vector<int>& baseline_bc_role,
                                         std::vector<int>& node_bc_role,
                                         std::vector<int>& out_contact_atoms,
                                         double alpha) const;

@@ -608,7 +608,7 @@ void minimize_energy_with_triangles(
     if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->isIndenterActive() &&
         userData->macro_geom_ptr->indenter.contact_mode == IndenterContactMode::RepulsivePenalty) {
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(
-            userData->points, userData->interior_mapping, grad, userData->current_alpha);
+            x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
     }
 }
@@ -813,7 +813,7 @@ void minimize_energy_with_triangles_noreduction(
     if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->isIndenterActive() &&
         userData->macro_geom_ptr->indenter.contact_mode == IndenterContactMode::RepulsivePenalty) {
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(
-            userData->points, userData->interior_mapping, grad, userData->current_alpha);
+            x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
     }
 

@@ -1,6 +1,7 @@
 // PreconditionedLBFGS.cpp
 #include "../include/optimization/PreconditionedLBFGS.h"
 #include "../include/optimization/SparseCholesky.h"
+#include "../include/geometry/MacroscopicGeometry.h"
 
 #include <Eigen/Eigenvalues>
 #include <algorithm>
@@ -243,6 +244,29 @@ FastStiffnessAssembler::assembleStiffness(const alglib::real_1d_array &x,
         }
       }
   }
+
+  // Add 2x2 nodal Hessian blocks for active RepulsivePenalty indenter contacts
+  if (userData->macro_geom_ptr != nullptr &&
+      userData->macro_geom_ptr->isIndenterActive() &&
+      userData->macro_geom_ptr->indenter.contact_mode == IndenterContactMode::RepulsivePenalty) {
+    const int n = n_nodes_;
+    for (int i = 0; i < n; ++i) {
+      int dof_idx = userData->interior_mapping[i].second;
+      if (dof_idx < 0 || dof_idx >= n) continue;
+      Eigen::Vector2d p(x[dof_idx], x[n + dof_idx]);
+      auto contact = userData->macro_geom_ptr->evaluateIndenterContact(
+          p, userData->current_alpha, 0.0);
+      if (contact.in_contact && contact.penetration > 0.0) {
+        int ux = dof_idx;
+        int uy = n + dof_idx;
+        values[value_slot(K_, ux, ux)] += contact.hessian(0, 0);
+        values[value_slot(K_, ux, uy)] += contact.hessian(0, 1);
+        values[value_slot(K_, uy, ux)] += contact.hessian(1, 0);
+        values[value_slot(K_, uy, uy)] += contact.hessian(1, 1);
+      }
+    }
+  }
+
   return K_;
 }
 

@@ -20,6 +20,7 @@ public struct GeometryBuilderView: View {
         case crackStart(String)
         case crackEnd(String)
         case polygonVertex(String, Int)
+        case movePolygon(String, Double, Double)
         case outerPolygonVertex(Int)
     }
     
@@ -519,6 +520,14 @@ public struct GeometryBuilderView: View {
                 ctx.stroke(Path(ellipseIn: r), with: .color(BlueHour.abyss), lineWidth: 1.5)
             }
         case .polygon:
+            if !cutout.vertices.isEmpty {
+                let cx = cutout.vertices.map(\.x).reduce(0.0, +) / Double(cutout.vertices.count)
+                let cy = cutout.vertices.map(\.y).reduce(0.0, +) / Double(cutout.vertices.count)
+                let centerPt = toScreen(cx, cy)
+                let cRect = CGRect(x: centerPt.x - 6, y: centerPt.y - 6, width: 12, height: 12)
+                ctx.fill(Path(ellipseIn: cRect), with: .color(gold))
+                ctx.stroke(Path(ellipseIn: cRect), with: .color(BlueHour.abyss), lineWidth: 1.5)
+            }
             for v in cutout.vertices {
                 let p = toScreen(v.x, v.y)
                 let r = CGRect(x: p.x - 5.5, y: p.y - 5.5, width: 11, height: 11)
@@ -677,11 +686,26 @@ public struct GeometryBuilderView: View {
                             break
                         }
                     case .polygon:
+                        var matchedVertex = false
                         for (vIdx, v) in cutout.vertices.enumerated() {
                             let p = toScreen(v.x, v.y)
                             if hypot(startLocation.x - p.x, startLocation.y - p.y) < 14 {
                                 selectedCutoutID = cutout.id
                                 activeDragMode = .polygonVertex(cutout.id, vIdx)
+                                matchedVertex = true
+                                break
+                            }
+                        }
+                        if matchedVertex { break }
+                        if !cutout.vertices.isEmpty {
+                            let cx = cutout.vertices.map(\.x).reduce(0.0, +) / Double(cutout.vertices.count)
+                            let cy = cutout.vertices.map(\.y).reduce(0.0, +) / Double(cutout.vertices.count)
+                            let centerPt = toScreen(cx, cy)
+                            if hypot(startLocation.x - centerPt.x, startLocation.y - centerPt.y) < 20 {
+                                selectedCutoutID = cutout.id
+                                dragStartCutout = cutout
+                                let (sxh, syh) = toNormalized(startLocation)
+                                activeDragMode = .movePolygon(cutout.id, sxh, syh)
                                 break
                             }
                         }
@@ -736,6 +760,25 @@ public struct GeometryBuilderView: View {
                vIdx < config.geometryConfig.cutouts[idx].vertices.count {
                 config.geometryConfig.cutouts[idx].vertices[vIdx].x = xh
                 config.geometryConfig.cutouts[idx].vertices[vIdx].y = yh
+            }
+        case .movePolygon(let id, let startXH, let startYH):
+            if let idx = config.geometryConfig.cutouts.firstIndex(where: { $0.id == id }),
+               let orig = dragStartCutout, !orig.vertices.isEmpty {
+                var dx = xh - startXH
+                var dy = yh - startYH
+                let minX = orig.vertices.map(\.x).min() ?? 0.0
+                let maxX = orig.vertices.map(\.x).max() ?? 1.0
+                let minY = orig.vertices.map(\.y).min() ?? 0.0
+                let maxY = orig.vertices.map(\.y).max() ?? 1.0
+                dx = max(-minX, min(1.0 - maxX, dx))
+                dy = max(-minY, min(1.0 - maxY, dy))
+                for k in 0..<orig.vertices.count {
+                    config.geometryConfig.cutouts[idx].vertices[k].x = (round((orig.vertices[k].x + dx) * 200) / 200)
+                    config.geometryConfig.cutouts[idx].vertices[k].y = (round((orig.vertices[k].y + dy) * 200) / 200)
+                }
+                let verts = config.geometryConfig.cutouts[idx].vertices
+                config.geometryConfig.cutouts[idx].cx = verts.map(\.x).reduce(0.0, +) / Double(verts.count)
+                config.geometryConfig.cutouts[idx].cy = verts.map(\.y).reduce(0.0, +) / Double(verts.count)
             }
         }
     }
@@ -924,6 +967,89 @@ public struct GeometryBuilderView: View {
                         Text(String(format: "%.2f", config.geometryConfig.disk_radius))
                             .font(.caption2.monospacedDigit())
                     }
+                } else if config.geometryConfig.outer_shape == .polygon {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 5) {
+                                Button("Hexagon") {
+                                    config.geometryConfig.outer_polygon = (0..<6).map { k in
+                                        let a = Double(k) * .pi / 3.0
+                                        return NormalizedVertex(x: round((0.5 + 0.46 * cos(a)) * 100) / 100,
+                                                                y: round((0.5 + 0.46 * sin(a)) * 100) / 100)
+                                    }
+                                }
+                                Button("Octagon") {
+                                    config.geometryConfig.outer_polygon = (0..<8).map { k in
+                                        let a = Double(k) * .pi / 4.0 + .pi / 8.0
+                                        return NormalizedVertex(x: round((0.5 + 0.48 * cos(a)) * 100) / 100,
+                                                                y: round((0.5 + 0.48 * sin(a)) * 100) / 100)
+                                    }
+                                }
+                                Button("Trapezoid") {
+                                    config.geometryConfig.outer_polygon = [
+                                        NormalizedVertex(x: 0.05, y: 0.02),
+                                        NormalizedVertex(x: 0.95, y: 0.02),
+                                        NormalizedVertex(x: 0.72, y: 0.98),
+                                        NormalizedVertex(x: 0.28, y: 0.98)
+                                    ]
+                                }
+                                Button("Hourglass") {
+                                    config.geometryConfig.outer_polygon = [
+                                        NormalizedVertex(x: 0.08, y: 0.02),
+                                        NormalizedVertex(x: 0.92, y: 0.02),
+                                        NormalizedVertex(x: 0.68, y: 0.50),
+                                        NormalizedVertex(x: 0.92, y: 0.98),
+                                        NormalizedVertex(x: 0.08, y: 0.98),
+                                        NormalizedVertex(x: 0.32, y: 0.50)
+                                    ]
+                                }
+                                Button("Reset Box") {
+                                    config.geometryConfig.outer_polygon = [
+                                        NormalizedVertex(x: 0.02, y: 0.02),
+                                        NormalizedVertex(x: 0.98, y: 0.02),
+                                        NormalizedVertex(x: 0.98, y: 0.98),
+                                        NormalizedVertex(x: 0.02, y: 0.98)
+                                    ]
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                        
+                        HStack {
+                            Text("Vertices (\(config.geometryConfig.outer_polygon.count)):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            Button("+ Add Vertex") {
+                                insertVertexOnLongestEdge(vertices: &config.geometryConfig.outer_polygon)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                        
+                        ForEach(config.geometryConfig.outer_polygon.indices, id: \.self) { idx in
+                            HStack(spacing: 6) {
+                                Text("V\(idx + 1)")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 22, alignment: .leading)
+                                Text("x:").font(.caption2)
+                                DoubleField(title: "0.5", value: $config.geometryConfig.outer_polygon[idx].x, width: 48, minValue: 0.0, maxValue: 1.0)
+                                Text("y:").font(.caption2)
+                                DoubleField(title: "0.5", value: $config.geometryConfig.outer_polygon[idx].y, width: 48, minValue: 0.0, maxValue: 1.0)
+                                Spacer()
+                                if config.geometryConfig.outer_polygon.count > 3 {
+                                    Button(role: .destructive) {
+                                        config.geometryConfig.outer_polygon.remove(at: idx)
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                            .font(.caption2)
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             .padding(6)
@@ -1082,6 +1208,83 @@ public struct GeometryBuilderView: View {
                         Text(String(format: "%.0f°", cutout.wrappedValue.rotation_deg)).font(.caption2.monospacedDigit())
                     }
                 }
+            } else {
+                // Polygon cutout inspector controls
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        Button("Triangle") {
+                            let cx = cutout.wrappedValue.cx
+                            let cy = cutout.wrappedValue.cy
+                            let r = max(0.08, min(0.28, cutout.wrappedValue.rx))
+                            cutout.wrappedValue.vertices = (0..<3).map { k in
+                                let a = Double(k) * 2.0 * .pi / 3.0 + .pi / 2.0
+                                return NormalizedVertex(
+                                    x: min(0.98, max(0.02, round((cx + r * cos(a)) * 100) / 100)),
+                                    y: min(0.98, max(0.02, round((cy + r * sin(a)) * 100) / 100))
+                                )
+                            }
+                        }
+                        Button("Diamond") {
+                            let cx = cutout.wrappedValue.cx
+                            let cy = cutout.wrappedValue.cy
+                            let r = max(0.08, min(0.28, cutout.wrappedValue.rx))
+                            cutout.wrappedValue.vertices = [
+                                NormalizedVertex(x: cx, y: min(0.98, cy + r)),
+                                NormalizedVertex(x: min(0.98, cx + r), y: cy),
+                                NormalizedVertex(x: cx, y: max(0.02, cy - r)),
+                                NormalizedVertex(x: max(0.02, cx - r), y: cy)
+                            ]
+                        }
+                        Button("Hexagon") {
+                            let cx = cutout.wrappedValue.cx
+                            let cy = cutout.wrappedValue.cy
+                            let r = max(0.08, min(0.28, cutout.wrappedValue.rx))
+                            cutout.wrappedValue.vertices = (0..<6).map { k in
+                                let a = Double(k) * .pi / 3.0
+                                return NormalizedVertex(
+                                    x: min(0.98, max(0.02, round((cx + r * cos(a)) * 100) / 100)),
+                                    y: min(0.98, max(0.02, round((cy + r * sin(a)) * 100) / 100))
+                                )
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+                
+                HStack {
+                    Text("Vertices (\(cutout.wrappedValue.vertices.count)):")
+                        .font(.caption2.bold())
+                    Spacer()
+                    Button("+ Add Vertex") {
+                        insertVertexOnLongestEdge(vertices: &cutout.wrappedValue.vertices)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+                
+                ForEach(cutout.wrappedValue.vertices.indices, id: \.self) { vIdx in
+                    HStack(spacing: 6) {
+                        Text("V\(vIdx + 1)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundColor(.secondary)
+                            .frame(width: 22, alignment: .leading)
+                        Text("x:").font(.caption2)
+                        DoubleField(title: "0.5", value: cutout.vertices[vIdx].x, width: 48, minValue: 0.0, maxValue: 1.0)
+                        Text("y:").font(.caption2)
+                        DoubleField(title: "0.5", value: cutout.vertices[vIdx].y, width: 48, minValue: 0.0, maxValue: 1.0)
+                        Spacer()
+                        if cutout.wrappedValue.vertices.count > 3 {
+                            Button(role: .destructive) {
+                                cutout.wrappedValue.vertices.remove(at: vIdx)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1237,6 +1440,26 @@ public struct GeometryBuilderView: View {
         selectedCutoutID = item.id
     }
     
+    private func insertVertexOnLongestEdge(vertices: inout [NormalizedVertex]) {
+        guard vertices.count >= 2 else { return }
+        var bestIdx = 0
+        var bestLen2 = -1.0
+        for i in 0..<vertices.count {
+            let j = (i + 1) % vertices.count
+            let dx = vertices[j].x - vertices[i].x
+            let dy = vertices[j].y - vertices[i].y
+            let len2 = dx * dx + dy * dy
+            if len2 > bestLen2 {
+                bestLen2 = len2
+                bestIdx = i
+            }
+        }
+        let nextIdx = (bestIdx + 1) % vertices.count
+        let midX = round(0.5 * (vertices[bestIdx].x + vertices[nextIdx].x) * 200) / 200
+        let midY = round(0.5 * (vertices[bestIdx].y + vertices[nextIdx].y) * 200) / 200
+        vertices.insert(NormalizedVertex(x: midX, y: midY), at: bestIdx + 1)
+    }
+    
     public func triggerCarvedMeshPreview() {
         let root = config.projectRoot
         let scratchGeomPath = "\(root)/scratch/geometry_config.json"
@@ -1277,7 +1500,8 @@ public struct GeometryBuilderView: View {
         let rxNorm = indenter.radius_a0 / max(1.0, Lx)
         let rx = CGFloat(rxNorm) * boxW
         let ry = rx
-        let contactPt = toScreen(cx, 1.0)
+        let yTop = config.geometryConfig.topSurfaceYHat(at: cx)
+        let contactPt = toScreen(cx, yTop)
         
         let depthNormY = indenter.max_depth_a0 / max(1.0, Ly)
         let depthPx = CGFloat(depthNormY) * boxH
@@ -1333,11 +1557,13 @@ public struct GeometryBuilderView: View {
             ctx.stroke(arrowPath, with: .color(goldStroke), style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
             
         case .wedge:
-            let h = min(50.0, max(20.0, ry))
+            let theta = min(85.0, max(15.0, indenter.wedge_half_angle_deg)) * .pi / 180.0
+            let h = min(50.0, max(20.0, ry / max(0.35, CGFloat(tan(theta)))))
+            let halfSpan = min(rx, max(12.0, h * CGFloat(tan(theta))))
             var tipPath = Path()
             tipPath.move(to: contactPt)
-            tipPath.addLine(to: CGPoint(x: contactPt.x - rx, y: contactPt.y - h))
-            tipPath.addLine(to: CGPoint(x: contactPt.x + rx, y: contactPt.y - h))
+            tipPath.addLine(to: CGPoint(x: contactPt.x - halfSpan, y: contactPt.y - h))
+            tipPath.addLine(to: CGPoint(x: contactPt.x + halfSpan, y: contactPt.y - h))
             tipPath.closeSubpath()
             ctx.fill(tipPath, with: .color(goldFill))
             ctx.stroke(tipPath, with: .color(goldStroke), lineWidth: 2.2)
@@ -1345,11 +1571,19 @@ public struct GeometryBuilderView: View {
             if depthPx > 1 {
                 var strokePath = Path()
                 strokePath.move(to: CGPoint(x: contactPt.x, y: contactPt.y + depthPx))
-                strokePath.addLine(to: CGPoint(x: contactPt.x - rx, y: contactPt.y - h + depthPx))
-                strokePath.addLine(to: CGPoint(x: contactPt.x + rx, y: contactPt.y - h + depthPx))
+                strokePath.addLine(to: CGPoint(x: contactPt.x - halfSpan, y: contactPt.y - h + depthPx))
+                strokePath.addLine(to: CGPoint(x: contactPt.x + halfSpan, y: contactPt.y - h + depthPx))
                 strokePath.closeSubpath()
                 ctx.stroke(strokePath, with: .color(cyanDash), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
             }
+            
+            var arrowPath = Path()
+            arrowPath.move(to: CGPoint(x: contactPt.x, y: contactPt.y - h - 14))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x, y: contactPt.y - h * 0.35))
+            arrowPath.move(to: CGPoint(x: contactPt.x - 5, y: contactPt.y - h * 0.35 - 7))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x, y: contactPt.y - h * 0.35))
+            arrowPath.addLine(to: CGPoint(x: contactPt.x + 5, y: contactPt.y - h * 0.35 - 7))
+            ctx.stroke(arrowPath, with: .color(goldStroke), style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
         }
     }
 }
@@ -1396,10 +1630,21 @@ struct NanoindenterCardView: View {
                         }
                         
                         HStack {
-                            Text("Tip Radius R (in a₀):")
+                            Text(config.geometryConfig.indenter.shape == .flatPunch ? "Half-Width R (in a₀):" : "Tip Radius / Cap R (in a₀):")
                                 .font(.caption2.bold())
                             Spacer()
                             DoubleField(title: "25.0", value: $config.geometryConfig.indenter.radius_a0, width: 60)
+                        }
+                        
+                        if config.geometryConfig.indenter.shape == .wedge {
+                            HStack {
+                                Text("Wedge Half-Angle θ (°):")
+                                    .font(.caption2.bold())
+                                Spacer()
+                                Slider(value: $config.geometryConfig.indenter.wedge_half_angle_deg, in: 15.0...85.0)
+                                    .frame(width: 75)
+                                DoubleField(title: "70.3", value: $config.geometryConfig.indenter.wedge_half_angle_deg, width: 48, minValue: 15.0, maxValue: 85.0)
+                            }
                         }
                         
                         HStack {

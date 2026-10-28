@@ -547,6 +547,9 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 if dist < 0.5 * c.thickness + margin { return true }
             case .polygon:
                 if Self.pointInPolygon(x: xHat, y: yHat, poly: c.vertices) { return true }
+                if margin > 0 && Self.distanceToPolygonEdges(x: xHat, y: yHat, poly: c.vertices) <= margin {
+                    return true
+                }
             }
         }
         return false
@@ -589,26 +592,85 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         return isPointInsideCutout(xHat: xHat, yHat: yHat, margin: 0.0)
     }
     
+    /// Highest solid yHat at the given xHat (used for positioning nanoindenter on carved top surface)
+    public func topSurfaceYHat(at xHat: Double) -> Double {
+        let steps = 200
+        let searchWidths = [0.0, 0.015, 0.03]
+        for halfW in searchWidths {
+            var bestY: Double? = nil
+            let xSamples = halfW == 0.0 ? [xHat] : [max(0.0, xHat - halfW), xHat, min(1.0, xHat + halfW)]
+            for xs in xSamples {
+                for k in 0...steps {
+                    let yh = 1.0 - Double(k) / Double(steps)
+                    if isPointInsideSolid(xHat: xs, yHat: yh) {
+                        if bestY == nil || yh > bestY! {
+                            bestY = yh
+                        }
+                        break
+                    }
+                }
+            }
+            if let found = bestY {
+                return found
+            }
+        }
+        return 1.0
+    }
+    
     /// Returns 0 = Free, 1 = Fixed, 2 = Driven
     public func classifyNodeRole(xHat: Double, yHat: Double, nx: Int, ny: Int) -> Int {
         var role = 0
         let a0x = 1.0 / Double(max(1, nx - 1))
         let a0y = 1.0 / Double(max(1, ny - 1))
+        
+        var domMinX = 0.0, domMaxX = 1.0, domMinY = 0.0, domMaxY = 1.0
+        if outer_shape == .polygon && outer_polygon.count >= 3 {
+            domMinX = outer_polygon.map(\.x).min() ?? 0.0
+            domMaxX = outer_polygon.map(\.x).max() ?? 1.0
+            domMinY = outer_polygon.map(\.y).min() ?? 0.0
+            domMaxY = outer_polygon.map(\.y).max() ?? 1.0
+        } else if outer_shape == .disk {
+            domMinX = max(0.0, 0.5 - disk_radius)
+            domMaxX = min(1.0, 0.5 + disk_radius)
+            domMinY = max(0.0, 0.5 - disk_radius)
+            domMaxY = min(1.0, 0.5 + disk_radius)
+        }
+        
         for rule in boundary_rules where rule.enabled {
             let stripX = max(0.35, rule.thickness_a0) * a0x
             let stripY = max(0.35, rule.thickness_a0) * a0y
             var matches = false
             switch rule.region {
-            case .top: matches = (yHat >= 1.0 - stripY)
-            case .bottom: matches = (yHat <= stripY)
-            case .left: matches = (xHat <= stripX)
-            case .right: matches = (xHat >= 1.0 - stripX)
+            case .top: matches = (yHat >= domMaxY - stripY)
+            case .bottom: matches = (yHat <= domMinY + stripY)
+            case .left: matches = (xHat <= domMinX + stripX)
+            case .right: matches = (xHat >= domMaxX - stripX)
             case .outerPerimeter:
                 if outer_shape == .disk {
                     let dist = hypot(xHat - 0.5, yHat - 0.5)
                     matches = (dist >= disk_radius - max(stripX, stripY))
+                } else if outer_shape == .polygon && outer_polygon.count >= 3 {
+                    let dist = Self.distanceToPolygonEdges(x: xHat, y: yHat, poly: outer_polygon)
+                    matches = (dist <= max(stripX, stripY))
+                } else if outer_shape == .dogbone {
+                    let halfGW = 0.5 * min(0.98, max(0.15, dogbone_gauge_width))
+                    let halfGL = 0.5 * min(0.90, max(0.10, dogbone_gauge_length))
+                    let rf = max(0.02, dogbone_fillet_radius)
+                    let dy = abs(yHat - 0.5)
+                    let halfWAllowed: Double
+                    if dy <= halfGL {
+                        halfWAllowed = halfGW
+                    } else if dy <= halfGL + rf {
+                        let u = dy - halfGL
+                        let filletDx = rf - sqrt(max(0.0, rf * rf - u * u))
+                        halfWAllowed = min(0.5, halfGW + filletDx * ((0.5 - halfGW) / rf))
+                    } else {
+                        halfWAllowed = 0.5
+                    }
+                    matches = (yHat <= stripY || yHat >= 1.0 - stripY || (halfWAllowed - abs(xHat - 0.5)) <= stripX)
                 } else {
-                    matches = (xHat <= stripX || xHat >= 1.0 - stripX || yHat <= stripY || yHat >= 1.0 - stripY)
+                    matches = (xHat <= domMinX + stripX || xHat >= domMaxX - stripX ||
+                               yHat <= domMinY + stripY || yHat >= domMaxY - stripY)
                 }
             case .holeSurfaces:
                 matches = isPointInsideCutout(xHat: xHat, yHat: yHat, margin: max(stripX, stripY))
@@ -624,15 +686,29 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 }
             }
         }
-        if indenter.enabled {
+        if indenter.enabled && role == 0 {
             let rNorm = indenter.radius_a0 * a0x
             let cx = indenter.cx
-            let cy = 1.0 + rNorm
-            let dx = xHat - cx
-            let dy = yHat - cy
-            let dist = sqrt(dx * dx + dy * dy)
-            if dist <= rNorm + 1.25 * a0y && yHat >= 1.0 - 2.5 * a0y {
-                role = 2 // Contact zone highlight
+            let yTop = topSurfaceYHat(at: cx)
+            let dx = abs(xHat - cx)
+            switch indenter.shape {
+            case .cylinder:
+                let cy = yTop + rNorm
+                let dy = yHat - cy
+                let dist = hypot(xHat - cx, dy)
+                if dist <= rNorm + 1.25 * a0y && yHat >= yTop - 2.5 * a0y {
+                    role = 2
+                }
+            case .flatPunch:
+                if dx <= rNorm + 0.75 * a0x && yHat >= yTop - 1.75 * a0y {
+                    role = 2
+                }
+            case .wedge:
+                let theta = min(85.0, max(15.0, indenter.wedge_half_angle_deg)) * .pi / 180.0
+                let halfSpan = max(2.5 * a0x, min(rNorm, 2.5 * a0y * tan(theta)))
+                if dx <= halfSpan && yHat >= yTop - 2.0 * a0y {
+                    role = 2
+                }
             }
         }
         return role
@@ -646,11 +722,29 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             let xi = poly[i].x, yi = poly[i].y
             let xj = poly[j].x, yj = poly[j].y
             let intersect = ((yi > y) != (yj > y)) &&
-                (x < (xj - xi) * (y - yi) / max(1e-15, (yj - yi)) + xi)
+                (x < (xj - xi) * (y - yi) / (yj - yi) + xi)
             if intersect { inside.toggle() }
             j = i
         }
         return inside
+    }
+    
+    public static func distanceToPolygonEdges(x: Double, y: Double, poly: [NormalizedVertex]) -> Double {
+        guard poly.count >= 2 else { return .infinity }
+        var minDist = Double.infinity
+        var j = poly.count - 1
+        for i in 0..<poly.count {
+            let ax = poly[j].x, ay = poly[j].y
+            let bx = poly[i].x, by = poly[i].y
+            let abx = bx - ax, aby = by - ay
+            let len2 = abx * abx + aby * aby
+            let t = len2 > 1e-15 ? min(1.0, max(0.0, ((x - ax) * abx + (y - ay) * aby) / len2)) : 0.0
+            let px = ax + t * abx, py = ay + t * aby
+            let d = hypot(x - px, y - py)
+            if d < minDist { minDist = d }
+            j = i
+        }
+        return minDist
     }
     
     public func writeJSON(to path: String) throws {

@@ -186,9 +186,13 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         processed_elements++;
     }
     
-    // Set the output values
-    total_energy = recalculated_total_energy;
-    total_stress = recalculated_total_stress;
+    // Set the output values only when custom macroscopic geometry / indenter is not active,
+    // so we never clobber indentation_load, sigma_yy, sigma_xx, or penalty energy.
+    const bool has_custom_macro = (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->enabled);
+    if (!has_custom_macro) {
+        total_energy = recalculated_total_energy;
+        total_stress = recalculated_total_stress;
+    }
     
     // Normalize total stress by total area if needed
     double total_area = 0.0;
@@ -197,7 +201,7 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
             total_area += elements[elem_idx].calculateCurrentArea(points);
         }
     }
-    if (total_area > 0.0) {
+    if (!has_custom_macro && total_area > 0.0) {
         double avg_stress = recalculated_total_stress / total_area;
         total_stress = avg_stress;
         //std::cout << "DEBUG: Average stress (total/area): " << avg_stress << std::endl;

@@ -161,9 +161,10 @@ bool isPointInPolygon(double x, double y, const std::vector<std::pair<double, do
     for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
         double xi = poly[i].first, yi = poly[i].second;
         double xj = poly[j].first, yj = poly[j].second;
-        bool intersect = ((yi > y) != (yj > y)) &&
-                         (x < (xj - xi) * (y - yi) / std::max(1e-15, (yj - yi)) + xi);
-        if (intersect) inside = !inside;
+        if ((yi > y) != (yj > y)) {
+            double x_intersect = (xj - xi) * (y - yi) / (yj - yi) + xi;
+            if (x < x_intersect) inside = !inside;
+        }
     }
     return inside;
 }
@@ -187,6 +188,38 @@ bool segmentsIntersect(const Eigen::Vector2d& p1, const Eigen::Vector2d& p2,
         return (C.y() - A.y()) * (B.x() - A.x()) > (B.y() - A.y()) * (C.x() - A.x());
     };
     return (ccw(p1, q1, q2) != ccw(p2, q1, q2)) && (ccw(p1, p2, q1) != ccw(p1, p2, q2));
+}
+
+// Minimum physical distance from physical point (x, y) to any edge of a normalized [0, 1]^2 polygon
+double distanceToPolygonEdges(double x, double y,
+                              double x_min, double y_min, double Lx, double Ly,
+                              const std::vector<std::pair<double, double>>& poly) {
+    if (poly.size() < 2) return 1e30;
+    Eigen::Vector2d p(x, y);
+    double min_dist = 1e30;
+    for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+        Eigen::Vector2d a(x_min + poly[j].first * Lx, y_min + poly[j].second * Ly);
+        Eigen::Vector2d b(x_min + poly[i].first * Lx, y_min + poly[i].second * Ly);
+        min_dist = std::min(min_dist, pointToSegmentDistance(p, a, b));
+    }
+    return min_dist;
+}
+
+// Check if physical segment p0-p1 properly intersects any edge of a normalized [0, 1]^2 polygon
+bool segmentIntersectsPolygonEdges(const Eigen::Vector2d& p0, const Eigen::Vector2d& p1,
+                                   double x_min, double y_min, double Lx, double Ly,
+                                   const std::vector<std::pair<double, double>>& poly) {
+    if (poly.size() < 3) return false;
+    // Shrink segment slightly so vertices lying right on the polygon boundary are not flagged
+    Eigen::Vector2d dir = p1 - p0;
+    Eigen::Vector2d s0 = p0 + 1e-4 * dir;
+    Eigen::Vector2d s1 = p1 - 1e-4 * dir;
+    for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+        Eigen::Vector2d a(x_min + poly[j].first * Lx, y_min + poly[j].second * Ly);
+        Eigen::Vector2d b(x_min + poly[i].first * Lx, y_min + poly[i].second * Ly);
+        if (segmentsIntersect(s0, s1, a, b)) return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -330,13 +363,29 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
     return true;
 }
 
-void MacroscopicGeometryConfig::setupIndenterBounds(double lattice_a0) {
+void MacroscopicGeometryConfig::setupIndenterBounds(double lattice_a0,
+                                                    const std::vector<Point2D>* carved_points) {
     a0 = (lattice_a0 > 1e-8) ? lattice_a0 : 1.0;
     indenter.physical_radius = std::max(1e-4, indenter.radius_a0 * a0);
     indenter.physical_max_depth = std::max(0.0, indenter.max_depth_a0 * a0);
     indenter.physical_cx = x_min + indenter.cx * Lx;
-    indenter.physical_y_top = y_min + Ly;
     indenter.physical_cushion_offset = std::max(0.0, indenter.cushion_offset_a0 * a0);
+
+    // Determine initial top surface height at indenter.physical_cx from actual carved crystal sites
+    double y_top = carved_y_max;
+    if (carved_points != nullptr && !carved_points->empty()) {
+        double search_half_w = std::max(2.5 * a0, 0.5 * indenter.physical_radius);
+        double max_y_local = -1e30;
+        for (const auto& pt : *carved_points) {
+            if (std::abs(pt.coord.x() - indenter.physical_cx) <= search_half_w) {
+                max_y_local = std::max(max_y_local, pt.coord.y());
+            }
+        }
+        if (max_y_local > -1e20) {
+            y_top = max_y_local;
+        }
+    }
+    indenter.physical_y_top = y_top;
 }
 
 Eigen::Vector2d MacroscopicGeometryConfig::getIndenterPosition(double alpha) const {
@@ -345,53 +394,160 @@ Eigen::Vector2d MacroscopicGeometryConfig::getIndenterPosition(double alpha) con
     return Eigen::Vector2d(indenter.physical_cx, y_center);
 }
 
+MacroscopicGeometryConfig::IndenterPointContact
+MacroscopicGeometryConfig::evaluateIndenterContact(const Eigen::Vector2d& p,
+                                                   double alpha,
+                                                   double extra_margin) const {
+    IndenterPointContact res;
+    if (!isIndenterActive()) return res;
+
+    const double depth = std::max(0.0, alpha) * indenter.physical_max_depth;
+    const double y_tip = indenter.physical_y_top - depth - extra_margin;
+    const double R_eff = indenter.physical_radius + extra_margin;
+    const double kc = indenter.penalty_stiffness;
+    const double cx = indenter.physical_cx;
+
+    switch (indenter.shape) {
+    case IndenterShapeType::Cylinder: {
+        Eigen::Vector2d c(cx, y_tip + R_eff);
+        if (p.y() < c.y()) {
+            Eigen::Vector2d diff = p - c;
+            double d = diff.norm();
+            if (d < R_eff) {
+                res.in_contact = true;
+                res.penetration = R_eff - d;
+                res.normal = (d > 1e-12) ? (diff / d) : Eigen::Vector2d(0.0, -1.0);
+                res.surface_point = c + R_eff * res.normal;
+                res.hessian = kc * (res.normal * res.normal.transpose());
+            }
+        }
+        break;
+    }
+    case IndenterShapeType::FlatPunch: {
+        const double r_c = std::min(0.5 * a0, 0.15 * R_eff);
+        const double w_flat = std::max(0.0, R_eff - r_c);
+        const double dx = p.x() - cx;
+        const double adx = std::abs(dx);
+        if (p.y() <= indenter.physical_y_top + 2.5 * a0) {
+            if (adx <= w_flat) {
+                if (p.y() > y_tip) {
+                    res.in_contact = true;
+                    res.penetration = p.y() - y_tip;
+                    res.normal = Eigen::Vector2d(0.0, -1.0);
+                    res.surface_point = Eigen::Vector2d(p.x(), y_tip);
+                    res.hessian = kc * (res.normal * res.normal.transpose());
+                }
+            } else if (adx < R_eff) {
+                Eigen::Vector2d c_corner(cx + (dx >= 0.0 ? w_flat : -w_flat), y_tip + r_c);
+                if (p.y() < c_corner.y()) {
+                    Eigen::Vector2d diff = p - c_corner;
+                    double d = diff.norm();
+                    if (d < r_c) {
+                        res.in_contact = true;
+                        res.penetration = r_c - d;
+                        res.normal = (d > 1e-12) ? (diff / d) : Eigen::Vector2d(0.0, -1.0);
+                        res.surface_point = c_corner + r_c * res.normal;
+                        res.hessian = kc * (res.normal * res.normal.transpose());
+                    }
+                } else {
+                    double u_c = adx - w_flat;
+                    double y_arc = c_corner.y() - std::sqrt(std::max(0.0, r_c * r_c - u_c * u_c));
+                    res.in_contact = true;
+                    res.penetration = p.y() - y_arc;
+                    res.normal = Eigen::Vector2d(0.0, -1.0);
+                    res.surface_point = Eigen::Vector2d(p.x(), y_arc);
+                    res.hessian = kc * (res.normal * res.normal.transpose());
+                }
+            }
+        }
+        break;
+    }
+    case IndenterShapeType::Wedge: {
+        const double theta_rad = std::clamp(indenter.wedge_half_angle_deg, 15.0, 85.0) * M_PI / 180.0;
+        const double sin_t = std::sin(theta_rad);
+        const double cos_t = std::cos(theta_rad);
+        const double r_tip = 0.25 * a0;
+        const Eigen::Vector2d c_tip(cx, y_tip + r_tip);
+        const double dx = p.x() - cx;
+        const double adx = std::abs(dx);
+        const double s = (dx >= 0.0) ? 1.0 : -1.0;
+
+        if (adx <= R_eff && p.y() <= indenter.physical_y_top + 2.5 * a0) {
+            const double qy = p.y() - c_tip.y();
+            const double tau = adx * sin_t + qy * cos_t;
+            if (tau <= 0.0) {
+                if (qy < 0.0) {
+                    Eigen::Vector2d diff(dx, qy);
+                    double d = diff.norm();
+                    if (d < r_tip) {
+                        res.in_contact = true;
+                        res.penetration = r_tip - d;
+                        res.normal = (d > 1e-12) ? (diff / d) : Eigen::Vector2d(0.0, -1.0);
+                        res.surface_point = c_tip + r_tip * res.normal;
+                        res.hessian = kc * (res.normal * res.normal.transpose());
+                    }
+                } else {
+                    res.in_contact = true;
+                    res.penetration = p.y() - y_tip;
+                    res.normal = Eigen::Vector2d(0.0, -1.0);
+                    res.surface_point = Eigen::Vector2d(p.x(), y_tip);
+                    res.hessian = kc * (res.normal * res.normal.transpose());
+                }
+            } else {
+                const double q_dot_u = adx * cos_t - qy * sin_t;
+                const double pen = r_tip - q_dot_u;
+                if (pen > 0.0) {
+                    res.in_contact = true;
+                    res.penetration = pen;
+                    res.normal = Eigen::Vector2d(s * cos_t, -sin_t);
+                    res.surface_point = p + pen * res.normal;
+                    res.hessian = kc * (res.normal * res.normal.transpose());
+                }
+            }
+        }
+        break;
+    }
+    }
+
+    return res;
+}
+
 double MacroscopicGeometryConfig::computeIndenterPenaltyEnergy(
     const std::vector<Point2D>& points, double alpha) const {
     if (!isIndenterActive()) return 0.0;
-    Eigen::Vector2d c = getIndenterPosition(alpha);
-    double R = indenter.physical_radius;
-    double kc = indenter.penalty_stiffness;
+    const double kc = indenter.penalty_stiffness;
     double total_energy = 0.0;
 
     for (const auto& pt : points) {
-        if (pt.coord.y() < c.y()) {
-            double d = (pt.coord - c).norm();
-            if (d < R) {
-                double penetration = R - d;
-                total_energy += 0.5 * kc * penetration * penetration;
-            }
+        auto contact = evaluateIndenterContact(pt.coord, alpha, 0.0);
+        if (contact.in_contact && contact.penetration > 0.0) {
+            total_energy += 0.5 * kc * contact.penetration * contact.penetration;
         }
     }
     return total_energy;
 }
 
 double MacroscopicGeometryConfig::accumulateIndenterPenalty(
-    const std::vector<Point2D>& points,
+    const alglib::real_1d_array& x,
     const std::vector<std::pair<int, int>>& interior_mapping,
     alglib::real_1d_array& grad,
     double alpha) const {
     if (!isIndenterActive()) return 0.0;
-    Eigen::Vector2d c = getIndenterPosition(alpha);
-    double R = indenter.physical_radius;
-    double kc = indenter.penalty_stiffness;
+    const double kc = indenter.penalty_stiffness;
     const int n_vars = static_cast<int>(interior_mapping.size());
     double total_energy = 0.0;
 
     for (int i = 0; i < n_vars; ++i) {
-        int pt_idx = interior_mapping[i].first;
         int dof_idx = interior_mapping[i].second;
-        const auto& p = points[pt_idx].coord;
-        if (p.y() < c.y()) {
-            Eigen::Vector2d diff = p - c;
-            double d = diff.norm();
-            if (d < R && d > 1e-12) {
-                double penetration = R - d;
-                total_energy += 0.5 * kc * penetration * penetration;
-                // Conservative force: F = -grad(E) -> dE/dx = -F = -kc * penetration * (diff / d)
-                Eigen::Vector2d dE_dx = -kc * penetration * (diff / d);
-                grad[dof_idx] += dE_dx.x();
-                grad[n_vars + dof_idx] += dE_dx.y();
-            }
+        if (dof_idx < 0 || dof_idx >= n_vars) continue;
+        Eigen::Vector2d p(x[dof_idx], x[n_vars + dof_idx]);
+        auto contact = evaluateIndenterContact(p, alpha, 0.0);
+        if (contact.in_contact && contact.penetration > 0.0) {
+            total_energy += 0.5 * kc * contact.penetration * contact.penetration;
+            // Conservative force: F = -grad(E) -> dE/dx = -kc * penetration * normal
+            Eigen::Vector2d dE_dx = -kc * contact.penetration * contact.normal;
+            grad[dof_idx] += dE_dx.x();
+            grad[n_vars + dof_idx] += dE_dx.y();
         }
     }
     return total_energy;
@@ -400,21 +556,15 @@ double MacroscopicGeometryConfig::accumulateIndenterPenalty(
 double MacroscopicGeometryConfig::computeIndenterVerticalForce(
     const std::vector<Point2D>& points, double alpha) const {
     if (!isIndenterActive()) return 0.0;
-    Eigen::Vector2d c = getIndenterPosition(alpha);
-    double R = indenter.physical_radius;
-    double kc = indenter.penalty_stiffness;
+    const double kc = indenter.penalty_stiffness;
     double total_Fy = 0.0;
 
     for (const auto& pt : points) {
-        if (pt.coord.y() < c.y()) {
-            Eigen::Vector2d diff = pt.coord - c;
-            double d = diff.norm();
-            if (d < R && d > 1e-12) {
-                double penetration = R - d;
-                // Upward normal component exerted by substrate on indenter:
-                double unit_y = -diff.y() / d; // positive when atom is below indenter center
-                total_Fy += kc * penetration * unit_y;
-            }
+        auto contact = evaluateIndenterContact(pt.coord, alpha, 0.0);
+        if (contact.in_contact && contact.penetration > 0.0) {
+            // Upward vertical reaction force exerted by substrate on indenter:
+            // contact.normal.y() is negative (pointing into substrate), so -normal.y() > 0
+            total_Fy += kc * contact.penetration * (-contact.normal.y());
         }
     }
     return total_Fy;
@@ -423,60 +573,49 @@ double MacroscopicGeometryConfig::computeIndenterVerticalForce(
 void MacroscopicGeometryConfig::updateIndenterContactKinematics(
     std::vector<Point2D>& current_points,
     const std::vector<Point2D>& points_ref,
+    const std::vector<int>& baseline_bc_role,
     std::vector<int>& node_bc_role,
     std::vector<int>& out_contact_atoms,
     double alpha) const {
     out_contact_atoms.clear();
     if (!isIndenterActive()) return;
 
-    // Reset nodes in the top indenter contact zone (upper 60% of specimen) back to free before re-detecting contact at new depth
-    for (size_t i = 0; i < current_points.size(); ++i) {
-        if (points_ref[i].coord.y() >= y_min + 0.4 * Ly) {
-            node_bc_role[i] = 0;
-        }
+    // Restore baseline BC roles first so user-defined Fixed/Driven BCs are preserved
+    // while previously pinned indenter atoms revert to Free before re-detecting contact
+    if (baseline_bc_role.size() == current_points.size()) {
+        node_bc_role = baseline_bc_role;
     }
 
-    Eigen::Vector2d c = getIndenterPosition(alpha);
-    double R = indenter.physical_radius;
-    double cushion_R = R + indenter.physical_cushion_offset;
-
+    const double y_cutoff = carved_y_min + 0.4 * std::max(1e-8, carved_y_max - carved_y_min);
     std::vector<int> direct_contact;
     for (size_t i = 0; i < current_points.size(); ++i) {
-        if (points_ref[i].coord.y() >= y_min + 0.4 * Ly) {
-            double d = (current_points[i].coord - c).norm();
-            if (d <= R + 1e-5) {
+        if (node_bc_role[i] != 0) continue; // Only unconstrained nodes can enter indenter contact
+        if (points_ref[i].coord.y() >= y_cutoff) {
+            auto contact = evaluateIndenterContact(current_points[i].coord, alpha, 1e-5);
+            if (contact.in_contact) {
+                current_points[i].coord = contact.surface_point;
+                node_bc_role[i] = 1; // Pinned on indenter surface
                 direct_contact.push_back(static_cast<int>(i));
             }
         }
     }
 
-    for (int idx : direct_contact) {
-        Eigen::Vector2d diff = current_points[idx].coord - c;
-        double d = diff.norm();
-        if (d > 1e-12) {
-            current_points[idx].coord = c + (diff / d) * R;
-        } else {
-            current_points[idx].coord = c - Eigen::Vector2d(0.0, R);
-        }
-        node_bc_role[idx] = 1; // Pinned on indenter surface
-    }
-
-    std::vector<int> cushion_contact;
     if (indenter.cushion_subsurface && !direct_contact.empty()) {
         double horiz_tol = 1.25 * a0;
         double vert_tol = 1.25 * a0;
         for (int c_idx : direct_contact) {
             const auto& c_pt = current_points[c_idx].coord;
             for (size_t i = 0; i < current_points.size(); ++i) {
-                if (static_cast<int>(i) == c_idx || node_bc_role[i] == 1) continue;
+                if (static_cast<int>(i) == c_idx || node_bc_role[i] != 0) continue;
                 double dx = std::abs(current_points[i].coord.x() - c_pt.x());
                 double dy = c_pt.y() - current_points[i].coord.y();
                 if (dx <= horiz_tol && dy > 0.0 && dy <= vert_tol) {
-                    double d = (current_points[i].coord - c).norm();
-                    if (d < cushion_R && d > 1e-12) {
+                    auto cush = evaluateIndenterContact(
+                        current_points[i].coord, alpha, indenter.physical_cushion_offset);
+                    if (cush.in_contact) {
                         // Smoothly nudge subsurface atom downward to avoid triangle inversion,
-                        // but leave node_bc_role = 0 so it remains a free degree of freedom during L-BFGS
-                        current_points[i].coord = c + ((current_points[i].coord - c) / d) * cushion_R;
+                        // leaving node_bc_role = 0 so it relaxes freely during L-BFGS
+                        current_points[i].coord = cush.surface_point;
                     }
                 }
             }
@@ -549,6 +688,10 @@ void MacroscopicGeometryConfig::setPhysicalBoundsFromPoints(
         y_min = 0.0;
         Lx = 100.0;
         Ly = 100.0;
+        carved_x_min = 0.0;
+        carved_x_max = 100.0;
+        carved_y_min = 0.0;
+        carved_y_max = 100.0;
         return;
     }
     double min_x = raw_points[0].coord.x();
@@ -565,7 +708,11 @@ void MacroscopicGeometryConfig::setPhysicalBoundsFromPoints(
     y_min = min_y;
     Lx = std::max(1e-8, max_x - min_x);
     Ly = std::max(1e-8, max_y - min_y);
-    setupIndenterBounds(lattice_a0);
+    carved_x_min = min_x;
+    carved_x_max = max_x;
+    carved_y_min = min_y;
+    carved_y_max = max_y;
+    setupIndenterBounds(lattice_a0, &raw_points);
 }
 
 bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double margin_phys) const {
@@ -675,6 +822,10 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
         }
         case CutoutShapeType::Polygon: {
             if (isPointInPolygon(x_hat, y_hat, c.vertices)) return true;
+            if (margin_phys > 0.0 && c.vertices.size() >= 3) {
+                double dist = distanceToPolygonEdges(x, y, x_min, y_min, Lx, Ly, c.vertices);
+                if (dist <= margin_phys) return true;
+            }
             break;
         }
         }
@@ -774,15 +925,31 @@ bool MacroscopicGeometryConfig::shouldRejectTriangle(
     if (l12 > 1.25 * a0 && !isPointInsideSolid(m12.x(), m12.y())) return true;
     if (l20 > 1.25 * a0 && !isPointInsideSolid(m20.x(), m20.y())) return true;
 
-    // 3. Check if any edge crosses a PreCrack slit segment
-    for (const auto& c : cutouts) {
-        if (!c.enabled || c.type != CutoutShapeType::PreCrack) continue;
-        Eigen::Vector2d a(x_min + c.x1 * Lx, y_min + c.y1 * Ly);
-        Eigen::Vector2d b(x_min + c.x2 * Lx, y_min + c.y2 * Ly);
-        if (segmentsIntersect(p0, p1, a, b) ||
-            segmentsIntersect(p1, p2, a, b) ||
-            segmentsIntersect(p2, p0, a, b)) {
+    // 3. Check if any edge crosses a PreCrack slit segment or Polygon boundary
+    if (outer_shape == OuterDomainShapeType::Polygon && outer_polygon.size() >= 3) {
+        if ((l01 > 1.25 * a0 && segmentIntersectsPolygonEdges(p0, p1, x_min, y_min, Lx, Ly, outer_polygon)) ||
+            (l12 > 1.25 * a0 && segmentIntersectsPolygonEdges(p1, p2, x_min, y_min, Lx, Ly, outer_polygon)) ||
+            (l20 > 1.25 * a0 && segmentIntersectsPolygonEdges(p2, p0, x_min, y_min, Lx, Ly, outer_polygon))) {
             return true;
+        }
+    }
+
+    for (const auto& c : cutouts) {
+        if (!c.enabled) continue;
+        if (c.type == CutoutShapeType::PreCrack) {
+            Eigen::Vector2d a(x_min + c.x1 * Lx, y_min + c.y1 * Ly);
+            Eigen::Vector2d b(x_min + c.x2 * Lx, y_min + c.y2 * Ly);
+            if (segmentsIntersect(p0, p1, a, b) ||
+                segmentsIntersect(p1, p2, a, b) ||
+                segmentsIntersect(p2, p0, a, b)) {
+                return true;
+            }
+        } else if (c.type == CutoutShapeType::Polygon && c.vertices.size() >= 3) {
+            if (segmentIntersectsPolygonEdges(p0, p1, x_min, y_min, Lx, Ly, c.vertices) ||
+                segmentIntersectsPolygonEdges(p1, p2, x_min, y_min, Lx, Ly, c.vertices) ||
+                segmentIntersectsPolygonEdges(p2, p0, x_min, y_min, Lx, Ly, c.vertices)) {
+                return true;
+            }
         }
     }
 
@@ -801,6 +968,25 @@ std::vector<Point2D> MacroscopicGeometryConfig::carveLatticePoints(
             carved.push_back(pt);
         }
     }
+
+    if (!carved.empty()) {
+        double c_min_x = carved[0].coord.x();
+        double c_max_x = carved[0].coord.x();
+        double c_min_y = carved[0].coord.y();
+        double c_max_y = carved[0].coord.y();
+        for (const auto& p : carved) {
+            c_min_x = std::min(c_min_x, p.coord.x());
+            c_max_x = std::max(c_max_x, p.coord.x());
+            c_min_y = std::min(c_min_y, p.coord.y());
+            c_max_y = std::max(c_max_y, p.coord.y());
+        }
+        carved_x_min = c_min_x;
+        carved_x_max = c_max_x;
+        carved_y_min = c_min_y;
+        carved_y_max = c_max_y;
+    }
+
+    setupIndenterBounds(lattice_a0, &carved);
 
     std::cout << "[MacroscopicGeometry] Carved discrete crystal lattice (fixed a0 = " << a0 << "): kept "
               << carved.size() << " / " << raw_points.size() << " lattice sites ("
@@ -823,8 +1009,18 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
 
     if (n_pts == 0) return;
 
-    const double x_max = x_min + Lx;
-    const double y_max = y_min + Ly;
+    // Use carved solid bounds for Top/Bottom/Left/Right edge grips so inset Custom Polygons
+    // and Disks properly match their extreme edges
+    double eff_x_min = carved_points[0].coord.x();
+    double eff_x_max = carved_points[0].coord.x();
+    double eff_y_min = carved_points[0].coord.y();
+    double eff_y_max = carved_points[0].coord.y();
+    for (const auto& pt : carved_points) {
+        eff_x_min = std::min(eff_x_min, pt.coord.x());
+        eff_x_max = std::max(eff_x_max, pt.coord.x());
+        eff_y_min = std::min(eff_y_min, pt.coord.y());
+        eff_y_max = std::max(eff_y_max, pt.coord.y());
+    }
     const Eigen::Vector2d center(x_min + 0.5 * Lx, y_min + 0.5 * Ly);
 
     // Evaluate boundary rules for each node
@@ -841,25 +1037,43 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
 
             switch (rule.region) {
             case BoundaryRegionType::TopEdge:
-                matches = (y >= y_max - strip);
+                matches = (y >= eff_y_max - strip);
                 break;
             case BoundaryRegionType::BottomEdge:
-                matches = (y <= y_min + strip);
+                matches = (y <= eff_y_min + strip);
                 break;
             case BoundaryRegionType::LeftEdge:
-                matches = (x <= x_min + strip);
+                matches = (x <= eff_x_min + strip);
                 break;
             case BoundaryRegionType::RightEdge:
-                matches = (x >= x_max - strip);
+                matches = (x >= eff_x_max - strip);
                 break;
             case BoundaryRegionType::OuterPerimeter:
                 if (outer_shape == OuterDomainShapeType::Disk) {
                     double r_phys = disk_radius * std::min(Lx, Ly);
                     double dist = (carved_points[i].coord - center).norm();
                     matches = (dist >= r_phys - strip);
+                } else if (outer_shape == OuterDomainShapeType::Polygon && outer_polygon.size() >= 3) {
+                    double dist = distanceToPolygonEdges(x, y, x_min, y_min, Lx, Ly, outer_polygon);
+                    matches = (dist <= strip);
+                } else if (outer_shape == OuterDomainShapeType::Dogbone) {
+                    double half_gauge_w = 0.5 * std::clamp(dogbone_gauge_width, 0.15, 0.98);
+                    double half_gauge_l = 0.5 * std::clamp(dogbone_gauge_length, 0.10, 0.90);
+                    double r_f = std::max(0.02, dogbone_fillet_radius);
+                    double dy = std::abs(y_hat - 0.5);
+                    double half_w_allowed = 0.5;
+                    if (dy <= half_gauge_l) {
+                        half_w_allowed = half_gauge_w;
+                    } else if (dy <= half_gauge_l + r_f) {
+                        double u = dy - half_gauge_l;
+                        double fillet_dx = r_f - std::sqrt(std::max(0.0, r_f * r_f - u * u));
+                        half_w_allowed = std::min(0.5, half_gauge_w + fillet_dx * ((0.5 - half_gauge_w) / r_f));
+                    }
+                    double x_edge_dist = (half_w_allowed - std::abs(x_hat - 0.5)) * Lx;
+                    matches = (x_edge_dist <= strip || y <= eff_y_min + strip || y >= eff_y_max - strip);
                 } else {
-                    matches = (x <= x_min + strip || x >= x_max - strip ||
-                               y <= y_min + strip || y >= y_max - strip);
+                    matches = (x <= eff_x_min + strip || x >= eff_x_max - strip ||
+                               y <= eff_y_min + strip || y >= eff_y_max - strip);
                 }
                 break;
             case BoundaryRegionType::HoleSurfaces:

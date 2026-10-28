@@ -880,7 +880,7 @@ void example_1_conti_zanzotto_loading(
       if (macro_geom.isIndenterActive() &&
           macro_geom.indenter.contact_mode == IndenterContactMode::KinematicProjection) {
         macro_geom.updateIndenterContactKinematics(
-            square_points, square_points_ref, node_bc_role, indenter_contacts, alpha);
+            square_points, square_points_ref, baseline_node_bc_role, node_bc_role, indenter_contacts, alpha);
         macro_geom.rebuildBoundaryDOFs(node_bc_role, interior_mapping, full_mapping);
         for (auto &elem : elements) {
           elem.set_dof_mapping(full_mapping);
@@ -1208,8 +1208,9 @@ void example_1_conti_zanzotto_loading(
         preOptUserData.current_alpha = pre_saving_value;
       }
 
+      double dummy_pre_e = pre_energy_val, dummy_pre_s = pre_stress_val;
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
-          &preOptUserData, pre_file_id, pre_energy_val, pre_stress_val, true);
+          &preOptUserData, pre_file_id, dummy_pre_e, dummy_pre_s, true);
       if (save_triangle_data) {
         ConfigurationSaver::saveTriangleData(&preOptUserData, pre_file_id,
                                              domain_dims, offsets, full_mapping);
@@ -1249,8 +1250,9 @@ void example_1_conti_zanzotto_loading(
       int post_file_id = caller_id + file_counter;
       file_counter++;
 
+      double dummy_post_e = post_energy, dummy_post_s = post_stress;
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
-          &postOptUserData, post_file_id, post_energy, post_stress, true);
+          &postOptUserData, post_file_id, dummy_post_e, dummy_post_s, true);
       if (save_triangle_data) {
         ConfigurationSaver::saveTriangleData(&postOptUserData, post_file_id,
                                              domain_dims, offsets, full_mapping);
@@ -1309,8 +1311,9 @@ void example_1_conti_zanzotto_loading(
         int periodic_file_id = caller_id + file_counter;
         file_counter++;
 
+        double dummy_per_e = post_energy, dummy_per_s = post_stress;
         ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
-            &postOptUserData, periodic_file_id, post_energy, post_stress, true);
+            &postOptUserData, periodic_file_id, dummy_per_e, dummy_per_s, true);
         if (save_triangle_data) {
           ConfigurationSaver::saveTriangleData(&postOptUserData, periodic_file_id,
                                                domain_dims, offsets, full_mapping);
