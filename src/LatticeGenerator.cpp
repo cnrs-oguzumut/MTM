@@ -1077,8 +1077,7 @@ std::pair<std::vector<Point2D>, DomainDimensions> LatticeGenerator::generate_rot
             double ry = cy + i * a1_y + j * a2_y;
 
             if (rx >= -tol && rx <= size_x + tol && ry >= -tol && ry <= size_y + tol) {
-                rx = std::max(0.0, std::min(size_x, rx));
-                ry = std::max(0.0, std::min(size_y, ry));
+                // Preserve exact crystalline lattice coordinate without artificial boundary snapping
                 points.push_back(Point2D(rx, ry));
             }
         }

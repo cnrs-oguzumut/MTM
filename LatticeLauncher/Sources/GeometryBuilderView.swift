@@ -822,6 +822,8 @@ public struct GeometryBuilderView: View {
                     Button(action: {
                         config.geometryConfig.enabled = true
                         config.geometryConfig.applyPreset(preset)
+                        config.alphaStart = 0.0
+                        config.noiseLevel = 0.0
                         selectedCutoutID = config.geometryConfig.cutouts.first?.id
                     }) {
                         HStack {

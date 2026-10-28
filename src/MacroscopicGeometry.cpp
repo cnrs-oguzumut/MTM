@@ -514,14 +514,19 @@ bool MacroscopicGeometryConfig::shouldRejectTriangle(
     }
 
     // 2. Check edge midpoints (prevents bridging across narrow notches, slots, or dogbone fillets)
+    // For small crystalline edges (length <= 1.25 * a0), chord sagitta along curved boundaries (e.g. circle)
+    // is tiny (~ 0.01 a0). Only check midpoint solid containment for edges > 1.25 * a0 to prevent
+    // falsely rejecting genuine crystalline surface facets.
     Eigen::Vector2d m01 = 0.5 * (p0 + p1);
     Eigen::Vector2d m12 = 0.5 * (p1 + p2);
     Eigen::Vector2d m20 = 0.5 * (p2 + p0);
-    if (!isPointInsideSolid(m01.x(), m01.y()) ||
-        !isPointInsideSolid(m12.x(), m12.y()) ||
-        !isPointInsideSolid(m20.x(), m20.y())) {
-        return true;
-    }
+    double l01 = (p1 - p0).norm();
+    double l12 = (p2 - p1).norm();
+    double l20 = (p0 - p2).norm();
+
+    if (l01 > 1.25 * a0 && !isPointInsideSolid(m01.x(), m01.y())) return true;
+    if (l12 > 1.25 * a0 && !isPointInsideSolid(m12.x(), m12.y())) return true;
+    if (l20 > 1.25 * a0 && !isPointInsideSolid(m20.x(), m20.y())) return true;
 
     // 3. Check if any edge crosses a PreCrack slit segment
     for (const auto& c : cutouts) {
@@ -623,8 +628,12 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
             if (!matches) continue;
 
             if (rule.kind == BoundaryConditionKind::FreeSurface) {
-                node_bc_role[i] = 0;
-                node_bc_velocity[i].setZero();
+                // FreeSurface (Neumann natural BC) marks a traction-free boundary.
+                // It MUST NEVER overwrite an already-constrained Dirichlet condition (Fixed, Prescribed, or Affine)!
+                if (node_bc_role[i] == 0) {
+                    node_bc_role[i] = 0;
+                    node_bc_velocity[i].setZero();
+                }
             } else if (rule.kind == BoundaryConditionKind::FixedClamped) {
                 node_bc_role[i] = 1;
                 node_bc_velocity[i].setZero();

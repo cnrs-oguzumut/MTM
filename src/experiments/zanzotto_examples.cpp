@@ -749,6 +749,12 @@ void example_1_conti_zanzotto_loading(
   std::vector<ElementTriangle2D> elements;
   std::vector<size_t> active_elements;
 
+  if (has_custom_geom) {
+    AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &square_points_ref);
+  } else {
+    AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
+  }
+
   if (restart_chk != nullptr) {
     square_points = restart_chk->points;
     elements = restart_chk->elements;
@@ -763,14 +769,8 @@ void example_1_conti_zanzotto_loading(
     std::cout << "[RESTART] Loaded " << square_points.size() << " nodes, "
               << elements.size() << " elements (" << active_elements.size() << " active)" << std::endl;
   } else {
-    if (has_custom_geom) {
-      AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &square_points_ref);
-    } else {
-      AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
-    }
     auto [mesh_elems, mesh_act_elems] = mesher.createMesh(
         square_points, free_dofs, Eigen::Matrix2d::Identity(), &dndx);
-    AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
     elements = std::move(mesh_elems);
     active_elements = std::move(mesh_act_elems);
     for (auto &element : elements) {
@@ -1322,6 +1322,10 @@ void example_1_conti_zanzotto_loading(
         break;
       }
     }
+  }
+
+  if (has_custom_geom) {
+    AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
   }
 }
 
