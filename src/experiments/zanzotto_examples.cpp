@@ -431,7 +431,7 @@ void memory(int caller_id, int nx, int ny, int restart_iteration) {
     // ==================== LOG DATA ====================
     ConfigurationSaver::logEnergyAndStress_v2(
         restart_iteration + i, alpha, pre_energy, pre_stress, post_energy,
-        post_stress, pre_area, post_area, (hasChanges > 0));
+        post_stress, pre_area, post_area, (hasChanges > 0), &postOptUserData);
 
     post_energy_previous = post_energy;
 
@@ -646,6 +646,7 @@ void example_1_conti_zanzotto_loading(
         : std::array<double, 2>{lattice_constant / 2.0,
                                 (sqrt(3.0) / 2.0) * lattice_constant};
   }
+  ConfigurationSaver::setReferenceRotationDeg(theta_rot);
 
   if (has_custom_geom) {
     square_points = macro_geom.carveLatticePoints(square_points, lattice_constant);
@@ -1149,60 +1150,59 @@ void example_1_conti_zanzotto_loading(
     frac_file.flush();
 
     if (stress_drop_detected || i == 0) {
-      // 1) Write PRE-avalanche state from cached RAM copy
-      int pre_file_id = caller_id + file_counter;
+      int eq_file_id = caller_id + file_counter;
       file_counter++;
+      int pre_file_id = eq_file_id;
+      int post_file_id = eq_file_id;
+      int num_dislocations_pre = 0;
 
-      UserData preOptUserData(pre_points, pre_elements, calculator,
-                              potential_func, potential_func_der, zero,
-                              optimal_lattice_parameter, pre_F_ext,
-                              interior_mapping, full_mapping,
-                              pre_active_elements, plasticity);
-      preOptUserData.second_derivative_function = &potential_func_sder;
-      if (has_custom_geom) {
-        preOptUserData.macro_geom_ptr = &macro_geom;
-        preOptUserData.current_alpha = pre_saving_value;
+      // 1) Write PRE-avalanche state from cached RAM copy (with distinct pre_avalanche_XXXXX prefix)
+      if (stress_drop_detected) {
+        UserData preOptUserData(pre_points, pre_elements, calculator,
+                                potential_func, potential_func_der, zero,
+                                optimal_lattice_parameter, pre_F_ext,
+                                interior_mapping, full_mapping,
+                                pre_active_elements, plasticity);
+        preOptUserData.second_derivative_function = &potential_func_sder;
+        if (has_custom_geom) {
+          preOptUserData.macro_geom_ptr = &macro_geom;
+          preOptUserData.current_alpha = pre_saving_value;
+        }
+
+        double dummy_pre_e = pre_energy_val, dummy_pre_s = pre_stress_val;
+        ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+            &preOptUserData, pre_file_id, dummy_pre_e, dummy_pre_s, true);
+
+        // Save pre-avalanche single-file checkpoint under pre_avalanche_XXXXX.chk
+        {
+          ConfigurationSaver::CheckpointData chk_pre;
+          chk_pre.nx = nx; chk_pre.ny = ny; chk_pre.iteration = pre_file_id;
+          chk_pre.current_alpha = pre_saving_value; chk_pre.step_size = step_size; chk_pre.alpha_end = alpha_max;
+          chk_pre.mode = (step_size > 0 ? "positive" : "negative");
+          chk_pre.seed = seed; chk_pre.enable_remeshing = enable_remeshing;
+          chk_pre.F_ext = pre_F_ext; chk_pre.points = pre_points;
+          chk_pre.elements = pre_elements; chk_pre.active_elements = pre_active_elements;
+
+          std::stringstream chk_ss;
+          chk_ss << "checkpoints/pre_avalanche_" << std::setw(5) << std::setfill('0') << pre_file_id << ".chk";
+          ConfigurationSaver::saveCheckpoint(chk_ss.str(), chk_pre);
+        }
+
+        std::vector<int> coordination_pre;
+        std::tie(num_dislocations_pre, coordination_pre) =
+            DefectAnalysis::analyzeDefectsInReferenceConfig(
+                &preOptUserData, pre_file_id, dndx, offsets, original_domain_map,
+                translation_map, domain_dims_point, element_area, pbc, true);
+
+        std::stringstream pre_vtk_ss;
+        pre_vtk_ss << "vtk_output/pre_avalanche_" << std::setw(5) << std::setfill('0') << pre_file_id << ".vtk";
+        ConfigurationSaver::writeToVTKFile(
+            pre_vtk_ss.str(), preOptUserData.points, preOptUserData.elements,
+            &preOptUserData, true, coordination_pre, pre_saving_value);
+        ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
       }
 
-      double dummy_pre_e = pre_energy_val, dummy_pre_s = pre_stress_val;
-      ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
-          &preOptUserData, pre_file_id, dummy_pre_e, dummy_pre_s, true);
-      if (save_triangle_data) {
-        ConfigurationSaver::saveTriangleData(&preOptUserData, pre_file_id,
-                                             domain_dims, offsets, full_mapping);
-        ConfigurationSaver::saveElements(pre_elements, pre_active_elements,
-                                         pre_file_id);
-      }
-
-      // Save pre-avalanche single-file checkpoint
-      {
-        ConfigurationSaver::CheckpointData chk_pre;
-        chk_pre.nx = nx; chk_pre.ny = ny; chk_pre.iteration = pre_file_id;
-        chk_pre.current_alpha = pre_saving_value; chk_pre.step_size = step_size; chk_pre.alpha_end = alpha_max;
-        chk_pre.mode = (step_size > 0 ? "positive" : "negative");
-        chk_pre.seed = seed; chk_pre.enable_remeshing = enable_remeshing;
-        chk_pre.F_ext = pre_F_ext; chk_pre.points = pre_points;
-        chk_pre.elements = pre_elements; chk_pre.active_elements = pre_active_elements;
-
-        std::stringstream chk_ss;
-        chk_ss << "checkpoints/checkpoint_" << std::setw(5) << std::setfill('0') << pre_file_id << ".chk";
-        ConfigurationSaver::saveCheckpoint(chk_ss.str(), chk_pre);
-      }
-
-      auto [num_dislocations_pre, coordination_pre] =
-          DefectAnalysis::analyzeDefectsInReferenceConfig(
-              &preOptUserData, pre_file_id, dndx, offsets, original_domain_map,
-              translation_map, domain_dims_point, element_area, pbc, true);
-
-      ConfigurationSaver::writeToVTK(
-          preOptUserData.points, preOptUserData.elements, &preOptUserData,
-          pre_file_id, true, coordination_pre, pre_saving_value);
-      ConfigurationSaver::logDislocationData(alpha, num_dislocations_pre);
-
-      // 2) Write POST-avalanche state
-      int post_file_id = caller_id + file_counter;
-      file_counter++;
-
+      // 2) Write POST-avalanche (equilibrium) state to configuration_XXXXX.vtk
       double dummy_post_e = post_energy, dummy_post_s = post_stress;
       ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
           &postOptUserData, post_file_id, dummy_post_e, dummy_post_s, true);
@@ -1236,13 +1236,12 @@ void example_1_conti_zanzotto_loading(
 
       ConfigurationSaver::writeToVTK(
           postOptUserData.points, postOptUserData.elements, &postOptUserData,
-          post_file_id, true, coordination_post, pre_saving_value);
+          post_file_id, true, coordination_post, alpha);
       ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
 
-      if (i == 0) {
-        std::cout << "  💾 [VTK Snapshot] Initial state saved -> VTK #"
-                  << std::setw(5) << std::setfill('0') << pre_file_id << " & #"
-                  << std::setw(5) << std::setfill('0') << post_file_id << std::setfill(' ')
+      if (i == 0 && !stress_drop_detected) {
+        std::cout << "  💾 [VTK Snapshot] Initial equilibrium state saved -> configuration_"
+                  << std::setw(5) << std::setfill('0') << post_file_id << ".vtk" << std::setfill(' ')
                   << " (dislocations: " << num_dislocations_post << ")" << std::endl;
       } else {
         std::cout << "  ⚡ [AVALANCHE #" << avalanche_counter << "] Stress dropped "
@@ -1251,9 +1250,9 @@ void example_1_conti_zanzotto_loading(
                   << " -> " << post_stress << "), ΔE = "
                   << std::showpos << (post_energy - post_energy_previous) << std::noshowpos
                   << " | Dislocations: " << num_dislocations_pre << " -> " << num_dislocations_post
-                  << " | Saved VTK #" << std::setw(5) << std::setfill('0') << pre_file_id
-                  << " (pre) & #" << std::setw(5) << std::setfill('0') << post_file_id
-                  << std::setfill(' ') << " (post)" << std::endl;
+                  << " | Saved pre_avalanche_" << std::setw(5) << std::setfill('0') << pre_file_id
+                  << ".vtk & configuration_" << std::setw(5) << std::setfill('0') << post_file_id
+                  << ".vtk" << std::setfill(' ') << std::endl;
       }
 
       AvalancheRecorder::instance().recordStep(
@@ -1326,12 +1325,12 @@ void example_1_conti_zanzotto_loading(
     // ==================== STABILITY MONITOR (optional) ====================
     stability_monitor.end_of_step(static_cast<int>(i), alpha, post_stress, postOptUserData,
                                   stress_drop_detected, pre_elements,
-                                  pre_active_elements, caller_id + file_counter - 2);
+                                  pre_active_elements, caller_id + file_counter - 1);
 
     // ==================== LOG DATA ====================
     ConfigurationSaver::logEnergyAndStress_v2(
         i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area,
-        post_area, (hasChanges > 0));
+        post_area, (hasChanges > 0), &postOptUserData, &indenter_contacts);
 
     post_energy_previous = post_energy;
     post_stress_previous = post_stress;
@@ -1347,6 +1346,7 @@ void example_1_conti_zanzotto_loading(
       }
     }
   }
+  ConfigurationSaver::setReferenceRotationDeg(theta_rot);
 
   if (has_custom_geom) {
     AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);

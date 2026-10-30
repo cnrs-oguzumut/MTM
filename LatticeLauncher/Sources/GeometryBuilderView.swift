@@ -1386,12 +1386,36 @@ public struct GeometryBuilderView: View {
                         }
                         
                         if rule.kind == .prescribed {
-                            HStack(spacing: 8) {
+                            HStack(spacing: 6) {
                                 Text("Grip Δu/α:").font(.caption2).foregroundColor(.secondary)
                                 Text("ux:").font(.caption2.bold())
-                                DoubleField(title: "0.0", value: $rule.ux, width: 48)
+                                Picker("", selection: Binding(
+                                    get: { BoundaryZoneRuleModel.snapUnitDirection(rule.ux) },
+                                    set: { rule.ux = $0 }
+                                )) {
+                                    Text("-1").tag(-1.0)
+                                    Text("0").tag(0.0)
+                                    Text("+1").tag(1.0)
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                .controlSize(.mini)
+                                .frame(width: 72)
+
                                 Text("uy:").font(.caption2.bold())
-                                DoubleField(title: "1.0", value: $rule.uy, width: 48)
+                                Picker("", selection: Binding(
+                                    get: { BoundaryZoneRuleModel.snapUnitDirection(rule.uy) },
+                                    set: { rule.uy = $0 }
+                                )) {
+                                    Text("-1").tag(-1.0)
+                                    Text("0").tag(0.0)
+                                    Text("+1").tag(1.0)
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                .controlSize(.mini)
+                                .frame(width: 72)
+
                                 Text("Strip (a₀):").font(.caption2)
                                 DoubleField(title: "2.0", value: $rule.thickness_a0, width: 42)
                             }

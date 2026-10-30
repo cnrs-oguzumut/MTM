@@ -281,7 +281,16 @@ public class ProcessRunner: ObservableObject {
                 
                 let remeshStr = parts[10].trimmingCharacters(in: .whitespacesAndNewlines)
                 let shouldRemesh = (remeshStr == "1" || remeshStr.lowercased() == "true")
-                
+
+                func parseCol(_ idx: Int, fallback: Double = 0.0) -> Double {
+                    guard idx < parts.count,
+                          let val = Double(parts[idx].trimmingCharacters(in: .whitespacesAndNewlines)),
+                          val.isFinite else {
+                        return fallback
+                    }
+                    return val
+                }
+
                 allPoints.append(StressStrainPoint(
                     iteration: iter,
                     alpha: alpha,
@@ -289,7 +298,19 @@ public class ProcessRunner: ObservableObject {
                     postStress: postStress,
                     preEnergy: preEnergy,
                     postEnergy: postEnergy,
-                    shouldRemesh: shouldRemesh
+                    shouldRemesh: shouldRemesh,
+                    cauchyXX: parseCol(11),
+                    cauchyXY: parseCol(12, fallback: postStress),
+                    cauchyYY: parseCol(13),
+                    hydrostaticPressure: parseCol(14),
+                    piola11: parseCol(15),
+                    piola12: parseCol(16),
+                    piola22: parseCol(17),
+                    vonMisesAvg: parseCol(18),
+                    vonMisesMax: parseCol(19),
+                    indenterLoad: parseCol(20),
+                    meanContactPressure: parseCol(21),
+                    contactAtoms: parseCol(22)
                 ))
             }
             

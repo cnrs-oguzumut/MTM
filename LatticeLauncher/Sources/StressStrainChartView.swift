@@ -32,9 +32,18 @@ struct StressStrainChartView: View {
     @EnvironmentObject var runner: ProcessRunner
     @State private var selectedAlpha: Double?
     @State private var chartMode: ChartMetricMode = .stress
+    @State private var stressComponent: StressComponentType = .primary
     @State private var scaleMode: ChartScaleMode = .autoFit
     @State private var showRemeshEvents: Bool = true
     @State private var showYieldLine: Bool = true
+    
+    private func stressValue(for pt: StressStrainPoint) -> Double {
+        pt.value(for: stressComponent)
+    }
+    
+    private var currentPeakStress: Double {
+        runner.curvePoints.map { abs(stressValue(for: $0)) }.max() ?? 0.0
+    }
     
     // Remesh / surgery points (excluding initial setup mesh at iteration 0)
     private var remeshEvents: [StressStrainPoint] {
@@ -97,7 +106,7 @@ struct StressStrainChartView: View {
         switch chartMode {
         case .stress:
             guard !runner.curvePoints.isEmpty else { return 0.0...0.05 }
-            let vals = runner.curvePoints.map(\.postStress)
+            let vals = runner.curvePoints.map { stressValue(for: $0) }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.01
             let span = maxY - minY
@@ -117,8 +126,9 @@ struct StressStrainChartView: View {
             }
             
             var yMax = maxY + pad
-            if showYieldLine && runner.peakStress > 0 && maxY > 0 {
-                yMax = max(yMax, runner.peakStress + pad * 0.5)
+            let peakVal = currentPeakStress
+            if showYieldLine && peakVal > 0 && maxY > 0 {
+                yMax = max(yMax, peakVal + pad * 0.5)
             }
             return yMin <= yMax ? yMin...yMax : 0.0...0.05
             
@@ -215,7 +225,41 @@ struct StressStrainChartView: View {
                 .labelsHidden()
                 .controlSize(.small)
                 .fixedSize()
-                .help("Select plotted quantity: Shear Stress σ(α), Internal Energy E(α), or Smallest Stiffness Eigenvalue λ_min(α)")
+                .help("Select plotted quantity: Stress / Load σ(α), Internal Energy E(α), or Smallest Stiffness Eigenvalue λ_min(α)")
+                
+                // 1b. Stress / Nanoindentation Component Dropdown Selector
+                if chartMode == .stress {
+                    Picker("", selection: $stressComponent) {
+                        Section(header: Text("Primary")) {
+                            Text(StressComponentType.primary.rawValue).tag(StressComponentType.primary)
+                        }
+                        Section(header: Text("Cauchy Stress & Pressure")) {
+                            Text(StressComponentType.cauchyXY.rawValue).tag(StressComponentType.cauchyXY)
+                            Text(StressComponentType.cauchyXX.rawValue).tag(StressComponentType.cauchyXX)
+                            Text(StressComponentType.cauchyYY.rawValue).tag(StressComponentType.cauchyYY)
+                            Text(StressComponentType.hydrostaticPressure.rawValue).tag(StressComponentType.hydrostaticPressure)
+                        }
+                        Section(header: Text("Aligned Piola / Projected Stress")) {
+                            Text(StressComponentType.piola12.rawValue).tag(StressComponentType.piola12)
+                            Text(StressComponentType.piola11.rawValue).tag(StressComponentType.piola11)
+                            Text(StressComponentType.piola22.rawValue).tag(StressComponentType.piola22)
+                        }
+                        Section(header: Text("Von Mises Equivalent Stress (2D)")) {
+                            Text(StressComponentType.vonMisesAvg.rawValue).tag(StressComponentType.vonMisesAvg)
+                            Text(StressComponentType.vonMisesMax.rawValue).tag(StressComponentType.vonMisesMax)
+                        }
+                        Section(header: Text("Nanoindentation Metrics")) {
+                            Text(StressComponentType.indenterLoad.rawValue).tag(StressComponentType.indenterLoad)
+                            Text(StressComponentType.meanContactPressure.rawValue).tag(StressComponentType.meanContactPressure)
+                            Text(StressComponentType.contactAtoms.rawValue).tag(StressComponentType.contactAtoms)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 195)
+                    .help("Select which stress component (Cauchy, Aligned Piola / Projected, Von Mises) or nanoindentation metric to monitor live")
+                }
                 
                 // 2. Pinned Clever Auto-Scaling Selector
                 Picker("", selection: $scaleMode) {
@@ -253,12 +297,13 @@ struct StressStrainChartView: View {
                                 .help("Display peak stress horizontal guide line")
                         }
                         
-                        if chartMode == .stress && runner.peakStress > 0 {
+                        let peakVal = currentPeakStress
+                        if chartMode == .stress && peakVal > 0 {
                             HStack(spacing: 4) {
                                 Image(systemName: "crown.fill")
                                     .font(.system(size: 9))
                                     .foregroundColor(.orange)
-                                Text("|σ|_max: \(String(format: "%.4f", runner.peakStress))")
+                                Text("|\(stressComponent.shortLabel)|_max: \(String(format: "%.4f", peakVal))")
                                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                                     .foregroundColor(.orange)
                             }
@@ -422,10 +467,11 @@ struct StressStrainChartView: View {
                     } else {
                         // 1. Primary Stress / Energy Line Mark (+ PointMark when sparse)
                         ForEach(displayCurvePoints) { pt in
+                            let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
+                            let yLabel = chartMode == .stress ? stressComponent.rawValue : "Internal Energy (E)"
                             LineMark(
                                 x: .value("Shear Strain (α)", pt.alpha),
-                                y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
-                                         chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                y: .value(yLabel, yVal)
                             )
                             .foregroundStyle(chartMode == .stress ? Color.blue : Color.purple)
                             .interpolationMethod(.linear)
@@ -433,8 +479,7 @@ struct StressStrainChartView: View {
                             if runner.curvePoints.count <= 50 {
                                 PointMark(
                                     x: .value("Shear Strain (α)", pt.alpha),
-                                    y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
-                                             chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                    y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle())
                                 .symbolSize(30)
@@ -445,10 +490,11 @@ struct StressStrainChartView: View {
                         // 2. Plasticity / Remesh Events Overlay
                         if showRemeshEvents {
                             ForEach(displayRemeshEvents) { pt in
+                                let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
+                                let yLabel = chartMode == .stress ? stressComponent.rawValue : "Internal Energy (E)"
                                 PointMark(
                                     x: .value("Shear Strain (α)", pt.alpha),
-                                    y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
-                                             chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                    y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle())
                                 .symbolSize(48)
@@ -456,8 +502,7 @@ struct StressStrainChartView: View {
                                 
                                 PointMark(
                                     x: .value("Shear Strain (α)", pt.alpha),
-                                    y: .value(chartMode == .stress ? "Shear Stress (σ)" : "Internal Energy (E)",
-                                             chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                    y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle().strokeBorder(lineWidth: 1.5))
                                 .symbolSize(80)
@@ -466,15 +511,17 @@ struct StressStrainChartView: View {
                         }
                         
                         // 3. Peak / Yield Stress Guide Line
-                        if showYieldLine && chartMode == .stress && runner.peakStress > 0 {
-                            let peakY = (runner.curvePoints.last?.postStress ?? 0) < 0 ? -runner.peakStress : runner.peakStress
+                        let peakVal = currentPeakStress
+                        if showYieldLine && chartMode == .stress && peakVal > 0 {
+                            let lastStress = runner.curvePoints.last.map { stressValue(for: $0) } ?? 0.0
+                            let peakY = lastStress < 0 ? -peakVal : peakVal
                             RuleMark(
                                 y: .value("Peak Stress", peakY)
                             )
                             .foregroundStyle(Color.orange.opacity(0.7))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
                             .annotation(position: .top, alignment: .trailing) {
-                                Text("|σ|_max: \(String(format: "%.4f", runner.peakStress))")
+                                Text("|\(stressComponent.shortLabel)|_max: \(String(format: "%.4f", peakVal))")
                                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                                     .foregroundColor(.orange)
                                     .padding(2)
@@ -490,7 +537,7 @@ struct StressStrainChartView: View {
                             
                             PointMark(
                                 x: .value("Selected α", pt.alpha),
-                                y: .value("Value", chartMode == .stress ? pt.postStress : pt.postEnergy)
+                                y: .value("Value", chartMode == .stress ? stressValue(for: pt) : pt.postEnergy)
                             )
                             .symbolSize(80)
                             .foregroundStyle(Color.cyan)
@@ -574,14 +621,26 @@ struct StressStrainChartView: View {
                 } else if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
                     let isIndentation = (runner.activeConfig?.geometryConfig.indenter.enabled == true ||
                                          runner.activeConfig?.geometryConfig.primary_stress_component == "indentation_load")
-                    HStack(spacing: 20) {
+                    let curStress = stressValue(for: pt)
+                    let stressTitle: String = {
+                        if stressComponent == .primary {
+                            return isIndentation ? "Load P" : "Stress σ"
+                        }
+                        return stressComponent.shortLabel
+                    }()
+                    HStack(spacing: 18) {
                         Text("Step: \(pt.iteration)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         Text(isIndentation ? "Depth δ: \(String(format: "%.4f", pt.alpha))" : "Strain α: \(String(format: "%.6f", pt.alpha))")
                             .font(.system(size: 11, design: .monospaced))
-                        Text(isIndentation ? "Load P: \(String(format: "%.4f", pt.postStress))" : "Stress σ: \(String(format: "%.6f", pt.postStress))")
-                            .font(.system(size: 11, design: .monospaced))
+                        Text("\(stressTitle): \(String(format: "%.6f", curStress))")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundColor(.blue)
+                        if stressComponent != .vonMisesAvg {
+                            Text("⟨σ_vM⟩: \(String(format: "%.4f", pt.vonMisesAvg))")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.orange)
+                        }
                         Text("Energy E: \(String(format: "%.6e", pt.postEnergy))")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.purple)
@@ -652,9 +711,9 @@ struct StressStrainChartView: View {
     // MARK: - Export Methods
     
     private func generateCurveCSV() -> String {
-        var csv = "step,alpha_strain,stress_sigma,energy_E,pre_stress,pre_energy,is_remesh\n"
+        var csv = "step,alpha_strain,stress_sigma,energy_E,pre_stress,pre_energy,is_remesh,cauchy_xx,cauchy_xy,cauchy_yy,hydrostatic_pressure,piola_11,piola_12,piola_22,von_mises_avg,von_mises_max,indenter_load,mean_contact_pressure,contact_atoms\n"
         for pt in runner.curvePoints {
-            csv += "\(pt.iteration),\(pt.alpha),\(pt.postStress),\(pt.postEnergy),\(pt.preStress),\(pt.preEnergy),\(pt.shouldRemesh)\n"
+            csv += "\(pt.iteration),\(pt.alpha),\(pt.postStress),\(pt.postEnergy),\(pt.preStress),\(pt.preEnergy),\(pt.shouldRemesh),\(pt.cauchyXX),\(pt.cauchyXY),\(pt.cauchyYY),\(pt.hydrostaticPressure),\(pt.piola11),\(pt.piola12),\(pt.piola22),\(pt.vonMisesAvg),\(pt.vonMisesMax),\(pt.indenterLoad),\(pt.meanContactPressure),\(pt.contactAtoms)\n"
         }
         return csv
     }

@@ -27,6 +27,83 @@ namespace {
     inline int32_t vtk_swap_int(int32_t val) {
         return static_cast<int32_t>(vtk_swap32(static_cast<uint32_t>(val)));
     }
+
+    static double g_reference_rotation_deg = 0.0;
+    static double g_reference_rotation_rad = 0.0;
+
+    inline Eigen::Matrix2d getReferenceRotationMatrix() {
+        const double c = std::cos(g_reference_rotation_rad);
+        const double s = std::sin(g_reference_rotation_rad);
+        Eigen::Matrix2d R_theta;
+        R_theta << c, -s,
+                   s,  c;
+        return R_theta;
+    }
+
+    inline Eigen::Matrix2d computeAlignedDeformationGradient(
+        const Eigen::Matrix2d& F,
+        double theta_rad = g_reference_rotation_rad)
+    {
+        const double c = std::cos(theta_rad);
+        const double s = std::sin(theta_rad);
+        Eigen::Matrix2d R_theta;
+        R_theta << c, -s,
+                   s,  c;
+
+        // Target sits at the midpoint (F12 = 1/4) of the Lagrange fundamental domain
+        // between the square phase (F12 = 0) and triangular phase (F12 = +1/2).
+        Eigen::Matrix2d B_target;
+        B_target << 1.0, 0.25,
+                    0.0, 1.0;
+        const Eigen::Matrix2d F_target = R_theta * B_target;
+
+        // 3 cyclic counterclockwise vertex permutations of a triangle in SL(2, Z)
+        Eigen::Matrix2d M_perms[3];
+        M_perms[0] <<  1.0,  0.0,
+                       0.0,  1.0;
+        M_perms[1] << -1.0, -1.0,
+                       1.0,  0.0;
+        M_perms[2] <<  0.0,  1.0,
+                      -1.0, -1.0;
+
+        // 4 discrete 90-degree reference rotations in SL(2, Z)
+        Eigen::Matrix2d R_syms[4];
+        R_syms[0] <<  1.0,  0.0,
+                      0.0,  1.0;
+        R_syms[1] <<  0.0, -1.0,
+                      1.0,  0.0;
+        R_syms[2] << -1.0,  0.0,
+                      0.0, -1.0;
+        R_syms[3] <<  0.0,  1.0,
+                     -1.0,  0.0;
+
+        Eigen::Matrix2d best_F = F;
+        double min_dist_sq = 0.0;
+        bool has_best = false;
+
+        for (int p = 0; p < 3; ++p) {
+            const Eigen::Matrix2d F_perm = F * M_perms[p];
+            for (int r = 0; r < 4; ++r) {
+                const Eigen::Matrix2d F_cand = F_perm * R_syms[r].transpose();
+                const double dist_sq = (F_cand - F_target).squaredNorm();
+                if (!has_best || dist_sq < min_dist_sq) {
+                    has_best = true;
+                    min_dist_sq = dist_sq;
+                    best_F = F_cand;
+                }
+            }
+        }
+        return best_F;
+    }
+}
+
+void ConfigurationSaver::setReferenceRotationDeg(double deg) {
+    g_reference_rotation_deg = deg;
+    g_reference_rotation_rad = deg * M_PI / 180.0;
+}
+
+double ConfigurationSaver::getReferenceRotationDeg() {
+    return g_reference_rotation_deg;
 }
 
 void ConfigurationSaver::ensureDirectoryExists(const std::string& directory) {
@@ -122,9 +199,10 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         element.setExternalDeformation(F_ext);
         element.calculate_deformation_gradient(points);
         
-        // Get the deformation gradient and metric tensor
-        const Eigen::Matrix2d& F = element.getDeformationGradient();
-        Eigen::Matrix2d C = element.getMetricTensor();
+        // Get the aligned deformation gradient and metric tensor
+        const Eigen::Matrix2d F = computeAlignedDeformationGradient(
+            element.getDeformationGradient());
+        Eigen::Matrix2d C = F.transpose() * F;
         
         if(reduction==true) {
             // Apply Lagrange reduction
@@ -461,9 +539,10 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
         element.setExternalDeformation(F_ext);
         element.calculate_deformation_gradient(points);
 
-        // Get the deformation gradient and metric tensor
-        const Eigen::Matrix2d& F = element.getDeformationGradient();
-        Eigen::Matrix2d C = element.getMetricTensor();
+        // Get the aligned deformation gradient and metric tensor
+        const Eigen::Matrix2d F = computeAlignedDeformationGradient(
+            element.getDeformationGradient());
+        Eigen::Matrix2d C = F.transpose() * F;
         if(reduction==true) {
             // Apply Lagrange reduction
             result = lagrange::reduce(C);
@@ -548,7 +627,9 @@ void ConfigurationSaver::logEnergyAndStress_v2(
     double post_stress,
     double pre_area,
     double post_area,  
-    bool shouldRemesh)  // Added plasticity flag parameter
+    bool shouldRemesh,
+    UserData* postUserData,
+    const std::vector<int>* contact_atoms)
 {
     static std::ofstream log_file;
     static std::filesystem::path log_directory;
@@ -563,9 +644,12 @@ void ConfigurationSaver::logEnergyAndStress_v2(
             log_file.open("energy_stress_log.csv", std::ios::app);
         } else {
             log_file.open("energy_stress_log.csv");
-            // Write header
+            // Write header (columns 0..10 preserved, columns 11..22 added)
             log_file << "Iteration,Alpha,PreEnergy,PreStress,PostEnergy,PostStress,"
-                     << "EnergyChange,StressChange,PreArea,PostArea,shouldRemesh\n";
+                     << "EnergyChange,StressChange,PreArea,PostArea,shouldRemesh,"
+                     << "CauchyXX,CauchyXY,CauchyYY,HydrostaticPressure,"
+                     << "Piola11,Piola12,Piola22,VonMisesAvg,VonMisesMax,"
+                     << "IndenterLoad,MeanContactPressure,ContactAtoms\n";
         }
         
         // Set maximum precision for all subsequent writes
@@ -573,6 +657,134 @@ void ConfigurationSaver::logEnergyAndStress_v2(
                  << std::setprecision(std::numeric_limits<double>::max_digits10);
         
         log_directory = current_directory;
+    }
+
+    double cauchy_xx = 0.0;
+    double cauchy_xy = post_stress;
+    double cauchy_yy = 0.0;
+    double hydro_pressure = 0.0;
+    double piola_11 = 0.0;
+    double piola_12 = 0.0;
+    double piola_22 = 0.0;
+    double vm_avg = 0.0;
+    double vm_max = 0.0;
+    double indenter_load = 0.0;
+    double mean_contact_pressure = 0.0;
+    int num_contact_atoms = 0;
+
+    if (postUserData != nullptr) {
+        std::vector<Point2D>& pts = postUserData->points;
+        std::vector<ElementTriangle2D>& elems = postUserData->elements;
+        BaseLatticeCalculator& calc = postUserData->calculator;
+        const double norm_area = calc.getUnitCellArea();
+        const Eigen::Matrix2d& F_ext = postUserData->F_external;
+        const Eigen::Matrix2d R_theta_T = getReferenceRotationMatrix().transpose();
+
+        double sum_curr_area = 0.0;
+        double sum_ref_area = 0.0;
+        Eigen::Matrix2d sum_cauchy = Eigen::Matrix2d::Zero();
+        Eigen::Matrix2d sum_piola = Eigen::Matrix2d::Zero();
+        double sum_vm = 0.0;
+
+        for (size_t elem_idx : postUserData->active_elements) {
+            if (elem_idx >= elems.size()) continue;
+            auto& element = elems[elem_idx];
+            if (!element.isInitialized()) continue;
+
+            element.setExternalDeformation(F_ext);
+            element.calculate_deformation_gradient(pts);
+
+            const Eigen::Matrix2d F = computeAlignedDeformationGradient(
+                element.getDeformationGradient());
+            Eigen::Matrix2d C = F.transpose() * F;
+            lagrange::Result res = lagrange::reduce(C);
+            C = res.C_reduced;
+
+            Eigen::Matrix2d dE_dC =
+                calc.calculate_derivative(C, postUserData->derivative_function) / norm_area;
+            Eigen::Matrix2d P =
+                2.0 * F * res.m_matrix * dE_dC * res.m_matrix.transpose();
+
+            double detF = F.determinant();
+            Eigen::Matrix2d sigma = (1.0 / detF) * P * F.transpose();
+            Eigen::Matrix2d P_lab = P * R_theta_T;
+
+            const double sxx = sigma(0, 0);
+            const double sxy = sigma(0, 1);
+            const double syy = sigma(1, 1);
+            const double vm = std::sqrt(
+                std::max(0.0, sxx * sxx - sxx * syy + syy * syy + 3.0 * sxy * sxy));
+
+            const double ref_a = element.getReferenceArea();
+            const double cur_a = element.calculateCurrentArea(pts);
+
+            sum_cauchy += sigma * cur_a;
+            sum_piola += P_lab * ref_a;
+            sum_vm += vm * cur_a;
+            if (vm > vm_max) vm_max = vm;
+            sum_curr_area += cur_a;
+            sum_ref_area += ref_a;
+        }
+
+        if (sum_curr_area > 0.0) {
+            sum_cauchy /= sum_curr_area;
+            cauchy_xx = sum_cauchy(0, 0);
+            cauchy_xy = sum_cauchy(0, 1);
+            cauchy_yy = sum_cauchy(1, 1);
+            hydro_pressure = -0.5 * (cauchy_xx + cauchy_yy);
+            vm_avg = sum_vm / sum_curr_area;
+        }
+        if (sum_ref_area > 0.0) {
+            sum_piola /= sum_ref_area;
+            piola_11 = sum_piola(0, 0);
+            piola_12 = sum_piola(0, 1);
+            piola_22 = sum_piola(1, 1);
+        }
+
+        if (postUserData->macro_geom_ptr != nullptr &&
+            postUserData->macro_geom_ptr->isIndenterActive()) {
+            const auto* mg = postUserData->macro_geom_ptr;
+            if (mg->indenter.contact_mode == IndenterContactMode::KinematicProjection && contact_atoms != nullptr) {
+                indenter_load = mg->computeKinematicContactForce(postUserData, *contact_atoms);
+                num_contact_atoms = static_cast<int>(contact_atoms->size());
+                if (!contact_atoms->empty()) {
+                    double x_min = pts[(*contact_atoms)[0]].coord.x();
+                    double x_max = x_min;
+                    for (int idx : *contact_atoms) {
+                        if (idx >= 0 && idx < static_cast<int>(pts.size())) {
+                            double x = pts[idx].coord.x();
+                            x_min = std::min(x_min, x);
+                            x_max = std::max(x_max, x);
+                        }
+                    }
+                    double a_c = std::max(postUserData->ideal_lattice_parameter,
+                                          (x_max - x_min) + postUserData->ideal_lattice_parameter);
+                    mean_contact_pressure = indenter_load / a_c;
+                }
+            } else {
+                indenter_load = mg->computeIndenterVerticalForce(pts, alpha);
+                double x_min = 0.0, x_max = 0.0;
+                bool first_c = true;
+                for (const auto& pt : pts) {
+                    auto c = mg->evaluateIndenterContact(pt.coord, alpha);
+                    if (c.in_contact) {
+                        num_contact_atoms++;
+                        if (first_c) {
+                            x_min = x_max = pt.coord.x();
+                            first_c = false;
+                        } else {
+                            x_min = std::min(x_min, pt.coord.x());
+                            x_max = std::max(x_max, pt.coord.x());
+                        }
+                    }
+                }
+                if (num_contact_atoms > 0) {
+                    double a_c = std::max(postUserData->ideal_lattice_parameter,
+                                          (x_max - x_min) + postUserData->ideal_lattice_parameter);
+                    mean_contact_pressure = indenter_load / a_c;
+                }
+            }
+        }
     }
     
     // Write data (precision is already set)
@@ -586,7 +798,19 @@ void ConfigurationSaver::logEnergyAndStress_v2(
              << -(post_stress * post_area - pre_stress * pre_area) << ","
              << pre_area << ","
              << post_area << ","
-             << shouldRemesh
+             << shouldRemesh << ","
+             << cauchy_xx << ","
+             << cauchy_xy << ","
+             << cauchy_yy << ","
+             << hydro_pressure << ","
+             << piola_11 << ","
+             << piola_12 << ","
+             << piola_22 << ","
+             << vm_avg << ","
+             << vm_max << ","
+             << indenter_load << ","
+             << mean_contact_pressure << ","
+             << num_contact_atoms
              << "\n";
     
     log_file.flush();
@@ -702,12 +926,16 @@ void ConfigurationSaver::writeToVTKFile(
     std::vector<double> element_energy_values;
     std::vector<Eigen::Matrix2d> element_cauchy_stress_tensors;
     std::vector<double> element_projected_stress_values;
+    std::vector<double> element_von_mises_values;
+    std::vector<double> element_hydrostatic_pressure_values;
     
     // Initialize nodal value arrays
     std::vector<double> nodal_energy(extended_point_count, 0.0);
     std::vector<double> atom_energy(original_points_count, 0.0);
     std::vector<double> atom_area(original_points_count, 0.0);
     std::vector<double> nodal_projected_stress(extended_point_count, 0.0);
+    std::vector<double> nodal_von_mises(extended_point_count, 0.0);
+    std::vector<double> nodal_hydrostatic_pressure(extended_point_count, 0.0);
     std::vector<double> nodal_cauchy_xx(extended_point_count, 0.0);
     std::vector<double> nodal_cauchy_xy(extended_point_count, 0.0);
     std::vector<double> nodal_cauchy_yy(extended_point_count, 0.0);
@@ -732,9 +960,10 @@ void ConfigurationSaver::writeToVTKFile(
         const auto& element = elements[elem_idx];
         if (!element.isInitialized()) continue;
         
-        // Calculate element quantities
-        const Eigen::Matrix2d& F = element.getDeformationGradient();
-        Eigen::Matrix2d C = element.getMetricTensor();
+        // Calculate element quantities from aligned deformation gradient
+        const Eigen::Matrix2d F = computeAlignedDeformationGradient(
+            element.getDeformationGradient());
+        Eigen::Matrix2d C = F.transpose() * F;
         lagrange::Result result;
         Eigen::Matrix2d P;
     
@@ -766,11 +995,22 @@ void ConfigurationSaver::writeToVTKFile(
         double detF = F.determinant();
         Eigen::Matrix2d cauchy_stress = (1.0 / detF) * P * F.transpose();
         element_cauchy_stress_tensors.push_back(cauchy_stress);
+
+        // Calculate 2D plane-stress Von Mises and Hydrostatic Pressure
+        const double sxx = cauchy_stress(0, 0);
+        const double sxy = cauchy_stress(0, 1);
+        const double syy = cauchy_stress(1, 1);
+        const double von_mises = std::sqrt(
+            std::max(0.0, sxx * sxx - sxx * syy + syy * syy + 3.0 * sxy * sxy));
+        const double hydro_pressure = -0.5 * (sxx + syy);
+        element_von_mises_values.push_back(von_mises);
+        element_hydrostatic_pressure_values.push_back(hydro_pressure);
         
-        // Calculate projected stress
+        // Calculate projected stress in the lab frame: P_lab = P * R(theta_0)^T
+        const Eigen::Matrix2d P_lab = P * getReferenceRotationMatrix().transpose();
         Eigen::Matrix2d dF_d_alpha = Eigen::Matrix2d::Zero();
         dF_d_alpha(0, 1) = 1.0;
-        double stress_value = P.cwiseProduct(dF_d_alpha).sum();
+        double stress_value = P_lab.cwiseProduct(dF_d_alpha).sum();
         element_projected_stress_values.push_back(stress_value);
         
         // Distribute to all 3 nodes of this triangle
@@ -785,6 +1025,8 @@ void ConfigurationSaver::writeToVTKFile(
                 atom_area[original_idx] += element_area / 3.0;      // Voronoi / dual area for this atom
             }
             nodal_projected_stress[extended_idx] += stress_value;
+            nodal_von_mises[extended_idx] += von_mises;
+            nodal_hydrostatic_pressure[extended_idx] += hydro_pressure;
             nodal_cauchy_xx[extended_idx] += cauchy_stress(0, 0);
             nodal_cauchy_xy[extended_idx] += cauchy_stress(0, 1);
             nodal_cauchy_yy[extended_idx] += cauchy_stress(1, 1);
@@ -826,6 +1068,8 @@ void ConfigurationSaver::writeToVTKFile(
     for (int i = 0; i < extended_point_count; i++) {
         if (node_count[i] > 0) {
             nodal_projected_stress[i] /= node_count[i];
+            nodal_von_mises[i] /= node_count[i];
+            nodal_hydrostatic_pressure[i] /= node_count[i];
             nodal_cauchy_xx[i] /= node_count[i];
             nodal_cauchy_xy[i] /= node_count[i];
             nodal_cauchy_yy[i] /= node_count[i];
@@ -922,6 +1166,28 @@ void ConfigurationSaver::writeToVTKFile(
     }
     file.write(reinterpret_cast<const char*>(elem_stress_buf.data()), elem_stress_buf.size() * sizeof(float));
     file << "\n";
+
+    // Element Von Mises Stress
+    file << "SCALARS ElementVonMisesStress float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_vm_buf;
+    elem_vm_buf.reserve(element_von_mises_values.size());
+    for (double val : element_von_mises_values) {
+        elem_vm_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_vm_buf.data()), elem_vm_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element Hydrostatic Pressure
+    file << "SCALARS ElementHydrostaticPressure float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_hydro_buf;
+    elem_hydro_buf.reserve(element_hydrostatic_pressure_values.size());
+    for (double val : element_hydrostatic_pressure_values) {
+        elem_hydro_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_hydro_buf.data()), elem_hydro_buf.size() * sizeof(float));
+    file << "\n";
     
     // Element Cauchy Stress Tensor
     file << "TENSORS CauchyStress float\n";
@@ -1011,6 +1277,28 @@ void ConfigurationSaver::writeToVTKFile(
         nodal_stress_buf.push_back(vtk_swap_float(static_cast<float>(val)));
     }
     file.write(reinterpret_cast<const char*>(nodal_stress_buf.data()), nodal_stress_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Nodal Von Mises Stress
+    file << "SCALARS NodalVonMisesStress float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> nodal_vm_buf;
+    nodal_vm_buf.reserve(nodal_von_mises.size());
+    for (double val : nodal_von_mises) {
+        nodal_vm_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(nodal_vm_buf.data()), nodal_vm_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Nodal Hydrostatic Pressure
+    file << "SCALARS NodalHydrostaticPressure float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> nodal_hydro_buf;
+    nodal_hydro_buf.reserve(nodal_hydrostatic_pressure.size());
+    for (double val : nodal_hydrostatic_pressure) {
+        nodal_hydro_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(nodal_hydro_buf.data()), nodal_hydro_buf.size() * sizeof(float));
     file << "\n";
 
     // Number of Elements per Node (Valence/Coordination) - from mesh

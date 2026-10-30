@@ -31,6 +31,8 @@ class DomainDimensions;
  */
 class ConfigurationSaver {
 public:
+    static void setReferenceRotationDeg(double deg);
+    static double getReferenceRotationDeg();
     
 
     struct IterationData {
@@ -134,7 +136,9 @@ public:
     double post_stress,
     double pre_area,
     double post_area,
-    bool shouldRemesh);  // Added plasticity flag parameter
+    bool shouldRemesh,
+    UserData* postUserData = nullptr,
+    const std::vector<int>* contact_atoms = nullptr);  // Added plasticity flag & extended stress metrics
 
     /**
      * Write configuration data to VTK format for visualization

@@ -213,6 +213,12 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
     public var uy: Double = 1.0
     public var affine_mode: String = "simple_shear_x"
     
+    public static func snapUnitDirection(_ val: Double) -> Double {
+        if val <= -0.25 { return -1.0 }
+        if val >= 0.25 { return 1.0 }
+        return 0.0
+    }
+
     public init(
         id: String = UUID().uuidString,
         region: BoundaryRegionSelector = .top,
@@ -236,8 +242,8 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
         self.box_y_min = box_y_min
         self.box_x_max = box_x_max
         self.box_y_max = box_y_max
-        self.ux = ux
-        self.uy = uy
+        self.ux = Self.snapUnitDirection(ux)
+        self.uy = Self.snapUnitDirection(uy)
         self.affine_mode = affine_mode
     }
 }
