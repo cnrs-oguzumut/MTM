@@ -177,6 +177,8 @@ public enum BoundaryRegionSelector: String, CaseIterable, Codable, Identifiable 
 public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifiable {
     case free = "free"
     case fixed = "fixed"
+    case rollerX = "roller_x"
+    case rollerY = "roller_y"
     case prescribed = "prescribed"
     case affine = "affine"
     
@@ -185,6 +187,8 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
         switch self {
         case .free: return "Free Surface (Traction-Free)"
         case .fixed: return "Fixed / Clamped (u = 0)"
+        case .rollerX: return "Roller X (Free ux, Fix uy = 0)"
+        case .rollerY: return "Roller Y (Fix ux = 0, Free uy)"
         case .prescribed: return "Prescribed Grip Δu(α)"
         case .affine: return "Affine Macro-Gradient F(α)"
         }
@@ -193,6 +197,8 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
         switch self {
         case .free: return "FREE"
         case .fixed: return "FIXED"
+        case .rollerX: return "ROLLER-X (uy=0)"
+        case .rollerY: return "ROLLER-Y (ux=0)"
         case .prescribed: return "DRIVEN Δu"
         case .affine: return "AFFINE F(α)"
         }
@@ -211,8 +217,16 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
     public var box_y_max: Double = 1.0
     public var ux: Double = 0.0
     public var uy: Double = 1.0
+    public var lock_x: Bool = true
+    public var lock_y: Bool = true
     public var affine_mode: String = "simple_shear_x"
     
+    enum CodingKeys: String, CodingKey {
+        case id, region, kind, enabled, thickness_a0
+        case box_x_min, box_y_min, box_x_max, box_y_max
+        case ux, uy, lock_x, lock_y, affine_mode
+    }
+
     public static func snapUnitDirection(_ val: Double) -> Double {
         if val <= -0.25 { return -1.0 }
         if val >= 0.25 { return 1.0 }
@@ -231,6 +245,8 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
         box_y_max: Double = 1.0,
         ux: Double = 0.0,
         uy: Double = 1.0,
+        lock_x: Bool = true,
+        lock_y: Bool = true,
         affine_mode: String = "simple_shear_x"
     ) {
         self.id = id
@@ -244,7 +260,35 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
         self.box_y_max = box_y_max
         self.ux = Self.snapUnitDirection(ux)
         self.uy = Self.snapUnitDirection(uy)
+        if kind == .rollerX {
+            self.lock_x = false
+            self.lock_y = true
+        } else if kind == .rollerY {
+            self.lock_x = true
+            self.lock_y = false
+        } else {
+            self.lock_x = lock_x
+            self.lock_y = lock_y
+        }
         self.affine_mode = affine_mode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        self.region = try c.decodeIfPresent(BoundaryRegionSelector.self, forKey: .region) ?? .top
+        self.kind = try c.decodeIfPresent(BoundaryConditionKindModel.self, forKey: .kind) ?? .prescribed
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        self.thickness_a0 = try c.decodeIfPresent(Double.self, forKey: .thickness_a0) ?? 2.0
+        self.box_x_min = try c.decodeIfPresent(Double.self, forKey: .box_x_min) ?? 0.0
+        self.box_y_min = try c.decodeIfPresent(Double.self, forKey: .box_y_min) ?? 0.90
+        self.box_x_max = try c.decodeIfPresent(Double.self, forKey: .box_x_max) ?? 1.0
+        self.box_y_max = try c.decodeIfPresent(Double.self, forKey: .box_y_max) ?? 1.0
+        self.ux = try c.decodeIfPresent(Double.self, forKey: .ux) ?? 0.0
+        self.uy = try c.decodeIfPresent(Double.self, forKey: .uy) ?? 1.0
+        self.lock_x = try c.decodeIfPresent(Bool.self, forKey: .lock_x) ?? (self.kind != .rollerX)
+        self.lock_y = try c.decodeIfPresent(Bool.self, forKey: .lock_y) ?? (self.kind != .rollerY)
+        self.affine_mode = try c.decodeIfPresent(String.self, forKey: .affine_mode) ?? "simple_shear_x"
     }
 }
 
@@ -319,7 +363,186 @@ public struct IndenterConfigModel: Codable, Equatable {
     }
 }
 
+public enum MicrostructureModeModel: String, CaseIterable, Codable, Identifiable {
+    case singleCrystal = "single_crystal"
+    case bicrystal = "bicrystal"
+    case voronoi = "voronoi_polycrystal"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .singleCrystal: return "Single Crystal"
+        case .bicrystal: return "Bicrystal (Planar GB)"
+        case .voronoi: return "2D Voronoi Polycrystal"
+        }
+    }
+    public var shortBadge: String {
+        switch self {
+        case .singleCrystal: return "SINGLE"
+        case .bicrystal: return "BICRYSTAL"
+        case .voronoi: return "VORONOI"
+        }
+    }
+}
+
+public enum SeamOverlapResolutionModel: String, CaseIterable, Codable, Identifiable {
+    case mergeMidpoint = "merge_midpoint"
+    case deleteSecond = "delete_second"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .mergeMidpoint: return "Merge Pair to Midpoint (Recommended)"
+        case .deleteSecond: return "Delete Grain 2 Atom"
+        }
+    }
+}
+
+public struct VoronoiGrainSeedModel: Codable, Equatable, Identifiable {
+    public var id: Int
+    public var cx: Double
+    public var cy: Double
+    public var theta_deg: Double
+    
+    public init(id: Int = 0, cx: Double = 0.5, cy: Double = 0.5, theta_deg: Double = 0.0) {
+        self.id = id
+        self.cx = cx
+        self.cy = cy
+        self.theta_deg = theta_deg
+    }
+}
+
+public struct MicrostructureConfigModel: Codable, Equatable {
+    public var mode: MicrostructureModeModel = .singleCrystal
+    public var seam_resolution: SeamOverlapResolutionModel = .mergeMidpoint
+    public var min_seam_distance_a0: Double = 0.55
+    public var max_gb_edge_a0: Double = 2.60
+    public var pre_relax_gb: Bool = true
+    
+    // Bicrystal parameters
+    public var gb_cx: Double = 0.50
+    public var gb_cy: Double = 0.50
+    public var gb_angle_deg: Double = 0.0 // 0° = Vertical GB (x = cx), 90° = Horizontal GB (y = cy)
+    public var theta1_deg: Double = -15.0
+    public var theta2_deg: Double = +15.0
+    public var gb_normal_gap_a0: Double = 0.0
+    public var gb_tangential_shift_a0: Double = 0.0
+    
+    // Voronoi Polycrystal parameters
+    public var num_grains: Int = 6
+    public var random_seed: Int = 42
+    public var theta_min_deg: Double = -30.0
+    public var theta_max_deg: Double = +30.0
+    public var seeds: [VoronoiGrainSeedModel] = []
+    
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case seam_resolution
+        case min_seam_distance_a0
+        case max_gb_edge_a0
+        case pre_relax_gb
+        case gb_cx
+        case gb_cy
+        case gb_angle_deg
+        case theta1_deg
+        case theta2_deg
+        case gb_normal_gap_a0
+        case gb_tangential_shift_a0
+        case num_grains
+        case random_seed
+        case theta_min_deg
+        case theta_max_deg
+        case seeds
+    }
+    
+    public init() {
+        self.regenerateSeeds()
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.mode = try c.decodeIfPresent(MicrostructureModeModel.self, forKey: .mode) ?? .singleCrystal
+        self.seam_resolution = try c.decodeIfPresent(SeamOverlapResolutionModel.self, forKey: .seam_resolution) ?? .mergeMidpoint
+        self.min_seam_distance_a0 = try c.decodeIfPresent(Double.self, forKey: .min_seam_distance_a0) ?? 0.55
+        self.max_gb_edge_a0 = try c.decodeIfPresent(Double.self, forKey: .max_gb_edge_a0) ?? 2.60
+        self.pre_relax_gb = try c.decodeIfPresent(Bool.self, forKey: .pre_relax_gb) ?? true
+        self.gb_cx = try c.decodeIfPresent(Double.self, forKey: .gb_cx) ?? 0.50
+        self.gb_cy = try c.decodeIfPresent(Double.self, forKey: .gb_cy) ?? 0.50
+        self.gb_angle_deg = try c.decodeIfPresent(Double.self, forKey: .gb_angle_deg) ?? 0.0
+        self.theta1_deg = try c.decodeIfPresent(Double.self, forKey: .theta1_deg) ?? -15.0
+        self.theta2_deg = try c.decodeIfPresent(Double.self, forKey: .theta2_deg) ?? +15.0
+        self.gb_normal_gap_a0 = try c.decodeIfPresent(Double.self, forKey: .gb_normal_gap_a0) ?? 0.0
+        self.gb_tangential_shift_a0 = try c.decodeIfPresent(Double.self, forKey: .gb_tangential_shift_a0) ?? 0.0
+        self.num_grains = try c.decodeIfPresent(Int.self, forKey: .num_grains) ?? 6
+        self.random_seed = try c.decodeIfPresent(Int.self, forKey: .random_seed) ?? 42
+        self.theta_min_deg = try c.decodeIfPresent(Double.self, forKey: .theta_min_deg) ?? -30.0
+        self.theta_max_deg = try c.decodeIfPresent(Double.self, forKey: .theta_max_deg) ?? +30.0
+        if let decodedSeeds = try c.decodeIfPresent([VoronoiGrainSeedModel].self, forKey: .seeds), !decodedSeeds.isEmpty {
+            self.seeds = decodedSeeds
+        } else {
+            self.regenerateSeeds()
+        }
+    }
+    
+    public mutating func regenerateSeeds() {
+        let ng = max(2, min(32, num_grains))
+        let cols = max(1, Int(ceil(sqrt(Double(ng)))))
+        let rows = max(1, Int(ceil(Double(ng) / Double(cols))))
+        let tMin = min(theta_min_deg, theta_max_deg)
+        let tMax = max(theta_min_deg, theta_max_deg)
+        var state = UInt64(bitPattern: Int64(random_seed == 0 ? 42 : random_seed))
+        func nextRand() -> Double {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Double((state >> 11) & 0x1FFFFF) / Double(0x1FFFFF)
+        }
+        var out: [VoronoiGrainSeedModel] = []
+        for k in 0..<ng {
+            let r = k / cols
+            let c = k % cols
+            let jx = 0.20 + 0.60 * nextRand()
+            let jy = 0.20 + 0.60 * nextRand()
+            let cx = min(0.94, max(0.06, (Double(c) + jx) / Double(cols)))
+            let cy = min(0.94, max(0.06, (Double(r) + jy) / Double(rows)))
+            let th = tMin + (tMax - tMin) * nextRand()
+            out.append(VoronoiGrainSeedModel(
+                id: k,
+                cx: (cx * 1000).rounded() / 1000,
+                cy: (cy * 1000).rounded() / 1000,
+                theta_deg: (th * 10).rounded() / 10
+            ))
+        }
+        self.seeds = out
+    }
+    
+    /// Returns (grainID, thetaDeg) at normalized coordinate (xHat, yHat)
+    public func grainAt(xHat: Double, yHat: Double, fallbackTheta: Double = 0.0) -> (Int, Double) {
+        switch mode {
+        case .singleCrystal:
+            return (0, fallbackTheta)
+        case .bicrystal:
+            let phi = gb_angle_deg * .pi / 180.0
+            let nx = cos(phi)
+            let ny = sin(phi)
+            let dist = (xHat - gb_cx) * nx + (yHat - gb_cy) * ny
+            return dist < 0.0 ? (0, theta1_deg) : (1, theta2_deg)
+        case .voronoi:
+            guard !seeds.isEmpty else { return (0, fallbackTheta) }
+            var bestIdx = 0
+            var bestD2 = Double.infinity
+            for (idx, s) in seeds.enumerated() {
+                let d2 = (xHat - s.cx) * (xHat - s.cx) + (yHat - s.cy) * (yHat - s.cy)
+                if d2 < bestD2 {
+                    bestD2 = d2
+                    bestIdx = idx
+                }
+            }
+            return (bestIdx, seeds[bestIdx].theta_deg)
+        }
+    }
+}
+
 public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
+    case perfectCrystalSlab = "perfect_crystal_slab"
     case plateWithHoleTension = "plate_hole_tension"
     case plateWithHoleShear = "plate_hole_shear"
     case dogboneTension = "dogbone_tension"
@@ -328,10 +551,14 @@ public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
     case tiltedEllipseTension = "tilted_ellipse_tension"
     case porousVoidArray = "porous_void_array"
     case nanoIndentation = "nano_indentation"
+    case bicrystalTiltTension = "bicrystal_tilt_tension"
+    case bicrystalIndentation = "bicrystal_indentation"
+    case voronoiPolycrystalDogbone = "voronoi_polycrystal_dogbone"
     
     public var id: String { rawValue }
     public var title: String {
         switch self {
+        case .perfectCrystalSlab: return "Perfect Crystal Slab (No Cutouts)"
         case .plateWithHoleTension: return "Plate with Hole (Uniaxial Tension)"
         case .plateWithHoleShear: return "Plate with Hole (Simple Shear)"
         case .dogboneTension: return "Dogbone Specimen (Uniaxial Tension)"
@@ -340,10 +567,15 @@ public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
         case .tiltedEllipseTension: return "Tilted 45° Elliptical Slot (Tension)"
         case .porousVoidArray: return "Porous 2×2 Void Metamaterial (Shear)"
         case .nanoIndentation: return "Nanoindentation on Crystal Substrate"
+        case .bicrystalTiltTension: return "Symmetric Tilt Bicrystal (Uniaxial Tension)"
+        case .bicrystalIndentation: return "Nanoindentation Near Bicrystal Grain Boundary"
+        case .voronoiPolycrystalDogbone: return "2D Voronoi Polycrystal Dogbone (Tension)"
         }
     }
     public var subtitle: String {
         switch self {
+        case .perfectCrystalSlab:
+            return "Pristine rectangular single crystal without holes or notches; bottom clamped, top driven, left/right traction-free."
         case .plateWithHoleTension:
             return "Central circular void (R=0.16 L), bottom clamped, top pulled (+α Ly), left/right/hole traction-free."
         case .plateWithHoleShear:
@@ -360,13 +592,19 @@ public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
             return "2×2 periodic-like pattern of circular cavities subject to macroscopic shear."
         case .nanoIndentation:
             return "Rigid cylindrical tip (R=25 a₀) penetrating top surface, clamped base, traction-free sides, P-δ curve."
+        case .bicrystalTiltTension:
+            return "Vertical symmetric tilt grain boundary (θ₁=-15°, θ₂=+15°) under vertical tension with traction-free sides."
+        case .bicrystalIndentation:
+            return "Cylindrical indenter pressing near a horizontal/vertical tilt grain boundary to probe slip transmission."
+        case .voronoiPolycrystalDogbone:
+            return "Multi-grain 2D Voronoi polycrystal carved into a tensile dogbone specimen."
         }
     }
 }
 
 public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     public var enabled: Bool = false
-    public var preset_name: String = GeometryEngineeringPreset.plateWithHoleTension.rawValue
+    public var preset_name: String = GeometryEngineeringPreset.perfectCrystalSlab.rawValue
     public var outer_shape: OuterDomainShape = .rectangle
     public var dogbone_gauge_width: Double = 0.50
     public var dogbone_gauge_length: Double = 0.44
@@ -378,17 +616,15 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         NormalizedVertex(x: 0.95, y: 0.95),
         NormalizedVertex(x: 0.05, y: 0.95)
     ]
-    public var cutouts: [GeometryCutoutItem] = [
-        GeometryCutoutItem(type: .circle, cx: 0.50, cy: 0.50, rx: 0.16, ry: 0.16)
-    ]
+    public var cutouts: [GeometryCutoutItem] = []
     public var boundary_rules: [BoundaryZoneRuleModel] = [
         BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
         BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0),
-        BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0),
-        BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
+        BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
     ]
     public var indenter: IndenterConfigModel = IndenterConfigModel()
+    public var microstructure: MicrostructureConfigModel = MicrostructureConfigModel()
     public var primary_stress_component: String = "auto"
     
     public init() {}
@@ -397,7 +633,19 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         self.enabled = true
         self.preset_name = preset.rawValue
         self.indenter.enabled = false
+        self.microstructure.mode = .singleCrystal
         switch preset {
+        case .perfectCrystalSlab:
+            outer_shape = .rectangle
+            cutouts = []
+            boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
+                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
+            ]
+            primary_stress_component = "sigma_yy"
+            
         case .plateWithHoleTension:
             outer_shape = .rectangle
             cutouts = [
@@ -502,6 +750,63 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             indenter.cushion_offset_a0 = 0.20
             indenter.penalty_stiffness = 100.0
             primary_stress_component = "indentation_load"
+            
+        case .bicrystalTiltTension:
+            outer_shape = .rectangle
+            cutouts = []
+            boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
+                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
+            ]
+            microstructure.mode = .bicrystal
+            microstructure.gb_cx = 0.50
+            microstructure.gb_cy = 0.50
+            microstructure.gb_angle_deg = 0.0
+            microstructure.theta1_deg = -15.0
+            microstructure.theta2_deg = +15.0
+            primary_stress_component = "sigma_yy"
+            
+        case .bicrystalIndentation:
+            outer_shape = .rectangle
+            cutouts = []
+            boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.5, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5)
+            ]
+            indenter.enabled = true
+            indenter.shape = .cylinder
+            indenter.contact_mode = .kinematic
+            indenter.cx = 0.50
+            indenter.radius_a0 = 25.0
+            indenter.max_depth_a0 = 5.0
+            microstructure.mode = .bicrystal
+            microstructure.gb_cx = 0.50
+            microstructure.gb_cy = 0.68
+            microstructure.gb_angle_deg = 90.0
+            microstructure.theta1_deg = -12.0
+            microstructure.theta2_deg = +12.0
+            primary_stress_component = "indentation_load"
+            
+        case .voronoiPolycrystalDogbone:
+            outer_shape = .dogbone
+            dogbone_gauge_width = 0.52
+            dogbone_gauge_length = 0.44
+            dogbone_fillet_radius = 0.12
+            cutouts = []
+            boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.5, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.5, ux: 0.0, uy: 1.0)
+            ]
+            microstructure.mode = .voronoi
+            microstructure.num_grains = 6
+            microstructure.theta_min_deg = -25.0
+            microstructure.theta_max_deg = +25.0
+            microstructure.regenerateSeeds()
+            primary_stress_component = "sigma_yy"
         }
     }
     
@@ -623,9 +928,12 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         return 1.0
     }
     
-    /// Returns 0 = Free, 1 = Fixed, 2 = Driven
+    /// Returns 0 = Free, 1 = Fixed, 2 = Driven, 3 = RollerY (X-locked), 4 = RollerX (Y-locked)
     public func classifyNodeRole(xHat: Double, yHat: Double, nx: Int, ny: Int) -> Int {
-        var role = 0
+        var lockedX = false
+        var lockedY = false
+        var drivenX = false
+        var drivenY = false
         let a0x = 1.0 / Double(max(1, nx - 1))
         let a0y = 1.0 / Double(max(1, ny - 1))
         
@@ -686,11 +994,35 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             }
             if matches {
                 switch rule.kind {
-                case .free: role = 0
-                case .fixed: role = 1
-                case .prescribed, .affine: role = 2
+                case .free:
+                    break
+                case .rollerX:
+                    lockedY = true
+                    drivenY = false
+                case .rollerY:
+                    lockedX = true
+                    drivenX = false
+                case .fixed:
+                    if rule.lock_x { lockedX = true; drivenX = false }
+                    if rule.lock_y { lockedY = true; drivenY = false }
+                case .prescribed:
+                    if rule.lock_x { lockedX = true; drivenX = true }
+                    if rule.lock_y { lockedY = true; drivenY = true }
+                case .affine:
+                    lockedX = true; lockedY = true
+                    drivenX = true; drivenY = true
                 }
             }
+        }
+        var role = 0
+        if lockedX && lockedY {
+            role = (drivenX || drivenY) ? 2 : 1
+        } else if lockedX && !lockedY {
+            role = 3
+        } else if !lockedX && lockedY {
+            role = 4
+        } else {
+            role = 0
         }
         if indenter.enabled && role == 0 {
             let rNorm = indenter.radius_a0 * a0x

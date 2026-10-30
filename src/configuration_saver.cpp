@@ -928,6 +928,9 @@ void ConfigurationSaver::writeToVTKFile(
     std::vector<double> element_projected_stress_values;
     std::vector<double> element_von_mises_values;
     std::vector<double> element_hydrostatic_pressure_values;
+    std::vector<int> element_grain_ids;
+    std::vector<double> element_rotation_angle_deg;
+    std::vector<Eigen::Matrix2d> element_f_aligned_tensors;
     
     // Initialize nodal value arrays
     std::vector<double> nodal_energy(extended_point_count, 0.0);
@@ -959,10 +962,49 @@ void ConfigurationSaver::writeToVTKFile(
         
         const auto& element = elements[elem_idx];
         if (!element.isInitialized()) continue;
-        
-        // Calculate element quantities from aligned deformation gradient
+
+        // Determine majority grain ID and grain reference angle for this element
+        int n0 = element.getNodeIndex(0);
+        int n1 = element.getNodeIndex(1);
+        int n2 = element.getNodeIndex(2);
+        int g0 = (n0 >= 0 && n0 < original_points_count) ? points[n0].grain_id : 0;
+        int g1 = (n1 >= 0 && n1 < original_points_count) ? points[n1].grain_id : 0;
+        int g2 = (n2 >= 0 && n2 < original_points_count) ? points[n2].grain_id : 0;
+        int elem_grain_id = g0;
+        double elem_theta_deg = (n0 >= 0 && n0 < original_points_count) ? points[n0].grain_theta_deg : g_reference_rotation_deg;
+        if (g0 == g1 || g0 == g2) {
+            elem_grain_id = g0;
+            elem_theta_deg = (n0 >= 0 && n0 < original_points_count) ? points[n0].grain_theta_deg : g_reference_rotation_deg;
+        } else if (g1 == g2) {
+            elem_grain_id = g1;
+            elem_theta_deg = (n1 >= 0 && n1 < original_points_count) ? points[n1].grain_theta_deg : g_reference_rotation_deg;
+        }
+        if (std::abs(elem_theta_deg) < 1e-12 && std::abs(g_reference_rotation_deg) > 1e-12 && elem_grain_id == 0) {
+            elem_theta_deg = g_reference_rotation_deg;
+        }
+        const double elem_theta_rad = elem_theta_deg * M_PI / 180.0;
+        Eigen::Matrix2d R_grain;
+        R_grain << std::cos(elem_theta_rad), -std::sin(elem_theta_rad),
+                   std::sin(elem_theta_rad),  std::cos(elem_theta_rad);
+
+        // Calculate element quantities from aligned deformation gradient relative to this grain's reference angle
         const Eigen::Matrix2d F = computeAlignedDeformationGradient(
-            element.getDeformationGradient());
+            element.getDeformationGradient(), elem_theta_rad);
+        const Eigen::Matrix2d F_grain_rel = R_grain.transpose() * F;
+        element_grain_ids.push_back(elem_grain_id);
+        element_f_aligned_tensors.push_back(F_grain_rel);
+
+        // Extract polar rotation angle relative to the grain's reference frame
+        Eigen::JacobiSVD<Eigen::Matrix2d> svd(F_grain_rel, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        Eigen::Matrix2d Q_rel = svd.matrixU() * svd.matrixV().transpose();
+        if (Q_rel.determinant() < 0.0) {
+            Eigen::Matrix2d U_fix = svd.matrixU();
+            U_fix.col(1) *= -1.0;
+            Q_rel = U_fix * svd.matrixV().transpose();
+        }
+        double rel_rot_deg = std::atan2(Q_rel(1, 0), Q_rel(0, 0)) * 180.0 / M_PI;
+        element_rotation_angle_deg.push_back(rel_rot_deg);
+
         Eigen::Matrix2d C = F.transpose() * F;
         lagrange::Result result;
         Eigen::Matrix2d P;
@@ -1006,8 +1048,8 @@ void ConfigurationSaver::writeToVTKFile(
         element_von_mises_values.push_back(von_mises);
         element_hydrostatic_pressure_values.push_back(hydro_pressure);
         
-        // Calculate projected stress in the lab frame: P_lab = P * R(theta_0)^T
-        const Eigen::Matrix2d P_lab = P * getReferenceRotationMatrix().transpose();
+        // Calculate projected stress in the grain/lab frame: P_lab = P * R_grain^T
+        const Eigen::Matrix2d P_lab = P * R_grain.transpose();
         Eigen::Matrix2d dF_d_alpha = Eigen::Matrix2d::Zero();
         dF_d_alpha(0, 1) = 1.0;
         double stress_value = P_lab.cwiseProduct(dF_d_alpha).sum();
@@ -1242,9 +1284,73 @@ void ConfigurationSaver::writeToVTKFile(
     file.write(reinterpret_cast<const char*>(elem_burgers_vec_buf.data()),
                elem_burgers_vec_buf.size() * sizeof(float));
     file << "\n";
+
+    // Element Grain ID
+    file << "SCALARS ElementGrainID int 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<int32_t> elem_gid_buf;
+    elem_gid_buf.reserve(element_grain_ids.size());
+    for (int gid : element_grain_ids) {
+        elem_gid_buf.push_back(vtk_swap_int(static_cast<int32_t>(gid)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_gid_buf.data()), elem_gid_buf.size() * sizeof(int32_t));
+    file << "\n";
+
+    // Element Local Rotation Angle (degrees, relative to grain reference angle)
+    file << "SCALARS ElementRotationAngleDeg float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_rot_buf;
+    elem_rot_buf.reserve(element_rotation_angle_deg.size());
+    for (double val : element_rotation_angle_deg) {
+        elem_rot_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_rot_buf.data()), elem_rot_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element Aligned Deformation Gradient Tensor (in grain reference frame)
+    file << "TENSORS ElementF_Aligned float\n";
+    std::vector<float> elem_f_buf;
+    elem_f_buf.reserve(element_f_aligned_tensors.size() * 9);
+    for (const auto& F_al : element_f_aligned_tensors) {
+        elem_f_buf.push_back(vtk_swap_float(static_cast<float>(F_al(0, 0))));
+        elem_f_buf.push_back(vtk_swap_float(static_cast<float>(F_al(0, 1))));
+        elem_f_buf.push_back(0.0f);
+        elem_f_buf.push_back(vtk_swap_float(static_cast<float>(F_al(1, 0))));
+        elem_f_buf.push_back(vtk_swap_float(static_cast<float>(F_al(1, 1))));
+        elem_f_buf.push_back(0.0f);
+        elem_f_buf.push_back(0.0f);
+        elem_f_buf.push_back(0.0f);
+        elem_f_buf.push_back(1.0f);
+    }
+    file.write(reinterpret_cast<const char*>(elem_f_buf.data()), elem_f_buf.size() * sizeof(float));
+    file << "\n";
     
     // --- Write Point Data (Per-Node Values) ---
     file << "\nPOINT_DATA " << extended_point_count << "\n";
+
+    // Nodal Grain ID & Reference Grain Angle
+    {
+        std::vector<int32_t> nodal_gid_buf(extended_point_count, vtk_swap_int(0));
+        std::vector<float> nodal_gtheta_buf(extended_point_count, vtk_swap_float(0.0f));
+        for (const auto& entry : node_map) {
+            int original_idx = entry.first.index;
+            int extended_idx = entry.second;
+            if (original_idx >= 0 && original_idx < original_points_count &&
+                extended_idx >= 0 && extended_idx < extended_point_count) {
+                nodal_gid_buf[extended_idx] = vtk_swap_int(static_cast<int32_t>(points[original_idx].grain_id));
+                nodal_gtheta_buf[extended_idx] = vtk_swap_float(static_cast<float>(points[original_idx].grain_theta_deg));
+            }
+        }
+        file << "SCALARS NodalGrainID int 1\n";
+        file << "LOOKUP_TABLE default\n";
+        file.write(reinterpret_cast<const char*>(nodal_gid_buf.data()), nodal_gid_buf.size() * sizeof(int32_t));
+        file << "\n";
+
+        file << "SCALARS NodalGrainThetaDeg float 1\n";
+        file << "LOOKUP_TABLE default\n";
+        file.write(reinterpret_cast<const char*>(nodal_gtheta_buf.data()), nodal_gtheta_buf.size() * sizeof(float));
+        file << "\n";
+    }
     
     // Nodal Energy (normalized per atom by Voronoi dual area)
     file << "SCALARS NodalEnergy float 1\n";
@@ -2140,7 +2246,8 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
 
     file << "NODES " << data.points.size() << "\n";
     for (size_t i = 0; i < data.points.size(); ++i) {
-        file << i << " " << data.points[i].coord.x() << " " << data.points[i].coord.y() << "\n";
+        file << i << " " << data.points[i].coord.x() << " " << data.points[i].coord.y()
+             << " " << data.points[i].grain_id << " " << data.points[i].grain_theta_deg << "\n";
     }
 
     file << "ELEMENTS " << data.active_elements.size() << "\n";
@@ -2230,7 +2337,13 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
             size_t idx;
             double x, y;
             if (iss >> idx >> x >> y) {
-                data.points.emplace_back(x, y);
+                int gid = 0;
+                double gtheta = 0.0;
+                if (!(iss >> gid >> gtheta)) {
+                    gid = 0;
+                    gtheta = 0.0;
+                }
+                data.points.emplace_back(x, y, gid, gtheta);
             }
         } else if (reading_elements) {
             size_t elem_idx;

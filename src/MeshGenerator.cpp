@@ -200,9 +200,16 @@ std::vector<Triangle> MeshGenerator::createTrianglesFromPoints(const std::vector
     auto reorderForMaxAngle = [&](int v0, int v1, int v2) -> std::array<int, 3> {
         std::array<int, 3> vertices = {v0, v1, v2};
         
-        // Try each vertex as origin and find the one that gives maximum angle
+        // Try each vertex as origin and find the one that gives maximum angle.
+        // However, if the triangle is strictly acute (max_angle < 75 deg, e.g. a symmetric
+        // grain-boundary kite triangle with edges (sqrt(2), sqrt(2), 1.265)) and is isosceles
+        // (two equal legs meeting at an apex), picking one of the two equal base angles
+        // arbitrarily breaks mirror symmetry (c11 != c22). Picking the isosceles apex
+        // where the two equal edges meet keeps c11 == c22 and preserves exact GB symmetry.
         double max_angle = -1.0;
         std::array<int, 3> best_ordering = {v0, v1, v2};
+        int isosceles_apex_idx = -1;
+        double best_isosceles_diff = 1.0;
         
         for (int origin_idx = 0; origin_idx < 3; ++origin_idx) {
             int origin = vertices[origin_idx];
@@ -220,6 +227,7 @@ std::vector<Triangle> MeshGenerator::createTrianglesFromPoints(const std::vector
             double dot_product = vec1.coord.x() * vec2.coord.x() + vec1.coord.y() * vec2.coord.y();
             double mag1 = std::sqrt(vec1.coord.x() * vec1.coord.x() + vec1.coord.y() * vec1.coord.y());
             double mag2 = std::sqrt(vec2.coord.x() * vec2.coord.x() + vec2.coord.y() * vec2.coord.y());
+            double mag3 = (points[other1].coord - points[other2].coord).norm();
             
             if (mag1 > 1e-12 && mag2 > 1e-12) { // Avoid division by zero
                 double cos_angle = dot_product / (mag1 * mag2);
@@ -231,7 +239,21 @@ std::vector<Triangle> MeshGenerator::createTrianglesFromPoints(const std::vector
                     max_angle = angle;
                     best_ordering = {origin, other1, other2};
                 }
+                double leg_rel_diff = std::abs(mag1 - mag2) / std::max(mag1, mag2);
+                double base_rel_diff = std::abs(mag3 - 0.5 * (mag1 + mag2)) / std::max(mag1, mag2);
+                if (leg_rel_diff < 0.01 && base_rel_diff > 0.03 && leg_rel_diff < best_isosceles_diff) {
+                    best_isosceles_diff = leg_rel_diff;
+                    isosceles_apex_idx = origin_idx;
+                }
             }
+        }
+        
+        if (max_angle < (75.0 * M_PI / 180.0) && isosceles_apex_idx >= 0) {
+            best_ordering = {
+                vertices[isosceles_apex_idx],
+                vertices[(isosceles_apex_idx + 1) % 3],
+                vertices[(isosceles_apex_idx + 2) % 3]
+            };
         }
         
         return best_ordering;

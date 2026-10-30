@@ -12,6 +12,15 @@ public struct GeometryBuilderView: View {
     @State private var showBCArrows: Bool = true
     @State private var activeDragMode: DragHandleMode = .none
     @State private var dragStartCutout: GeometryCutoutItem? = nil
+    @State private var inspectorSection: InspectorSection = .microstructure
+    
+    private enum InspectorSection: String, CaseIterable, Identifiable {
+        case microstructure = "Microstructure & GB"
+        case shapeAndCutouts = "Shape & Cutouts"
+        case bcsAndIndenter = "BCs & Indenter"
+        case all = "All"
+        var id: String { rawValue }
+    }
     
     private enum DragHandleMode {
         case none
@@ -22,6 +31,8 @@ public struct GeometryBuilderView: View {
         case polygonVertex(String, Int)
         case movePolygon(String, Double, Double)
         case outerPolygonVertex(Int)
+        case moveBicrystalGB
+        case moveVoronoiSeed(Int)
     }
     
     public init(
@@ -38,9 +49,11 @@ public struct GeometryBuilderView: View {
         VStack(spacing: 0) {
             studioTopBar
             Divider()
-            HSplitView {
+            HStack(spacing: 0) {
                 // LEFT: Interactive Macroscopic Geometry & Discrete Lattice Canvas
                 VStack(spacing: 0) {
+                    canvasHeaderHintBar
+                    Divider()
                     GeometryReader { geo in
                         interactiveCanvas(size: geo.size)
                     }
@@ -50,19 +63,62 @@ public struct GeometryBuilderView: View {
                 .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
                 .background(BlueHour.canvasBackground)
                 
-                // RIGHT: Cutouts & Boundary Condition Inspector Panel
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        crystalLatticeCard
-                        presetsCard
-                        outerDomainCard
-                        nanoindenterCard
-                        cutoutsCard
-                        boundaryConditionsCard
+                Divider()
+                
+                // RIGHT: Organized Inspector Panel with Section Switcher (Fixed Width)
+                VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Label("Geometry & GB Inspector", systemImage: "slider.horizontal.3")
+                                .font(.caption.bold())
+                                .foregroundColor(BlueHour.ice)
+                            Spacer()
+                            Text("\(config.nx)×\(config.ny)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(Color(red: 0.31, green: 0.85, blue: 0.78))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(BlueHour.midnight.opacity(0.65), in: Capsule())
+                        }
+                        Picker("", selection: $inspectorSection) {
+                            Text("Grains & GB").tag(InspectorSection.microstructure)
+                            Text("Shape & Holes").tag(InspectorSection.shapeAndCutouts)
+                            Text("BCs & Indenter").tag(InspectorSection.bcsAndIndenter)
+                            Text("All").tag(InspectorSection.all)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
                     }
-                    .padding(12)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(BlueHour.controlSurface)
+                    
+                    Divider()
+                    
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if inspectorSection == .microstructure || inspectorSection == .all {
+                                microstructureCard
+                                if config.geometryConfig.microstructure.mode == .singleCrystal {
+                                    crystalLatticeCard
+                                }
+                            }
+                            if inspectorSection == .shapeAndCutouts || inspectorSection == .all {
+                                presetsCard
+                                outerDomainCard
+                                cutoutsCard
+                            }
+                            if inspectorSection == .bcsAndIndenter || inspectorSection == .all {
+                                boundaryConditionsCard
+                                nanoindenterCard
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                    }
                 }
-                .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
+                .frame(width: 400)
                 .background(BlueHour.sidebarBackground)
             }
         }
@@ -71,6 +127,25 @@ public struct GeometryBuilderView: View {
                 selectedCutoutID = config.geometryConfig.cutouts.first?.id
             }
         }
+    }
+    
+    private var canvasHeaderHintBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "hand.draw.fill")
+                .font(.system(size: 10))
+                .foregroundColor(BlueHour.ice)
+            Text("Interactive Macroscopic Geometry Canvas:")
+                .font(.system(size: 10.5, weight: .bold))
+                .foregroundColor(BlueHour.ice)
+            Text("Drag GB/seed/cutout handles directly on canvas • Click 'Generate & View Carved Triangulation' to mesh")
+                .font(.system(size: 10))
+                .foregroundColor(BlueHour.mist)
+                .lineLimit(1)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(BlueHour.midnight.opacity(0.65))
     }
     
     // MARK: - Top Toolbar
@@ -228,59 +303,14 @@ public struct GeometryBuilderView: View {
                     )
                 }
                 
-                // 4. Discrete Crystal Lattice Sites (Square or Triangular, Color-Coded by BC Role)
-                // Step 1: Crystal lattice (at rotation theta) completely fills the rectangular box [0, 1] x [0, 1].
-                // Step 2: Solid mask carves macroscopic outer boundary & cutouts from this filled crystal.
+                // 4. Discrete Crystal Lattice Sites (Square or Triangular, Color-Coded by Grain & BC Role)
                 if showDiscreteLatticePreview {
-                    let stepStride = max(1, Int(ceil(Double(max(config.nx, config.ny)) / 75.0)))
-                    let isTri = (config.latticeSymmetry == .triangular)
-                    let dotR: CGFloat = max(1.6, min(4.2, min(boxW, boxH) / CGFloat(max(config.nx, config.ny) / stepStride) * 0.30))
-                    
-                    let thetaRad = (config.useRotation ? config.rotationAngle : 0.0) * .pi / 180.0
-                    let cosT = cos(thetaRad), sinT = sin(thetaRad)
-                    let sqrt3 = sqrt(3.0)
-                    
-                    let a0 = 1.0
-                    let Lx = Double(config.nx) * a0
-                    let Ly = isTri ? (Double(config.ny) * a0 * sqrt3 * 0.5) : (Double(config.ny) * a0)
-                    let dMin = isTri ? (a0 * sqrt3 * 0.5) : a0
-                    
-                    // Stride-scaled spacing in normalized [0, 1] x [0, 1] coordinates
-                    let scaleStep = Double(stepStride)
-                    let a1HatX = (scaleStep * a0 * cosT) / max(1e-4, Lx)
-                    let a1HatY = (scaleStep * a0 * sinT) / max(1e-4, Ly)
-                    let a2HatX = (isTri ? (scaleStep * a0 * (0.5 * cosT - 0.5 * sqrt3 * sinT)) : (-scaleStep * a0 * sinT)) / max(1e-4, Lx)
-                    let a2HatY = (isTri ? (scaleStep * a0 * (0.5 * sinT + 0.5 * sqrt3 * cosT)) : (scaleStep * a0 * cosT)) / max(1e-4, Ly)
-                    
-                    let rBox = hypot(Lx * 0.5, Ly * 0.5)
-                    let nSpan = Int(ceil(rBox / (dMin * scaleStep))) + 4
-                    
-                    for i in -nSpan...nSpan {
-                        for j in -nSpan...nSpan {
-                            let xHat = 0.5 + Double(i) * a1HatX + Double(j) * a2HatX
-                            let yHat = 0.5 + Double(i) * a1HatY + Double(j) * a2HatY
-                            
-                            guard xHat >= -1e-5 && xHat <= 1.0 + 1e-5 && yHat >= -1e-5 && yHat <= 1.0 + 1e-5 else { continue }
-                            let clampedX = min(1.0, max(0.0, xHat))
-                            let clampedY = min(1.0, max(0.0, yHat))
-                            guard config.geometryConfig.isPointInsideSolid(xHat: clampedX, yHat: clampedY) else { continue }
-                            
-                            let role = config.geometryConfig.classifyNodeRole(
-                                xHat: clampedX, yHat: clampedY, nx: config.nx, ny: config.ny
-                            )
-                            let pt = toScreen(clampedX, clampedY)
-                            let rect = CGRect(x: pt.x - dotR, y: pt.y - dotR, width: dotR * 2, height: dotR * 2)
-                            let dotColor: Color
-                            if role == 1 {
-                                dotColor = Color(red: 1.0, green: 0.42, blue: 0.42) // Fixed Clamped
-                            } else if role == 2 {
-                                dotColor = Color(red: 0.31, green: 0.85, blue: 0.78) // Driven Prescribed
-                            } else {
-                                dotColor = BlueHour.ice.opacity(0.62) // Free Interior / Free Surface
-                            }
-                            ctx.fill(Path(ellipseIn: rect), with: .color(dotColor))
-                        }
-                    }
+                    drawDiscreteLatticeSitesPreview(ctx: &ctx, toScreen: toScreen, boxW: boxW, boxH: boxH)
+                }
+                
+                // 4b. Bicrystal GB Plane / Voronoi Grain Cell Boundaries & Seed Handles
+                if config.geometryConfig.microstructure.mode != .singleCrystal {
+                    drawMicrostructureOverlay(ctx: &ctx, toScreen: toScreen, originX: originX, originY: originY, boxW: boxW, boxH: boxH)
                 }
                 
                 // 5. Boundary Condition Velocity Arrows on Driven Edges
@@ -326,26 +356,6 @@ public struct GeometryBuilderView: View {
                         dragStartCutout = nil
                     }
             )
-            
-            // Top-Left Overlay HUD Badge
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Image(systemName: "hand.draw.fill")
-                        .foregroundColor(BlueHour.ice)
-                    Text("Interactive Macroscopic Geometry Canvas")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(BlueHour.ice)
-                }
-                Text("Drag center handle to move hole • Drag cyan rim handle to resize • Click 'Generate & View Carved Triangulation' to mesh")
-                    .font(.system(size: 9.5))
-                    .foregroundColor(BlueHour.mist)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(BlueHour.midnight.opacity(0.88), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(BlueHour.border, lineWidth: 1))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(10)
         }
     }
     
@@ -546,6 +556,7 @@ public struct GeometryBuilderView: View {
     ) {
         let drivenColor = Color(red: 0.31, green: 0.85, blue: 0.78)
         let fixedColor = Color(red: 1.0, green: 0.42, blue: 0.42)
+        let rollerColor = Color(red: 0.98, green: 0.72, blue: 0.24)
         
         for rule in config.geometryConfig.boundary_rules where rule.enabled {
             if rule.region == .customBox {
@@ -554,13 +565,20 @@ public struct GeometryBuilderView: View {
                 let bw = CGFloat(max(0.01, rule.box_x_max - rule.box_x_min)) * boxW
                 let bh = CGFloat(max(0.01, rule.box_y_max - rule.box_y_min)) * boxH
                 let rect = CGRect(x: bx, y: by, width: bw, height: bh)
-                let col = (rule.kind == .fixed) ? fixedColor : (rule.kind == .free ? Color.gray : drivenColor)
+                let col: Color
+                switch rule.kind {
+                case .fixed: col = fixedColor
+                case .rollerX, .rollerY: col = rollerColor
+                case .free: col = Color.gray
+                case .prescribed, .affine: col = drivenColor
+                }
                 ctx.fill(Path(rect), with: .color(col.opacity(0.12)))
                 ctx.stroke(Path(rect), with: .color(col.opacity(0.85)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
             }
 
-            if rule.kind == .fixed {
-                // Draw subtle clamped hash marks along fixed edge
+            if rule.kind == .fixed || rule.kind == .rollerX || rule.kind == .rollerY {
+                let isRoller = (rule.kind == .rollerX || rule.kind == .rollerY || !rule.lock_x || !rule.lock_y)
+                let markerColor = isRoller ? rollerColor : fixedColor
                 let count = 7
                 for k in 1..<count {
                     let t = CGFloat(k) / CGFloat(count)
@@ -571,7 +589,18 @@ public struct GeometryBuilderView: View {
                     else if rule.region == .right { pt = CGPoint(x: originX + boxW + 8, y: originY + t * boxH) }
                     else { continue }
                     let tri = Path(ellipseIn: CGRect(x: pt.x - 3.5, y: pt.y - 3.5, width: 7, height: 7))
-                    ctx.stroke(tri, with: .color(fixedColor), lineWidth: 1.6)
+                    ctx.stroke(tri, with: .color(markerColor), lineWidth: 1.6)
+                    if isRoller {
+                        var slideLine = Path()
+                        if rule.kind == .rollerX || (!rule.lock_x && rule.lock_y) {
+                            slideLine.move(to: CGPoint(x: pt.x - 5.5, y: pt.y))
+                            slideLine.addLine(to: CGPoint(x: pt.x + 5.5, y: pt.y))
+                        } else {
+                            slideLine.move(to: CGPoint(x: pt.x, y: pt.y - 5.5))
+                            slideLine.addLine(to: CGPoint(x: pt.x, y: pt.y + 5.5))
+                        }
+                        ctx.stroke(slideLine, with: .color(markerColor), lineWidth: 1.4)
+                    }
                 }
             } else if rule.kind == .prescribed || rule.kind == .affine {
                 var vx = rule.ux
@@ -623,8 +652,25 @@ public struct GeometryBuilderView: View {
         boxH: CGFloat
     ) {
         if case .none = activeDragMode {
-            // Hit-test outer polygon vertices first
-            if config.geometryConfig.outer_shape == .polygon {
+            // Hit-test Bicrystal GB center handle or Voronoi grain seed handles first
+            let micro = config.geometryConfig.microstructure
+            if micro.mode == .bicrystal {
+                let gbPt = toScreen(micro.gb_cx, micro.gb_cy)
+                if hypot(startLocation.x - gbPt.x, startLocation.y - gbPt.y) < 16 {
+                    activeDragMode = .moveBicrystalGB
+                }
+            } else if micro.mode == .voronoi {
+                for (sIdx, s) in micro.seeds.enumerated() {
+                    let sPt = toScreen(s.cx, s.cy)
+                    if hypot(startLocation.x - sPt.x, startLocation.y - sPt.y) < 16 {
+                        activeDragMode = .moveVoronoiSeed(sIdx)
+                        break
+                    }
+                }
+            }
+
+            // Hit-test outer polygon vertices
+            if case .none = activeDragMode, config.geometryConfig.outer_shape == .polygon {
                 for (idx, v) in config.geometryConfig.outer_polygon.enumerated() {
                     let p = toScreen(v.x, v.y)
                     if hypot(startLocation.x - p.x, startLocation.y - p.y) < 14 {
@@ -718,6 +764,14 @@ public struct GeometryBuilderView: View {
         switch activeDragMode {
         case .none:
             break
+        case .moveBicrystalGB:
+            config.geometryConfig.microstructure.gb_cx = (round(xh * 200) / 200)
+            config.geometryConfig.microstructure.gb_cy = (round(yh * 200) / 200)
+        case .moveVoronoiSeed(let sIdx):
+            if sIdx >= 0 && sIdx < config.geometryConfig.microstructure.seeds.count {
+                config.geometryConfig.microstructure.seeds[sIdx].cx = (round(xh * 200) / 200)
+                config.geometryConfig.microstructure.seeds[sIdx].cy = (round(yh * 200) / 200)
+            }
         case .outerPolygonVertex(let idx):
             if idx < config.geometryConfig.outer_polygon.count {
                 config.geometryConfig.outer_polygon[idx].x = xh
@@ -793,12 +847,17 @@ public struct GeometryBuilderView: View {
             }
             HStack(spacing: 5) {
                 Circle().fill(Color(red: 1.0, green: 0.42, blue: 0.42)).frame(width: 8, height: 8)
-                Text("Fixed Clamped Grip Atoms (u = 0)")
+                Text("Fixed (u = 0)")
+                    .font(.caption2)
+            }
+            HStack(spacing: 5) {
+                Circle().fill(Color(red: 0.98, green: 0.72, blue: 0.24)).frame(width: 8, height: 8)
+                Text("Roller (1-DOF Locked)")
                     .font(.caption2)
             }
             HStack(spacing: 5) {
                 Circle().fill(Color(red: 0.31, green: 0.85, blue: 0.78)).frame(width: 8, height: 8)
-                Text("Driven Prescribed Grip Atoms Δu(α)")
+                Text("Driven Δu(α)")
                     .font(.caption2)
             }
             if config.geometryConfig.indenter.enabled {
@@ -883,6 +942,841 @@ public struct GeometryBuilderView: View {
                 }
             }
             .padding(6)
+        }
+    }
+    
+    // MARK: - Microstructure Card (Bicrystal & 2D Voronoi Polycrystal)
+    private var microstructureCard: some View {
+        GroupBox(label: Label("1b. Grain Boundaries & Polycrystal", systemImage: "square.split.diagonal.2x2")) {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("", selection: $config.geometryConfig.microstructure.mode) {
+                    Text("Single Crystal").tag(MicrostructureModeModel.singleCrystal)
+                    Text("Bicrystal (GB)").tag(MicrostructureModeModel.bicrystal)
+                    Text("2D Voronoi").tag(MicrostructureModeModel.voronoi)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+                .onChange(of: config.geometryConfig.microstructure.mode) { newMode in
+                    if newMode != .singleCrystal {
+                        config.geometryConfig.enabled = true
+                        if newMode == .voronoi && config.geometryConfig.microstructure.seeds.isEmpty {
+                            config.geometryConfig.microstructure.regenerateSeeds()
+                        }
+                    }
+                }
+                
+                if config.geometryConfig.microstructure.mode == .bicrystal {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 4) {
+                            Button("Vertical GB") {
+                                config.geometryConfig.microstructure.gb_cx = 0.50
+                                config.geometryConfig.microstructure.gb_cy = 0.50
+                                config.geometryConfig.microstructure.gb_angle_deg = 0.0
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            
+                            Button("Horizontal GB") {
+                                config.geometryConfig.microstructure.gb_cx = 0.50
+                                config.geometryConfig.microstructure.gb_cy = 0.50
+                                config.geometryConfig.microstructure.gb_angle_deg = 90.0
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            
+                            Button("Sym ±15°") {
+                                config.geometryConfig.microstructure.theta1_deg = -15.0
+                                config.geometryConfig.microstructure.theta2_deg = +15.0
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                        
+                        HStack(spacing: 4) {
+                            Text("CSL Presets:")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundColor(.secondary)
+                            Button("Σ5 (310) ±18.43°") {
+                                let exact = atan2(1.0, 3.0) * 180.0 / .pi
+                                config.geometryConfig.microstructure.gb_cx = 0.50
+                                config.geometryConfig.microstructure.gb_cy = 0.50
+                                config.geometryConfig.microstructure.gb_angle_deg = 0.0
+                                config.geometryConfig.microstructure.theta1_deg = -exact
+                                config.geometryConfig.microstructure.theta2_deg = +exact
+                                config.geometryConfig.microstructure.seam_resolution = .mergeMidpoint
+                                config.geometryConfig.microstructure.min_seam_distance_a0 = 0.68
+                                config.geometryConfig.microstructure.gb_normal_gap_a0 = 0.0
+                                config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
+                                config.geometryConfig.microstructure.max_gb_edge_a0 = 2.60
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .left, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .right, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0)
+                                ]
+                                config.geometryConfig.primary_stress_component = "sigma_xx"
+                                config.noiseLevel = 0.0
+                                config.nx = 76
+                                config.ny = 76
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.mini)
+                            
+                            Button("Σ5 (210) ±26.57°") {
+                                let exact = atan2(1.0, 2.0) * 180.0 / .pi
+                                config.geometryConfig.microstructure.gb_cx = 0.50
+                                config.geometryConfig.microstructure.gb_cy = 0.50
+                                config.geometryConfig.microstructure.gb_angle_deg = 0.0
+                                config.geometryConfig.microstructure.theta1_deg = -exact
+                                config.geometryConfig.microstructure.theta2_deg = +exact
+                                config.geometryConfig.microstructure.seam_resolution = .mergeMidpoint
+                                config.geometryConfig.microstructure.min_seam_distance_a0 = 0.50
+                                config.geometryConfig.microstructure.gb_normal_gap_a0 = 0.0
+                                config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
+                                config.geometryConfig.microstructure.max_gb_edge_a0 = 2.60
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .left, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .right, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0)
+                                ]
+                                config.geometryConfig.primary_stress_component = "sigma_xx"
+                                config.noiseLevel = 0.0
+                                config.nx = 76
+                                config.ny = 76
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                        
+                        Button(action: {
+                            config.geometryConfig.boundary_rules = [
+                                BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                BoundaryZoneRuleModel(region: .left, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                BoundaryZoneRuleModel(region: .right, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0)
+                            ]
+                            config.geometryConfig.primary_stress_component = "sigma_xx"
+                        }) {
+                            Label("Apply GB Roller BCs (Fix uy = 0, Free ux on All 4 Edges)", systemImage: "arrow.left.and.right.square")
+                                .font(.system(size: 10, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Color(red: 0.98, green: 0.72, blue: 0.24))
+                        .controlSize(.mini)
+                        
+                        HStack(spacing: 4) {
+                            Text("CSL-Commensurate N×N:")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundColor(.secondary)
+                            Button("64×64 (20L)") {
+                                config.nx = 64
+                                config.ny = 64
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            Button("76×76 (24L)") {
+                                config.nx = 76
+                                config.ny = 76
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            Button("95×95 (30L)") {
+                                config.nx = 95
+                                config.ny = 95
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            if config.noiseLevel > 0.0 {
+                                Button("σ=0") {
+                                    config.noiseLevel = 0.0
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.orange)
+                                .controlSize(.mini)
+                            }
+                        }
+                        
+                        HStack {
+                            Text("GB Center (cx, cy):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            DoubleField(title: "0.50", value: $config.geometryConfig.microstructure.gb_cx, width: 46, minValue: 0.05, maxValue: 0.95)
+                            DoubleField(title: "0.50", value: $config.geometryConfig.microstructure.gb_cy, width: 46, minValue: 0.05, maxValue: 0.95)
+                        }
+                        
+                        HStack {
+                            Text("GB Plane Angle ϕ (°):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            Slider(value: $config.geometryConfig.microstructure.gb_angle_deg, in: -90.0...90.0, step: 1.0)
+                                .frame(width: 85)
+                            DoubleField(title: "0.0", value: $config.geometryConfig.microstructure.gb_angle_deg, width: 48, minValue: -180.0, maxValue: 180.0)
+                        }
+                        
+                        HStack {
+                            Text("Grain 1 Angle θ₁ (°):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            Slider(value: $config.geometryConfig.microstructure.theta1_deg, in: -90.0...90.0, step: 0.5)
+                                .frame(width: 85)
+                            DoubleField(title: "-15.0", value: $config.geometryConfig.microstructure.theta1_deg, width: 48, minValue: -180.0, maxValue: 180.0)
+                        }
+                        
+                        HStack {
+                            Text("Grain 2 Angle θ₂ (°):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            Slider(value: $config.geometryConfig.microstructure.theta2_deg, in: -90.0...90.0, step: 0.5)
+                                .frame(width: 85)
+                            DoubleField(title: "+15.0", value: $config.geometryConfig.microstructure.theta2_deg, width: 48, minValue: -180.0, maxValue: 180.0)
+                        }
+                        
+                        Divider().padding(.vertical, 1)
+                        
+                        HStack(spacing: 4) {
+                            Text("Grain Separation δ_⊥ (in a₀):")
+                                .font(.caption2.bold())
+                                .foregroundColor(Color(red: 0.31, green: 0.85, blue: 0.78))
+                            Spacer()
+                            Slider(value: $config.geometryConfig.microstructure.gb_normal_gap_a0, in: -0.40...1.00, step: 0.02)
+                                .frame(width: 78)
+                            DoubleField(title: "0.0", value: $config.geometryConfig.microstructure.gb_normal_gap_a0, width: 44, minValue: -0.60, maxValue: 1.50)
+                            Button("0") {
+                                config.geometryConfig.microstructure.gb_normal_gap_a0 = 0.0
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                        
+                        HStack(spacing: 4) {
+                            Text("GB Parallel Shift δ_∥ (in a₀):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            Slider(value: $config.geometryConfig.microstructure.gb_tangential_shift_a0, in: -0.50...0.50, step: 0.02)
+                                .frame(width: 78)
+                            DoubleField(title: "0.0", value: $config.geometryConfig.microstructure.gb_tangential_shift_a0, width: 44, minValue: -1.00, maxValue: 1.00)
+                            Button("0") {
+                                config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                        
+                        let misori = abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg)
+                        HStack {
+                            Image(systemName: "angle")
+                                .foregroundColor(Color(red: 1.0, green: 0.82, blue: 0.35))
+                            Text(String(format: "Misorientation Δθ = %.2f° • Gap δ_⊥ = %.2f a₀", misori, config.geometryConfig.microstructure.gb_normal_gap_a0))
+                                .font(.system(size: 9.5, weight: .medium).monospacedDigit())
+                                .foregroundColor(Color(red: 1.0, green: 0.82, blue: 0.35))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(BlueHour.midnight.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+                } else if config.geometryConfig.microstructure.mode == .voronoi {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Grains N_g:")
+                                .font(.caption2.bold())
+                            Stepper(
+                                "\(config.geometryConfig.microstructure.num_grains)",
+                                value: $config.geometryConfig.microstructure.num_grains,
+                                in: 2...32,
+                                onEditingChanged: { _ in
+                                    config.geometryConfig.microstructure.regenerateSeeds()
+                                }
+                            )
+                            .font(.caption2.monospacedDigit())
+                            Spacer()
+                            Text("Seed:")
+                                .font(.caption2)
+                            IntField(title: "42", value: $config.geometryConfig.microstructure.random_seed, width: 44)
+                            Button("Regenerate") {
+                                config.geometryConfig.microstructure.regenerateSeeds()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.mini)
+                        }
+                        
+                        HStack {
+                            Text("Orientation Range [θ_min, θ_max] (°):")
+                                .font(.caption2)
+                            Spacer()
+                            DoubleField(title: "-30", value: $config.geometryConfig.microstructure.theta_min_deg, width: 46, minValue: -180.0, maxValue: 180.0)
+                            Text("to").font(.caption2)
+                            DoubleField(title: "+30", value: $config.geometryConfig.microstructure.theta_max_deg, width: 46, minValue: -180.0, maxValue: 180.0)
+                        }
+                        
+                        Text("Drag grain seeds (G0, G1, ...) directly on canvas or edit below:")
+                            .font(.system(size: 9.5))
+                            .foregroundColor(.secondary)
+                        
+                        ScrollView {
+                            VStack(spacing: 4) {
+                                ForEach(config.geometryConfig.microstructure.seeds.indices, id: \.self) { idx in
+                                    HStack(spacing: 6) {
+                                        Text("G\(idx)")
+                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                            .foregroundColor(grainPaletteColor(idx))
+                                            .frame(width: 24, alignment: .leading)
+                                        Text("cx:")
+                                            .font(.system(size: 9.5))
+                                        DoubleField(title: "0.5", value: $config.geometryConfig.microstructure.seeds[idx].cx, width: 42, minValue: 0.02, maxValue: 0.98)
+                                        Text("cy:")
+                                            .font(.system(size: 9.5))
+                                        DoubleField(title: "0.5", value: $config.geometryConfig.microstructure.seeds[idx].cy, width: 42, minValue: 0.02, maxValue: 0.98)
+                                        Text("θ:")
+                                            .font(.system(size: 9.5))
+                                        DoubleField(title: "0.0", value: $config.geometryConfig.microstructure.seeds[idx].theta_deg, width: 46, minValue: -180.0, maxValue: 180.0)
+                                        Text("°").font(.system(size: 9.5))
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 110)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(BlueHour.midnight.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+                }
+                
+                if config.geometryConfig.microstructure.mode != .singleCrystal {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("Seam Overlap (r_ij < d_min):")
+                                .font(.caption2.bold())
+                            Spacer()
+                            Picker("", selection: $config.geometryConfig.microstructure.seam_resolution) {
+                                ForEach(SeamOverlapResolutionModel.allCases) { s in
+                                    Text(s.displayName).tag(s)
+                                }
+                            }
+                            .labelsHidden()
+                            .controlSize(.mini)
+                            .frame(width: 170)
+                        }
+                        HStack {
+                            Text("Min Seam Distance d_min (in a₀):")
+                                .font(.caption2)
+                            Spacer()
+                            Slider(value: $config.geometryConfig.microstructure.min_seam_distance_a0, in: 0.25...0.90, step: 0.05)
+                                .frame(width: 85)
+                            DoubleField(title: "0.55", value: $config.geometryConfig.microstructure.min_seam_distance_a0, width: 46, minValue: 0.20, maxValue: 0.95)
+                        }
+                        HStack {
+                            Text("Max GB Element Edge L_max (in a₀):")
+                                .font(.caption2)
+                            Spacer()
+                            Slider(value: $config.geometryConfig.microstructure.max_gb_edge_a0, in: 1.50...3.50, step: 0.05)
+                                .frame(width: 85)
+                            DoubleField(title: "2.60", value: $config.geometryConfig.microstructure.max_gb_edge_a0, width: 46, minValue: 1.40, maxValue: 5.00)
+                        }
+                        let dMin = config.geometryConfig.microstructure.min_seam_distance_a0
+                        let lMax = config.geometryConfig.microstructure.max_gb_edge_a0
+                        let isMerge = (config.geometryConfig.microstructure.seam_resolution == .mergeMidpoint)
+                        if isMerge && dMin <= 0.62 && lMax >= 2.25 {
+                            Text("✓ Defect-Free Kite Seam: merges coincidence apices (d=0) while preserving kite-wing pairs; use Grain Separation δ_⊥ to relieve core compression.")
+                                .font(.system(size: 9))
+                                .foregroundColor(Color(red: 0.45, green: 0.90, blue: 0.62))
+                        } else if isMerge && dMin > 0.62 && lMax >= 2.25 {
+                            Text("⚠ Large d_min (> 0.63 a₀) merges kite-wing atoms onto the GB line, which can buckle into opposite zig-zag phases (disconnection). Use d_min ≈ 0.45–0.50 a₀.")
+                                .font(.system(size: 9))
+                                .foregroundColor(.orange)
+                        } else {
+                            Text("⚠ Small L_max (< 2.1 a₀) or Delete Mode with large d_min (> 0.70 a₀) removes stretched GB elements to form core voids.")
+                                .font(.system(size: 9))
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(BlueHour.midnight.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+        }
+    }
+    
+    private func grainPaletteColor(_ gid: Int) -> Color {
+        let palette: [Color] = [
+            Color(red: 0.56, green: 0.78, blue: 1.00),
+            Color(red: 1.00, green: 0.76, blue: 0.42),
+            Color(red: 0.62, green: 0.92, blue: 0.68),
+            Color(red: 0.92, green: 0.62, blue: 0.95),
+            Color(red: 1.00, green: 0.60, blue: 0.62),
+            Color(red: 0.52, green: 0.92, blue: 0.90),
+            Color(red: 0.95, green: 0.90, blue: 0.52),
+            Color(red: 0.75, green: 0.68, blue: 1.00)
+        ]
+        return palette[abs(gid) % palette.count]
+    }
+    
+    private struct CanvasLatticeSite {
+        var xPhys: Double
+        var yPhys: Double
+        var gid: Int
+        var thetaDeg: Double
+        var isMergedSeam: Bool = false
+    }
+
+    private func snapNearCSLAngle(_ deg: Double) -> Double {
+        let r2d = 180.0 / Double.pi
+        let cslHalfAngles: [Double] = [
+            atan2(1.0, 3.0) * r2d,
+            atan2(1.0, 2.0) * r2d,
+            atan2(2.0, 3.0) * r2d,
+            atan2(1.0, 4.0) * r2d,
+            atan2(1.0, 5.0) * r2d,
+            atan2(2.0, 5.0) * r2d,
+            atan2(3.0, 5.0) * r2d,
+            0.5 * atan2(3.0, 4.0) * r2d,
+            0.5 * atan2(4.0, 3.0) * r2d
+        ]
+        for exact in cslHalfAngles {
+            if abs(abs(deg) - exact) < 0.02 {
+                return (deg < 0.0) ? -exact : exact
+            }
+        }
+        return deg
+    }
+
+    private func drawDiscreteLatticeSitesPreview(
+        ctx: inout GraphicsContext,
+        toScreen: (Double, Double) -> CGPoint,
+        boxW: CGFloat,
+        boxH: CGFloat
+    ) {
+        let stepStride = max(1, Int(ceil(Double(max(config.nx, config.ny)) / 125.0)))
+        let isTri = (config.latticeSymmetry == .triangular)
+        let dotR: CGFloat = max(1.6, min(4.2, min(boxW, boxH) / CGFloat(max(config.nx, config.ny) / stepStride) * 0.30))
+        let sqrt3 = sqrt(3.0)
+        let a0 = 1.0
+        let Lx = max(1e-4, Double(config.nx) * a0)
+        let Ly = max(1e-4, isTri ? (Double(config.ny) * a0 * sqrt3 * 0.5) : (Double(config.ny) * a0))
+        let scaleStep = Double(stepStride)
+        let aCanvas = scaleStep * a0
+        let dMinGrid = isTri ? (aCanvas * sqrt3 * 0.5) : aCanvas
+        let rBox = hypot(Lx, Ly)
+        let nSpan = Int(ceil(rBox / dMinGrid)) + 4
+        let micro = config.geometryConfig.microstructure
+
+        var rawSites: [CanvasLatticeSite] = []
+        rawSites.reserveCapacity(6400)
+
+        func appendGrainLattice(gid: Int, thetaDeg: Double, originXHat: Double, originYHat: Double, pred: (Double, Double) -> Bool) {
+            let snappedDeg = snapNearCSLAngle(thetaDeg)
+            let thetaRad = snappedDeg * .pi / 180.0
+            let cosT = cos(thetaRad), sinT = sin(thetaRad)
+            let a1X = aCanvas * cosT
+            let a1Y = aCanvas * sinT
+            let a2X = isTri ? (aCanvas * (0.5 * cosT - 0.5 * sqrt3 * sinT)) : (-aCanvas * sinT)
+            let a2Y = isTri ? (aCanvas * (0.5 * sinT + 0.5 * sqrt3 * cosT)) : (aCanvas * cosT)
+            let ox = originXHat * Lx
+            let oy = originYHat * Ly
+
+            for i in -nSpan...nSpan {
+                for j in -nSpan...nSpan {
+                    let rx = ox + Double(i) * a1X + Double(j) * a2X
+                    let ry = oy + Double(i) * a1Y + Double(j) * a2Y
+                    guard rx >= -1e-4 && rx <= Lx + 1e-4 && ry >= -1e-4 && ry <= Ly + 1e-4 else { continue }
+                    let xHat = min(1.0, max(0.0, rx / Lx))
+                    let yHat = min(1.0, max(0.0, ry / Ly))
+                    guard pred(xHat, yHat) else { continue }
+                    guard config.geometryConfig.isPointInsideSolid(xHat: xHat, yHat: yHat) else { continue }
+                    rawSites.append(CanvasLatticeSite(xPhys: xHat * Lx, yPhys: yHat * Ly, gid: gid, thetaDeg: snappedDeg))
+                }
+            }
+        }
+
+        switch micro.mode {
+        case .singleCrystal:
+            let theta = config.useRotation ? config.rotationAngle : 0.0
+            appendGrainLattice(gid: 0, thetaDeg: theta, originXHat: 0.5, originYHat: 0.5) { _, _ in true }
+        case .bicrystal:
+            let phi = micro.gb_angle_deg * .pi / 180.0
+            let nx = cos(phi), ny = sin(phi)
+            let tx = -ny, ty = nx
+            let deltaPar = micro.gb_tangential_shift_a0 * aCanvas
+            let x0 = micro.gb_cx * Lx
+            let y0 = micro.gb_cy * Ly
+            let cslBand = 0.02 * aCanvas
+            let ox0 = (x0 - 0.5 * deltaPar * tx) / Lx
+            let oy0 = (y0 - 0.5 * deltaPar * ty) / Ly
+            let ox1 = (x0 + 0.5 * deltaPar * tx) / Lx
+            let oy1 = (y0 + 0.5 * deltaPar * ty) / Ly
+            appendGrainLattice(gid: 0, thetaDeg: micro.theta1_deg, originXHat: ox0, originYHat: oy0) { x, y in
+                ((x * Lx - x0) * nx + (y * Ly - y0) * ny) <= cslBand
+            }
+            appendGrainLattice(gid: 1, thetaDeg: micro.theta2_deg, originXHat: ox1, originYHat: oy1) { x, y in
+                ((x * Lx - x0) * nx + (y * Ly - y0) * ny) >= -cslBand
+            }
+        case .voronoi:
+            for (k, s) in micro.seeds.enumerated() {
+                appendGrainLattice(gid: k, thetaDeg: s.theta_deg, originXHat: s.cx, originYHat: s.cy) { x, y in
+                    micro.grainAt(xHat: x, yHat: y).0 == k
+                }
+            }
+        }
+
+        // Apply live Seam Overlap Filter using fast 2D spatial grid (O(N) on UI thread)
+        var filteredSites = rawSites
+        if micro.mode != .singleCrystal && filteredSites.count > 1 {
+            let dMinPhys = max(0.15, min(0.98, micro.min_seam_distance_a0)) * aCanvas
+            let dMinSq = dMinPhys * dMinPhys
+            let dSameSafeSq = pow(min(dMinPhys, 0.68 * aCanvas), 2)
+            let n = filteredSites.count
+            var removed = [Bool](repeating: false, count: n)
+
+            let cellH = max(1e-3, 2.5 * aCanvas)
+            let invCell = 1.0 / cellH
+            let gNx = max(1, Int(ceil(Lx * invCell)) + 3)
+            let gNy = max(1, Int(ceil(Ly * invCell)) + 3)
+            var buckets = [[Int]](repeating: [], count: gNx * gNy)
+
+            @inline(__always)
+            func cellCoord(_ x: Double, _ y: Double) -> (Int, Int) {
+                let ix = min(gNx - 1, max(0, Int(floor(x * invCell)) + 1))
+                let iy = min(gNy - 1, max(0, Int(floor(y * invCell)) + 1))
+                return (ix, iy)
+            }
+
+            for i in 0..<n {
+                let (ix, iy) = cellCoord(filteredSites[i].xPhys, filteredSites[i].yPhys)
+                buckets[iy * gNx + ix].append(i)
+            }
+
+            var crossPairs: [(Int, Int, Double)] = []
+            for i in 0..<n {
+                let xi = filteredSites[i].xPhys, yi = filteredSites[i].yPhys
+                let gi = filteredSites[i].gid
+                let (ix, iy) = cellCoord(xi, yi)
+                for dy in -1...1 {
+                    let ny = iy + dy
+                    if ny < 0 || ny >= gNy { continue }
+                    for dx in -1...1 {
+                        let nx = ix + dx
+                        if nx < 0 || nx >= gNx { continue }
+                        for j in buckets[ny * gNx + nx] where j > i {
+                            if filteredSites[j].gid == gi { continue }
+                            let ddx = filteredSites[j].xPhys - xi
+                            let ddy = filteredSites[j].yPhys - yi
+                            let d2 = ddx * ddx + ddy * ddy
+                            if d2 < dMinSq {
+                                crossPairs.append((i, j, d2))
+                            }
+                        }
+                    }
+                }
+            }
+            crossPairs.sort { $0.2 < $1.2 }
+
+            for (i, j, _) in crossPairs {
+                if removed[i] || removed[j] { continue }
+                let dx = filteredSites[j].xPhys - filteredSites[i].xPhys
+                let dy = filteredSites[j].yPhys - filteredSites[i].yPhys
+                if dx * dx + dy * dy >= dMinSq { continue }
+
+                if micro.seam_resolution == .mergeMidpoint {
+                    let mx = 0.5 * (filteredSites[i].xPhys + filteredSites[j].xPhys)
+                    let my = 0.5 * (filteredSites[i].yPhys + filteredSites[j].yPhys)
+                    let (mix, miy) = cellCoord(mx, my)
+                    var crowded = false
+                    outerCheck: for dy in -1...1 {
+                        let ny = miy + dy
+                        if ny < 0 || ny >= gNy { continue }
+                        for dx in -1...1 {
+                            let nx = mix + dx
+                            if nx < 0 || nx >= gNx { continue }
+                            for k in buckets[ny * gNx + nx] where !removed[k] && k != i && k != j {
+                                let kx = filteredSites[k].xPhys - mx
+                                let ky = filteredSites[k].yPhys - my
+                                let sameOrSeam = (filteredSites[k].gid == filteredSites[i].gid) || filteredSites[k].isMergedSeam
+                                let tol2 = sameOrSeam ? dSameSafeSq : dMinSq
+                                if kx * kx + ky * ky < tol2 {
+                                    crowded = true
+                                    break outerCheck
+                                }
+                            }
+                        }
+                    }
+                    if !crowded {
+                        filteredSites[i].xPhys = mx
+                        filteredSites[i].yPhys = my
+                        buckets[miy * gNx + mix].append(i)
+                    }
+                    filteredSites[i].isMergedSeam = true
+                }
+                removed[j] = true
+            }
+
+            // Secondary cleanup pass on spatial buckets to guarantee zero overlapping nodes at Voronoi triple junctions
+            for idx in 0..<buckets.count { buckets[idx].removeAll(keepingCapacity: true) }
+            for i in 0..<n where !removed[i] {
+                let (ix, iy) = cellCoord(filteredSites[i].xPhys, filteredSites[i].yPhys)
+                buckets[iy * gNx + ix].append(i)
+            }
+            for i in 0..<n where !removed[i] {
+                let xi = filteredSites[i].xPhys, yi = filteredSites[i].yPhys
+                let gi = filteredSites[i].gid
+                let (ix, iy) = cellCoord(xi, yi)
+                for dy in -1...1 {
+                    let ny = iy + dy
+                    if ny < 0 || ny >= gNy { continue }
+                    for dx in -1...1 {
+                        let nx = ix + dx
+                        if nx < 0 || nx >= gNx { continue }
+                        for j in buckets[ny * gNx + nx] where j > i && !removed[j] {
+                            let ddx = filteredSites[j].xPhys - xi
+                            let ddy = filteredSites[j].yPhys - yi
+                            let bothMergedSeam = filteredSites[i].isMergedSeam && filteredSites[j].isMergedSeam
+                            let cutoff2 = (filteredSites[j].gid != gi && !bothMergedSeam) ? dMinSq : dSameSafeSq
+                            if ddx * ddx + ddy * ddy < cutoff2 {
+                                removed[j] = true
+                            }
+                        }
+                    }
+                }
+            }
+
+            let phiSep = micro.gb_angle_deg * .pi / 180.0
+            let nxSep = cos(phiSep), nySep = sin(phiSep)
+            let deltaPerp = (micro.mode == .bicrystal) ? (micro.gb_normal_gap_a0 * aCanvas) : 0.0
+
+            var survivors: [CanvasLatticeSite] = []
+            survivors.reserveCapacity(n)
+            for i in 0..<n where !removed[i] {
+                var site = filteredSites[i]
+                if abs(deltaPerp) > 1e-12 && !site.isMergedSeam {
+                    let sgn = (site.gid == 0) ? -0.5 : 0.5
+                    site.xPhys += sgn * deltaPerp * nxSep
+                    site.yPhys += sgn * deltaPerp * nySep
+                }
+                if site.xPhys >= -1e-4 && site.xPhys <= Lx + 1e-4 && site.yPhys >= -1e-4 && site.yPhys <= Ly + 1e-4 {
+                    survivors.append(site)
+                }
+            }
+            filteredSites = survivors
+
+            // Rebuild buckets on survivors for O(N) live cross-seam GB bond preview
+            for idx in 0..<buckets.count { buckets[idx].removeAll(keepingCapacity: true) }
+            let m = filteredSites.count
+            for i in 0..<m {
+                let (ix, iy) = cellCoord(filteredSites[i].xPhys, filteredSites[i].yPhys)
+                buckets[iy * gNx + ix].append(i)
+            }
+
+            let lMaxPhys = micro.max_gb_edge_a0 * aCanvas
+            let maxSearchPhys = 2.40 * aCanvas
+            let maxSearchSq = maxSearchPhys * maxSearchPhys
+            var connectedPath = Path()
+            var brokenPath = Path()
+
+            for i in 0..<m {
+                let si = filteredSites[i]
+                let (ix, iy) = cellCoord(si.xPhys, si.yPhys)
+                var nearestCrossIdx = -1
+                var nearestD2 = maxSearchSq
+                for dy in -1...1 {
+                    let ny = iy + dy
+                    if ny < 0 || ny >= gNy { continue }
+                    for dx in -1...1 {
+                        let nx = ix + dx
+                        if nx < 0 || nx >= gNx { continue }
+                        for j in buckets[ny * gNx + nx] where filteredSites[j].gid != si.gid {
+                            let ddx = filteredSites[j].xPhys - si.xPhys
+                            let ddy = filteredSites[j].yPhys - si.yPhys
+                            let d2 = ddx * ddx + ddy * ddy
+                            if d2 < nearestD2 {
+                                nearestD2 = d2
+                                nearestCrossIdx = j
+                            }
+                        }
+                    }
+                }
+                if nearestCrossIdx >= 0 {
+                    let sj = filteredSites[nearestCrossIdx]
+                    let dist = sqrt(nearestD2)
+                    let p1 = toScreen(si.xPhys / Lx, si.yPhys / Ly)
+                    let p2 = toScreen(sj.xPhys / Lx, sj.yPhys / Ly)
+                    if dist <= lMaxPhys {
+                        connectedPath.move(to: p1)
+                        connectedPath.addLine(to: p2)
+                    } else {
+                        brokenPath.move(to: p1)
+                        brokenPath.addLine(to: p2)
+                    }
+                }
+            }
+            ctx.stroke(connectedPath, with: .color(Color(red: 0.45, green: 0.90, blue: 0.62).opacity(0.42)), lineWidth: 1.1)
+            ctx.stroke(brokenPath, with: .color(Color(red: 1.0, green: 0.38, blue: 0.36).opacity(0.90)), style: StrokeStyle(lineWidth: 1.6, dash: [3, 2]))
+        }
+
+        // Render all surviving lattice sites (highlighting merged seam-core atoms)
+        let goldRing = Color(red: 1.0, green: 0.85, blue: 0.35)
+        for site in filteredSites {
+            let xHat = min(1.0, max(0.0, site.xPhys / Lx))
+            let yHat = min(1.0, max(0.0, site.yPhys / Ly))
+            let role = config.geometryConfig.classifyNodeRole(
+                xHat: xHat, yHat: yHat, nx: config.nx, ny: config.ny
+            )
+            let pt = toScreen(xHat, yHat)
+            let r = site.isMergedSeam ? (dotR * 1.18) : dotR
+            let rect = CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)
+            let baseColor = (micro.mode == .singleCrystal) ? BlueHour.ice.opacity(0.62) : grainPaletteColor(site.gid).opacity(0.82)
+            let dotColor: Color
+            if role == 1 {
+                dotColor = Color(red: 1.0, green: 0.42, blue: 0.42)
+            } else if role == 2 {
+                dotColor = Color(red: 0.31, green: 0.85, blue: 0.78)
+            } else if role == 3 || role == 4 {
+                dotColor = Color(red: 0.98, green: 0.72, blue: 0.24)
+            } else {
+                dotColor = baseColor
+            }
+            ctx.fill(Path(ellipseIn: rect), with: .color(dotColor))
+            if site.isMergedSeam {
+                ctx.stroke(Path(ellipseIn: rect.insetBy(dx: -0.8, dy: -0.8)), with: .color(goldRing.opacity(0.95)), lineWidth: 1.1)
+            }
+        }
+    }
+    
+    private func drawMicrostructureOverlay(
+        ctx: inout GraphicsContext,
+        toScreen: (Double, Double) -> CGPoint,
+        originX: CGFloat,
+        originY: CGFloat,
+        boxW: CGFloat,
+        boxH: CGFloat
+    ) {
+        let micro = config.geometryConfig.microstructure
+        let gold = Color(red: 1.0, green: 0.82, blue: 0.35)
+        
+        if micro.mode == .bicrystal {
+            let phi = micro.gb_angle_deg * .pi / 180.0
+            // Tangent vector along the GB plane: (-sin(phi), cos(phi))
+            let tx = -sin(phi)
+            let ty = cos(phi)
+            let p1 = toScreen(micro.gb_cx - 1.5 * tx, micro.gb_cy - 1.5 * ty)
+            let p2 = toScreen(micro.gb_cx + 1.5 * tx, micro.gb_cy + 1.5 * ty)
+            
+            var clipCtx = ctx
+            clipCtx.clip(to: Path(CGRect(x: originX, y: originY, width: boxW, height: boxH)))
+            var gbLine = Path()
+            gbLine.move(to: p1)
+            gbLine.addLine(to: p2)
+            clipCtx.stroke(gbLine, with: .color(gold), style: StrokeStyle(lineWidth: 2.2, dash: [6, 4]))
+            
+            // Draggable GB center handle
+            let cPt = toScreen(micro.gb_cx, micro.gb_cy)
+            let hRect = CGRect(x: cPt.x - 6, y: cPt.y - 6, width: 12, height: 12)
+            ctx.fill(Path(ellipseIn: hRect), with: .color(gold))
+            ctx.stroke(Path(ellipseIn: hRect), with: .color(BlueHour.abyss), lineWidth: 1.5)
+            
+            let nx = cos(phi), ny = sin(phi)
+            let g0Pt = toScreen(min(0.88, max(0.12, micro.gb_cx - 0.18 * nx)), min(0.88, max(0.12, micro.gb_cy - 0.18 * ny)))
+            let g1Pt = toScreen(min(0.88, max(0.12, micro.gb_cx + 0.18 * nx)), min(0.88, max(0.12, micro.gb_cy + 0.18 * ny)))
+            let pill0 = CGRect(x: g0Pt.x - 42, y: g0Pt.y - 10, width: 84, height: 20)
+            let pill1 = CGRect(x: g1Pt.x - 42, y: g1Pt.y - 10, width: 84, height: 20)
+            ctx.fill(Path(roundedRect: pill0, cornerRadius: 5), with: .color(BlueHour.abyss.opacity(0.86)))
+            ctx.stroke(Path(roundedRect: pill0, cornerRadius: 5), with: .color(grainPaletteColor(0).opacity(0.65)), lineWidth: 1.0)
+            ctx.fill(Path(roundedRect: pill1, cornerRadius: 5), with: .color(BlueHour.abyss.opacity(0.86)))
+            ctx.stroke(Path(roundedRect: pill1, cornerRadius: 5), with: .color(grainPaletteColor(1).opacity(0.65)), lineWidth: 1.0)
+            ctx.draw(
+                Text(String(format: "G0 (%.1f°)", micro.theta1_deg))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(grainPaletteColor(0)),
+                at: g0Pt
+            )
+            ctx.draw(
+                Text(String(format: "G1 (%.1f°)", micro.theta2_deg))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(grainPaletteColor(1)),
+                at: g1Pt
+            )
+        } else if micro.mode == .voronoi {
+            // Draw analytical Voronoi grain-boundary network (dashed gold bisector edges)
+            let seeds = micro.seeds
+            let ng = seeds.count
+            if ng >= 2 {
+                var clipCtx = ctx
+                clipCtx.clip(to: Path(CGRect(x: originX, y: originY, width: boxW, height: boxH)))
+                var voronoiPath = Path()
+                for i in 0..<ng {
+                    for j in (i + 1)..<ng {
+                        let sx_i = seeds[i].cx, sy_i = seeds[i].cy
+                        let sx_j = seeds[j].cx, sy_j = seeds[j].cy
+                        let dx = sx_j - sx_i, dy = sy_j - sy_i
+                        let dist = hypot(dx, dy)
+                        if dist < 1e-6 { continue }
+                        let mx = 0.5 * (sx_i + sx_j)
+                        let my = 0.5 * (sy_i + sy_j)
+                        let tx = -dy / dist
+                        let ty = dx / dist
+                        var tMin = -2.0
+                        var tMax = 2.0
+
+                        // Clip to [0, 1]^2
+                        if abs(tx) > 1e-9 {
+                            let t0 = (0.0 - mx) / tx
+                            let t1 = (1.0 - mx) / tx
+                            tMin = max(tMin, min(t0, t1))
+                            tMax = min(tMax, max(t0, t1))
+                        }
+                        if abs(ty) > 1e-9 {
+                            let t0 = (0.0 - my) / ty
+                            let t1 = (1.0 - my) / ty
+                            tMin = max(tMin, min(t0, t1))
+                            tMax = min(tMax, max(t0, t1))
+                        }
+
+                        // Clip against all other Voronoi seeds k != i, j
+                        let r_i2 = (mx - sx_i) * (mx - sx_i) + (my - sy_i) * (my - sy_i)
+                        for k in 0..<ng where k != i && k != j {
+                            let sx_k = seeds[k].cx, sy_k = seeds[k].cy
+                            let a = 2.0 * (tx * (sx_k - sx_i) + ty * (sy_k - sy_i))
+                            let b = ((mx - sx_k) * (mx - sx_k) + (my - sy_k) * (my - sy_k)) - r_i2
+                            if abs(a) < 1e-9 {
+                                if b < 0.0 { tMin = 1.0; tMax = -1.0; break }
+                            } else if a > 0.0 {
+                                tMax = min(tMax, b / a)
+                            } else {
+                                tMin = max(tMin, b / a)
+                            }
+                        }
+
+                        if tMin < tMax {
+                            let p1 = toScreen(mx + tMin * tx, my + tMin * ty)
+                            let p2 = toScreen(mx + tMax * tx, my + tMax * ty)
+                            voronoiPath.move(to: p1)
+                            voronoiPath.addLine(to: p2)
+                        }
+                    }
+                }
+                clipCtx.stroke(voronoiPath, with: .color(gold.opacity(0.82)), style: StrokeStyle(lineWidth: 1.8, dash: [5, 3]))
+            }
+
+            for (idx, s) in micro.seeds.enumerated() {
+                let p = toScreen(s.cx, s.cy)
+                let col = grainPaletteColor(idx)
+                let hRect = CGRect(x: p.x - 5.5, y: p.y - 5.5, width: 11, height: 11)
+                ctx.fill(Path(ellipseIn: hRect), with: .color(col))
+                ctx.stroke(Path(ellipseIn: hRect), with: .color(BlueHour.abyss), lineWidth: 1.5)
+                let labelPt = CGPoint(x: p.x, y: p.y - 15)
+                let pillRect = CGRect(x: labelPt.x - 34, y: labelPt.y - 8, width: 68, height: 16)
+                ctx.fill(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(BlueHour.abyss.opacity(0.86)))
+                ctx.draw(
+                    Text(String(format: "G%d (%.0f°)", idx, s.theta_deg))
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(col),
+                    at: labelPt
+                )
+            }
         }
     }
     
@@ -1295,6 +2189,15 @@ public struct GeometryBuilderView: View {
                 // Quick BC Templates
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
+                        Button("GB Roller (Fix uy=0, Free ux)") {
+                            config.geometryConfig.boundary_rules = [
+                                BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                BoundaryZoneRuleModel(region: .left, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                BoundaryZoneRuleModel(region: .right, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0)
+                            ]
+                            config.geometryConfig.primary_stress_component = "sigma_xx"
+                        }
                         Button("Tension (+Y)") {
                             config.geometryConfig.boundary_rules = [
                                 BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
@@ -1356,7 +2259,21 @@ public struct GeometryBuilderView: View {
                             }
                             .labelsHidden()
                             .controlSize(.mini)
-                            .frame(width: 95)
+                            .frame(width: 125)
+                            .onChange(of: rule.kind) { newKind in
+                                if newKind == .rollerX {
+                                    rule.lock_x = false
+                                    rule.lock_y = true
+                                } else if newKind == .rollerY {
+                                    rule.lock_x = true
+                                    rule.lock_y = false
+                                } else if newKind == .fixed || newKind == .prescribed {
+                                    if !rule.lock_x && !rule.lock_y {
+                                        rule.lock_x = true
+                                        rule.lock_y = true
+                                    }
+                                }
+                            }
                             
                             Button(role: .destructive, action: {
                                 let idToRemove = rule.id
@@ -1386,42 +2303,79 @@ public struct GeometryBuilderView: View {
                         }
                         
                         if rule.kind == .prescribed {
-                            HStack(spacing: 6) {
-                                Text("Grip Δu/α:").font(.caption2).foregroundColor(.secondary)
-                                Text("ux:").font(.caption2.bold())
-                                Picker("", selection: Binding(
-                                    get: { BoundaryZoneRuleModel.snapUnitDirection(rule.ux) },
-                                    set: { rule.ux = $0 }
-                                )) {
-                                    Text("-1").tag(-1.0)
-                                    Text("0").tag(0.0)
-                                    Text("+1").tag(1.0)
-                                }
-                                .pickerStyle(.segmented)
-                                .labelsHidden()
-                                .controlSize(.mini)
-                                .frame(width: 72)
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text("Grip Δu/α:").font(.caption2).foregroundColor(.secondary)
+                                    Text("ux:").font(.caption2.bold())
+                                    Picker("", selection: Binding(
+                                        get: { BoundaryZoneRuleModel.snapUnitDirection(rule.ux) },
+                                        set: { rule.ux = $0 }
+                                    )) {
+                                        Text("-1").tag(-1.0)
+                                        Text("0").tag(0.0)
+                                        Text("+1").tag(1.0)
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .labelsHidden()
+                                    .controlSize(.mini)
+                                    .frame(width: 72)
+                                    .disabled(!rule.lock_x)
 
-                                Text("uy:").font(.caption2.bold())
-                                Picker("", selection: Binding(
-                                    get: { BoundaryZoneRuleModel.snapUnitDirection(rule.uy) },
-                                    set: { rule.uy = $0 }
-                                )) {
-                                    Text("-1").tag(-1.0)
-                                    Text("0").tag(0.0)
-                                    Text("+1").tag(1.0)
-                                }
-                                .pickerStyle(.segmented)
-                                .labelsHidden()
-                                .controlSize(.mini)
-                                .frame(width: 72)
+                                    Text("uy:").font(.caption2.bold())
+                                    Picker("", selection: Binding(
+                                        get: { BoundaryZoneRuleModel.snapUnitDirection(rule.uy) },
+                                        set: { rule.uy = $0 }
+                                    )) {
+                                        Text("-1").tag(-1.0)
+                                        Text("0").tag(0.0)
+                                        Text("+1").tag(1.0)
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .labelsHidden()
+                                    .controlSize(.mini)
+                                    .frame(width: 72)
+                                    .disabled(!rule.lock_y)
 
-                                Text("Strip (a₀):").font(.caption2)
-                                DoubleField(title: "2.0", value: $rule.thickness_a0, width: 42)
+                                    Text("Strip (a₀):").font(.caption2)
+                                    DoubleField(title: "2.0", value: $rule.thickness_a0, width: 42)
+                                }
+                                HStack(spacing: 12) {
+                                    Text("Active DOFs:").font(.caption2).foregroundColor(.secondary)
+                                    Toggle("Lock ux", isOn: $rule.lock_x)
+                                        .font(.caption2)
+                                        .controlSize(.mini)
+                                    Toggle("Lock uy", isOn: $rule.lock_y)
+                                        .font(.caption2)
+                                        .controlSize(.mini)
+                                    Spacer()
+                                    Text(rule.lock_x && rule.lock_y ? "Both Prescribed" : (rule.lock_x ? "Free uy (Roller)" : (rule.lock_y ? "Free ux (Roller)" : "All Free")))
+                                        .font(.system(size: 9.5, weight: .medium))
+                                        .foregroundColor(Color(red: 0.98, green: 0.72, blue: 0.24))
+                                }
                             }
                         } else if rule.kind == .fixed {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 8) {
+                                    Text("Clamped Strip Thickness (in a₀):").font(.caption2).foregroundColor(.secondary)
+                                    Spacer()
+                                    DoubleField(title: "2.0", value: $rule.thickness_a0, width: 52)
+                                }
+                                HStack(spacing: 12) {
+                                    Text("Clamped DOFs:").font(.caption2).foregroundColor(.secondary)
+                                    Toggle("Lock ux = 0", isOn: $rule.lock_x)
+                                        .font(.caption2)
+                                        .controlSize(.mini)
+                                    Toggle("Lock uy = 0", isOn: $rule.lock_y)
+                                        .font(.caption2)
+                                        .controlSize(.mini)
+                                    Spacer()
+                                }
+                            }
+                        } else if rule.kind == .rollerX || rule.kind == .rollerY {
                             HStack(spacing: 8) {
-                                Text("Clamped Strip Thickness (in a₀):").font(.caption2).foregroundColor(.secondary)
+                                Text(rule.kind == .rollerX ? "Free ux, Fix uy = 0 (Strip in a₀):" : "Fix ux = 0, Free uy (Strip in a₀):")
+                                    .font(.caption2)
+                                    .foregroundColor(Color(red: 0.98, green: 0.72, blue: 0.24))
                                 Spacer()
                                 DoubleField(title: "2.0", value: $rule.thickness_a0, width: 52)
                             }

@@ -114,9 +114,11 @@ struct IndenterConfig {
 
 enum class BoundaryConditionKind {
     FreeSurface = 0,            // Unconstrained DOF (natural traction-free boundary)
-    FixedClamped = 1,           // Clamped u = 0
+    FixedClamped = 1,           // Clamped u = 0 (or single-axis lock if lock_x/lock_y toggled)
     PrescribedDisplacement = 2, // Driven u(alpha) = alpha * (ux * L_ref, uy * L_ref)
-    AffineDeformation = 3       // Driven x(alpha) = F(alpha) * X_0
+    AffineDeformation = 3,      // Driven x(alpha) = F(alpha) * X_0
+    RollerX = 4,                // Free ux, Fixed uy = 0 (horizontal slide / normal volume relaxation)
+    RollerY = 5                 // Fixed ux = 0, Free uy (vertical slide)
 };
 
 struct BoundaryZoneRule {
@@ -138,8 +140,54 @@ struct BoundaryZoneRule {
     double ux = 0.0;
     double uy = 1.0;
 
+    // Per-axis DOF constraint locks for FixedClamped and PrescribedDisplacement
+    bool lock_x = true;
+    bool lock_y = true;
+
     // Affine mode: "simple_shear_x", "simple_shear_y", "uniaxial_y", "uniaxial_x", "pure_shear", "biaxial"
     std::string affine_mode = "simple_shear_x";
+};
+
+enum class MicrostructureMode {
+    SingleCrystal = 0,
+    Bicrystal = 1,
+    VoronoiPolycrystal = 2
+};
+
+enum class SeamOverlapResolution {
+    MergeMidpoint = 0, // Replace close cross-grain pair (r_ij < d_min * a0) with midpoint
+    DeleteSecond = 1   // Keep lower grain_id atom, remove higher grain_id atom
+};
+
+struct VoronoiGrainSeed {
+    int id = 0;
+    double cx = 0.5;        // Normalized [0, 1] x-coordinate
+    double cy = 0.5;        // Normalized [0, 1] y-coordinate
+    double theta_deg = 0.0; // Crystal lattice orientation in degrees
+};
+
+struct MicrostructureConfig {
+    MicrostructureMode mode = MicrostructureMode::SingleCrystal;
+    SeamOverlapResolution seam_resolution = SeamOverlapResolution::MergeMidpoint;
+    double min_seam_distance_a0 = 0.55; // Minimum interatomic spacing across GB seam in units of a_0
+    double max_gb_edge_a0 = 2.60;       // Max allowed element edge length across GB / interior (in units of a_0)
+    bool pre_relax_gb = true;           // Relax grain boundaries with traction-free surfaces before applying BCs
+
+    // Bicrystal parameters (Method A)
+    double gb_cx = 0.50;        // Normalized point on GB plane
+    double gb_cy = 0.50;
+    double gb_angle_deg = 0.0;  // 0 deg = vertical GB (x = cx), 90 deg = horizontal GB (y = cy)
+    double theta1_deg = -15.0;  // Grain 1 orientation (degrees)
+    double theta2_deg = +15.0;  // Grain 2 orientation (degrees)
+    double gb_normal_gap_a0 = 0.0;       // Normal separation δ_⊥ between Grain 1 and Grain 2 (in units of a_0)
+    double gb_tangential_shift_a0 = 0.0; // Relative tangential shift δ_∥ along GB plane (in units of a_0)
+
+    // 2D Voronoi Polycrystal parameters (Method C)
+    int num_grains = 6;
+    int random_seed = 42;
+    double theta_min_deg = -30.0;
+    double theta_max_deg = +30.0;
+    std::vector<VoronoiGrainSeed> seeds;
 };
 
 struct MacroscopicGeometryConfig {
@@ -164,6 +212,9 @@ struct MacroscopicGeometryConfig {
     // Nanoindenter Contact Tool configuration
     IndenterConfig indenter;
 
+    // Microstructure configuration (SingleCrystal, Bicrystal, VoronoiPolycrystal)
+    MicrostructureConfig microstructure;
+
     // Primary macroscopic stress component to log in Stress-Strain curves:
     // "auto", "sigma_xy", "sigma_yy", "sigma_xx", "von_mises", "hydrostatic", "indentation_load"
     std::string primary_stress_component = "auto";
@@ -184,6 +235,13 @@ struct MacroscopicGeometryConfig {
     // Load from JSON file
     static bool loadFromJSON(const std::string& filepath, MacroscopicGeometryConfig& out_config);
 
+    // Generate multi-grain (Bicrystal or 2D Voronoi Polycrystal) uncarved lattice points
+    std::pair<std::vector<Point2D>, DomainDimensions> generateMicrostructureLattice(
+        const std::string& lattice_type,
+        int nx, int ny,
+        double lattice_a0,
+        double fallback_theta_deg = 0.0);
+
     // Initialize bounding box from uncarved reference crystal
     void setPhysicalBoundsFromPoints(const std::vector<Point2D>& raw_points, double lattice_a0);
 
@@ -203,7 +261,28 @@ struct MacroscopicGeometryConfig {
     std::vector<Point2D> carveLatticePoints(const std::vector<Point2D>& raw_points, double lattice_a0);
 
     // Classify surviving nodes and build DOF mappings + per-node BC roles and velocity vectors
-    // bc_role: 0 = Free (interior or traction-free surface), 1 = Fixed (u = 0), 2 = Driven (u(alpha))
+    // bc_role:
+    //   0 = Free (interior or traction-free surface)
+    //   1 = Fixed (ux = 0, uy = 0)
+    //   2 = Driven (ux(alpha), uy(alpha))
+    //   3 = X-Constrained / Y-Free (RollerY or partial X lock: ux(alpha) prescribed/0, uy free)
+    //   4 = Y-Constrained / X-Free (RollerX or partial Y lock: ux free, uy(alpha) prescribed/0)
+    mutable std::vector<int> cached_node_bc_role;
+    mutable bool has_partial_dof_constraints = false;
+
+    bool hasPartialDOFConstraints() const { return enabled && has_partial_dof_constraints; }
+    bool isNodeXConstrained(int node_idx) const {
+        return (node_idx >= 0 && node_idx < static_cast<int>(cached_node_bc_role.size())) &&
+               (cached_node_bc_role[node_idx] == 1 || cached_node_bc_role[node_idx] == 2 || cached_node_bc_role[node_idx] == 3);
+    }
+    bool isNodeYConstrained(int node_idx) const {
+        return (node_idx >= 0 && node_idx < static_cast<int>(cached_node_bc_role.size())) &&
+               (cached_node_bc_role[node_idx] == 1 || cached_node_bc_role[node_idx] == 2 || cached_node_bc_role[node_idx] == 4);
+    }
+    void zeroConstrainedComponentGradients(
+        const std::vector<std::pair<int, int>>& interior_mapping,
+        alglib::real_1d_array& grad) const;
+
     void buildBoundaryDOFs(
         const std::vector<Point2D>& carved_points,
         std::vector<std::pair<int, int>>& interior_mapping,

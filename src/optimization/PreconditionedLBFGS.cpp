@@ -40,6 +40,15 @@ std::uint64_t mesh_signature(const UserData *userData) {
       h = hash_mix(h, static_cast<std::uint64_t>(node_dof(element, a, userData) + 1));
     }
   }
+  if (userData->macro_geom_ptr != nullptr &&
+      userData->macro_geom_ptr->hasPartialDOFConstraints()) {
+    for (const auto &pr : userData->interior_mapping) {
+      const int p = pr.first;
+      const int rx = userData->macro_geom_ptr->isNodeXConstrained(p) ? 1 : 0;
+      const int ry = userData->macro_geom_ptr->isNodeYConstrained(p) ? 2 : 0;
+      h = hash_mix(h, static_cast<std::uint64_t>(rx + ry));
+    }
+  }
   return h;
 }
 
@@ -147,16 +156,24 @@ void FastStiffnessAssembler::ensurePattern(UserData *userData) {
   n_nodes_ = static_cast<int>(userData->interior_mapping.size());
   const int n = n_nodes_;
   const auto &active = userData->active_elements;
+  const bool has_partial = (userData->macro_geom_ptr != nullptr &&
+                            userData->macro_geom_ptr->hasPartialDOFConstraints());
 
   std::vector<Eigen::Triplet<double>> triplets;
-  triplets.reserve(active.size() * 36);
+  triplets.reserve(active.size() * 36 + static_cast<size_t>(2 * n));
+  for (int d = 0; d < 2 * n; ++d) {
+    triplets.emplace_back(d, d, 1.0);
+  }
   for (size_t idx : active) {
     const ElementTriangle2D &element = userData->elements[idx];
     int dofs[6];
     for (int a = 0; a < 3; a++) {
+      const int node_idx = element.getNodeIndex(a);
       const int s = node_dof(element, a, userData);
-      dofs[2 * a] = s;
-      dofs[2 * a + 1] = (s >= 0) ? s + n : -1;
+      const bool lock_x = has_partial && userData->macro_geom_ptr->isNodeXConstrained(node_idx);
+      const bool lock_y = has_partial && userData->macro_geom_ptr->isNodeYConstrained(node_idx);
+      dofs[2 * a] = (s >= 0 && !lock_x) ? s : -1;
+      dofs[2 * a + 1] = (s >= 0 && !lock_y) ? (s + n) : -1;
     }
     for (int r = 0; r < 6; r++)
       for (int c = 0; c < 6; c++)
@@ -172,9 +189,12 @@ void FastStiffnessAssembler::ensurePattern(UserData *userData) {
     const ElementTriangle2D &element = userData->elements[active[e]];
     int dofs[6];
     for (int a = 0; a < 3; a++) {
+      const int node_idx = element.getNodeIndex(a);
       const int s = node_dof(element, a, userData);
-      dofs[2 * a] = s;
-      dofs[2 * a + 1] = (s >= 0) ? s + n : -1;
+      const bool lock_x = has_partial && userData->macro_geom_ptr->isNodeXConstrained(node_idx);
+      const bool lock_y = has_partial && userData->macro_geom_ptr->isNodeYConstrained(node_idx);
+      dofs[2 * a] = (s >= 0 && !lock_x) ? s : -1;
+      dofs[2 * a + 1] = (s >= 0 && !lock_y) ? (s + n) : -1;
     }
     for (int r = 0; r < 6; r++)
       for (int c = 0; c < 6; c++)
@@ -249,19 +269,42 @@ FastStiffnessAssembler::assembleStiffness(const alglib::real_1d_array &x,
   if (userData->macro_geom_ptr != nullptr &&
       userData->macro_geom_ptr->isIndenterActive()) {
     const int n = n_nodes_;
+    const bool has_partial = userData->macro_geom_ptr->hasPartialDOFConstraints();
     for (int i = 0; i < n; ++i) {
+      const int node_idx = userData->interior_mapping[i].first;
       int dof_idx = userData->interior_mapping[i].second;
       if (dof_idx < 0 || dof_idx >= n) continue;
+      const bool lock_x = has_partial && userData->macro_geom_ptr->isNodeXConstrained(node_idx);
+      const bool lock_y = has_partial && userData->macro_geom_ptr->isNodeYConstrained(node_idx);
       Eigen::Vector2d p(x[dof_idx], x[n + dof_idx]);
       auto contact = userData->macro_geom_ptr->evaluateIndenterContact(
           p, userData->current_alpha, 0.0);
       if (contact.in_contact && contact.penetration > 0.0) {
         int ux = dof_idx;
         int uy = n + dof_idx;
-        values[value_slot(K_, ux, ux)] += contact.hessian(0, 0);
-        values[value_slot(K_, ux, uy)] += contact.hessian(0, 1);
-        values[value_slot(K_, uy, ux)] += contact.hessian(1, 0);
-        values[value_slot(K_, uy, uy)] += contact.hessian(1, 1);
+        if (!lock_x) values[value_slot(K_, ux, ux)] += contact.hessian(0, 0);
+        if (!lock_x && !lock_y) {
+          values[value_slot(K_, ux, uy)] += contact.hessian(0, 1);
+          values[value_slot(K_, uy, ux)] += contact.hessian(1, 0);
+        }
+        if (!lock_y) values[value_slot(K_, uy, uy)] += contact.hessian(1, 1);
+      }
+    }
+  }
+
+  // Place unit diagonal on locked scalar DOFs of partially constrained (Roller) nodes
+  if (userData->macro_geom_ptr != nullptr &&
+      userData->macro_geom_ptr->hasPartialDOFConstraints()) {
+    const int n = n_nodes_;
+    for (int i = 0; i < n; ++i) {
+      const int node_idx = userData->interior_mapping[i].first;
+      const int dof_idx = userData->interior_mapping[i].second;
+      if (dof_idx < 0 || dof_idx >= n) continue;
+      if (userData->macro_geom_ptr->isNodeXConstrained(node_idx)) {
+        values[value_slot(K_, dof_idx, dof_idx)] = 1.0;
+      }
+      if (userData->macro_geom_ptr->isNodeYConstrained(node_idx)) {
+        values[value_slot(K_, n + dof_idx, n + dof_idx)] = 1.0;
       }
     }
   }
@@ -452,6 +495,21 @@ static void transformed_energy(const alglib::real_1d_array &z, double &func,
   } else {
     std::copy(z.getcontent(), z.getcontent() + n, x);
   }
+  if (ctx->userData->macro_geom_ptr != nullptr &&
+      ctx->userData->macro_geom_ptr->hasPartialDOFConstraints()) {
+    const auto &imap = ctx->userData->interior_mapping;
+    const int n_vars = static_cast<int>(imap.size());
+    for (int i = 0; i < n_vars; ++i) {
+      const int node_idx = imap[i].first;
+      const int dof_idx = imap[i].second;
+      if (ctx->userData->macro_geom_ptr->isNodeXConstrained(node_idx)) {
+        x[dof_idx] = ctx->x0[dof_idx];
+      }
+      if (ctx->userData->macro_geom_ptr->isNodeYConstrained(node_idx)) {
+        x[n_vars + dof_idx] = ctx->x0[n_vars + dof_idx];
+      }
+    }
+  }
 
   minimize_energy_with_triangles(ctx->x_work, func, ctx->gx_work, ctx->userData);
   ctx->nfev++;
@@ -459,6 +517,11 @@ static void transformed_energy(const alglib::real_1d_array &z, double &func,
   const double *gx = ctx->gx_work.getcontent();
   if (factor) {
     factor->apply_inverse(gx, grad.getcontent(), n);
+    if (ctx->userData->macro_geom_ptr != nullptr &&
+        ctx->userData->macro_geom_ptr->hasPartialDOFConstraints()) {
+      ctx->userData->macro_geom_ptr->zeroConstrainedComponentGradients(
+          ctx->userData->interior_mapping, grad);
+    }
   } else {
     std::copy(gx, gx + n, grad.getcontent());
   }
@@ -542,6 +605,21 @@ PreconditionedLBFGSReport PreconditionedLBFGS::optimize(alglib::real_1d_array &x
       for (int i = 0; i < n; i++) x[i] += ctx.x0[i];
     } else {
       for (int i = 0; i < n; i++) x[i] = z[i];
+    }
+    if (userData->macro_geom_ptr != nullptr &&
+        userData->macro_geom_ptr->hasPartialDOFConstraints()) {
+      const auto &imap = userData->interior_mapping;
+      const int n_vars = static_cast<int>(imap.size());
+      for (int i = 0; i < n_vars; ++i) {
+        const int node_idx = imap[i].first;
+        const int dof_idx = imap[i].second;
+        if (userData->macro_geom_ptr->isNodeXConstrained(node_idx)) {
+          x[dof_idx] = ctx.x0[dof_idx];
+        }
+        if (userData->macro_geom_ptr->isNodeYConstrained(node_idx)) {
+          x[n_vars + dof_idx] = ctx.x0[n_vars + dof_idx];
+        }
+      }
     }
     report.iterations += static_cast<int>(rep.iterationscount);
     report.nfev += static_cast<int>(rep.nfev);

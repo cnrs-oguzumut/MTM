@@ -586,7 +586,18 @@ void example_1_conti_zanzotto_loading(
   std::array<double, 2> offsets = {0.0, 0.0};
   double theta_rot = 0.0;
 
-  if (use_rotation) {
+  if (has_custom_geom && macro_geom.microstructure.mode != MicrostructureMode::SingleCrystal) {
+    auto [pts, dims] = macro_geom.generateMicrostructureLattice(
+        lattice_type, nx, ny, lattice_constant, use_rotation ? rotation_angle : 0.0);
+    square_points = pts;
+    square_points_ref = pts;
+    domain_dims = dims;
+    offsets = (lattice_type == "square")
+        ? std::array<double, 2>{lattice_constant, lattice_constant}
+        : std::array<double, 2>{lattice_constant / 2.0,
+                                (sqrt(3.0) / 2.0) * lattice_constant};
+    theta_rot = 0.0;
+  } else if (use_rotation) {
     if (pbc) {
       int m = (csl_m == 0 && csl_n == 0) ? 1 : csl_m;
       int n = (csl_m == 0 && csl_n == 0) ? 0 : csl_n;
@@ -633,10 +644,19 @@ void example_1_conti_zanzotto_loading(
                 << rotation_angle << "°: " << pts.size() << " points ("
                 << dims.size_x << " x " << dims.size_y << ")\n";
     }
+    for (auto& pt : square_points) {
+      pt.grain_id = 0;
+      pt.grain_theta_deg = theta_rot;
+    }
+    square_points_ref = square_points;
     // Note: Reference element is always kept unrotated square (p1=(0,0), p2=(h,0), p3=(0,h))
   } else {
     square_points = LatticeGenerator::generate_2d_lattice(
         nx, ny, lattice_constant, lattice_type);
+    for (auto& pt : square_points) {
+      pt.grain_id = 0;
+      pt.grain_theta_deg = 0.0;
+    }
     square_points_ref = square_points;
     DomainInfo domain_size = compute_domain_size(square_points);
     domain_dims = DomainDimensions(domain_size.get_width(),

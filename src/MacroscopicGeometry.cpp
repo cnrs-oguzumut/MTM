@@ -313,6 +313,8 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
         if (kind_str == "fixed" || kind_str == "fixedClamped") r.kind = BoundaryConditionKind::FixedClamped;
         else if (kind_str == "prescribed" || kind_str == "prescribedDisplacement" || kind_str == "driven") r.kind = BoundaryConditionKind::PrescribedDisplacement;
         else if (kind_str == "affine" || kind_str == "affineDeformation") r.kind = BoundaryConditionKind::AffineDeformation;
+        else if (kind_str == "roller_x" || kind_str == "rollerX") r.kind = BoundaryConditionKind::RollerX;
+        else if (kind_str == "roller_y" || kind_str == "rollerY") r.kind = BoundaryConditionKind::RollerY;
         else r.kind = BoundaryConditionKind::FreeSurface;
 
         r.thickness_a0 = extractDouble(item_json, "thickness_a0", 2.0);
@@ -322,6 +324,15 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
         r.box_y_max = extractDouble(item_json, "box_y_max", 0.1);
         r.ux = extractDouble(item_json, "ux", 0.0);
         r.uy = extractDouble(item_json, "uy", 0.0);
+        r.lock_x = extractBool(item_json, "lock_x", true);
+        r.lock_y = extractBool(item_json, "lock_y", true);
+        if (r.kind == BoundaryConditionKind::RollerX) {
+            r.lock_x = false;
+            r.lock_y = true;
+        } else if (r.kind == BoundaryConditionKind::RollerY) {
+            r.lock_x = true;
+            r.lock_y = false;
+        }
         r.affine_mode = extractString(item_json, "affine_mode", "simple_shear_x");
         out_config.boundary_rules.push_back(r);
     }
@@ -355,12 +366,404 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
         out_config.indenter.wedge_half_angle_deg = extractDouble(indenter_raw, "wedge_half_angle_deg", 70.3);
     }
 
+    // Parse microstructure object if present
+    std::string micro_raw = extractRawValue(json, "microstructure");
+    if (!micro_raw.empty()) {
+        std::string mode_str = extractString(micro_raw, "mode", "single_crystal");
+        if (mode_str == "bicrystal" || mode_str == "Bicrystal") {
+            out_config.microstructure.mode = MicrostructureMode::Bicrystal;
+        } else if (mode_str == "voronoi" || mode_str == "voronoi_polycrystal" || mode_str == "VoronoiPolycrystal") {
+            out_config.microstructure.mode = MicrostructureMode::VoronoiPolycrystal;
+        } else {
+            out_config.microstructure.mode = MicrostructureMode::SingleCrystal;
+        }
+
+        std::string seam_str = extractString(micro_raw, "seam_resolution", "merge_midpoint");
+        if (seam_str == "delete_second" || seam_str == "deleteSecond") {
+            out_config.microstructure.seam_resolution = SeamOverlapResolution::DeleteSecond;
+        } else {
+            out_config.microstructure.seam_resolution = SeamOverlapResolution::MergeMidpoint;
+        }
+
+        out_config.microstructure.min_seam_distance_a0 = extractDouble(micro_raw, "min_seam_distance_a0", 0.55);
+        out_config.microstructure.max_gb_edge_a0 = std::clamp(extractDouble(micro_raw, "max_gb_edge_a0", 2.60), 1.40, 5.00);
+        out_config.microstructure.pre_relax_gb = extractBool(micro_raw, "pre_relax_gb", true);
+        out_config.microstructure.gb_cx = extractDouble(micro_raw, "gb_cx", 0.50);
+        out_config.microstructure.gb_cy = extractDouble(micro_raw, "gb_cy", 0.50);
+        out_config.microstructure.gb_angle_deg = extractDouble(micro_raw, "gb_angle_deg", 0.0);
+        out_config.microstructure.theta1_deg = extractDouble(micro_raw, "theta1_deg", -15.0);
+        out_config.microstructure.theta2_deg = extractDouble(micro_raw, "theta2_deg", +15.0);
+        out_config.microstructure.gb_normal_gap_a0 = std::clamp(extractDouble(micro_raw, "gb_normal_gap_a0", 0.0), -0.50, 1.50);
+        out_config.microstructure.gb_tangential_shift_a0 = std::clamp(extractDouble(micro_raw, "gb_tangential_shift_a0", 0.0), -1.00, 1.00);
+
+        out_config.microstructure.num_grains = static_cast<int>(extractDouble(micro_raw, "num_grains", 6.0));
+        out_config.microstructure.random_seed = static_cast<int>(extractDouble(micro_raw, "random_seed", 42.0));
+        out_config.microstructure.theta_min_deg = extractDouble(micro_raw, "theta_min_deg", -30.0);
+        out_config.microstructure.theta_max_deg = extractDouble(micro_raw, "theta_max_deg", +30.0);
+
+        out_config.microstructure.seeds.clear();
+        std::string seeds_raw = extractRawValue(micro_raw, "seeds");
+        int seed_idx = 0;
+        for (const auto& s_json : splitJSONObjectArray(seeds_raw)) {
+            VoronoiGrainSeed s;
+            s.id = static_cast<int>(extractDouble(s_json, "id", seed_idx));
+            s.cx = extractDouble(s_json, "cx", 0.5);
+            s.cy = extractDouble(s_json, "cy", 0.5);
+            s.theta_deg = extractDouble(s_json, "theta_deg", 0.0);
+            out_config.microstructure.seeds.push_back(s);
+            ++seed_idx;
+        }
+    }
+
+    std::string micro_label = "SINGLE";
+    if (out_config.microstructure.mode == MicrostructureMode::Bicrystal) micro_label = "BICRYSTAL";
+    else if (out_config.microstructure.mode == MicrostructureMode::VoronoiPolycrystal) micro_label = "VORONOI";
+
     std::cout << "[MacroscopicGeometry] Loaded '" << out_config.preset_name << "' from " << filepath
               << " (" << out_config.cutouts.size() << " cutouts, "
-              << out_config.boundary_rules.size() << " boundary rules, indenter: "
+              << out_config.boundary_rules.size() << " boundary rules, microstructure: " << micro_label
+              << ", indenter: "
               << (out_config.indenter.enabled ? (out_config.indenter.contact_mode == IndenterContactMode::RepulsivePenalty ? "PENALTY" : "KINEMATIC") : "OFF")
               << ")\n";
     return true;
+}
+
+std::pair<std::vector<Point2D>, DomainDimensions>
+MacroscopicGeometryConfig::generateMicrostructureLattice(
+    const std::string& lattice_type,
+    int nx, int ny,
+    double lattice_a0,
+    double fallback_theta_deg) {
+
+    const double a = (lattice_a0 > 0.0) ? lattice_a0 : 1.0;
+    const double sqrt3 = std::sqrt(3.0);
+    const double size_x = nx * a;
+    const double size_y = (lattice_type == "triangular") ? (ny * a * sqrt3 * 0.5) : (ny * a);
+    const double d_lat = (lattice_type == "triangular") ? (a * sqrt3 * 0.5) : a;
+    const double r_box = std::hypot(size_x, size_y);
+    const int n_span = static_cast<int>(std::ceil(r_box / d_lat)) + 4;
+    const double tol = 1e-5;
+
+    std::vector<Point2D> raw_points;
+
+    auto appendGrainPoints = [&](int gid, double theta_deg, double origin_x, double origin_y,
+                                 const std::function<bool(double, double)>& region_pred) {
+        const double theta_rad = theta_deg * M_PI / 180.0;
+        const double cos_th = std::cos(theta_rad);
+        const double sin_th = std::sin(theta_rad);
+
+        const double a1_x = a * cos_th;
+        const double a1_y = a * sin_th;
+        const double a2_x = (lattice_type == "triangular") ? a * (0.5 * cos_th - 0.5 * sqrt3 * sin_th) : (-a * sin_th);
+        const double a2_y = (lattice_type == "triangular") ? a * (0.5 * sin_th + 0.5 * sqrt3 * cos_th) : (a * cos_th);
+
+        for (int i = -n_span; i <= n_span; ++i) {
+            for (int j = -n_span; j <= n_span; ++j) {
+                double rx = origin_x + i * a1_x + j * a2_x;
+                double ry = origin_y + i * a1_y + j * a2_y;
+                if (rx >= -tol && rx <= size_x + tol && ry >= -tol && ry <= size_y + tol) {
+                    if (region_pred(rx, ry)) {
+                        raw_points.emplace_back(rx, ry, gid, theta_deg);
+                    }
+                }
+            }
+        }
+    };
+
+    if (microstructure.mode == MicrostructureMode::Bicrystal) {
+        const double p_gb_x = std::clamp(microstructure.gb_cx, 0.0, 1.0) * size_x;
+        const double p_gb_y = std::clamp(microstructure.gb_cy, 0.0, 1.0) * size_y;
+        const double phi_rad = microstructure.gb_angle_deg * M_PI / 180.0;
+        // Normal vector to the GB plane: phi = 0 deg -> vertical boundary (normal = +x),
+        // phi = 90 deg -> horizontal boundary (normal = +y)
+        const double nx_gb = std::cos(phi_rad);
+        const double ny_gb = std::sin(phi_rad);
+
+        // Snap near-CSL angles (within 0.02 deg of exact atan(n/m) relative to the GB plane)
+        // so that UI-rounded values like ±18.43° or ±18.435° produce exact CSL periodicity
+        // along the entire boundary without drift between the lower and upper halves.
+        auto snapNearCSLAngle = [&](double theta_in_deg) -> double {
+            if (lattice_type != "square") return theta_in_deg;
+            const double rel_deg = theta_in_deg - microstructure.gb_angle_deg;
+            struct CSLCandidate { int m; int n; };
+            static const CSLCandidate csl_list[] = {
+                {3, 1}, {2, 1}, {3, 2}, {5, 1}, {4, 1}, {5, 2}, {5, 3}, {4, 3}
+            };
+            for (const auto& c : csl_list) {
+                const double exact_abs = std::atan2(static_cast<double>(c.n), static_cast<double>(c.m)) * 180.0 / M_PI;
+                for (double sgn : {-1.0, 1.0}) {
+                    const double target_rel = sgn * exact_abs;
+                    if (std::abs(rel_deg - target_rel) < 0.02) {
+                        return microstructure.gb_angle_deg + target_rel;
+                    }
+                }
+            }
+            return theta_in_deg;
+        };
+
+        const double th1_exact = snapNearCSLAngle(microstructure.theta1_deg);
+        const double th2_exact = snapNearCSLAngle(microstructure.theta2_deg);
+
+        // Include a small coincidence capture band (±0.02 * a) on the GB plane for both grains
+        // so coincidence lattice sites on the boundary are never dropped due to floating-point drift,
+        // and are then merged symmetrically onto the GB plane by the seam filter.
+        const double gb_coincidence_band = 0.02 * a;
+        const double tx_gb = -ny_gb;
+        const double ty_gb = nx_gb;
+        const double delta_par = microstructure.gb_tangential_shift_a0 * a;
+
+        // Grain 0: left/lower half-space (dist <= +gb_coincidence_band)
+        appendGrainPoints(0, th1_exact,
+                          p_gb_x - 0.5 * delta_par * tx_gb,
+                          p_gb_y - 0.5 * delta_par * ty_gb,
+                          [&](double x, double y) {
+                              double dist = (x - p_gb_x) * nx_gb + (y - p_gb_y) * ny_gb;
+                              return dist <= gb_coincidence_band;
+                          });
+
+        // Grain 1: right/upper half-space (dist >= -gb_coincidence_band)
+        appendGrainPoints(1, th2_exact,
+                          p_gb_x + 0.5 * delta_par * tx_gb,
+                          p_gb_y + 0.5 * delta_par * ty_gb,
+                          [&](double x, double y) {
+                              double dist = (x - p_gb_x) * nx_gb + (y - p_gb_y) * ny_gb;
+                              return dist >= -gb_coincidence_band;
+                          });
+
+        std::cout << "[Microstructure] Generated Bicrystal: GB center=(" << microstructure.gb_cx << ", "
+                  << microstructure.gb_cy << "), phi_GB=" << microstructure.gb_angle_deg
+                  << "°, theta_1=" << th1_exact << "°, theta_2=" << th2_exact
+                  << "°, gap_perp=" << microstructure.gb_normal_gap_a0
+                  << " a0, shift_par=" << microstructure.gb_tangential_shift_a0
+                  << " a0 (raw points before seam filter: " << raw_points.size() << ")\n";
+
+    } else if (microstructure.mode == MicrostructureMode::VoronoiPolycrystal) {
+        std::vector<VoronoiGrainSeed> seeds = microstructure.seeds;
+        if (seeds.empty()) {
+            int ng = std::clamp(microstructure.num_grains, 2, 64);
+            std::mt19937 rng(static_cast<unsigned int>(microstructure.random_seed));
+            std::uniform_real_distribution<double> u01(0.12, 0.88);
+            std::uniform_real_distribution<double> utheta(
+                std::min(microstructure.theta_min_deg, microstructure.theta_max_deg),
+                std::max(microstructure.theta_min_deg, microstructure.theta_max_deg));
+
+            // Stratified / Poisson-disc-like placement so Voronoi grains are well-spaced
+            int cols = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(ng)))));
+            int rows = std::max(1, static_cast<int>(std::ceil(static_cast<double>(ng) / cols)));
+            for (int k = 0; k < ng; ++k) {
+                int r = k / cols;
+                int c = k % cols;
+                std::uniform_real_distribution<double> jx(0.20, 0.80);
+                std::uniform_real_distribution<double> jy(0.20, 0.80);
+                VoronoiGrainSeed s;
+                s.id = k;
+                s.cx = std::clamp((c + jx(rng)) / cols, 0.06, 0.94);
+                s.cy = std::clamp((r + jy(rng)) / rows, 0.06, 0.94);
+                s.theta_deg = utheta(rng);
+                seeds.push_back(s);
+            }
+            microstructure.seeds = seeds;
+        }
+
+        const int ng = static_cast<int>(seeds.size());
+        std::vector<Eigen::Vector2d> seed_phys(ng);
+        for (int k = 0; k < ng; ++k) {
+            seed_phys[k] = Eigen::Vector2d(seeds[k].cx * size_x, seeds[k].cy * size_y);
+        }
+
+        for (int k = 0; k < ng; ++k) {
+            appendGrainPoints(k, seeds[k].theta_deg, seed_phys[k].x(), seed_phys[k].y(),
+                              [&](double x, double y) {
+                                  Eigen::Vector2d p(x, y);
+                                  double d_k = (p - seed_phys[k]).squaredNorm();
+                                  for (int j = 0; j < ng; ++j) {
+                                      if (j == k) continue;
+                                      double d_j = (p - seed_phys[j]).squaredNorm();
+                                      if (d_j < d_k - 1e-10) return false;
+                                      if (std::abs(d_j - d_k) <= 1e-10 && j < k) return false;
+                                  }
+                                  return true;
+                              });
+        }
+
+        std::cout << "[Microstructure] Generated 2D Voronoi Polycrystal with " << ng
+                  << " grains (raw points before seam filter: " << raw_points.size() << ")\n";
+    } else {
+        // Fallback SingleCrystal
+        appendGrainPoints(0, fallback_theta_deg, 0.5 * size_x, 0.5 * size_y,
+                          [](double, double) { return true; });
+        return {raw_points, DomainDimensions(size_x, size_y)};
+    }
+
+    // ==================== SEAM OVERLAP FILTER (r_ij < d_min * a0) ====================
+    // Multi-pass, distance-sorted overlap resolution for Bicrystals and 2D Voronoi Polycrystals
+    // (guarantees zero overlapping nodes at grain boundaries and triple junctions).
+    const double d_min = std::clamp(microstructure.min_seam_distance_a0, 0.15, 0.98) * a;
+    const double d_min_sq = d_min * d_min;
+    const double d_same_safe = std::min(d_min, 0.68 * a);
+    const double d_same_safe_sq = d_same_safe * d_same_safe;
+    const size_t N = raw_points.size();
+    std::vector<bool> removed(N, false);
+    std::vector<bool> is_merged_seam(N, false);
+    int merged_or_removed_count = 0;
+
+    // Spatial hash grid with cell size d_min
+    const double cell_h = std::max(1e-4, d_min);
+    const double inv_cell = 1.0 / cell_h;
+    const int grid_nx = std::max(1, static_cast<int>(std::ceil(size_x * inv_cell)) + 4);
+    const int grid_ny = std::max(1, static_cast<int>(std::ceil(size_y * inv_cell)) + 4);
+    std::vector<std::vector<size_t>> buckets(static_cast<size_t>(grid_nx * grid_ny));
+
+    auto cellIndex = [&](double x, double y) -> std::pair<int, int> {
+        int ix = std::clamp(static_cast<int>(std::floor(x * inv_cell)) + 1, 0, grid_nx - 1);
+        int iy = std::clamp(static_cast<int>(std::floor(y * inv_cell)) + 1, 0, grid_ny - 1);
+        return {ix, iy};
+    };
+
+    auto rebuildBuckets = [&]() {
+        for (auto& b : buckets) b.clear();
+        for (size_t i = 0; i < N; ++i) {
+            if (removed[i]) continue;
+            auto [ix, iy] = cellIndex(raw_points[i].coord.x(), raw_points[i].coord.y());
+            buckets[static_cast<size_t>(iy * grid_nx + ix)].push_back(i);
+        }
+    };
+
+    rebuildBuckets();
+
+    // Collect all cross-grain candidate pairs within d_min and sort by distance (closest first)
+    struct OverlapPair {
+        size_t i;
+        size_t j;
+        double d2;
+    };
+    std::vector<OverlapPair> candidate_pairs;
+    for (size_t i = 0; i < N; ++i) {
+        auto [ix, iy] = cellIndex(raw_points[i].coord.x(), raw_points[i].coord.y());
+        for (int dy = -1; dy <= 1; ++dy) {
+            int ny_c = iy + dy;
+            if (ny_c < 0 || ny_c >= grid_ny) continue;
+            for (int dx = -1; dx <= 1; ++dx) {
+                int nx_c = ix + dx;
+                if (nx_c < 0 || nx_c >= grid_nx) continue;
+                const auto& bucket = buckets[static_cast<size_t>(ny_c * grid_nx + nx_c)];
+                for (size_t j : bucket) {
+                    if (j <= i) continue;
+                    if (raw_points[i].grain_id == raw_points[j].grain_id) continue;
+                    double d2 = (raw_points[i].coord - raw_points[j].coord).squaredNorm();
+                    if (d2 < d_min_sq) {
+                        candidate_pairs.push_back({i, j, d2});
+                    }
+                }
+            }
+        }
+    }
+    std::sort(candidate_pairs.begin(), candidate_pairs.end(),
+              [](const OverlapPair& a, const OverlapPair& b) { return a.d2 < b.d2; });
+
+    auto isPositionCrowded = [&](const Eigen::Vector2d& pos, size_t ignore_a, size_t ignore_b, int keep_gid) -> bool {
+        auto [ix, iy] = cellIndex(pos.x(), pos.y());
+        for (int dy = -1; dy <= 1; ++dy) {
+            int ny_c = iy + dy;
+            if (ny_c < 0 || ny_c >= grid_ny) continue;
+            for (int dx = -1; dx <= 1; ++dx) {
+                int nx_c = ix + dx;
+                if (nx_c < 0 || nx_c >= grid_nx) continue;
+                for (size_t k : buckets[static_cast<size_t>(ny_c * grid_nx + nx_c)]) {
+                    if (removed[k] || k == ignore_a || k == ignore_b) continue;
+                    double d2 = (raw_points[k].coord - pos).squaredNorm();
+                    double tol2 = (raw_points[k].grain_id == keep_gid || is_merged_seam[k]) ? d_same_safe_sq : d_min_sq;
+                    if (d2 < tol2) return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    // Pass 1: Resolve sorted cross-grain overlaps (closest pairs first)
+    for (const auto& pair : candidate_pairs) {
+        size_t i = pair.i;
+        size_t j = pair.j;
+        if (removed[i] || removed[j]) continue;
+        double cur_d2 = (raw_points[i].coord - raw_points[j].coord).squaredNorm();
+        if (cur_d2 >= d_min_sq) continue;
+
+        if (microstructure.seam_resolution == SeamOverlapResolution::MergeMidpoint) {
+            Eigen::Vector2d mid = 0.5 * (raw_points[i].coord + raw_points[j].coord);
+            // Only shift i to midpoint if it doesn't crowd another existing node;
+            // otherwise keep i at its lattice position and delete j.
+            if (!isPositionCrowded(mid, i, j, raw_points[i].grain_id)) {
+                raw_points[i].coord = mid;
+                is_merged_seam[i] = true;
+                auto [nix, niy] = cellIndex(mid.x(), mid.y());
+                buckets[static_cast<size_t>(niy * grid_nx + nix)].push_back(i);
+            }
+        }
+        removed[j] = true;
+        ++merged_or_removed_count;
+    }
+
+    // Pass 2: Exhaustive cleanup sweep (guarantees zero remaining cross-grain or triple-junction overlaps)
+    for (int pass = 0; pass < 3; ++pass) {
+        rebuildBuckets();
+        int pass_removed = 0;
+        for (size_t i = 0; i < N; ++i) {
+            if (removed[i]) continue;
+            auto [ix, iy] = cellIndex(raw_points[i].coord.x(), raw_points[i].coord.y());
+            for (int dy = -1; dy <= 1; ++dy) {
+                int ny_c = iy + dy;
+                if (ny_c < 0 || ny_c >= grid_ny) continue;
+                for (int dx = -1; dx <= 1; ++dx) {
+                    int nx_c = ix + dx;
+                    if (nx_c < 0 || nx_c >= grid_nx) continue;
+                    for (size_t j : buckets[static_cast<size_t>(ny_c * grid_nx + nx_c)]) {
+                        if (j <= i || removed[j]) continue;
+                        double d2 = (raw_points[i].coord - raw_points[j].coord).squaredNorm();
+                        double cutoff2 = (raw_points[i].grain_id != raw_points[j].grain_id && !is_merged_seam[i] && !is_merged_seam[j])
+                                         ? d_min_sq
+                                         : d_same_safe_sq;
+                        if (d2 < cutoff2) {
+                            removed[j] = true;
+                            ++merged_or_removed_count;
+                            ++pass_removed;
+                        }
+                    }
+                }
+            }
+        }
+        if (pass_removed == 0) break;
+    }
+
+    const double phi_gb_rad = microstructure.gb_angle_deg * M_PI / 180.0;
+    const double nx_gb_sep = std::cos(phi_gb_rad);
+    const double ny_gb_sep = std::sin(phi_gb_rad);
+    const double delta_perp = (microstructure.mode == MicrostructureMode::Bicrystal)
+        ? (microstructure.gb_normal_gap_a0 * a)
+        : 0.0;
+
+    std::vector<Point2D> filtered_points;
+    filtered_points.reserve(N - static_cast<size_t>(merged_or_removed_count));
+    for (size_t i = 0; i < N; ++i) {
+        if (!removed[i]) {
+            Point2D pt = raw_points[i];
+            if (std::abs(delta_perp) > 1e-12 && !is_merged_seam[i]) {
+                double sgn = (pt.grain_id == 0) ? -0.5 : +0.5;
+                pt.coord.x() += sgn * delta_perp * nx_gb_sep;
+                pt.coord.y() += sgn * delta_perp * ny_gb_sep;
+            }
+            filtered_points.push_back(pt);
+        }
+    }
+
+    std::cout << "[Microstructure] Seam filter (d_min = " << microstructure.min_seam_distance_a0
+              << " a0, mode = "
+              << (microstructure.seam_resolution == SeamOverlapResolution::MergeMidpoint ? "MERGE_MIDPOINT" : "DELETE_SECOND")
+              << ", gap_perp = " << microstructure.gb_normal_gap_a0
+              << " a0): resolved " << merged_or_removed_count << " overlapping seam nodes -> "
+              << filtered_points.size() << " atoms retained.\n";
+
+    return {filtered_points, DomainDimensions(size_x + std::abs(delta_perp * nx_gb_sep),
+                                              size_y + std::abs(delta_perp * ny_gb_sep))};
 }
 
 void MacroscopicGeometryConfig::setupIndenterBounds(double lattice_a0,
@@ -636,14 +1039,38 @@ void MacroscopicGeometryConfig::rebuildBoundaryDOFs(
     const size_t n_pts = node_bc_role.size();
     interior_mapping.clear();
     full_mapping.clear();
+    cached_node_bc_role = node_bc_role;
+    has_partial_dof_constraints = false;
     int next_solver_idx = 0;
     for (size_t i = 0; i < n_pts; ++i) {
-        if (node_bc_role[i] == 0) {
+        int role = node_bc_role[i];
+        if (role == 0 || role == 3 || role == 4) {
             interior_mapping.emplace_back(static_cast<int>(i), next_solver_idx);
             full_mapping.emplace_back(static_cast<int>(i), next_solver_idx);
             ++next_solver_idx;
+            if (role == 3 || role == 4) {
+                has_partial_dof_constraints = true;
+            }
         } else {
             full_mapping.emplace_back(static_cast<int>(i), -1);
+        }
+    }
+}
+
+void MacroscopicGeometryConfig::zeroConstrainedComponentGradients(
+    const std::vector<std::pair<int, int>>& interior_mapping,
+    alglib::real_1d_array& grad) const {
+    if (!has_partial_dof_constraints || cached_node_bc_role.empty()) return;
+    const int n_vars = static_cast<int>(interior_mapping.size());
+    const int n_roles = static_cast<int>(cached_node_bc_role.size());
+    for (int i = 0; i < n_vars; ++i) {
+        const auto& [point_idx, dof_idx] = interior_mapping[i];
+        if (point_idx < 0 || point_idx >= n_roles || dof_idx < 0 || dof_idx >= n_vars) continue;
+        const int role = cached_node_bc_role[point_idx];
+        if (role == 3) {
+            grad[dof_idx] = 0.0; // X-DOF constrained, Y-DOF free
+        } else if (role == 4) {
+            grad[n_vars + dof_idx] = 0.0; // Y-DOF constrained, X-DOF free
         }
     }
 }
@@ -1025,12 +1452,19 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
     }
     const Eigen::Vector2d center(x_min + 0.5 * Lx, y_min + 0.5 * Ly);
 
-    // Evaluate boundary rules for each node
+    // Evaluate boundary rules for each node, accumulating independent X/Y locks so
+    // intersecting roller edges (e.g. RollerY on Left + RollerX on Bottom) compose at corners.
     for (size_t i = 0; i < n_pts; ++i) {
         const double x = carved_points[i].coord.x();
         const double y = carved_points[i].coord.y();
         const double x_hat = (x - x_min) / Lx;
         const double y_hat = (y - y_min) / Ly;
+
+        bool locked_x = false;
+        bool locked_y = false;
+        bool driven_x = false;
+        bool driven_y = false;
+        Eigen::Vector2d vel = Eigen::Vector2d::Zero();
 
         for (const auto& rule : boundary_rules) {
             if (!rule.enabled) continue;
@@ -1091,62 +1525,111 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
 
             if (rule.kind == BoundaryConditionKind::FreeSurface) {
                 // FreeSurface (Neumann natural BC) marks a traction-free boundary.
-                // It MUST NEVER overwrite an already-constrained Dirichlet condition (Fixed, Prescribed, or Affine)!
-                if (node_bc_role[i] == 0) {
-                    node_bc_role[i] = 0;
-                    node_bc_velocity[i].setZero();
-                }
+                // It MUST NEVER overwrite an already-constrained Dirichlet condition!
+            } else if (rule.kind == BoundaryConditionKind::RollerX) {
+                // Roller X: Free ux, Fix uy = 0
+                locked_y = true;
+                driven_y = false;
+                vel.y() = 0.0;
+            } else if (rule.kind == BoundaryConditionKind::RollerY) {
+                // Roller Y: Fix ux = 0, Free uy
+                locked_x = true;
+                driven_x = false;
+                vel.x() = 0.0;
             } else if (rule.kind == BoundaryConditionKind::FixedClamped) {
-                node_bc_role[i] = 1;
-                node_bc_velocity[i].setZero();
+                if (rule.lock_x) {
+                    locked_x = true;
+                    driven_x = false;
+                    vel.x() = 0.0;
+                }
+                if (rule.lock_y) {
+                    locked_y = true;
+                    driven_y = false;
+                    vel.y() = 0.0;
+                }
             } else if (rule.kind == BoundaryConditionKind::PrescribedDisplacement) {
-                node_bc_role[i] = 2;
                 // ux, uy are normalized by Ly so alpha = 0.01 means 1% engineering strain
-                node_bc_velocity[i] = Eigen::Vector2d(rule.ux * Ly, rule.uy * Ly);
+                if (rule.lock_x) {
+                    locked_x = true;
+                    driven_x = true;
+                    vel.x() = rule.ux * Ly;
+                }
+                if (rule.lock_y) {
+                    locked_y = true;
+                    driven_y = true;
+                    vel.y() = rule.uy * Ly;
+                }
             } else if (rule.kind == BoundaryConditionKind::AffineDeformation) {
-                node_bc_role[i] = 2;
+                locked_x = true;
+                locked_y = true;
+                driven_x = true;
+                driven_y = true;
                 Eigen::Vector2d rel(x - x_min, y - y_min);
                 if (rule.affine_mode == "simple_shear_y") {
-                    node_bc_velocity[i] = Eigen::Vector2d(0.0, rel.x());
+                    vel = Eigen::Vector2d(0.0, rel.x());
                 } else if (rule.affine_mode == "uniaxial_y") {
-                    node_bc_velocity[i] = Eigen::Vector2d(0.0, rel.y());
+                    vel = Eigen::Vector2d(0.0, rel.y());
                 } else if (rule.affine_mode == "uniaxial_x") {
-                    node_bc_velocity[i] = Eigen::Vector2d(rel.x(), 0.0);
+                    vel = Eigen::Vector2d(rel.x(), 0.0);
                 } else if (rule.affine_mode == "pure_shear") {
-                    node_bc_velocity[i] = Eigen::Vector2d(rel.x(), -rel.y());
+                    vel = Eigen::Vector2d(rel.x(), -rel.y());
                 } else if (rule.affine_mode == "biaxial") {
-                    node_bc_velocity[i] = Eigen::Vector2d(rel.x(), rel.y());
+                    vel = Eigen::Vector2d(rel.x(), rel.y());
                 } else {
                     // default: simple_shear_x -> u_x = alpha * (y - y_min)
-                    node_bc_velocity[i] = Eigen::Vector2d(rel.y(), 0.0);
+                    vel = Eigen::Vector2d(rel.y(), 0.0);
                 }
             }
         }
+
+        node_bc_velocity[i] = vel;
+        if (locked_x && locked_y) {
+            node_bc_role[i] = (driven_x || driven_y) ? 2 : 1;
+        } else if (locked_x && !locked_y) {
+            node_bc_role[i] = 3; // X-Constrained, Y-Free (Roller Y or partial X lock)
+        } else if (!locked_x && locked_y) {
+            node_bc_role[i] = 4; // Y-Constrained, X-Free (Roller X or partial Y lock)
+        } else {
+            node_bc_role[i] = 0; // Free in both X and Y
+        }
     }
 
-    // Build interior_mapping and full_mapping
+    // Build interior_mapping and full_mapping (nodes with at least 1 free DOF are included)
+    cached_node_bc_role = node_bc_role;
+    has_partial_dof_constraints = false;
     interior_mapping.reserve(n_pts);
     full_mapping.reserve(n_pts);
     int solver_idx = 0;
-    int count_free = 0, count_fixed = 0, count_driven = 0;
+    int count_free = 0, count_fixed = 0, count_driven = 0, count_roller_x = 0, count_roller_y = 0;
 
     for (size_t i = 0; i < n_pts; ++i) {
-        if (node_bc_role[i] == 0) {
+        int role = node_bc_role[i];
+        if (role == 0 || role == 3 || role == 4) {
             interior_mapping.emplace_back(static_cast<int>(i), solver_idx);
             full_mapping.emplace_back(static_cast<int>(i), solver_idx);
             ++solver_idx;
-            ++count_free;
+            if (role == 0) {
+                ++count_free;
+            } else if (role == 3) {
+                ++count_roller_y;
+                has_partial_dof_constraints = true;
+            } else if (role == 4) {
+                ++count_roller_x;
+                has_partial_dof_constraints = true;
+            }
         } else {
             full_mapping.emplace_back(static_cast<int>(i), -1);
-            if (node_bc_role[i] == 1) ++count_fixed;
+            if (role == 1) ++count_fixed;
             else ++count_driven;
         }
     }
 
     std::cout << "[MacroscopicGeometry] Boundary DOFs classified: "
-              << count_free << " Free (interior + traction-free surfaces), "
-              << count_fixed << " Fixed (clamped), "
-              << count_driven << " Driven (prescribed BC)\n";
+              << count_free << " Free, "
+              << count_fixed << " Fixed (ux=0, uy=0), "
+              << count_driven << " Driven (ux, uy), "
+              << count_roller_x << " Roller-X (Free ux, Constrained uy), "
+              << count_roller_y << " Roller-Y (Constrained ux, Free uy)\n";
 }
 
 Eigen::Matrix2d MacroscopicGeometryConfig::computeMacroscopicF(double alpha) const {
@@ -1230,6 +1713,24 @@ void MacroscopicGeometryConfig::applyLoadStep(
         } else if (node_bc_role[j] == 2) {
             // Driven / Prescribed node: exact boundary trajectory X_0 + alpha * v_j
             current_points[j].coord = points_ref[j].coord + alpha * node_bc_velocity[j];
+        } else if (node_bc_role[j] == 3) {
+            // Roller-Y / X-Constrained, Y-Free: lock x(alpha) = X_0.x + alpha * vx, free predictor on y
+            Eigen::Vector2d rel = points_ref[j].coord - origin;
+            current_points[j].coord.x() = points_ref[j].coord.x() + alpha * node_bc_velocity[j].x();
+            if (is_first_step) {
+                current_points[j].coord.y() = (origin + F_macro_alpha * rel + noise_vec).y();
+            } else {
+                current_points[j].coord.y() += (dF_macro * rel).y();
+            }
+        } else if (node_bc_role[j] == 4) {
+            // Roller-X / Y-Constrained, X-Free: lock y(alpha) = X_0.y + alpha * vy, free predictor on x
+            Eigen::Vector2d rel = points_ref[j].coord - origin;
+            current_points[j].coord.y() = points_ref[j].coord.y() + alpha * node_bc_velocity[j].y();
+            if (is_first_step) {
+                current_points[j].coord.x() = (origin + F_macro_alpha * rel + noise_vec).x();
+            } else {
+                current_points[j].coord.x() += (dF_macro * rel).x();
+            }
         } else {
             // Free node (interior or traction-free hole/outer surface):
             // Warm-start predictor using smooth macroscopic increment

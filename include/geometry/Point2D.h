@@ -12,9 +12,12 @@ typedef Kernel::Point_2 CGALPoint;
 class Point2D {
 public:
     Eigen::Vector2d coord;
+    int grain_id = 0;
+    double grain_theta_deg = 0.0;
     
-    Point2D() : coord(0.0, 0.0) {}
-    Point2D(double x, double y) : coord(x, y) {}
+    Point2D() : coord(0.0, 0.0), grain_id(0), grain_theta_deg(0.0) {}
+    Point2D(double x, double y, int gid = 0, double gtheta = 0.0)
+        : coord(x, y), grain_id(gid), grain_theta_deg(gtheta) {}
     
     // Convenience accessors
     double x() const { return coord.x(); }

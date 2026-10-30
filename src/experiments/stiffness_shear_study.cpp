@@ -88,6 +88,7 @@ static void exportInitialMeshJSON(
             is_bnd = (full_mapping[i].second == -1);
         }
         int role = (i < static_cast<int>(node_bc_role.size())) ? node_bc_role[i] : (is_bnd ? 1 : 0);
+        if (role != 0) is_bnd = true;
         double vx = (i < static_cast<int>(node_bc_velocity.size())) ? node_bc_velocity[i].x() : 0.0;
         double vy = (i < static_cast<int>(node_bc_velocity.size())) ? node_bc_velocity[i].y() : 0.0;
         out << "    {\"id\": " << i
@@ -391,7 +392,16 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     int actual_sigma = 1;
     bool is_csl_active = false;
 
-    if (config.use_rotation) {
+    if (has_custom_geom && macro_geom.microstructure.mode != MicrostructureMode::SingleCrystal) {
+        auto [pts, dims] = macro_geom.generateMicrostructureLattice(
+            config.lattice_type, config.nx, study_ny, a_0,
+            config.use_rotation ? config.rotation_angle : 0.0);
+        points_ref = pts;
+        domain_dims = dims;
+        offsets = (config.lattice_type == "square")
+            ? std::array<double, 2>{a_0, a_0}
+            : std::array<double, 2>{a_0 / 2.0, (std::sqrt(3.0) / 2.0) * a_0};
+    } else if (config.use_rotation) {
         if (pbc) {
             is_csl_active = true;
             int m = (config.csl_m == 0 && config.csl_n == 0) ? 1 : config.csl_m;
@@ -587,6 +597,10 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
                           a_0, F_shear, interior_mapping, full_mapping, active_elements, false);
         if (config.potential_mode != 3) {
             userData.second_derivative_function = &pot_sder;
+        }
+        if (has_custom_geom) {
+            userData.macro_geom_ptr = &macro_geom;
+            userData.current_alpha = alpha;
         }
 
         const Eigen::SparseMatrix<double> &K = assembler.assembleStiffness(x_alpha, &userData, false);

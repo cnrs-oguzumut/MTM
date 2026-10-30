@@ -618,6 +618,9 @@ void minimize_energy_with_triangles(
             x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
     }
+    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasPartialDOFConstraints()) {
+        userData->macro_geom_ptr->zeroConstrainedComponentGradients(userData->interior_mapping, grad);
+    }
 }
 
 
@@ -821,6 +824,9 @@ void minimize_energy_with_triangles_noreduction(
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(
             x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
+    }
+    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasPartialDOFConstraints()) {
+        userData->macro_geom_ptr->zeroConstrainedComponentGradients(userData->interior_mapping, grad);
     }
 
 
