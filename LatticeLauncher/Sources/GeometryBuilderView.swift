@@ -13,6 +13,7 @@ public struct GeometryBuilderView: View {
     @State private var activeDragMode: DragHandleMode = .none
     @State private var dragStartCutout: GeometryCutoutItem? = nil
     @State private var inspectorSection: InspectorSection = .microstructure
+    @State private var autoUpdateGBSeamParams: Bool = true
     
     private enum InspectorSection: String, CaseIterable, Identifiable {
         case microstructure = "Microstructure & GB"
@@ -968,56 +969,48 @@ public struct GeometryBuilderView: View {
                 }
                 
                 if config.geometryConfig.microstructure.mode == .bicrystal {
+                    let phiGB = config.geometryConfig.microstructure.gb_angle_deg
+                    let phiRad = phiGB * .pi / 180.0
+                    let isMostlyVertical = abs(cos(phiRad)) >= abs(sin(phiRad))
+                    let currentHalfTilt = max(0.5, 0.5 * abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg))
+                    let cslMatch = CSLRationalizer.closestMatch(forHalfAngleDeg: currentHalfTilt, maxIndex: 18)
+                    let isExactCSL = abs(abs(config.geometryConfig.microstructure.theta1_deg - phiGB) - cslMatch.halfAngleDeg) < 0.025 &&
+                                     abs(abs(config.geometryConfig.microstructure.theta2_deg - phiGB) - cslMatch.halfAngleDeg) < 0.025
+
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 4) {
-                            Button("Vertical GB") {
+                            Button("Vertical GB (ϕ=0°)") {
                                 config.geometryConfig.microstructure.gb_cx = 0.50
                                 config.geometryConfig.microstructure.gb_cy = 0.50
-                                config.geometryConfig.microstructure.gb_angle_deg = 0.0
+                                config.geometryConfig.rotateBicrystalOrientation(toAngleDeg: 0.0)
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
                             
-                            Button("Horizontal GB") {
+                            Button("Horizontal GB (ϕ=90°)") {
                                 config.geometryConfig.microstructure.gb_cx = 0.50
                                 config.geometryConfig.microstructure.gb_cy = 0.50
-                                config.geometryConfig.microstructure.gb_angle_deg = 90.0
+                                config.geometryConfig.rotateBicrystalOrientation(toAngleDeg: 90.0)
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
                             
-                            Button("Sym ±15°") {
-                                config.geometryConfig.microstructure.theta1_deg = -15.0
-                                config.geometryConfig.microstructure.theta2_deg = +15.0
+                            Menu("CSL Catalog (4.8°–36.9°)") {
+                                ForEach(CSLRationalizer.curatedCatalog) { item in
+                                    Button(item.shortLabel) {
+                                        applyCSLMatch(item, applyAnalyticGap: autoUpdateGBSeamParams)
+                                    }
+                                }
                             }
-                            .buttonStyle(.bordered)
                             .controlSize(.mini)
                         }
                         
                         HStack(spacing: 4) {
-                            Text("CSL Presets:")
+                            Text("Quick Σ5:")
                                 .font(.system(size: 9.5, weight: .semibold))
                                 .foregroundColor(.secondary)
                             Button("Σ5 (310) ±18.43°") {
-                                let exact = atan2(1.0, 3.0) * 180.0 / .pi
-                                config.geometryConfig.microstructure.gb_cx = 0.50
-                                config.geometryConfig.microstructure.gb_cy = 0.50
-                                config.geometryConfig.microstructure.gb_angle_deg = 0.0
-                                config.geometryConfig.microstructure.theta1_deg = -exact
-                                config.geometryConfig.microstructure.theta2_deg = +exact
-                                config.geometryConfig.microstructure.seam_resolution = .mergeMidpoint
-                                config.geometryConfig.microstructure.min_seam_distance_a0 = 0.68
-                                config.geometryConfig.microstructure.gb_normal_gap_a0 = 0.0
-                                config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
-                                config.geometryConfig.microstructure.max_gb_edge_a0 = 2.60
-                                config.geometryConfig.boundary_rules = [
-                                    BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                    BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                    BoundaryZoneRuleModel(region: .left, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                    BoundaryZoneRuleModel(region: .right, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0)
-                                ]
-                                config.geometryConfig.primary_stress_component = "sigma_xx"
-                                config.noiseLevel = 0.0
+                                applyCSLMatch(CSLRationalizer.makeMatch(m: 3, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
                                 config.nx = 76
                                 config.ny = 76
                             }
@@ -1025,25 +1018,15 @@ public struct GeometryBuilderView: View {
                             .controlSize(.mini)
                             
                             Button("Σ5 (210) ±26.57°") {
-                                let exact = atan2(1.0, 2.0) * 180.0 / .pi
-                                config.geometryConfig.microstructure.gb_cx = 0.50
-                                config.geometryConfig.microstructure.gb_cy = 0.50
-                                config.geometryConfig.microstructure.gb_angle_deg = 0.0
-                                config.geometryConfig.microstructure.theta1_deg = -exact
-                                config.geometryConfig.microstructure.theta2_deg = +exact
-                                config.geometryConfig.microstructure.seam_resolution = .mergeMidpoint
-                                config.geometryConfig.microstructure.min_seam_distance_a0 = 0.50
-                                config.geometryConfig.microstructure.gb_normal_gap_a0 = 0.0
-                                config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
-                                config.geometryConfig.microstructure.max_gb_edge_a0 = 2.60
-                                config.geometryConfig.boundary_rules = [
-                                    BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                    BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                    BoundaryZoneRuleModel(region: .left, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                    BoundaryZoneRuleModel(region: .right, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0)
-                                ]
-                                config.geometryConfig.primary_stress_component = "sigma_xx"
-                                config.noiseLevel = 0.0
+                                applyCSLMatch(CSLRationalizer.makeMatch(m: 2, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
+                                config.nx = 76
+                                config.ny = 76
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+
+                            Button("Σ13 (320) ±33.69°") {
+                                applyCSLMatch(CSLRationalizer.makeMatch(m: 3, n: 2), applyAnalyticGap: autoUpdateGBSeamParams)
                                 config.nx = 76
                                 config.ny = 76
                             }
@@ -1051,54 +1034,84 @@ public struct GeometryBuilderView: View {
                             .controlSize(.mini)
                         }
                         
+                        // General (m, n) CSL Rationalizer Box (gb_code / aimsgb)
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 4) {
+                                Image(systemName: isExactCSL ? "checkmark.seal.fill" : "wand.and.stars")
+                                    .foregroundColor(isExactCSL ? Color(red: 0.45, green: 0.90, blue: 0.62) : Color(red: 0.31, green: 0.85, blue: 0.78))
+                                    .font(.system(size: 10))
+                                Text("CSL Rationalizer (\(cslMatch.m),\(cslMatch.n)): Σ\(cslMatch.sigma) (\(cslMatch.m) \(cslMatch.n) 0)")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(BlueHour.ice)
+                                Spacer()
+                                Text(String(format: "±%.3f° (Δθ=%.2f°)", cslMatch.halfAngleDeg, cslMatch.fullMisoriDeg))
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(Color(red: 1.0, green: 0.82, blue: 0.35))
+                            }
+                            
+                            Text(String(format: "L_CSL = √%d a₀ = %.3f a₀ • d_(%d%d) = %.3f a₀ • d_min = %.2f a₀ • δ_⊥* = %.2f a₀",
+                                        cslMatch.m * cslMatch.m + cslMatch.n * cslMatch.n,
+                                        cslMatch.periodA0,
+                                        cslMatch.m, cslMatch.n,
+                                        cslMatch.layerSpacingA0,
+                                        cslMatch.recommendedDMinA0,
+                                        cslMatch.recommendedGapA0))
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundColor(.secondary)
+                            
+                            HStack(spacing: 4) {
+                                Button(action: {
+                                    applyCSLMatch(cslMatch, applyAnalyticGap: autoUpdateGBSeamParams)
+                                }) {
+                                    Label(isExactCSL ? "Re-Sync (\(cslMatch.m),\(cslMatch.n)) Box & BCs" : "Snap to Exact (\(cslMatch.m),\(cslMatch.n)) CSL + Box & BCs",
+                                          systemImage: "scope")
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(Color(red: 0.24, green: 0.68, blue: 0.64))
+                                .controlSize(.mini)
+                            }
+                            
+                            HStack(spacing: 4) {
+                                Text("Commensurate K·L_CSL:")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(.secondary)
+                                ForEach(cslMatch.suggestedPeriodCounts(around: config.nx), id: \.self) { k in
+                                    let nBox = cslMatch.commensurateSize(periods: k)
+                                    Button("\(nBox)×\(nBox) (\(k)L)") {
+                                        config.nx = nBox
+                                        config.ny = nBox
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.mini)
+                                }
+                                if config.noiseLevel > 0.0 {
+                                    Button("σ=0") {
+                                        config.noiseLevel = 0.0
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.orange)
+                                    .controlSize(.mini)
+                                }
+                            }
+                        }
+                        .padding(6)
+                        .background(BlueHour.slate.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                        
                         Button(action: {
-                            config.geometryConfig.boundary_rules = [
-                                BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .left, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .right, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0)
-                            ]
-                            config.geometryConfig.primary_stress_component = "sigma_xx"
+                            config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: phiGB)
                         }) {
-                            Label("Apply GB Roller BCs (Fix uy = 0, Free ux on All 4 Edges)", systemImage: "arrow.left.and.right.square")
-                                .font(.system(size: 10, weight: .semibold))
+                            Label(isMostlyVertical
+                                  ? "Apply GB Roller BCs (Vertical GB: Roller-X, Fix uy=0, Free ux)"
+                                  : "Apply GB Roller BCs (Horizontal GB: Roller-Y, Fix ux=0, Free uy)",
+                                  systemImage: "arrow.left.and.right.square")
+                                .font(.system(size: 9.5, weight: .semibold))
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
                         .tint(Color(red: 0.98, green: 0.72, blue: 0.24))
                         .controlSize(.mini)
-                        
-                        HStack(spacing: 4) {
-                            Text("CSL-Commensurate N×N:")
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundColor(.secondary)
-                            Button("64×64 (20L)") {
-                                config.nx = 64
-                                config.ny = 64
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                            Button("76×76 (24L)") {
-                                config.nx = 76
-                                config.ny = 76
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                            Button("95×95 (30L)") {
-                                config.nx = 95
-                                config.ny = 95
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                            if config.noiseLevel > 0.0 {
-                                Button("σ=0") {
-                                    config.noiseLevel = 0.0
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.orange)
-                                .controlSize(.mini)
-                            }
-                        }
                         
                         HStack {
                             Text("GB Center (cx, cy):")
@@ -1112,7 +1125,10 @@ public struct GeometryBuilderView: View {
                             Text("GB Plane Angle ϕ (°):")
                                 .font(.caption2.bold())
                             Spacer()
-                            Slider(value: $config.geometryConfig.microstructure.gb_angle_deg, in: -90.0...90.0, step: 1.0)
+                            Slider(value: Binding(
+                                get: { config.geometryConfig.microstructure.gb_angle_deg },
+                                set: { newPhi in config.geometryConfig.rotateBicrystalOrientation(toAngleDeg: newPhi) }
+                            ), in: -90.0...90.0, step: 1.0)
                                 .frame(width: 85)
                             DoubleField(title: "0.0", value: $config.geometryConfig.microstructure.gb_angle_deg, width: 48, minValue: -180.0, maxValue: 180.0)
                         }
@@ -1125,6 +1141,9 @@ public struct GeometryBuilderView: View {
                                 .frame(width: 85)
                             DoubleField(title: "-15.0", value: $config.geometryConfig.microstructure.theta1_deg, width: 48, minValue: -180.0, maxValue: 180.0)
                         }
+                        .onChange(of: config.geometryConfig.microstructure.theta1_deg) { _ in
+                            syncAutoSeamParamsFromCurrentAngles()
+                        }
                         
                         HStack {
                             Text("Grain 2 Angle θ₂ (°):")
@@ -1134,8 +1153,22 @@ public struct GeometryBuilderView: View {
                                 .frame(width: 85)
                             DoubleField(title: "+15.0", value: $config.geometryConfig.microstructure.theta2_deg, width: 48, minValue: -180.0, maxValue: 180.0)
                         }
+                        .onChange(of: config.geometryConfig.microstructure.theta2_deg) { _ in
+                            syncAutoSeamParamsFromCurrentAngles()
+                        }
                         
                         Divider().padding(.vertical, 1)
+                        
+                        HStack {
+                            Toggle(isOn: $autoUpdateGBSeamParams) {
+                                Text("Auto-set δ_⊥, δ_∥ & d_min when angles change (editable below)")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundColor(Color(red: 0.45, green: 0.90, blue: 0.62))
+                            }
+                            .toggleStyle(.checkbox)
+                            .controlSize(.mini)
+                            Spacer()
+                        }
                         
                         HStack(spacing: 4) {
                             Text("Grain Separation δ_⊥ (in a₀):")
@@ -1145,8 +1178,8 @@ public struct GeometryBuilderView: View {
                             Slider(value: $config.geometryConfig.microstructure.gb_normal_gap_a0, in: -0.40...1.00, step: 0.02)
                                 .frame(width: 78)
                             DoubleField(title: "0.0", value: $config.geometryConfig.microstructure.gb_normal_gap_a0, width: 44, minValue: -0.60, maxValue: 1.50)
-                            Button("0") {
-                                config.geometryConfig.microstructure.gb_normal_gap_a0 = 0.0
+                            Button("Auto") {
+                                config.geometryConfig.microstructure.gb_normal_gap_a0 = cslMatch.recommendedGapA0
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
@@ -1325,22 +1358,40 @@ public struct GeometryBuilderView: View {
         var isMergedSeam: Bool = false
     }
 
+    private func syncAutoSeamParamsFromCurrentAngles() {
+        guard autoUpdateGBSeamParams else { return }
+        let halfTilt = max(0.5, 0.5 * abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg))
+        let match = CSLRationalizer.closestMatch(forHalfAngleDeg: halfTilt, maxIndex: 18)
+        config.geometryConfig.microstructure.min_seam_distance_a0 = match.recommendedDMinA0
+        config.geometryConfig.microstructure.gb_normal_gap_a0 = match.recommendedGapA0
+        config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
+    }
+
+    private func applyCSLMatch(_ match: CSLRationalMatch, applyAnalyticGap: Bool) {
+        let phiGB = config.geometryConfig.microstructure.gb_angle_deg
+        config.geometryConfig.microstructure.gb_cx = 0.50
+        config.geometryConfig.microstructure.gb_cy = 0.50
+        config.geometryConfig.microstructure.theta1_deg = phiGB - match.halfAngleDeg
+        config.geometryConfig.microstructure.theta2_deg = phiGB + match.halfAngleDeg
+        config.geometryConfig.microstructure.seam_resolution = .mergeMidpoint
+        config.geometryConfig.microstructure.min_seam_distance_a0 = match.recommendedDMinA0
+        config.geometryConfig.microstructure.gb_normal_gap_a0 = applyAnalyticGap ? match.recommendedGapA0 : 0.0
+        config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
+        config.geometryConfig.microstructure.max_gb_edge_a0 = 2.60
+        config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: phiGB)
+        config.noiseLevel = 0.0
+        let kPeriods = max(2, Int(round(Double(max(config.nx, 60)) / match.periodA0)))
+        let commN = match.commensurateSize(periods: kPeriods)
+        config.nx = commN
+        config.ny = commN
+    }
+
     private func snapNearCSLAngle(_ deg: Double) -> Double {
-        let r2d = 180.0 / Double.pi
-        let cslHalfAngles: [Double] = [
-            atan2(1.0, 3.0) * r2d,
-            atan2(1.0, 2.0) * r2d,
-            atan2(2.0, 3.0) * r2d,
-            atan2(1.0, 4.0) * r2d,
-            atan2(1.0, 5.0) * r2d,
-            atan2(2.0, 5.0) * r2d,
-            atan2(3.0, 5.0) * r2d,
-            0.5 * atan2(3.0, 4.0) * r2d,
-            0.5 * atan2(4.0, 3.0) * r2d
-        ]
-        for exact in cslHalfAngles {
-            if abs(abs(deg) - exact) < 0.02 {
-                return (deg < 0.0) ? -exact : exact
+        let phiGB = config.geometryConfig.microstructure.gb_angle_deg
+        let rel = deg - phiGB
+        for cand in CSLRationalizer.allCandidates {
+            if abs(abs(rel) - cand.halfAngleDeg) < 0.025 {
+                return phiGB + ((rel < 0.0) ? -cand.halfAngleDeg : cand.halfAngleDeg)
             }
         }
         return deg
@@ -2189,14 +2240,8 @@ public struct GeometryBuilderView: View {
                 // Quick BC Templates
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        Button("GB Roller (Fix uy=0, Free ux)") {
-                            config.geometryConfig.boundary_rules = [
-                                BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .left, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .right, kind: .rollerX, thickness_a0: 2.0, ux: 0.0, uy: 0.0)
-                            ]
-                            config.geometryConfig.primary_stress_component = "sigma_xx"
+                        Button("GB Roller (Auto X/Y)") {
+                            config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: config.geometryConfig.microstructure.gb_angle_deg)
                         }
                         Button("Tension (+Y)") {
                             config.geometryConfig.boundary_rules = [

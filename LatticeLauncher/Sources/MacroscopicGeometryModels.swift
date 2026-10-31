@@ -1085,6 +1085,34 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         return minDist
     }
     
+    public mutating func applyGBFrameRollerBCs(forAngleDeg gbAngleDeg: Double) {
+        let phiRad = gbAngleDeg * .pi / 180.0
+        let isMostlyVertical = abs(cos(phiRad)) >= abs(sin(phiRad))
+        let rollerKind: BoundaryConditionKindModel = isMostlyVertical ? .rollerX : .rollerY
+        let lockX = !isMostlyVertical
+        let lockY = isMostlyVertical
+        boundary_rules = [
+            BoundaryZoneRuleModel(region: .bottom, kind: rollerKind, thickness_a0: 2.0, ux: 0.0, uy: 0.0, lock_x: lockX, lock_y: lockY),
+            BoundaryZoneRuleModel(region: .top, kind: rollerKind, thickness_a0: 2.0, ux: 0.0, uy: 0.0, lock_x: lockX, lock_y: lockY),
+            BoundaryZoneRuleModel(region: .left, kind: rollerKind, thickness_a0: 2.0, ux: 0.0, uy: 0.0, lock_x: lockX, lock_y: lockY),
+            BoundaryZoneRuleModel(region: .right, kind: rollerKind, thickness_a0: 2.0, ux: 0.0, uy: 0.0, lock_x: lockX, lock_y: lockY)
+        ]
+        primary_stress_component = isMostlyVertical ? "sigma_xx" : "sigma_yy"
+    }
+
+    public mutating func rotateBicrystalOrientation(toAngleDeg newPhiDeg: Double) {
+        let oldPhi = microstructure.gb_angle_deg
+        let rel1 = microstructure.theta1_deg - oldPhi
+        let rel2 = microstructure.theta2_deg - oldPhi
+        microstructure.gb_angle_deg = newPhiDeg
+        microstructure.theta1_deg = newPhiDeg + rel1
+        microstructure.theta2_deg = newPhiDeg + rel2
+        let allRollers = !boundary_rules.isEmpty && boundary_rules.allSatisfy { $0.kind == .rollerX || $0.kind == .rollerY }
+        if allRollers {
+            applyGBFrameRollerBCs(forAngleDeg: newPhiDeg)
+        }
+    }
+
     public func writeJSON(to path: String) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1092,5 +1120,137 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         let url = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url)
+    }
+}
+
+// MARK: - General (m, n) Coincidence Site Lattice (CSL) Rationalizer (gb_code / aimsgb)
+public struct CSLRationalMatch: Equatable, Identifiable {
+    public let m: Int
+    public let n: Int
+    public let sigma: Int
+    public let halfAngleDeg: Double
+    public let fullMisoriDeg: Double
+    public let periodA0: Double
+    public let layerSpacingA0: Double
+    public let recommendedDMinA0: Double
+    public let recommendedGapA0: Double
+
+    public var id: String { "\(m)_\(n)" }
+
+    public var shortLabel: String {
+        String(format: "Σ%d (%d %d 0) • ±%.2f° (Δθ=%.2f°)", sigma, m, n, halfAngleDeg, fullMisoriDeg)
+    }
+
+    public func commensurateSize(periods k: Int) -> Int {
+        max(16, Int(round(Double(max(1, k)) * periodA0)))
+    }
+
+    public func suggestedPeriodCounts(around targetN: Int) -> [Int] {
+        let kCenter = max(2, Int(round(Double(targetN) / periodA0)))
+        var counts: [Int] = []
+        for dk in [-2, 0, 2] {
+            let k = max(1, kCenter + dk)
+            if !counts.contains(k) {
+                counts.append(k)
+            }
+        }
+        return counts
+    }
+}
+
+public enum CSLRationalizer {
+    public static func gcd(_ a: Int, _ b: Int) -> Int {
+        var x = abs(a)
+        var y = abs(b)
+        while y != 0 {
+            let r = x % y
+            x = y
+            y = r
+        }
+        return max(1, x)
+    }
+
+    public static func makeMatch(m: Int, n: Int) -> CSLRationalMatch {
+        let sumSq = m * m + n * n
+        let g2 = gcd(sumSq, 2)
+        let sigma = sumSq / g2
+        let halfDeg = atan2(Double(n), Double(m)) * 180.0 / .pi
+        let period = sqrt(Double(sumSq))
+        let dLayer = 1.0 / period
+        let recDMin: Double
+        if m == 3 && n == 1 {
+            recDMin = 0.68
+        } else if m == 2 && n == 1 {
+            recDMin = 0.50
+        } else {
+            recDMin = min(0.65, max(0.48, (round((1.12 * dLayer) * 100.0) / 100.0)))
+        }
+        // First unmerged symmetric cross-grain layer k_first satisfies 2 * k_first * dLayer >= recDMin
+        let kFirst = max(1, Int(ceil((recDMin - 1e-6) / (2.0 * dLayer))))
+        let rFirst = 2.0 * Double(kFirst) * dLayer
+        let rawGap = (m == 2 && n == 1) ? 0.0 : max(0.0, 0.94 - rFirst)
+        let recGap = min(0.38, max(0.0, (round(rawGap * 50.0) / 50.0)))
+        return CSLRationalMatch(
+            m: m,
+            n: n,
+            sigma: sigma,
+            halfAngleDeg: halfDeg,
+            fullMisoriDeg: 2.0 * halfDeg,
+            periodA0: period,
+            layerSpacingA0: dLayer,
+            recommendedDMinA0: recDMin,
+            recommendedGapA0: recGap
+        )
+    }
+
+    public static let allCandidates: [CSLRationalMatch] = {
+        var list: [CSLRationalMatch] = []
+        for m in 1...18 {
+            for n in 1...m {
+                if gcd(m, n) == 1 {
+                    list.append(makeMatch(m: m, n: n))
+                }
+            }
+        }
+        list.sort { $0.halfAngleDeg < $1.halfAngleDeg }
+        return list
+    }()
+
+    /// Curated CSL sequence from low-angle tilt walls (~4.8°) up to high-angle Σ5 / Σ13 / Σ17 / Σ25 / Σ29 boundaries
+    public static let curatedCatalog: [CSLRationalMatch] = {
+        let pairs: [(Int, Int)] = [
+            (12, 1), // ±4.76° (Δθ = 9.53°, Σ145)
+            (10, 1), // ±5.71° (Δθ = 11.42°, Σ101)
+            (9, 1),  // ±6.34° (Δθ = 12.68°, Σ41)
+            (8, 1),  // ±7.13° (Δθ = 14.25°, Σ65)
+            (7, 1),  // ±8.13° (Δθ = 16.26°, Σ25)
+            (6, 1),  // ±9.46° (Δθ = 18.92°, Σ37)
+            (5, 1),  // ±11.31° (Δθ = 22.62°, Σ13)
+            (4, 1),  // ±14.04° (Δθ = 28.07°, Σ17)
+            (3, 1),  // ±18.43° (Δθ = 36.87°, Σ5)
+            (5, 2),  // ±21.80° (Δθ = 43.60°, Σ29)
+            (2, 1),  // ±26.57° (Δθ = 53.13°, Σ5)
+            (5, 3),  // ±30.96° (Δθ = 61.93°, Σ17)
+            (3, 2),  // ±33.69° (Δθ = 67.38°, Σ13)
+            (4, 3)   // ±36.87° (Δθ = 73.74°, Σ25)
+        ]
+        return pairs.map { makeMatch(m: $0.0, n: $0.1) }
+    }()
+
+    public static func closestMatch(forHalfAngleDeg targetDeg: Double, maxIndex: Int = 18) -> CSLRationalMatch {
+        let absTarget = max(0.5, min(45.0, abs(targetDeg)))
+        var best = makeMatch(m: 3, n: 1)
+        var bestErr = Double.infinity
+        for cand in allCandidates where cand.m <= maxIndex {
+            // Slightly favor lower-index (higher-coincidence) boundaries when within 0.15 deg
+            let angleErr = abs(cand.halfAngleDeg - absTarget)
+            let complexityPenalty = 0.008 * Double(cand.m)
+            let score = angleErr + complexityPenalty
+            if score < bestErr {
+                bestErr = score
+                best = cand
+            }
+        }
+        return best
     }
 }

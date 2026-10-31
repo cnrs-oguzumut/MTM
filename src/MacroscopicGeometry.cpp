@@ -8,6 +8,7 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <numeric>
 #include <random>
 #include <cctype>
 
@@ -479,24 +480,35 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         const double nx_gb = std::cos(phi_rad);
         const double ny_gb = std::sin(phi_rad);
 
-        // Snap near-CSL angles (within 0.02 deg of exact atan(n/m) relative to the GB plane)
-        // so that UI-rounded values like ±18.43° or ±18.435° produce exact CSL periodicity
-        // along the entire boundary without drift between the lower and upper halves.
+        // General (m, n) CSL Rationalizer (gb_code / aimsgb):
+        // Snap near-CSL angles (within 0.02 deg of exact atan(n/m) for coprime 1 <= n <= m <= 18)
+        // relative to the GB plane so that UI-rounded values produce exact CSL periodicity
+        // along the entire boundary without drift between the two halves.
+        int matched_csl_m = 0;
+        int matched_csl_n = 0;
         auto snapNearCSLAngle = [&](double theta_in_deg) -> double {
             if (lattice_type != "square") return theta_in_deg;
             const double rel_deg = theta_in_deg - microstructure.gb_angle_deg;
-            struct CSLCandidate { int m; int n; };
-            static const CSLCandidate csl_list[] = {
-                {3, 1}, {2, 1}, {3, 2}, {5, 1}, {4, 1}, {5, 2}, {5, 3}, {4, 3}
-            };
-            for (const auto& c : csl_list) {
-                const double exact_abs = std::atan2(static_cast<double>(c.n), static_cast<double>(c.m)) * 180.0 / M_PI;
-                for (double sgn : {-1.0, 1.0}) {
-                    const double target_rel = sgn * exact_abs;
-                    if (std::abs(rel_deg - target_rel) < 0.02) {
-                        return microstructure.gb_angle_deg + target_rel;
+            double best_diff = 0.025;
+            double best_target_rel = rel_deg;
+            for (int m = 1; m <= 18; ++m) {
+                for (int n = 1; n <= m; ++n) {
+                    if (std::gcd(m, n) != 1) continue;
+                    const double exact_abs = std::atan2(static_cast<double>(n), static_cast<double>(m)) * 180.0 / M_PI;
+                    for (double sgn : {-1.0, 1.0}) {
+                        const double target_rel = sgn * exact_abs;
+                        const double diff = std::abs(rel_deg - target_rel);
+                        if (diff < best_diff) {
+                            best_diff = diff;
+                            best_target_rel = target_rel;
+                            matched_csl_m = m;
+                            matched_csl_n = n;
+                        }
                     }
                 }
+            }
+            if (best_diff < 0.025) {
+                return microstructure.gb_angle_deg + best_target_rel;
             }
             return theta_in_deg;
         };
@@ -536,6 +548,15 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                   << "°, gap_perp=" << microstructure.gb_normal_gap_a0
                   << " a0, shift_par=" << microstructure.gb_tangential_shift_a0
                   << " a0 (raw points before seam filter: " << raw_points.size() << ")\n";
+        if (matched_csl_m > 0 && matched_csl_n > 0) {
+            const int sum_sq = matched_csl_m * matched_csl_m + matched_csl_n * matched_csl_n;
+            const int sigma = sum_sq / std::gcd(sum_sq, 2);
+            const double l_csl = std::sqrt(static_cast<double>(sum_sq));
+            const double d_mn = 1.0 / l_csl;
+            std::cout << "[Microstructure] CSL Rationalizer: Σ" << sigma << " (" << matched_csl_m
+                      << " " << matched_csl_n << " 0), L_CSL = " << l_csl
+                      << " a0, d_(mn) = " << d_mn << " a0\n";
+        }
 
     } else if (microstructure.mode == MicrostructureMode::VoronoiPolycrystal) {
         std::vector<VoronoiGrainSeed> seeds = microstructure.seeds;
