@@ -872,7 +872,13 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
         int max_row = std::max(min_row + total_planes, effective_ny - 3);
 
         std::vector<int> plane_rows;
-        if (microstructure.dislocation_layout == "alternating_staggered" || microstructure.dislocation_layout == "alternating_random_x") {
+        bool use_equispaced_rows = (
+            microstructure.dislocation_layout == "alternating_staggered" ||
+            microstructure.dislocation_layout == "alternating_random_x" ||
+            microstructure.dislocation_layout == "equispaced_random_signs" ||
+            microstructure.dislocation_layout == "grouped_dipole_band"
+        );
+        if (use_equispaced_rows) {
             for (int k = 0; k < total_planes; ++k) {
                 double ideal_row = (static_cast<double>(k) + 0.5) * (static_cast<double>(effective_ny) / static_cast<double>(total_planes)) - 0.5;
                 int r = std::clamp(static_cast<int>(std::round(ideal_row)), min_row, max_row);
@@ -923,7 +929,10 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
         std::uniform_real_distribution<double> x_dist(0.18, 0.82);
 
         std::vector<int> signs(total_planes);
-        if (microstructure.dislocation_layout == "random_planes_random_signs" && !microstructure.bound_strip_excess) {
+        if (microstructure.dislocation_layout == "grouped_dipole_band") {
+            for (int k = 0; k < total_planes; ++k) signs[k] = (k < M) ? 1 : -1;
+        } else if (microstructure.dislocation_layout == "random_planes_random_signs" ||
+                   microstructure.dislocation_layout == "equispaced_random_signs") {
             for (int k = 0; k < total_planes; ++k) signs[k] = (k < M) ? 1 : -1;
             std::shuffle(signs.begin(), signs.end(), x_rng);
         } else {

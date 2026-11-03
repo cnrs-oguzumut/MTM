@@ -1610,6 +1610,34 @@ public struct GeometryBuilderView: View {
                 }
             }
 
+            // Vertical ±b Sign Order Quick Controls
+            let currentSigns = config.geometryConfig.microstructure.dislocations.map(\.burgers_sign)
+            let isAlternatingOrder = !currentSigns.isEmpty && currentSigns.enumerated().allSatisfy { $0.element == (($0.offset % 2 == 0) ? 1 : -1) }
+            let isGroupedOrder = !currentSigns.isEmpty && currentSigns.enumerated().allSatisfy { $0.element == (($0.offset < currentSigns.count / 2) ? 1 : -1) }
+            HStack(spacing: 4) {
+                Text("±b Order in Y:")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(BlueHour.mist)
+                selectableChipButton(
+                    title: "🎲 Shuffle ±b",
+                    isSelected: !isAlternatingOrder && !isGroupedOrder && isBalanced
+                ) {
+                    shuffleBurgersSigns()
+                }
+                selectableChipButton(
+                    title: "+ − Alternating",
+                    isSelected: isAlternatingOrder
+                ) {
+                    setAlternatingBurgersSigns()
+                }
+                selectableChipButton(
+                    title: "+ + − − Grouped",
+                    isSelected: isGroupedOrder && currentSigns.count >= 4
+                ) {
+                    setGroupedBurgersSigns()
+                }
+            }
+
             HStack(spacing: 8) {
                 Text("Min Spacing Δj:")
                     .font(.caption2)
@@ -1768,6 +1796,41 @@ public struct GeometryBuilderView: View {
         guard total >= 2 else { return }
         let half = total / 2
         for i in 0..<total {
+            dislocs[i].burgers_sign = (i < half) ? 1 : -1
+        }
+        config.geometryConfig.microstructure.dislocations = dislocs
+    }
+
+    private func shuffleBurgersSigns() {
+        var dislocs = config.geometryConfig.microstructure.dislocations
+        let total = dislocs.count
+        guard total >= 2 else { return }
+        let half = total / 2
+        let oldSigns = dislocs.map(\.burgers_sign)
+        var signs = (0..<total).map { ($0 < half) ? 1 : -1 }
+        for _ in 0..<16 {
+            signs.shuffle()
+            let isAlt = (0..<total).allSatisfy { signs[$0] == (($0 % 2 == 0) ? 1 : -1) }
+            if (!isAlt || total < 4) && signs != oldSigns { break }
+        }
+        for i in 0..<total {
+            dislocs[i].burgers_sign = signs[i]
+        }
+        config.geometryConfig.microstructure.dislocations = dislocs
+    }
+
+    private func setAlternatingBurgersSigns() {
+        var dislocs = config.geometryConfig.microstructure.dislocations
+        for i in 0..<dislocs.count {
+            dislocs[i].burgers_sign = (i % 2 == 0) ? 1 : -1
+        }
+        config.geometryConfig.microstructure.dislocations = dislocs
+    }
+
+    private func setGroupedBurgersSigns() {
+        var dislocs = config.geometryConfig.microstructure.dislocations
+        let half = dislocs.count / 2
+        for i in 0..<dislocs.count {
             dislocs[i].burgers_sign = (i < half) ? 1 : -1
         }
         config.geometryConfig.microstructure.dislocations = dislocs

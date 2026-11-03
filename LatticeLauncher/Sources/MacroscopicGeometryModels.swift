@@ -434,15 +434,19 @@ public struct SeededDislocationModel: Codable, Equatable, Identifiable {
 public enum DislocationLayoutPreset: String, CaseIterable, Codable, Identifiable {
     case alternatingRandomX = "alternating_random_x"
     case alternatingStaggered = "alternating_staggered"
+    case equispacedRandomSigns = "equispaced_random_signs"
     case randomBalanced = "random_planes_random_signs"
+    case groupedDipoleBand = "grouped_dipole_band"
     case custom = "custom"
     
     public var id: String { rawValue }
     public var displayName: String {
         switch self {
-        case .alternatingRandomX: return "Alternating ±b (Random X)"
-        case .alternatingStaggered: return "Alternating ±b (Staggered X)"
-        case .randomBalanced: return "Random Planes & ±b (∑b = 0)"
+        case .alternatingRandomX: return "Equispaced · Alternating (+ − + −) · Random X"
+        case .alternatingStaggered: return "Equispaced · Alternating (+ − + −) · Staggered X"
+        case .equispacedRandomSigns: return "Equispaced · Random ±b Order (∑b = 0)"
+        case .randomBalanced: return "Random Planes & Random ±b Order (∑b = 0)"
+        case .groupedDipoleBand: return "Equispaced · Grouped (+…+ / −…−) Band"
         case .custom: return "Custom Dislocation Table"
         }
     }
@@ -551,7 +555,7 @@ public struct MicrostructureConfigModel: Codable, Equatable {
     
     // Multi-Plane Single-Dislocation Periodic Setup (2M active glide planes, 1 dislocation per plane, sum(b) = 0)
     public var dislocation_pair_count: Int = 2
-    public var dislocation_layout: String = DislocationLayoutPreset.alternatingRandomX.rawValue
+    public var dislocation_layout: String = DislocationLayoutPreset.equispacedRandomSigns.rawValue
     public var min_plane_spacing_rows: Int = 6
     public var dislocation_core_radius_a0: Double = 0.8
     public var bound_strip_excess: Bool = true
@@ -672,8 +676,15 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         let minRow = 1
         let maxRow = max(minRow + totalPlanes, ny - 2)
         
+        let useEquispacedRows = (
+            dislocation_layout == DislocationLayoutPreset.alternatingStaggered.rawValue ||
+            dislocation_layout == DislocationLayoutPreset.alternatingRandomX.rawValue ||
+            dislocation_layout == DislocationLayoutPreset.equispacedRandomSigns.rawValue ||
+            dislocation_layout == DislocationLayoutPreset.groupedDipoleBand.rawValue
+        )
+        
         var planeRows: [Int] = []
-        if dislocation_layout == DislocationLayoutPreset.alternatingStaggered.rawValue || dislocation_layout == DislocationLayoutPreset.alternatingRandomX.rawValue {
+        if useEquispacedRows {
             for k in 0..<totalPlanes {
                 let idealRow = (Double(k) + 0.5) * (Double(ny) / Double(totalPlanes)) - 0.5
                 var r = min(maxRow, max(minRow, Int(idealRow.rounded())))
@@ -709,10 +720,24 @@ public struct MicrostructureConfigModel: Codable, Equatable {
             }
         }
         
+        let oldSigns = self.dislocations.map(\.burgers_sign)
         var signs = [Int](repeating: 1, count: totalPlanes)
-        if dislocation_layout == DislocationLayoutPreset.randomBalanced.rawValue && !bound_strip_excess {
+        if dislocation_layout == DislocationLayoutPreset.groupedDipoleBand.rawValue {
+            for k in 0..<totalPlanes { signs[k] = (k < M) ? 1 : -1 }
+        } else if dislocation_layout == DislocationLayoutPreset.randomBalanced.rawValue ||
+                  dislocation_layout == DislocationLayoutPreset.equispacedRandomSigns.rawValue {
             for k in 0..<totalPlanes { signs[k] = (k < M) ? 1 : -1 }
             signs.shuffle()
+            if totalPlanes >= 4 {
+                let isStrictAlternating = (0..<totalPlanes).allSatisfy { signs[$0] == (($0 % 2 == 0) ? 1 : -1) }
+                if isStrictAlternating || signs == oldSigns {
+                    for _ in 0..<12 {
+                        signs.shuffle()
+                        let stillAlt = (0..<totalPlanes).allSatisfy { signs[$0] == (($0 % 2 == 0) ? 1 : -1) }
+                        if !stillAlt && signs != oldSigns { break }
+                    }
+                }
+            }
         } else {
             for k in 0..<totalPlanes { signs[k] = (k % 2 == 0) ? 1 : -1 }
         }
