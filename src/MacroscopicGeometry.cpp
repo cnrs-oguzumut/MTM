@@ -853,7 +853,7 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
     int M = std::max(1, microstructure.dislocation_pair_count);
     std::vector<SeededDislocation> active_dislocs;
 
-    if (microstructure.dislocation_layout == "custom" && !microstructure.dislocations.empty()) {
+    if (!microstructure.dislocations.empty()) {
         for (const auto& d : microstructure.dislocations) {
             if (d.enabled && d.glide_plane_row >= 1 && d.glide_plane_row < effective_ny - 1) {
                 active_dislocs.push_back(d);
@@ -864,18 +864,18 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
     int sum_b = 0;
     for (const auto& d : active_dislocs) sum_b += d.burgers_sign;
 
-    if (active_dislocs.size() < 2 || active_dislocs.size() % 2 != 0 || sum_b != 0 || microstructure.dislocation_layout != "custom") {
+    if (active_dislocs.size() < 2 || active_dislocs.size() % 2 != 0 || sum_b != 0) {
         active_dislocs.clear();
         int total_planes = 2 * M;
 
-        int min_row = std::max(2, 2);
+        int min_row = 2;
         int max_row = std::max(min_row + total_planes, effective_ny - 3);
 
         std::vector<int> plane_rows;
         if (microstructure.dislocation_layout == "alternating_staggered" || microstructure.dislocation_layout == "alternating_random_x") {
-            double step = static_cast<double>(max_row - min_row) / std::max(1, total_planes - 1);
             for (int k = 0; k < total_planes; ++k) {
-                int r = std::clamp(static_cast<int>(std::round(min_row + k * step)), min_row, max_row);
+                double ideal_row = (static_cast<double>(k) + 0.5) * (static_cast<double>(effective_ny) / static_cast<double>(total_planes)) - 0.5;
+                int r = std::clamp(static_cast<int>(std::round(ideal_row)), min_row, max_row);
                 if (!plane_rows.empty() && r <= plane_rows.back()) {
                     r = plane_rows.back() + 1;
                 }
@@ -894,7 +894,9 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
                 for (int r : candidates) {
                     bool ok = true;
                     for (int existing : plane_rows) {
-                        if (std::abs(r - existing) < min_space) { ok = false; break; }
+                        int diff = std::abs(r - existing);
+                        int p_diff = std::min(diff, effective_ny - diff);
+                        if (p_diff < min_space) { ok = false; break; }
                     }
                     if (ok) {
                         plane_rows.push_back(r);
@@ -908,9 +910,9 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
             }
             if (!success) {
                 plane_rows.clear();
-                double step = static_cast<double>(max_row - min_row) / std::max(1, total_planes - 1);
                 for (int k = 0; k < total_planes; ++k) {
-                    int r = std::clamp(static_cast<int>(std::round(min_row + k * step)), min_row, max_row);
+                    double ideal_row = (static_cast<double>(k) + 0.5) * (static_cast<double>(effective_ny) / static_cast<double>(total_planes)) - 0.5;
+                    int r = std::clamp(static_cast<int>(std::round(ideal_row)), min_row, max_row);
                     if (!plane_rows.empty() && r <= plane_rows.back()) r = plane_rows.back() + 1;
                     plane_rows.push_back(r);
                 }
@@ -964,6 +966,42 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
             : DislocationSolutionParams::fromPotentialMode(potential_mode, lattice_type);
 
     const double core_r0 = std::clamp(microstructure.dislocation_core_radius_a0, 0.1, 5.0) * a;
+    constexpr int Mx = 8;
+    constexpr int My = 3;
+
+    auto evalXPeriodicSinglePlane = [&](double xi, double eta, const Eigen::Vector2d& b_vec) -> Eigen::Vector2d {
+        const double b = b_vec.x();
+        const double sgn_eta = (eta >= 0.0) ? 1.0 : -1.0;
+        const double shift_x = sgn_eta * 0.25 * b;
+
+        // Primary image (mx = 0)
+        Eigen::Vector2d u0 = NonSingularDisplacement::calculateEdgeDisplacement(
+            Eigen::Vector2d(xi, eta), b_vec, core_r0, disloc_params);
+        double sum_ux = u0.x() - shift_x;
+        double sum_uy = u0.y();
+
+        // Symmetric periodic image pairs (+mx, -mx):
+        // ux_centered is strictly odd in x; uy is strictly even in x.
+        for (int mx = 1; mx <= Mx; ++mx) {
+            Eigen::Vector2d u_pos = NonSingularDisplacement::calculateEdgeDisplacement(
+                Eigen::Vector2d(xi + mx * Lx, eta), b_vec, core_r0, disloc_params);
+            Eigen::Vector2d u_neg = NonSingularDisplacement::calculateEdgeDisplacement(
+                Eigen::Vector2d(xi - mx * Lx, eta), b_vec, core_r0, disloc_params);
+            Eigen::Vector2d u_ref = NonSingularDisplacement::calculateEdgeDisplacement(
+                Eigen::Vector2d(mx * Lx, 0.0), b_vec, core_r0, disloc_params);
+
+            sum_ux += (u_pos.x() - shift_x) + (u_neg.x() - shift_x);
+            sum_uy += (u_pos.y() + u_neg.y() - 2.0 * u_ref.y());
+        }
+
+        // Exact telescoping boundary jump at xi = +Lx/2 vs xi = -Lx/2:
+        // Since ux_centered is odd in x, delta_ux = 2 * ux_centered((Mx + 0.5) * Lx, eta), and delta_uy = 0.
+        Eigen::Vector2d u_end = NonSingularDisplacement::calculateEdgeDisplacement(
+            Eigen::Vector2d((Mx + 0.5) * Lx, eta), b_vec, core_r0, disloc_params);
+        double delta_ux = 2.0 * (u_end.x() - shift_x);
+
+        return Eigen::Vector2d(sum_ux - delta_ux * (xi / Lx), sum_uy);
+    };
 
     std::vector<Point2D> points;
     points.reserve(nx * effective_ny + 2 * M);
@@ -974,11 +1012,13 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
         const double stagger_x = is_triangular ? (0.5 * (j % 2)) : 0.0;
 
         for (int i = 0; i < Nj; ++i) {
-            double bx = (i + stagger_x) * (Lx / static_cast<double>(Nj));
+            // Half-integer offset (i + 0.5) keeps edge atoms away from the x = 0 / Lx branch cut
+            double bx = (static_cast<double>(i) + 0.5 + stagger_x) * (Lx / static_cast<double>(Nj));
+            while (bx >= Lx) bx -= Lx;
             double by = row_y;
 
-            double total_ux = 0.0;
-            double total_uy = 0.0;
+            Eigen::Vector2d total_u = Eigen::Vector2d::Zero();
+            Eigen::Vector2d delta_v_y = Eigen::Vector2d::Zero();
 
             for (const auto& d : active_dislocs) {
                 double disloc_x = d.x_frac * Lx;
@@ -986,46 +1026,37 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
                 Eigen::Vector2d b_vec(d.burgers_sign * a, 0.0);
 
                 double dx_raw = bx - disloc_x;
-                double dx_wrap = dx_raw - Lx * std::round(dx_raw / Lx);
+                double xi = dx_raw - Lx * std::round(dx_raw / Lx);
 
-                for (int my = -1; my <= 1; ++my) {
-                    double dy = by - (disloc_y + my * Ly);
-                    Eigen::Vector2d rel_pos(dx_wrap, dy);
-
-                    Eigen::Vector2d u_analytic = NonSingularDisplacement::calculateEdgeDisplacement(
-                        rel_pos, b_vec, core_r0, disloc_params);
-
-                    double sgn_y = (dy >= 0.0) ? 1.0 : -1.0;
-                    double u_corr_x = sgn_y * (b_vec.x() / (2.0 * Lx)) * dx_wrap;
-
-                    total_ux += u_analytic.x() + u_corr_x;
-                    total_uy += u_analytic.y();
+                for (int my = -My; my <= My; ++my) {
+                    double eta = by - (disloc_y + my * Ly);
+                    total_u += evalXPeriodicSinglePlane(xi, eta, b_vec);
                 }
+
+                // Exact vertical telescoping residual between y = Ly and y = 0:
+                Eigen::Vector2d v_top = evalXPeriodicSinglePlane(xi, (My + 1.0) * Ly - disloc_y, b_vec);
+                Eigen::Vector2d v_bot = evalXPeriodicSinglePlane(xi, -My * Ly - disloc_y, b_vec);
+                delta_v_y += (v_top - v_bot);
             }
 
-            double final_x = bx + total_ux;
-            double final_y = by + total_uy;
+            total_u -= delta_v_y * ((by - 0.5 * Ly) / Ly);
 
-            while (final_x < 0.0) final_x += Lx;
-            while (final_x >= Lx) final_x -= Lx;
+            double final_x = bx + total_u.x();
+            double final_y = by + total_u.y();
 
             points.emplace_back(final_x, final_y, 0, 0.0);
         }
     }
 
-    std::sort(points.begin(), points.end(), [](const Point2D& p1, const Point2D& p2) {
-        if (std::abs(p1.coord.y() - p2.coord.y()) > 1e-5) {
-            return p1.coord.y() < p2.coord.y();
-        }
-        return p1.coord.x() < p2.coord.x();
-    });
-
-    DomainInfo dinfo = compute_domain_size(points);
-    DomainDimensions dims(dinfo.get_width(), dinfo.get_height());
+    // Exact periodic domain dimensions so that domain_dims + offsets == (Lx, Ly) to machine precision
+    const double offset_x = is_triangular ? (0.5 * a) : a;
+    const double offset_y = h_y;
+    DomainDimensions dims(Lx - offset_x, Ly - offset_y);
 
     std::cout << "[PeriodicDislocations] Generated " << points.size() << " atoms with "
-              << active_dislocs.size() << " glide-plane dislocations (M = " << M
-              << " pairs, ∑b = 0, lattice = " << lattice_type << ")\n";
+              << active_dislocs.size() << " glide-plane dislocations (M = " << (active_dislocs.size() / 2)
+              << " pairs, ∑b = 0, lattice = " << lattice_type
+              << ", periodic box = " << Lx << " x " << Ly << ")\n";
 
     return {points, dims};
 }

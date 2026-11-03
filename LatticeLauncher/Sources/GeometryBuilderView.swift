@@ -434,8 +434,8 @@ public struct GeometryBuilderView: View {
                     drawMicrostructureOverlay(ctx: &ctx, toScreen: toScreen, originX: originX, originY: originY, boxW: boxW, boxH: boxH)
                 }
                 
-                // 5. Boundary Condition Velocity Arrows on Driven Edges
-                if showBCArrows {
+                // 5. Boundary Condition Velocity Arrows on Driven Edges (suppressed in Full 2D Periodic Dislocations mode)
+                if showBCArrows && config.geometryConfig.microstructure.mode != .periodicDislocations {
                     drawBoundaryArrows(ctx: &ctx, originX: originX, originY: originY, boxW: boxW, boxH: boxH)
                 }
                 
@@ -456,32 +456,41 @@ public struct GeometryBuilderView: View {
                 }
                 
                 // 8. Nanoindenter Tip Visual Preview (always visible when enabled so user can position it in either tab)
-                if config.geometryConfig.indenter.enabled {
+                if config.geometryConfig.indenter.enabled && config.geometryConfig.microstructure.mode != .periodicDislocations {
                     drawNanoindenterTip(ctx: &ctx, toScreen: toScreen, boxW: boxW, boxH: boxH)
                 }
             }
             .overlay(alignment: .topLeading) {
+                let isPeriodicDislocs = (config.geometryConfig.microstructure.mode == .periodicDislocations)
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(isViewingStage1RelaxBCs ? Color.green : Color(red: 0.31, green: 0.85, blue: 0.78))
+                        .fill((isPeriodicDislocs || isViewingStage1RelaxBCs) ? Color.green : Color(red: 0.31, green: 0.85, blue: 0.78))
                         .frame(width: 7, height: 7)
-                    Text(isViewingStage1RelaxBCs
-                         ? "RELAXATION STEP BCs (\(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) rules)"
-                         : "LOADING STEP BCs & INDENTER (\(config.geometryConfig.boundary_rules.filter(\.enabled).count) rules)\(config.geometryConfig.indenter.enabled ? " + Indenter" : "")")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(isViewingStage1RelaxBCs ? Color(red: 0.45, green: 0.92, blue: 0.62) : BlueHour.ice)
-                    if config.protocolMode == .relaxThenLoad {
-                        Button(isViewingStage1RelaxBCs ? "Loading Step BCs →" : "← Relaxation Step BCs") {
-                            previewStage = isViewingStage1RelaxBCs ? .stage2Load : .stage1Relax
+                    if isPeriodicDislocs {
+                        Text(config.protocolMode == .relaxOnly
+                             ? "FULL 2D PERIODIC TORUS (PBC) · Stage 1 Core Relaxation Only (α = 0)"
+                             : "FULL 2D PERIODIC TORUS (PBC) · Stage 1 Relax (α = 0) → Stage 2 Shear (α > 0)")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                    } else {
+                        Text(isViewingStage1RelaxBCs
+                             ? "RELAXATION STEP BCs (\(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) rules)"
+                             : "LOADING STEP BCs & INDENTER (\(config.geometryConfig.boundary_rules.filter(\.enabled).count) rules)\(config.geometryConfig.indenter.enabled ? " + Indenter" : "")")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(isViewingStage1RelaxBCs ? Color(red: 0.45, green: 0.92, blue: 0.62) : BlueHour.ice)
+                        if config.protocolMode == .relaxThenLoad {
+                            Button(isViewingStage1RelaxBCs ? "Loading Step BCs →" : "← Relaxation Step BCs") {
+                                previewStage = isViewingStage1RelaxBCs ? .stage2Load : .stage1Relax
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.mini)
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(BlueHour.abyss.opacity(0.88), in: Capsule())
-                .overlay(Capsule().strokeBorder(isViewingStage1RelaxBCs ? Color.green.opacity(0.55) : BlueHour.ice.opacity(0.45), lineWidth: 1))
+                .overlay(Capsule().strokeBorder((isPeriodicDislocs || isViewingStage1RelaxBCs) ? Color.green.opacity(0.55) : BlueHour.ice.opacity(0.45), lineWidth: 1))
                 .padding(10)
             }
             .gesture(
@@ -1128,11 +1137,21 @@ public struct GeometryBuilderView: View {
                         if newMode == .voronoi && config.geometryConfig.microstructure.seeds.isEmpty {
                             config.geometryConfig.microstructure.regenerateSeeds()
                         } else if newMode == .periodicDislocations {
-                            if config.geometryConfig.microstructure.dislocations.isEmpty {
+                            let hasOutOfBounds = config.geometryConfig.microstructure.dislocations.contains {
+                                $0.glide_plane_row < 1 || $0.glide_plane_row >= config.ny - 1
+                            }
+                            if config.geometryConfig.microstructure.dislocations.isEmpty || hasOutOfBounds {
                                 config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
                             }
                             config.boundaryCondition = .periodic
+                            config.noiseLevel = 0.0
                         }
+                    }
+                }
+                .onChange(of: config.ny) { newNy in
+                    if config.geometryConfig.microstructure.mode == .periodicDislocations &&
+                        config.geometryConfig.microstructure.dislocation_layout != DislocationLayoutPreset.custom.rawValue {
+                        config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: newNy)
                     }
                 }
                 
@@ -1565,7 +1584,7 @@ public struct GeometryBuilderView: View {
                 ForEach([1, 2, 3, 4], id: \.self) { mVal in
                     let isSel = (config.geometryConfig.microstructure.dislocation_pair_count == mVal)
                     selectableChipButton(
-                        title: "\(mVal) Pair (\(2 * mVal)D)",
+                        title: "M=\(mVal) (\(2 * mVal)D)",
                         isSelected: isSel
                     ) {
                         config.geometryConfig.microstructure.dislocation_pair_count = mVal
@@ -1722,7 +1741,7 @@ public struct GeometryBuilderView: View {
                     }
                 }
             }
-            .frame(maxHeight: 140)
+            .frame(maxHeight: 195)
 
             HStack {
                 Button("+ Add Balanced (±b) Pair") {
@@ -1912,11 +1931,11 @@ public struct GeometryBuilderView: View {
                     nStrip += d.burgers_sign
                 }
                 let Nj = max(2, nx + nStrip)
-                let rowStagger = isTri ? (0.5 * Double(j % 2) * aCanvas) : 0.0
+                let rowStagger = isTri ? (0.5 * Double(j % 2)) : 0.0
                 let y0 = Double(j) * hy
 
                 for i in 0..<Nj {
-                    var x0 = (Double(i) * aCanvas + rowStagger) * (Lx / Double(Nj))
+                    var x0 = (Double(i) + 0.5 + rowStagger) * (Lx / Double(Nj))
                     x0 = fmod(x0, Lx)
                     if x0 < 0 { x0 += Lx }
 
@@ -1931,27 +1950,29 @@ public struct GeometryBuilderView: View {
                         var xi = x0 - xk
                         while xi < -0.5 * Lx { xi += Lx }
                         while xi >= 0.5 * Lx { xi -= Lx }
-                        let eta = y0 - yk
+                        var eta = y0 - yk
+                        while eta < -0.5 * Ly { eta += Ly }
+                        while eta >= 0.5 * Ly { eta -= Ly }
                         let r2 = xi * xi + eta * eta + rc2
 
-                        let thetaK = atan2(eta, xi)
-                        let termX = (bk / (2.0 * .pi)) * (thetaK + (xi * eta) / (2.0 * (1.0 - nu) * r2))
-                        let termY = -(bk / (2.0 * .pi)) * (((1.0 - 2.0 * nu) / (4.0 * (1.0 - nu))) * log(r2) + (xi * xi - eta * eta) / (4.0 * (1.0 - nu) * r2))
                         let sgnEta = eta >= 0 ? 1.0 : -1.0
-                        let closureTilt = sgnEta * (bk / (2.0 * Lx)) * xi
+                        let thetaK = atan2(eta, xi)
+                        let thetaCentered = thetaK - sgnEta * (.pi / 2.0)
+                        let termX = (bk / (2.0 * .pi)) * (thetaCentered + (xi * eta) / (2.0 * (1.0 - nu) * r2))
+                        let termY = -(bk / (2.0 * .pi)) * (((1.0 - 2.0 * nu) / (4.0 * (1.0 - nu))) * log(r2) + (xi * xi - eta * eta) / (4.0 * (1.0 - nu) * r2))
+                        let closureTilt = -sgnEta * (bk / (2.0 * Lx)) * xi
 
                         ux += termX + closureTilt
                         uy += termY
                     }
 
                     let xFinal = x0 + ux
-                    let yFinal = y0 + uy
-                    let xHat = xFinal / Lx
-                    let yHat = yFinal / Ly
-                    if xHat >= 0.0 && xHat <= 1.0 && yHat >= 0.0 && yHat <= 1.0 {
-                        if config.geometryConfig.isPointInsideSolid(xHat: xHat, yHat: yHat) {
-                            rawSites.append(CanvasLatticeSite(xPhys: xHat * Lx, yPhys: yHat * Ly, gid: 0, thetaDeg: 0.0))
-                        }
+                    var yFinal = fmod(y0 + uy, Ly)
+                    if yFinal < 0 { yFinal += Ly }
+                    let xHat = min(1.0, max(0.0, xFinal / Lx))
+                    let yHat = min(1.0, max(0.0, yFinal / Ly))
+                    if config.geometryConfig.isPointInsideSolid(xHat: xHat, yHat: yHat) {
+                        rawSites.append(CanvasLatticeSite(xPhys: xHat * Lx, yPhys: yHat * Ly, gid: 0, thetaDeg: 0.0))
                     }
                 }
             }
@@ -2155,18 +2176,22 @@ public struct GeometryBuilderView: View {
         for site in filteredSites {
             let xHat = min(1.0, max(0.0, site.xPhys / Lx))
             let yHat = min(1.0, max(0.0, site.yPhys / Ly))
-            let role = config.geometryConfig.classifyNodeRole(
-                xHat: xHat,
-                yHat: yHat,
-                nx: config.nx,
-                ny: config.ny,
-                overrideRules: activeCanvasBoundaryRules,
-                overrideIndenterEnabled: activeCanvasIndenterEnabled
-            )
+            let role = (micro.mode == .periodicDislocations)
+                ? 0
+                : config.geometryConfig.classifyNodeRole(
+                    xHat: xHat,
+                    yHat: yHat,
+                    nx: config.nx,
+                    ny: config.ny,
+                    overrideRules: activeCanvasBoundaryRules,
+                    overrideIndenterEnabled: activeCanvasIndenterEnabled
+                )
             let pt = toScreen(xHat, yHat)
             let r = site.isMergedSeam ? (dotR * 1.18) : dotR
             let rect = CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)
-            let baseColor = (micro.mode == .singleCrystal) ? BlueHour.ice.opacity(0.62) : grainPaletteColor(site.gid).opacity(0.82)
+            let baseColor = (micro.mode == .singleCrystal || micro.mode == .periodicDislocations)
+                ? BlueHour.ice.opacity(0.68)
+                : grainPaletteColor(site.gid).opacity(0.82)
             let dotColor: Color
             if role == 1 {
                 dotColor = Color(red: 1.0, green: 0.42, blue: 0.42)
@@ -2361,9 +2386,11 @@ public struct GeometryBuilderView: View {
                     at: CGPoint(x: pCore.x, y: pCore.y)
                 )
                 
-                // Core tag pill
-                let labelPt = CGPoint(x: pCore.x, y: pCore.y - 15)
-                let pillW: CGFloat = 74
+                // Core tag pill (clamp y inside the canvas box so top/bottom planes never clip)
+                let clampedLabelY = max(originY + 12, min(originY + boxH - 12, pCore.y - 15))
+                let clampedLabelX = max(originX + 40, min(originX + boxW - 40, pCore.x))
+                let labelPt = CGPoint(x: clampedLabelX, y: clampedLabelY)
+                let pillW: CGFloat = 76
                 let pillH: CGFloat = 16
                 let pillRect = CGRect(x: labelPt.x - pillW * 0.5, y: labelPt.y - pillH * 0.5, width: pillW, height: pillH)
                 ctx.fill(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(BlueHour.abyss.opacity(0.88)))

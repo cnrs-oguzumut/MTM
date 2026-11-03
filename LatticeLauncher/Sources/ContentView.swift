@@ -315,22 +315,25 @@ struct SidebarControlsView: View {
                             
                             // Boundary Conditions Selector
                             if config.geometryConfig.enabled {
+                                let isPeriodicDislocs = (config.geometryConfig.microstructure.mode == .periodicDislocations)
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
                                         Text("Boundary Condition:")
                                             .font(.subheadline)
                                         Spacer()
                                         HStack(spacing: 4) {
-                                            Circle().fill(Color(red: 0.31, green: 0.85, blue: 0.78)).frame(width: 6, height: 6)
-                                            Text("Managed by Geometry Studio")
+                                            Circle().fill(isPeriodicDislocs ? Color(red: 0.45, green: 0.90, blue: 0.62) : Color(red: 0.31, green: 0.85, blue: 0.78)).frame(width: 6, height: 6)
+                                            Text(isPeriodicDislocs ? "Full 2D Periodic (Torus PBC)" : "Managed by Geometry Studio")
                                                 .font(.system(size: 10, weight: .bold))
-                                                .foregroundColor(BlueHour.ice)
+                                                .foregroundColor(isPeriodicDislocs ? Color(red: 0.45, green: 0.90, blue: 0.62) : BlueHour.ice)
                                         }
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
                                         .background(BlueHour.pillSurface, in: RoundedRectangle(cornerRadius: 5))
                                     }
-                                    Text("Global PBC is disabled. Surface boundary conditions (Free, Fixed, Driven, Affine) are configured per-region in the Geometry & BC Studio below.")
+                                    Text(isPeriodicDislocs
+                                         ? "Full 2D periodic boundary conditions (T²) are enforced across x ∈ [0, Lx) and y ∈ [0, Ly). Stage 1 relaxes cores at α=0; Stage 2 shears the periodic torus."
+                                         : "Global PBC is disabled. Surface boundary conditions (Free, Fixed, Driven, Affine) are configured per-region in the Geometry & BC Studio below.")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }

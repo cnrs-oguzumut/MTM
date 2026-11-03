@@ -669,25 +669,30 @@ public struct MicrostructureConfigModel: Codable, Equatable {
     public mutating func regeneratePeriodicDislocations(nx: Int = 60, ny: Int = 60) {
         let M = max(1, dislocation_pair_count)
         let totalPlanes = 2 * M
-        let minRow = max(2, 2)
-        let maxRow = max(minRow + totalPlanes, ny - 3)
+        let minRow = 1
+        let maxRow = max(minRow + totalPlanes, ny - 2)
         
         var planeRows: [Int] = []
         if dislocation_layout == DislocationLayoutPreset.alternatingStaggered.rawValue || dislocation_layout == DislocationLayoutPreset.alternatingRandomX.rawValue {
-            let step = Double(maxRow - minRow) / Double(max(1, totalPlanes - 1))
             for k in 0..<totalPlanes {
-                var r = min(maxRow, max(minRow, Int((Double(minRow) + Double(k) * step).rounded())))
+                let idealRow = (Double(k) + 0.5) * (Double(ny) / Double(totalPlanes)) - 0.5
+                var r = min(maxRow, max(minRow, Int(idealRow.rounded())))
                 if let last = planeRows.last, r <= last {
                     r = last + 1
                 }
                 planeRows.append(r)
             }
         } else {
-            var candidates = Array(minRow...maxRow).shuffled()
+            let candidates = Array(minRow...maxRow).shuffled()
             let minSpace = max(2, min_plane_spacing_rows)
             var chosen: [Int] = []
             for r in candidates {
-                if !chosen.contains(where: { abs($0 - r) < minSpace }) {
+                let tooClose = chosen.contains { existing in
+                    let diff = abs(existing - r)
+                    let pDiff = min(diff, max(1, ny - diff))
+                    return pDiff < minSpace
+                }
+                if !tooClose {
                     chosen.append(r)
                     if chosen.count == totalPlanes { break }
                 }
@@ -695,9 +700,9 @@ public struct MicrostructureConfigModel: Codable, Equatable {
             if chosen.count == totalPlanes {
                 planeRows = chosen.sorted()
             } else {
-                let step = Double(maxRow - minRow) / Double(max(1, totalPlanes - 1))
                 for k in 0..<totalPlanes {
-                    var r = min(maxRow, max(minRow, Int((Double(minRow) + Double(k) * step).rounded())))
+                    let idealRow = (Double(k) + 0.5) * (Double(ny) / Double(totalPlanes)) - 0.5
+                    var r = min(maxRow, max(minRow, Int(idealRow.rounded())))
                     if let last = planeRows.last, r <= last { r = last + 1 }
                     planeRows.append(r)
                 }

@@ -936,7 +936,7 @@ void example_1_conti_zanzotto_loading(
         active_elements = initialize_active_elements(elements, full_mapping, square_points.size());
       }
     } else if (i == 0 && restart_chk == nullptr) {
-      if (noise_level > 0.0) {
+      if (noise_level > 0.0 && !is_periodic_dislocs) {
         // Use deterministic seed so both positive and negative runs share the exact same initial noise
         std::mt19937 gen(seed);
         std::normal_distribution<double> noise_dist(0.0, noise_level);
@@ -965,7 +965,7 @@ void example_1_conti_zanzotto_loading(
                       F_ext, interior_mapping, full_mapping, active_elements,
                       plasticity);
     userData.second_derivative_function = &potential_func_sder;
-    if (has_custom_geom) {
+    if (has_custom_geom && !is_periodic_dislocs) {
       userData.macro_geom_ptr = &macro_geom;
       userData.current_alpha = alpha;
     }
@@ -1173,7 +1173,7 @@ void example_1_conti_zanzotto_loading(
                              optimal_lattice_parameter, F_ext, interior_mapping,
                              full_mapping, active_elements, plasticity);
     postOptUserData.second_derivative_function = &potential_func_sder;
-    if (has_custom_geom) {
+    if (has_custom_geom && !is_periodic_dislocs) {
       postOptUserData.macro_geom_ptr = &macro_geom;
       postOptUserData.current_alpha = alpha;
     }
@@ -1521,7 +1521,12 @@ void example_1_conti_zanzotto_loading(
         std::cout << "[Stage 1/1] Equilibration complete at alpha = 0 (Relax Only mode). Stopping cleanly." << std::endl;
         break;
       }
-      if (stage1_pre_relax_active) {
+      if (is_periodic_dislocs) {
+        if (macro_geom.microstructure.reanchor_ref_after_relax) {
+          square_points_ref = square_points;
+        }
+        std::cout << "[Stage 2/2] Handover complete: Periodic dislocations equilibrated in full 2D PBCs at alpha = 0; starting homogeneous periodic simple shear F_ext(alpha)..." << std::endl;
+      } else if (stage1_pre_relax_active) {
         macro_geom.indenter.enabled = original_indenter_enabled;
         if (macro_geom.microstructure.reanchor_ref_after_relax) {
           square_points_ref = square_points;

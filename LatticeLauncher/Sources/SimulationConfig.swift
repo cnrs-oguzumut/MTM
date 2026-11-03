@@ -265,11 +265,12 @@ public class SimulationConfig: ObservableObject {
     public var defaultRunDirName: String {
         let remeshTag = enableRemeshing ? "remesh" : "noremesh"
         let latTag = latticeSymmetry == .triangular ? "_tri" : ""
-        let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed) ? "_fixed" : ""
+        let isPeriodicDislocs = (geometryConfig.enabled && geometryConfig.microstructure.mode == .periodicDislocations)
+        let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed && !isPeriodicDislocs) ? "_fixed" : ""
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
         let rotTag = useRotation ? ((boundaryCondition == .fixed || geometryConfig.enabled || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
         let relaxTag = (mode == .volterra && relaxMacroStress) ? "_relax" : ""
-        let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? "_\(geometryConfig.preset_name)" : ""
+        let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? (isPeriodicDislocs ? "_pbc_dislocs_\(2 * geometryConfig.microstructure.dislocation_pair_count)D" : "_\(geometryConfig.preset_name)") : ""
         if mode == .shift {
             let pertTag = shiftPerturbMesh ? "_pert" : ""
             return String(format: "run_shift_%dx%d_amp%.1f_%@%@%@%@%@", nx, ny, shiftAmplitude, remeshTag, pertTag, latTag, potTag, rotTag)
@@ -292,6 +293,10 @@ public class SimulationConfig: ObservableObject {
         self.nx = nx
         self.ny = ny
         updateCSLSupercellAuto()
+        if geometryConfig.microstructure.mode == .periodicDislocations &&
+            geometryConfig.microstructure.dislocation_layout != DislocationLayoutPreset.custom.rawValue {
+            geometryConfig.microstructure.regeneratePeriodicDislocations(nx: nx, ny: ny)
+        }
     }
     
     /// Constructs the array of command-line arguments for the executable
@@ -416,7 +421,8 @@ public class SimulationConfig: ObservableObject {
         // Boundary condition & Macroscopic Geometry Studio
         if mode != .shift && mode != .volterra {
             if activeGeometry.enabled {
-                args.append("--bc=fixed")
+                let isPeriodicDislocs = (activeGeometry.microstructure.mode == .periodicDislocations)
+                args.append(isPeriodicDislocs ? "--bc=periodic" : "--bc=fixed")
                 var effectiveGeom = activeGeometry
                 effectiveGeom.microstructure.relax_only = (activeProtocol != .relaxThenLoad)
                 let scratchDir = "\(projectRoot)/scratch"
