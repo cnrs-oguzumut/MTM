@@ -295,48 +295,54 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
         out_config.cutouts.push_back(c);
     }
 
-    // Parse boundary_rules array
-    std::string rules_raw = extractRawValue(json, "boundary_rules");
-    for (const auto& item_json : splitJSONObjectArray(rules_raw)) {
-        BoundaryZoneRule r;
-        r.id = extractString(item_json, "id", "bc");
-        r.enabled = extractBool(item_json, "enabled", true);
-        std::string reg_str = extractString(item_json, "region", "top");
-        if (reg_str == "bottom" || reg_str == "bottomEdge") r.region = BoundaryRegionType::BottomEdge;
-        else if (reg_str == "left" || reg_str == "leftEdge") r.region = BoundaryRegionType::LeftEdge;
-        else if (reg_str == "right" || reg_str == "rightEdge") r.region = BoundaryRegionType::RightEdge;
-        else if (reg_str == "outer" || reg_str == "outer_perimeter" || reg_str == "outerPerimeter") r.region = BoundaryRegionType::OuterPerimeter;
-        else if (reg_str == "hole" || reg_str == "hole_surfaces" || reg_str == "holeSurfaces") r.region = BoundaryRegionType::HoleSurfaces;
-        else if (reg_str == "custom_box" || reg_str == "customBox" || reg_str == "box") r.region = BoundaryRegionType::CustomBox;
-        else r.region = BoundaryRegionType::TopEdge;
+    auto parseRulesList = [](const std::string& raw_arr) -> std::vector<BoundaryZoneRule> {
+        std::vector<BoundaryZoneRule> parsed;
+        for (const auto& item_json : splitJSONObjectArray(raw_arr)) {
+            BoundaryZoneRule r;
+            r.id = extractString(item_json, "id", "bc");
+            r.enabled = extractBool(item_json, "enabled", true);
+            std::string reg_str = extractString(item_json, "region", "top");
+            if (reg_str == "bottom" || reg_str == "bottomEdge") r.region = BoundaryRegionType::BottomEdge;
+            else if (reg_str == "left" || reg_str == "leftEdge") r.region = BoundaryRegionType::LeftEdge;
+            else if (reg_str == "right" || reg_str == "rightEdge") r.region = BoundaryRegionType::RightEdge;
+            else if (reg_str == "outer" || reg_str == "outer_perimeter" || reg_str == "outerPerimeter") r.region = BoundaryRegionType::OuterPerimeter;
+            else if (reg_str == "hole" || reg_str == "hole_surfaces" || reg_str == "holeSurfaces") r.region = BoundaryRegionType::HoleSurfaces;
+            else if (reg_str == "custom_box" || reg_str == "customBox" || reg_str == "box") r.region = BoundaryRegionType::CustomBox;
+            else r.region = BoundaryRegionType::TopEdge;
 
-        std::string kind_str = extractString(item_json, "kind", "free");
-        if (kind_str == "fixed" || kind_str == "fixedClamped") r.kind = BoundaryConditionKind::FixedClamped;
-        else if (kind_str == "prescribed" || kind_str == "prescribedDisplacement" || kind_str == "driven") r.kind = BoundaryConditionKind::PrescribedDisplacement;
-        else if (kind_str == "affine" || kind_str == "affineDeformation") r.kind = BoundaryConditionKind::AffineDeformation;
-        else if (kind_str == "roller_x" || kind_str == "rollerX") r.kind = BoundaryConditionKind::RollerX;
-        else if (kind_str == "roller_y" || kind_str == "rollerY") r.kind = BoundaryConditionKind::RollerY;
-        else r.kind = BoundaryConditionKind::FreeSurface;
+            std::string kind_str = extractString(item_json, "kind", "free");
+            if (kind_str == "fixed" || kind_str == "fixedClamped") r.kind = BoundaryConditionKind::FixedClamped;
+            else if (kind_str == "prescribed" || kind_str == "prescribedDisplacement" || kind_str == "driven") r.kind = BoundaryConditionKind::PrescribedDisplacement;
+            else if (kind_str == "affine" || kind_str == "affineDeformation") r.kind = BoundaryConditionKind::AffineDeformation;
+            else if (kind_str == "roller_x" || kind_str == "rollerX") r.kind = BoundaryConditionKind::RollerX;
+            else if (kind_str == "roller_y" || kind_str == "rollerY") r.kind = BoundaryConditionKind::RollerY;
+            else r.kind = BoundaryConditionKind::FreeSurface;
 
-        r.thickness_a0 = extractDouble(item_json, "thickness_a0", 2.0);
-        r.box_x_min = extractDouble(item_json, "box_x_min", 0.0);
-        r.box_y_min = extractDouble(item_json, "box_y_min", 0.0);
-        r.box_x_max = extractDouble(item_json, "box_x_max", 1.0);
-        r.box_y_max = extractDouble(item_json, "box_y_max", 0.1);
-        r.ux = extractDouble(item_json, "ux", 0.0);
-        r.uy = extractDouble(item_json, "uy", 0.0);
-        r.lock_x = extractBool(item_json, "lock_x", true);
-        r.lock_y = extractBool(item_json, "lock_y", true);
-        if (r.kind == BoundaryConditionKind::RollerX) {
-            r.lock_x = false;
-            r.lock_y = true;
-        } else if (r.kind == BoundaryConditionKind::RollerY) {
-            r.lock_x = true;
-            r.lock_y = false;
+            r.thickness_a0 = extractDouble(item_json, "thickness_a0", 2.0);
+            r.box_x_min = extractDouble(item_json, "box_x_min", 0.0);
+            r.box_y_min = extractDouble(item_json, "box_y_min", 0.0);
+            r.box_x_max = extractDouble(item_json, "box_x_max", 1.0);
+            r.box_y_max = extractDouble(item_json, "box_y_max", 0.1);
+            r.ux = extractDouble(item_json, "ux", 0.0);
+            r.uy = extractDouble(item_json, "uy", 0.0);
+            r.lock_x = extractBool(item_json, "lock_x", true);
+            r.lock_y = extractBool(item_json, "lock_y", true);
+            if (r.kind == BoundaryConditionKind::RollerX) {
+                r.lock_x = false;
+                r.lock_y = true;
+            } else if (r.kind == BoundaryConditionKind::RollerY) {
+                r.lock_x = true;
+                r.lock_y = false;
+            }
+            r.affine_mode = extractString(item_json, "affine_mode", "simple_shear_x");
+            parsed.push_back(r);
         }
-        r.affine_mode = extractString(item_json, "affine_mode", "simple_shear_x");
-        out_config.boundary_rules.push_back(r);
-    }
+        return parsed;
+    };
+
+    // Parse boundary_rules (Stage 2) and stage1_boundary_rules (Stage 1) arrays
+    out_config.boundary_rules = parseRulesList(extractRawValue(json, "boundary_rules"));
+    out_config.stage1_boundary_rules = parseRulesList(extractRawValue(json, "stage1_boundary_rules"));
 
     // Parse indenter object if present
     std::string indenter_raw = extractRawValue(json, "indenter");
@@ -389,6 +395,11 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
         out_config.microstructure.min_seam_distance_a0 = extractDouble(micro_raw, "min_seam_distance_a0", 0.55);
         out_config.microstructure.max_gb_edge_a0 = std::clamp(extractDouble(micro_raw, "max_gb_edge_a0", 2.60), 1.40, 5.00);
         out_config.microstructure.pre_relax_gb = extractBool(micro_raw, "pre_relax_gb", true);
+        out_config.microstructure.relax_only = extractBool(micro_raw, "relax_only", false);
+        out_config.microstructure.reanchor_ref_after_relax = extractBool(micro_raw, "reanchor_ref_after_relax", true);
+        out_config.microstructure.max_relax_remesh_passes = std::clamp(static_cast<int>(extractDouble(micro_raw, "max_relax_remesh_passes", 5.0)), 1, 25);
+        out_config.microstructure.loading_bc_preset = extractString(micro_raw, "loading_bc_preset", "keep_studio");
+        out_config.microstructure.stage2_load_type = extractString(micro_raw, "stage2_load_type", "shear_parallel_gb");
         out_config.microstructure.gb_cx = extractDouble(micro_raw, "gb_cx", 0.50);
         out_config.microstructure.gb_cy = extractDouble(micro_raw, "gb_cy", 0.50);
         out_config.microstructure.gb_angle_deg = extractDouble(micro_raw, "gb_angle_deg", 0.0);
@@ -1494,7 +1505,12 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
 
             switch (rule.region) {
             case BoundaryRegionType::TopEdge:
-                matches = (y >= eff_y_max - strip);
+                // When the Nanoindenter is active, keep the top surface free for contact
+                if (isIndenterActive() && rule.kind != BoundaryConditionKind::FreeSurface) {
+                    matches = false;
+                } else {
+                    matches = (y >= eff_y_max - strip);
+                }
                 break;
             case BoundaryRegionType::BottomEdge:
                 matches = (y <= eff_y_min + strip);
@@ -1651,6 +1667,239 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
               << count_driven << " Driven (ux, uy), "
               << count_roller_x << " Roller-X (Free ux, Constrained uy), "
               << count_roller_y << " Roller-Y (Constrained ux, Free uy)\n";
+}
+
+std::vector<BoundaryZoneRule> MacroscopicGeometryConfig::buildStage1RelaxationRules() const {
+    if (!stage1_boundary_rules.empty()) {
+        return stage1_boundary_rules;
+    }
+    if (microstructure.mode == MicrostructureMode::Bicrystal) {
+        std::vector<BoundaryZoneRule> rules;
+        const double phi_rad = microstructure.gb_angle_deg * M_PI / 180.0;
+        const bool is_vertical_gb = std::abs(std::cos(phi_rad)) >= std::abs(std::sin(phi_rad));
+
+        if (is_vertical_gb) {
+            // Vertical-dominant GB:
+            // Top & Bottom on RollerX (lock uy = 0, free ux) -> keeps GB terminations flat, allows normal breathing
+            BoundaryZoneRule r_top;
+            r_top.id = "stage1_gb_top_roller";
+            r_top.region = BoundaryRegionType::TopEdge;
+            r_top.kind = BoundaryConditionKind::RollerX;
+            r_top.thickness_a0 = 1.5;
+            r_top.lock_x = false;
+            r_top.lock_y = true;
+            rules.push_back(r_top);
+
+            BoundaryZoneRule r_bot;
+            r_bot.id = "stage1_gb_bot_roller";
+            r_bot.region = BoundaryRegionType::BottomEdge;
+            r_bot.kind = BoundaryConditionKind::RollerX;
+            r_bot.thickness_a0 = 1.5;
+            r_bot.lock_x = false;
+            r_bot.lock_y = true;
+            rules.push_back(r_bot);
+
+            // Left Edge on RollerY (lock ux = 0, free uy) -> anchors Grain 1 horizontally while Right Edge is FreeSurface
+            // so Grain 2 can freely adjust both normal expansion Δu_⊥ and tangential shift Δu_∥
+            BoundaryZoneRule r_left;
+            r_left.id = "stage1_gb_left_pin";
+            r_left.region = BoundaryRegionType::LeftEdge;
+            r_left.kind = BoundaryConditionKind::RollerY;
+            r_left.thickness_a0 = 1.5;
+            r_left.lock_x = true;
+            r_left.lock_y = false;
+            rules.push_back(r_left);
+        } else {
+            // Horizontal-dominant GB:
+            // Left & Right on RollerY (lock ux = 0, free uy) -> keeps GB terminations flat
+            BoundaryZoneRule r_left;
+            r_left.id = "stage1_gb_left_roller";
+            r_left.region = BoundaryRegionType::LeftEdge;
+            r_left.kind = BoundaryConditionKind::RollerY;
+            r_left.thickness_a0 = 1.5;
+            r_left.lock_x = true;
+            r_left.lock_y = false;
+            rules.push_back(r_left);
+
+            BoundaryZoneRule r_right;
+            r_right.id = "stage1_gb_right_roller";
+            r_right.region = BoundaryRegionType::RightEdge;
+            r_right.kind = BoundaryConditionKind::RollerY;
+            r_right.thickness_a0 = 1.5;
+            r_right.lock_x = true;
+            r_right.lock_y = false;
+            rules.push_back(r_right);
+
+            // Bottom Edge on RollerX (lock uy = 0, free ux) -> anchors bottom grain vertically while Top Edge breathes
+            BoundaryZoneRule r_bot;
+            r_bot.id = "stage1_gb_bot_pin";
+            r_bot.region = BoundaryRegionType::BottomEdge;
+            r_bot.kind = BoundaryConditionKind::RollerX;
+            r_bot.thickness_a0 = 1.5;
+            r_bot.lock_x = false;
+            r_bot.lock_y = true;
+            rules.push_back(r_bot);
+        }
+        return rules;
+    }
+
+    // For Voronoi Polycrystal or general cutouts: keep non-driven rules or convert driven rules to rollers at alpha = 0
+    return boundary_rules;
+}
+
+std::vector<BoundaryZoneRule> MacroscopicGeometryConfig::buildStage2LoadingRules(
+    const std::string& fallback_affine_mode) const {
+
+    const std::string& preset = microstructure.loading_bc_preset;
+    const std::string& ltype = microstructure.stage2_load_type;
+    if (preset.empty() || preset == "keep_studio") {
+        return boundary_rules;
+    }
+
+    // Map stage2_load_type to affine mode and grip displacement vector
+    std::string aff_mode = fallback_affine_mode;
+    if (ltype == "shear_parallel_gb") aff_mode = "simple_shear_y";
+    else if (ltype == "shear_horizontal") aff_mode = "simple_shear_x";
+    else if (ltype == "tension_normal_x" || ltype == "compression_normal_x") aff_mode = "uniaxial_x";
+    else if (ltype == "tension_vertical_y" || ltype == "compression_vertical_y") aff_mode = "uniaxial_y";
+    else {
+        for (const auto& r : boundary_rules) {
+            if (r.enabled && r.kind == BoundaryConditionKind::AffineDeformation && !r.affine_mode.empty()) {
+                aff_mode = r.affine_mode;
+                break;
+            }
+        }
+    }
+
+    if (preset == "affine_from_relaxed") {
+        std::vector<BoundaryZoneRule> rules;
+        BoundaryZoneRule r_aff;
+        r_aff.id = "stage2_affine_outer";
+        r_aff.region = BoundaryRegionType::OuterPerimeter;
+        r_aff.kind = BoundaryConditionKind::AffineDeformation;
+        r_aff.thickness_a0 = 2.0;
+        r_aff.lock_x = true;
+        r_aff.lock_y = true;
+        r_aff.affine_mode = aff_mode;
+        rules.push_back(r_aff);
+        return rules;
+    }
+
+    if (preset == "x_grips_y_roller") {
+        // Left & Right edges driven (shear or normal tension/compression across vertical GB), Top & Bottom on RollerX
+        std::vector<BoundaryZoneRule> rules;
+        double drive_ux = 0.0;
+        double drive_uy = 1.0;
+        if (ltype == "tension_normal_x") {
+            drive_ux = 1.0; drive_uy = 0.0;
+        } else if (ltype == "compression_normal_x") {
+            drive_ux = -1.0; drive_uy = 0.0;
+        } else if (ltype == "shear_parallel_gb") {
+            drive_ux = 0.0; drive_uy = 1.0;
+        } else if (primary_stress_component == "sigma_xx") {
+            drive_ux = 1.0; drive_uy = 0.0;
+        } else {
+            drive_ux = 0.0; drive_uy = 1.0;
+        }
+
+        BoundaryZoneRule r_left;
+        r_left.id = "stage2_left_grip";
+        r_left.region = BoundaryRegionType::LeftEdge;
+        r_left.kind = BoundaryConditionKind::FixedClamped;
+        r_left.thickness_a0 = 2.0;
+        r_left.lock_x = true;
+        r_left.lock_y = true;
+        rules.push_back(r_left);
+
+        BoundaryZoneRule r_right;
+        r_right.id = "stage2_right_grip";
+        r_right.region = BoundaryRegionType::RightEdge;
+        r_right.kind = BoundaryConditionKind::PrescribedDisplacement;
+        r_right.thickness_a0 = 2.0;
+        r_right.ux = drive_ux;
+        r_right.uy = drive_uy;
+        r_right.lock_x = true;
+        r_right.lock_y = true;
+        rules.push_back(r_right);
+
+        BoundaryZoneRule r_top;
+        r_top.id = "stage2_top_roller";
+        r_top.region = BoundaryRegionType::TopEdge;
+        r_top.kind = BoundaryConditionKind::RollerX;
+        r_top.thickness_a0 = 1.5;
+        r_top.lock_x = false;
+        r_top.lock_y = true;
+        rules.push_back(r_top);
+
+        BoundaryZoneRule r_bot;
+        r_bot.id = "stage2_bot_roller";
+        r_bot.region = BoundaryRegionType::BottomEdge;
+        r_bot.kind = BoundaryConditionKind::RollerX;
+        r_bot.thickness_a0 = 1.5;
+        r_bot.lock_x = false;
+        r_bot.lock_y = true;
+        rules.push_back(r_bot);
+        return rules;
+    }
+
+    if (preset == "y_grips_x_roller") {
+        // Top & Bottom edges driven, Left & Right on RollerY
+        std::vector<BoundaryZoneRule> rules;
+        double drive_ux = 1.0;
+        double drive_uy = 0.0;
+        if (ltype == "tension_vertical_y") {
+            drive_ux = 0.0; drive_uy = 1.0;
+        } else if (ltype == "compression_vertical_y") {
+            drive_ux = 0.0; drive_uy = -1.0;
+        } else if (ltype == "shear_horizontal") {
+            drive_ux = 1.0; drive_uy = 0.0;
+        } else if (primary_stress_component == "sigma_yy") {
+            drive_ux = 0.0; drive_uy = 1.0;
+        } else {
+            drive_ux = 1.0; drive_uy = 0.0;
+        }
+
+        BoundaryZoneRule r_bot;
+        r_bot.id = "stage2_bot_grip";
+        r_bot.region = BoundaryRegionType::BottomEdge;
+        r_bot.kind = BoundaryConditionKind::FixedClamped;
+        r_bot.thickness_a0 = 2.0;
+        r_bot.lock_x = true;
+        r_bot.lock_y = true;
+        rules.push_back(r_bot);
+
+        BoundaryZoneRule r_top;
+        r_top.id = "stage2_top_grip";
+        r_top.region = BoundaryRegionType::TopEdge;
+        r_top.kind = BoundaryConditionKind::PrescribedDisplacement;
+        r_top.thickness_a0 = 2.0;
+        r_top.ux = drive_ux;
+        r_top.uy = drive_uy;
+        r_top.lock_x = true;
+        r_top.lock_y = true;
+        rules.push_back(r_top);
+
+        BoundaryZoneRule r_left;
+        r_left.id = "stage2_left_roller";
+        r_left.region = BoundaryRegionType::LeftEdge;
+        r_left.kind = BoundaryConditionKind::RollerY;
+        r_left.thickness_a0 = 1.5;
+        r_left.lock_x = true;
+        r_left.lock_y = false;
+        rules.push_back(r_left);
+
+        BoundaryZoneRule r_right;
+        r_right.id = "stage2_right_roller";
+        r_right.region = BoundaryRegionType::RightEdge;
+        r_right.kind = BoundaryConditionKind::RollerY;
+        r_right.thickness_a0 = 1.5;
+        r_right.lock_x = true;
+        r_right.lock_y = false;
+        rules.push_back(r_right);
+        return rules;
+    }
+
+    return boundary_rules;
 }
 
 Eigen::Matrix2d MacroscopicGeometryConfig::computeMacroscopicF(double alpha) const {

@@ -14,6 +14,50 @@ public struct GeometryBuilderView: View {
     @State private var dragStartCutout: GeometryCutoutItem? = nil
     @State private var inspectorSection: InspectorSection = .microstructure
     @State private var autoUpdateGBSeamParams: Bool = true
+    @State private var previewStage: BCStagePreviewMode = .stage2Load
+    
+    private enum BCStagePreviewMode: String, CaseIterable, Identifiable {
+        case stage1Relax = "Relaxation Step BCs"
+        case stage2Load = "Loading Step BCs & Indenter"
+        var id: String { rawValue }
+    }
+    
+    private var isViewingStage1RelaxBCs: Bool {
+        if config.protocolMode != .relaxThenLoad {
+            return true
+        }
+        return previewStage == .stage1Relax
+    }
+    
+    private var activeEditingRulesBinding: Binding<[BoundaryZoneRuleModel]> {
+        isViewingStage1RelaxBCs
+            ? $config.geometryConfig.stage1_boundary_rules
+            : $config.geometryConfig.boundary_rules
+    }
+    
+    private var activeCanvasBoundaryRules: [BoundaryZoneRuleModel] {
+        if isViewingStage1RelaxBCs {
+            return config.geometryConfig.stage1RelaxationRules()
+        }
+        if config.geometryConfig.indenter.enabled {
+            return config.geometryConfig.boundary_rules.map { rule in
+                if rule.region == .top && rule.kind != .free {
+                    var copy = rule
+                    copy.kind = .free
+                    return copy
+                }
+                return rule
+            }
+        }
+        return config.geometryConfig.boundary_rules
+    }
+    
+    private var activeCanvasIndenterEnabled: Bool {
+        if isViewingStage1RelaxBCs {
+            return false
+        }
+        return config.geometryConfig.indenter.enabled
+    }
     
     private enum InspectorSection: String, CaseIterable, Identifiable {
         case microstructure = "Microstructure & GB"
@@ -76,23 +120,50 @@ public struct GeometryBuilderView: View {
                             Spacer()
                             Text("\(config.nx)×\(config.ny)")
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .monospacedDigit()
                                 .foregroundColor(Color(red: 0.31, green: 0.85, blue: 0.78))
+                                .frame(minWidth: 56)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(BlueHour.midnight.opacity(0.65), in: Capsule())
                         }
-                        Picker("", selection: $inspectorSection) {
-                            Text("Grains & GB").tag(InspectorSection.microstructure)
-                            Text("Shape & Holes").tag(InspectorSection.shapeAndCutouts)
-                            Text("BCs & Indenter").tag(InspectorSection.bcsAndIndenter)
-                            Text("All").tag(InspectorSection.all)
+                        HStack(spacing: 3) {
+                            ForEach([
+                                (InspectorSection.microstructure, "Grains & GB"),
+                                (InspectorSection.shapeAndCutouts, "Shape & Holes"),
+                                (InspectorSection.bcsAndIndenter, "BCs & Indenter"),
+                                (InspectorSection.all, "All")
+                            ], id: \.0.id) { item in
+                                let isSelected = (inspectorSection == item.0)
+                                Button(action: { inspectorSection = item.0 }) {
+                                    Text(item.1)
+                                        .font(.system(size: 10, weight: isSelected ? .bold : .medium))
+                                        .foregroundColor(isSelected ? .white : BlueHour.ice.opacity(0.85))
+                                        .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22)
+                                        .background(
+                                            isSelected
+                                                ? Color(red: 0.12, green: 0.64, blue: 0.54)
+                                                : BlueHour.midnight.opacity(0.65),
+                                            in: RoundedRectangle(cornerRadius: 5)
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 5)
+                                                .strokeBorder(
+                                                    isSelected
+                                                        ? Color(red: 0.42, green: 0.96, blue: 0.84)
+                                                        : BlueHour.steel.opacity(0.45),
+                                                    lineWidth: isSelected ? 1.2 : 0.8
+                                                )
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .controlSize(.small)
+                        .frame(height: 24)
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
+                    .frame(height: 60)
                     .background(BlueHour.controlSurface)
                     
                     Divider()
@@ -110,9 +181,19 @@ public struct GeometryBuilderView: View {
                                 outerDomainCard
                                 cutoutsCard
                             }
-                            if inspectorSection == .bcsAndIndenter || inspectorSection == .all {
+                        if inspectorSection == .bcsAndIndenter || inspectorSection == .all {
+                                stageProtocolBannerCard
                                 boundaryConditionsCard
                                 nanoindenterCard
+                                    .onChange(of: config.geometryConfig.indenter.enabled) { enabled in
+                                        if enabled {
+                                            if config.protocolMode == .relaxOnly {
+                                                config.protocolMode = .relaxThenLoad
+                                                config.geometryConfig.microstructure.relax_only = false
+                                            }
+                                            previewStage = .stage2Load
+                                        }
+                                    }
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -233,9 +314,47 @@ public struct GeometryBuilderView: View {
                 .overlay(Capsule().strokeBorder(BlueHour.border, lineWidth: 1))
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.vertical, 6)
         }
+        .frame(height: 36)
         .background(BlueHour.controlSurface)
+    }
+    
+    // MARK: - Reusable High-Contrast Choice Chip
+    private func selectableChipButton(
+        title: String,
+        isSelected: Bool,
+        activeFill: Color = Color(red: 0.12, green: 0.64, blue: 0.54),
+        activeBorder: Color = Color(red: 0.42, green: 0.96, blue: 0.84),
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 3.5) {
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                Text(title)
+                    .font(.system(size: 9.5, weight: isSelected ? .bold : .medium, design: .monospaced))
+                    .foregroundColor(isSelected ? .white : BlueHour.ice.opacity(0.90))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 6.5)
+            .padding(.vertical, 3.5)
+            .background(
+                isSelected ? activeFill : BlueHour.midnight.opacity(0.88),
+                in: RoundedRectangle(cornerRadius: 5)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(
+                        isSelected ? activeBorder : BlueHour.steel.opacity(0.58),
+                        lineWidth: isSelected ? 1.35 : 0.95
+                    )
+            )
+        }
+        .buttonStyle(.plain)
     }
     
     // MARK: - Interactive Canvas
@@ -335,10 +454,34 @@ public struct GeometryBuilderView: View {
                     }
                 }
                 
-                // 8. Nanoindenter Tip Visual Preview
+                // 8. Nanoindenter Tip Visual Preview (always visible when enabled so user can position it in either tab)
                 if config.geometryConfig.indenter.enabled {
                     drawNanoindenterTip(ctx: &ctx, toScreen: toScreen, boxW: boxW, boxH: boxH)
                 }
+            }
+            .overlay(alignment: .topLeading) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(isViewingStage1RelaxBCs ? Color.green : Color(red: 0.31, green: 0.85, blue: 0.78))
+                        .frame(width: 7, height: 7)
+                    Text(isViewingStage1RelaxBCs
+                         ? "RELAXATION STEP BCs (\(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) rules)"
+                         : "LOADING STEP BCs & INDENTER (\(config.geometryConfig.boundary_rules.filter(\.enabled).count) rules)\(config.geometryConfig.indenter.enabled ? " + Indenter" : "")")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(isViewingStage1RelaxBCs ? Color(red: 0.45, green: 0.92, blue: 0.62) : BlueHour.ice)
+                    if config.protocolMode == .relaxThenLoad {
+                        Button(isViewingStage1RelaxBCs ? "Loading Step BCs →" : "← Relaxation Step BCs") {
+                            previewStage = isViewingStage1RelaxBCs ? .stage2Load : .stage1Relax
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(BlueHour.abyss.opacity(0.88), in: Capsule())
+                .overlay(Capsule().strokeBorder(isViewingStage1RelaxBCs ? Color.green.opacity(0.55) : BlueHour.ice.opacity(0.45), lineWidth: 1))
+                .padding(10)
             }
             .gesture(
                 DragGesture(minimumDistance: 1)
@@ -559,7 +702,7 @@ public struct GeometryBuilderView: View {
         let fixedColor = Color(red: 1.0, green: 0.42, blue: 0.42)
         let rollerColor = Color(red: 0.98, green: 0.72, blue: 0.24)
         
-        for rule in config.geometryConfig.boundary_rules where rule.enabled {
+        for rule in activeCanvasBoundaryRules where rule.enabled {
             if rule.region == .customBox {
                 let bx = originX + CGFloat(rule.box_x_min) * boxW
                 let by = originY + CGFloat(1.0 - rule.box_y_max) * boxH
@@ -922,11 +1065,12 @@ public struct GeometryBuilderView: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                             ForEach([0.0, 15.0, 30.0, 45.0, 60.0, 90.0], id: \.self) { deg in
-                                Button("\(Int(deg))°") {
+                                selectableChipButton(
+                                    title: "\(Int(deg))°",
+                                    isSelected: abs(config.rotationAngle - deg) < 0.05
+                                ) {
                                     config.rotationAngle = deg
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.mini)
                             }
                         }
                     }
@@ -977,61 +1121,78 @@ public struct GeometryBuilderView: View {
                     let isExactCSL = abs(abs(config.geometryConfig.microstructure.theta1_deg - phiGB) - cslMatch.halfAngleDeg) < 0.025 &&
                                      abs(abs(config.geometryConfig.microstructure.theta2_deg - phiGB) - cslMatch.halfAngleDeg) < 0.025
 
+                    let isVerticalGBSelected = abs(phiGB) < 0.5 || abs(abs(phiGB) - 180.0) < 0.5
+                    let isHorizontalGBSelected = abs(abs(phiGB) - 90.0) < 0.5
+
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 4) {
-                            Button("Vertical GB (ϕ=0°)") {
+                        HStack(spacing: 5) {
+                            selectableChipButton(
+                                title: "Vertical GB (ϕ=0°)",
+                                isSelected: isVerticalGBSelected
+                            ) {
                                 config.geometryConfig.microstructure.gb_cx = 0.50
                                 config.geometryConfig.microstructure.gb_cy = 0.50
                                 config.geometryConfig.rotateBicrystalOrientation(toAngleDeg: 0.0)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
                             
-                            Button("Horizontal GB (ϕ=90°)") {
+                            selectableChipButton(
+                                title: "Horizontal GB (ϕ=90°)",
+                                isSelected: isHorizontalGBSelected
+                            ) {
                                 config.geometryConfig.microstructure.gb_cx = 0.50
                                 config.geometryConfig.microstructure.gb_cy = 0.50
                                 config.geometryConfig.rotateBicrystalOrientation(toAngleDeg: 90.0)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
                             
-                            Menu("CSL Catalog (4.8°–36.9°)") {
+                            Menu {
                                 ForEach(CSLRationalizer.curatedCatalog) { item in
                                     Button(item.shortLabel) {
                                         applyCSLMatch(item, applyAnalyticGap: autoUpdateGBSeamParams)
                                     }
                                 }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "list.bullet.rectangle")
+                                        .font(.system(size: 9))
+                                    Text("CSL Catalog")
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                }
+                                .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.40))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
                             }
-                            .controlSize(.mini)
+                            .menuStyle(.borderlessButton)
+                            .background(BlueHour.midnight.opacity(0.90), in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .strokeBorder(Color(red: 1.0, green: 0.82, blue: 0.35).opacity(0.75), lineWidth: 1.0)
+                            )
                         }
                         
                         HStack(spacing: 4) {
-                            Text("Quick Σ5:")
+                            Text("Quick CSL:")
                                 .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundColor(.secondary)
-                            Button("Σ5 (310) ±18.43°") {
+                                .foregroundColor(BlueHour.mist)
+                            selectableChipButton(
+                                title: "Σ5 (310) ±18.43°",
+                                isSelected: isExactCSL && cslMatch.m == 3 && cslMatch.n == 1
+                            ) {
                                 applyCSLMatch(CSLRationalizer.makeMatch(m: 3, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
-                                config.nx = 76
-                                config.ny = 76
                             }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.mini)
                             
-                            Button("Σ5 (210) ±26.57°") {
+                            selectableChipButton(
+                                title: "Σ5 (210) ±26.57°",
+                                isSelected: isExactCSL && cslMatch.m == 2 && cslMatch.n == 1
+                            ) {
                                 applyCSLMatch(CSLRationalizer.makeMatch(m: 2, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
-                                config.nx = 76
-                                config.ny = 76
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
 
-                            Button("Σ13 (320) ±33.69°") {
+                            selectableChipButton(
+                                title: "Σ13 (320) ±33.69°",
+                                isSelected: isExactCSL && cslMatch.m == 3 && cslMatch.n == 2
+                            ) {
                                 applyCSLMatch(CSLRationalizer.makeMatch(m: 3, n: 2), applyAnalyticGap: autoUpdateGBSeamParams)
-                                config.nx = 76
-                                config.ny = 76
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
                         }
                         
                         // General (m, n) CSL Rationalizer Box (gb_code / aimsgb)
@@ -1076,15 +1237,16 @@ public struct GeometryBuilderView: View {
                             HStack(spacing: 4) {
                                 Text("Commensurate K·L_CSL:")
                                     .font(.system(size: 9, weight: .semibold))
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(BlueHour.mist)
                                 ForEach(cslMatch.suggestedPeriodCounts(around: config.nx), id: \.self) { k in
                                     let nBox = cslMatch.commensurateSize(periods: k)
-                                    Button("\(nBox)×\(nBox) (\(k)L)") {
+                                    selectableChipButton(
+                                        title: "\(nBox)×\(nBox) (\(k)L)",
+                                        isSelected: config.nx == nBox && config.ny == nBox
+                                    ) {
                                         config.nx = nBox
                                         config.ny = nBox
                                     }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.mini)
                                 }
                                 if config.noiseLevel > 0.0 {
                                     Button("σ=0") {
@@ -1098,20 +1260,6 @@ public struct GeometryBuilderView: View {
                         }
                         .padding(6)
                         .background(BlueHour.slate.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
-                        
-                        Button(action: {
-                            config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: phiGB)
-                        }) {
-                            Label(isMostlyVertical
-                                  ? "Apply GB Roller BCs (Vertical GB: Roller-X, Fix uy=0, Free ux)"
-                                  : "Apply GB Roller BCs (Horizontal GB: Roller-Y, Fix ux=0, Free uy)",
-                                  systemImage: "arrow.left.and.right.square")
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(Color(red: 0.98, green: 0.72, blue: 0.24))
-                        .controlSize(.mini)
                         
                         HStack {
                             Text("GB Center (cx, cy):")
@@ -1378,12 +1526,14 @@ public struct GeometryBuilderView: View {
         config.geometryConfig.microstructure.gb_normal_gap_a0 = applyAnalyticGap ? match.recommendedGapA0 : 0.0
         config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
         config.geometryConfig.microstructure.max_gb_edge_a0 = 2.60
-        config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: phiGB)
+        if config.protocolMode == .relaxOnly && !config.geometryConfig.indenter.enabled {
+            config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: phiGB)
+        }
         config.noiseLevel = 0.0
-        let kPeriods = max(2, Int(round(Double(max(config.nx, 60)) / match.periodA0)))
-        let commN = match.commensurateSize(periods: kPeriods)
-        config.nx = commN
-        config.ny = commN
+        let kPeriodsX = max(2, Int(round(Double(max(config.nx, 32)) / match.periodA0)))
+        let kPeriodsY = max(2, Int(round(Double(max(config.ny, 32)) / match.periodA0)))
+        config.nx = match.commensurateSize(periods: kPeriodsX)
+        config.ny = match.commensurateSize(periods: kPeriodsY)
     }
 
     private func snapNearCSLAngle(_ deg: Double) -> Double {
@@ -1403,9 +1553,9 @@ public struct GeometryBuilderView: View {
         boxW: CGFloat,
         boxH: CGFloat
     ) {
-        let stepStride = max(1, Int(ceil(Double(max(config.nx, config.ny)) / 125.0)))
+        let stepStride = max(1, Int(ceil(Double(max(config.nx, config.ny)) / 350.0)))
         let isTri = (config.latticeSymmetry == .triangular)
-        let dotR: CGFloat = max(1.6, min(4.2, min(boxW, boxH) / CGFloat(max(config.nx, config.ny) / stepStride) * 0.30))
+        let dotR: CGFloat = max(0.85, min(4.2, min(boxW, boxH) / CGFloat(max(config.nx, config.ny) / stepStride) * 0.30))
         let sqrt3 = sqrt(3.0)
         let a0 = 1.0
         let Lx = max(1e-4, Double(config.nx) * a0)
@@ -1674,7 +1824,12 @@ public struct GeometryBuilderView: View {
             let xHat = min(1.0, max(0.0, site.xPhys / Lx))
             let yHat = min(1.0, max(0.0, site.yPhys / Ly))
             let role = config.geometryConfig.classifyNodeRole(
-                xHat: xHat, yHat: yHat, nx: config.nx, ny: config.ny
+                xHat: xHat,
+                yHat: yHat,
+                nx: config.nx,
+                ny: config.ny,
+                overrideRules: activeCanvasBoundaryRules,
+                overrideIndenterEnabled: activeCanvasIndenterEnabled
             )
             let pt = toScreen(xHat, yHat)
             let r = site.isMergedSeam ? (dotR * 1.18) : dotR
@@ -2234,56 +2389,253 @@ public struct GeometryBuilderView: View {
         }
     }
     
-    private var boundaryConditionsCard: some View {
-        GroupBox(label: Label("Boundary Conditions on Geometry", systemImage: "arrow.up.and.down.and.sparkles")) {
+    private var stageProtocolBannerCard: some View {
+        GroupBox(label: Label("Select Step to Edit in BCs & Indenter", systemImage: "arrow.triangle.branch")) {
             VStack(alignment: .leading, spacing: 8) {
-                // Quick BC Templates
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        Button("GB Roller (Auto X/Y)") {
-                            config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: config.geometryConfig.microstructure.gb_angle_deg)
-                        }
-                        Button("Tension (+Y)") {
-                            config.geometryConfig.boundary_rules = [
-                                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
-                                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
-                                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
-                                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
-                            ]
-                            config.geometryConfig.primary_stress_component = "sigma_yy"
-                        }
-                        Button("Compression (-Y)") {
-                            config.geometryConfig.boundary_rules = [
-                                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: -1.0),
-                                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
-                                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
-                                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
-                            ]
-                            config.geometryConfig.primary_stress_component = "sigma_yy"
-                        }
-                        Button("Shear Grips (Top +X)") {
-                            config.geometryConfig.boundary_rules = [
-                                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
-                                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
-                            ]
-                            config.geometryConfig.primary_stress_component = "sigma_xy"
-                        }
-                        Button("Affine Shear Box") {
-                            config.geometryConfig.boundary_rules = [
-                                BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: "simple_shear_x"),
-                                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
-                            ]
-                            config.geometryConfig.primary_stress_component = "sigma_xy"
+                if config.protocolMode == .relaxThenLoad {
+                    HStack(spacing: 4) {
+                        ForEach(BCStagePreviewMode.allCases) { mode in
+                            let isSelected = previewStage == mode
+                            let activeColor = mode == .stage1Relax
+                                ? Color(red: 0.16, green: 0.72, blue: 0.52)
+                                : Color(red: 0.18, green: 0.62, blue: 0.78)
+                            let borderColor = mode == .stage1Relax
+                                ? Color(red: 0.45, green: 0.96, blue: 0.78)
+                                : Color(red: 0.48, green: 0.90, blue: 0.98)
+                            Button {
+                                previewStage = mode
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 9, weight: .bold))
+                                    Text(mode.rawValue)
+                                        .font(.system(size: 10.5, weight: isSelected ? .bold : .medium))
+                                        .lineLimit(1)
+                                }
+                                .foregroundColor(isSelected ? .white : BlueHour.ice.opacity(0.88))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 5)
+                                .padding(.horizontal, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(isSelected ? activeColor : BlueHour.midnight.opacity(0.75))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .strokeBorder(
+                                            isSelected ? borderColor : BlueHour.steel.opacity(0.65),
+                                            lineWidth: isSelected ? 1.3 : 0.8
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
+                    .padding(3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(BlueHour.midnight.opacity(0.92))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(BlueHour.steel.opacity(0.55), lineWidth: 1)
+                    )
+                } else {
+                    HStack {
+                        Label("Protocol Mode: \(config.protocolMode.shortTitle)", systemImage: "checkmark.seal.fill")
+                            .font(.caption.bold())
+                            .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                        Spacer()
+                        Button("Switch to 2. Relax → Load") {
+                            config.protocolMode = .relaxThenLoad
+                            config.geometryConfig.microstructure.relax_only = false
+                            previewStage = .stage2Load
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                    }
                 }
                 
-                ForEach($config.geometryConfig.boundary_rules) { $rule in
+                if isViewingStage1RelaxBCs {
+                    HStack(alignment: .top, spacing: 6) {
+                        Circle().fill(Color.green).frame(width: 7, height: 7).padding(.top, 3)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Editing Relaxation Step BCs (\(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) active rules)")
+                                .font(.caption.bold())
+                                .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                            Text("Boundary conditions used during the initial relaxation step before mechanical loading.")
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.green.opacity(0.55), lineWidth: 1))
+                } else {
+                    HStack(alignment: .top, spacing: 6) {
+                        Circle().fill(Color(red: 0.31, green: 0.85, blue: 0.78)).frame(width: 7, height: 7).padding(.top, 3)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Editing Loading Step BCs & Indenter (\(config.geometryConfig.boundary_rules.filter(\.enabled).count) active rules)")
+                                .font(.caption.bold())
+                                .foregroundColor(BlueHour.ice)
+                            Text("Boundary conditions and Nanoindenter used during the mechanical loading step.")
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(BlueHour.slate.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(BlueHour.ice.opacity(0.55), lineWidth: 1))
+                }
+            }
+            .padding(6)
+        }
+    }
+    
+    private var boundaryConditionsCard: some View {
+        GroupBox(label: Label(
+            isViewingStage1RelaxBCs
+                ? "Relaxation Step BCs"
+                : "Loading Step BCs",
+            systemImage: isViewingStage1RelaxBCs ? "checkmark.seal.fill" : "arrow.up.and.down.and.sparkles"
+        )) {
+            VStack(alignment: .leading, spacing: 8) {
+                // Quick BC Templates (Stage-aware)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        if isViewingStage1RelaxBCs {
+                            let s1 = config.geometryConfig.stage1_boundary_rules
+                            let kindOf = { (reg: BoundaryRegionSelector) -> BoundaryConditionKindModel? in
+                                s1.first(where: { $0.enabled && $0.region == reg })?.kind
+                            }
+                            let isGBRollerDefault = (kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerY && kindOf(.right) == .free)
+                                || (kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.bottom) == .rollerX && kindOf(.top) == .free)
+                            let is4EdgeRoller = (kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerX && kindOf(.right) == .rollerX)
+                                || (kindOf(.top) == .rollerY && kindOf(.bottom) == .rollerY && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY)
+                            let isIndentBase = kindOf(.bottom) == .fixed && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.top) == .free
+                            let isAllFree = kindOf(.bottom) == .free && kindOf(.top) == .free && kindOf(.left) == .free && kindOf(.right) == .free
+                            
+                            selectableChipButton(title: "GB Roller (Default)", isSelected: isGBRollerDefault) {
+                                config.geometryConfig.resetStage1ToGBFrameRollerBCs(forAngleDeg: config.geometryConfig.microstructure.gb_angle_deg)
+                            }
+                            selectableChipButton(title: "4-Edge Roller (Auto X/Y)", isSelected: is4EdgeRoller) {
+                                let phiRad = config.geometryConfig.microstructure.gb_angle_deg * .pi / 180.0
+                                let isVert = abs(cos(phiRad)) >= abs(sin(phiRad))
+                                let rk: BoundaryConditionKindModel = isVert ? .rollerX : .rollerY
+                                config.geometryConfig.stage1_boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: rk, thickness_a0: 2.0, lock_x: !isVert, lock_y: isVert),
+                                    BoundaryZoneRuleModel(region: .top, kind: rk, thickness_a0: 2.0, lock_x: !isVert, lock_y: isVert),
+                                    BoundaryZoneRuleModel(region: .left, kind: rk, thickness_a0: 2.0, lock_x: !isVert, lock_y: isVert),
+                                    BoundaryZoneRuleModel(region: .right, kind: rk, thickness_a0: 2.0, lock_x: !isVert, lock_y: isVert)
+                                ]
+                            }
+                            selectableChipButton(title: "Indent Base (Bottom Fixed)", isSelected: isIndentBase) {
+                                config.geometryConfig.stage1_boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .right, kind: .rollerY, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5)
+                                ]
+                            }
+                            selectableChipButton(title: "All Free Surface", isSelected: isAllFree) {
+                                config.geometryConfig.stage1_boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
+                                ]
+                            }
+                        } else {
+                            let s2 = config.geometryConfig.boundary_rules
+                            let ruleOf = { (reg: BoundaryRegionSelector) -> BoundaryZoneRuleModel? in
+                                s2.first(where: { $0.enabled && $0.region == reg })
+                            }
+                            let isIndentBase = ruleOf(.bottom)?.kind == .fixed && ruleOf(.left)?.kind == .rollerY && ruleOf(.right)?.kind == .rollerY && ruleOf(.top)?.kind == .free
+                            let isShearGB = ruleOf(.left)?.kind == .fixed && ruleOf(.right)?.kind == .prescribed && abs((ruleOf(.right)?.uy ?? 0) - 1.0) < 0.01
+                            let isTensionGB = ruleOf(.left)?.kind == .rollerY && ruleOf(.right)?.kind == .prescribed && abs((ruleOf(.right)?.ux ?? 0) - 1.0) < 0.01
+                            let isTensionY = ruleOf(.bottom)?.kind == .fixed && ruleOf(.top)?.kind == .prescribed && abs((ruleOf(.top)?.uy ?? 0) - 1.0) < 0.01
+                            let isCompY = ruleOf(.bottom)?.kind == .fixed && ruleOf(.top)?.kind == .prescribed && abs((ruleOf(.top)?.uy ?? 0) + 1.0) < 0.01
+                            let isShearTop = ruleOf(.bottom)?.kind == .fixed && ruleOf(.top)?.kind == .prescribed && abs((ruleOf(.top)?.ux ?? 0) - 1.0) < 0.01
+                            let isAffine = ruleOf(.outerPerimeter)?.kind == .affine
+                            let isGBRoller2 = (ruleOf(.top)?.kind == .rollerX && ruleOf(.bottom)?.kind == .rollerX && ruleOf(.left)?.kind == .rollerY && ruleOf(.right)?.kind == .free)
+                                || (ruleOf(.left)?.kind == .rollerY && ruleOf(.right)?.kind == .rollerY && ruleOf(.bottom)?.kind == .rollerX && ruleOf(.top)?.kind == .free)
+                            
+                            selectableChipButton(title: "Indent Base (Bottom Fixed)", isSelected: isIndentBase) {
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .right, kind: .rollerY, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                                ]
+                                config.geometryConfig.primary_stress_component = "indentation_load"
+                            }
+                            selectableChipButton(title: "Shear ∥ GB (Right +Y)", isSelected: isShearGB) {
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .left, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .right, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0, lock_x: true, lock_y: true),
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                                ]
+                                config.geometryConfig.primary_stress_component = "sigma_xy"
+                            }
+                            selectableChipButton(title: "Tension ⊥ GB (Right +X)", isSelected: isTensionGB) {
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .right, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0, lock_x: true, lock_y: false),
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                                ]
+                                config.geometryConfig.primary_stress_component = "sigma_xx"
+                            }
+                            selectableChipButton(title: "Tension (+Y)", isSelected: isTensionY) {
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
+                                    BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                                ]
+                                config.geometryConfig.primary_stress_component = "sigma_yy"
+                            }
+                            selectableChipButton(title: "Compression (-Y)", isSelected: isCompY) {
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: -1.0),
+                                    BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                                ]
+                                config.geometryConfig.primary_stress_component = "sigma_yy"
+                            }
+                            selectableChipButton(title: "Shear Grips (Top +X)", isSelected: isShearTop) {
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                                ]
+                                config.geometryConfig.primary_stress_component = "sigma_xy"
+                            }
+                            selectableChipButton(title: "Affine Shear Box", isSelected: isAffine) {
+                                config.geometryConfig.boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: "simple_shear_x"),
+                                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                                ]
+                                config.geometryConfig.primary_stress_component = "sigma_xy"
+                            }
+                            selectableChipButton(title: "GB Roller (Auto X/Y)", isSelected: isGBRoller2) {
+                                config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: config.geometryConfig.microstructure.gb_angle_deg)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                
+                ForEach(activeEditingRulesBinding) { $rule in
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
                             Toggle("", isOn: $rule.enabled)
@@ -2322,7 +2674,11 @@ public struct GeometryBuilderView: View {
                             
                             Button(role: .destructive, action: {
                                 let idToRemove = rule.id
-                                config.geometryConfig.boundary_rules.removeAll { $0.id == idToRemove }
+                                if isViewingStage1RelaxBCs {
+                                    config.geometryConfig.stage1_boundary_rules.removeAll { $0.id == idToRemove }
+                                } else {
+                                    config.geometryConfig.boundary_rules.removeAll { $0.id == idToRemove }
+                                }
                             }) {
                                 Image(systemName: "xmark.circle")
                                     .font(.caption2)
@@ -2444,9 +2800,15 @@ public struct GeometryBuilderView: View {
                 }
                 
                 Button("+ Add Boundary Zone Rule") {
-                    config.geometryConfig.boundary_rules.append(
-                        BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0)
-                    )
+                    if isViewingStage1RelaxBCs {
+                        config.geometryConfig.stage1_boundary_rules.append(
+                            BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true)
+                        )
+                    } else {
+                        config.geometryConfig.boundary_rules.append(
+                            BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0)
+                        )
+                    }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
@@ -2616,14 +2978,22 @@ struct NanoindenterCardView: View {
     @ObservedObject var config: SimulationConfig
     
     var body: some View {
-        GroupBox(label: Label("Nanoindenter Contact Tool", systemImage: "arrow.down.to.line.compact")) {
+        GroupBox(label: Label("Loading Step: Nanoindenter Contact Tool", systemImage: "arrow.down.to.line.compact")) {
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Enable Nanoindenter Tool", isOn: $config.geometryConfig.indenter.enabled)
                     .font(.caption.bold())
                     .onChange(of: config.geometryConfig.indenter.enabled) { enabled in
                         if enabled {
                             config.geometryConfig.enabled = true
+                            config.boundaryCondition = .fixed
                             config.geometryConfig.primary_stress_component = "indentation_load"
+                            config.geometryConfig.boundary_rules = [
+                                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 2.0),
+                                BoundaryZoneRuleModel(region: .right, kind: .rollerY, thickness_a0: 2.0),
+                                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5),
+                                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                            ]
                         }
                     }
                 

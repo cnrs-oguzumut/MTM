@@ -5,6 +5,7 @@ public enum ChartMetricMode: String, CaseIterable, Identifiable {
     case stress = "Stress σ(α)"
     case energy = "Energy E(α)"
     case eigenvalue = "λ_min(α)"
+    case gbEnergy = "γ_GB(Δθ)"
     
     public var id: String { rawValue }
 }
@@ -36,9 +37,25 @@ struct StressStrainChartView: View {
     @State private var scaleMode: ChartScaleMode = .autoFit
     @State private var showRemeshEvents: Bool = true
     @State private var showYieldLine: Bool = true
+    @State private var useInteriorGBGauge: Bool = true
+    @State private var showGBSigmaLabels: Bool = true
     
     private func stressValue(for pt: StressStrainPoint) -> Double {
         pt.value(for: stressComponent)
+    }
+    
+    private func gbEnergyValue(for pt: GBEnergyPoint) -> Double {
+        useInteriorGBGauge ? pt.gbEnergyInterior : pt.gbEnergyTotal
+    }
+    
+    private var displayGBPoints: [GBEnergyPoint] {
+        if !runner.gbEnergyPoints.isEmpty {
+            return runner.gbEnergyPoints
+        }
+        if let cur = runner.currentGBEnergy {
+            return [cur]
+        }
+        return []
     }
     
     private var currentPeakStress: Double {
@@ -53,6 +70,9 @@ struct StressStrainChartView: View {
     // MARK: - Dynamic Clever Domain Calculations
     
     private var activeAlphas: [Double] {
+        if chartMode == .gbEnergy {
+            return displayGBPoints.map(\.misorientationDeg)
+        }
         if chartMode == .eigenvalue && !runner.eigenPoints.isEmpty {
             return runner.eigenPoints.map(\.alpha)
         }
@@ -60,6 +80,20 @@ struct StressStrainChartView: View {
     }
     
     private var xDomain: ClosedRange<Double> {
+        if chartMode == .gbEnergy {
+            let angles = displayGBPoints.map(\.misorientationDeg)
+            guard !angles.isEmpty else { return 0.0...60.0 }
+            let minA = angles.min() ?? 0.0
+            let maxA = angles.max() ?? 60.0
+            if scaleMode == .fromZero {
+                return 0.0...max(10.0, maxA * 1.08)
+            }
+            let span = max(4.0, maxA - minA)
+            let lo = max(0.0, minA - span * 0.08)
+            let hi = maxA + span * 0.08
+            return lo < hi ? lo...hi : 0.0...60.0
+        }
+        
         let alphas = activeAlphas
         let firstAlpha = alphas.first ?? (runner.activeConfig?.alphaStart ?? 0.14)
         
@@ -104,6 +138,17 @@ struct StressStrainChartView: View {
     
     private var yDomain: ClosedRange<Double> {
         switch chartMode {
+        case .gbEnergy:
+            let pts = displayGBPoints
+            guard !pts.isEmpty else { return 0.0...1.0 }
+            let vals = pts.map { gbEnergyValue(for: $0) }
+            let minY = vals.min() ?? 0.0
+            let maxY = vals.max() ?? 0.5
+            let span = max(0.05, maxY - minY)
+            let lo = scaleMode == .fromZero ? 0.0 : max(0.0, minY - span * 0.12)
+            let hi = maxY + span * 0.14
+            return lo < hi ? lo...hi : 0.0...max(0.5, maxY * 1.2)
+            
         case .stress:
             guard !runner.curvePoints.isEmpty else { return 0.0...0.05 }
             let vals = runner.curvePoints.map { stressValue(for: $0) }
@@ -171,6 +216,9 @@ struct StressStrainChartView: View {
     // MARK: - Axis Formatter Helpers
     
     private func formatXValue(_ val: Double) -> String {
+        if chartMode == .gbEnergy {
+            return String(format: "%.1f°", val)
+        }
         let span = xDomain.upperBound - xDomain.lowerBound
         if span <= 0.002 {
             return String(format: "%.5f", val)
@@ -186,7 +234,7 @@ struct StressStrainChartView: View {
     private func formatYValue(_ val: Double) -> String {
         let span = yDomain.upperBound - yDomain.lowerBound
         switch chartMode {
-        case .stress, .eigenvalue:
+        case .stress, .eigenvalue, .gbEnergy:
             if span <= 0.002 {
                 return String(format: "%.5f", val)
             } else if span <= 0.02 {
@@ -215,7 +263,7 @@ struct StressStrainChartView: View {
         VStack(spacing: 0) {
             // Chart Control Toolbar: Pinned left pickers + horizontally scrollable options/badges
             HStack(spacing: 10) {
-                // 1. Pinned Metric Selector: Stress vs Energy vs Eigenvalue
+                // 1. Pinned Metric Selector: Stress vs Energy vs Eigenvalue vs GB Energy
                 Picker("", selection: $chartMode) {
                     ForEach(ChartMetricMode.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
@@ -225,7 +273,7 @@ struct StressStrainChartView: View {
                 .labelsHidden()
                 .controlSize(.small)
                 .fixedSize()
-                .help("Select plotted quantity: Stress / Load σ(α), Internal Energy E(α), or Smallest Stiffness Eigenvalue λ_min(α)")
+                .help("Select plotted quantity: Stress / Load σ(α), Internal Energy E(α), Smallest Stiffness Eigenvalue λ_min(α), or Grain Boundary Energy γ_GB(Δθ)")
                 
                 // 1b. Stress / Nanoindentation Component Dropdown Selector
                 if chartMode == .stress {
@@ -279,7 +327,20 @@ struct StressStrainChartView: View {
                 // 3. Horizontally scrollable toggles & badges so left pickers never shift or clip
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
-                        if chartMode != .eigenvalue {
+                        if chartMode == .gbEnergy {
+                            Toggle("Interior Gauge (exclude 4a₀ collar)", isOn: $useInteriorGBGauge)
+                                .toggleStyle(.checkbox)
+                                .controlSize(.small)
+                                .lineLimit(1)
+                                .fixedSize()
+                                .help("When checked, uses E_int / L_int (excluding 4a₀ near the outer boundaries). Uncheck for total E / L_GB.")
+                            Toggle("Σ Labels", isOn: $showGBSigmaLabels)
+                                .toggleStyle(.checkbox)
+                                .controlSize(.small)
+                                .lineLimit(1)
+                                .fixedSize()
+                                .help("Show Σ cusp labels on the γ_GB(Δθ) curve")
+                        } else if chartMode != .eigenvalue {
                             Toggle("Remesh (\(remeshEvents.count))", isOn: $showRemeshEvents)
                                 .toggleStyle(.checkbox)
                                 .controlSize(.small)
@@ -295,6 +356,29 @@ struct StressStrainChartView: View {
                                 .lineLimit(1)
                                 .fixedSize()
                                 .help("Display peak stress horizontal guide line")
+                        }
+                        
+                        // Live Grain Boundary Energy badge (always visible when a Bicrystal run produced γ_GB)
+                        if let curGB = runner.currentGBEnergy {
+                            let gVal = useInteriorGBGauge ? curGB.gbEnergyInterior : curGB.gbEnergyTotal
+                            Button(action: { chartMode = .gbEnergy }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "square.split.2x1.fill")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(.green)
+                                    Text("γ_GB: \(String(format: "%.5f", gVal)) (Δθ=\(String(format: "%.2f°", curGB.misorientationDeg)))")
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .foregroundColor(.green)
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(BlueHour.controlSurface)
+                                .cornerRadius(4)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Grain Boundary Energy at α = 0. Click to view the cumulative γ_GB(Δθ) curve across misorientations.")
+                            .lineLimit(1)
+                            .fixedSize()
                         }
                         
                         let peakVal = currentPeakStress
@@ -330,7 +414,13 @@ struct StressStrainChartView: View {
                             .fixedSize()
                         }
                         
-                        let ptCount = chartMode == .eigenvalue ? runner.eigenPoints.count : runner.curvePoints.count
+                        let ptCount: Int = {
+                            switch chartMode {
+                            case .eigenvalue: return runner.eigenPoints.count
+                            case .gbEnergy: return displayGBPoints.count
+                            default: return runner.curvePoints.count
+                            }
+                        }()
                         Text("\(ptCount) pts")
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
                             .foregroundColor(.secondary)
@@ -345,7 +435,7 @@ struct StressStrainChartView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 
                 // Active Strain Range Badge
-                if let firstA = runner.curvePoints.first?.alpha, let lastA = runner.curvePoints.last?.alpha {
+                if chartMode != .gbEnergy, let firstA = runner.curvePoints.first?.alpha, let lastA = runner.curvePoints.last?.alpha {
                     Text("α: [\(String(format: "%.3f", firstA)) → \(String(format: "%.3f", lastA))]")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundColor(.secondary)
@@ -358,19 +448,43 @@ struct StressStrainChartView: View {
                 }
                 
                 // Export Data Menu
-                if !runner.curvePoints.isEmpty {
+                if !runner.curvePoints.isEmpty || !displayGBPoints.isEmpty {
                     Menu {
-                        Button(action: exportCurveCSV) {
-                            Label("Save Stress–Strain Curve (CSV)...", systemImage: "chart.xyaxis.line")
-                        }
-                        if !remeshEvents.isEmpty {
-                            Button(action: exportAvalanchesCSV) {
-                                Label("Save Avalanches / Remesh Events (CSV)...", systemImage: "burst")
+                        if !runner.curvePoints.isEmpty {
+                            Button(action: exportCurveCSV) {
+                                Label("Save Stress–Strain Curve (CSV)...", systemImage: "chart.xyaxis.line")
+                            }
+                            if !remeshEvents.isEmpty {
+                                Button(action: exportAvalanchesCSV) {
+                                    Label("Save Avalanches / Remesh Events (CSV)...", systemImage: "burst")
+                                }
+                            }
+                            Button(action: copyCurveCSVToClipboard) {
+                                Label("Copy Curve Data (CSV)", systemImage: "doc.on.doc")
                             }
                         }
-                        Divider()
-                        Button(action: copyCurveCSVToClipboard) {
-                            Label("Copy Curve Data (CSV)", systemImage: "doc.on.doc")
+                        if !displayGBPoints.isEmpty {
+                            if !runner.curvePoints.isEmpty {
+                                Divider()
+                            }
+                            Button(action: exportGBEnergyText) {
+                                Label("Save Angle vs. Energy Table (.txt)...", systemImage: "doc.text")
+                            }
+                            Button(action: exportGBEnergyCSV) {
+                                Label("Save γ_GB vs Misorientation Δθ (CSV)...", systemImage: "square.split.2x1")
+                            }
+                            Button(action: copyGBEnergyCSVToClipboard) {
+                                Label("Copy γ_GB(Δθ) Table (CSV)", systemImage: "doc.on.doc")
+                            }
+                            Button(action: { runner.openSweepTextFile() }) {
+                                Label("Open angle_vs_energy.txt", systemImage: "arrow.up.forward.app")
+                            }
+                            Button(action: { runner.openSweepRelaxedVTKFolder() }) {
+                                Label("Open Relaxed VTK Configurations Folder", systemImage: "folder")
+                            }
+                            Button(role: .destructive, action: { runner.clearGBEnergyHistory() }) {
+                                Label("Clear Cumulative γ_GB(Δθ) History", systemImage: "trash")
+                            }
                         }
                     } label: {
                         Label("Export Data", systemImage: "square.and.arrow.up")
@@ -387,7 +501,23 @@ struct StressStrainChartView: View {
             Divider()
             
             // Main Chart Canvas
-            if chartMode == .eigenvalue && runner.eigenPoints.isEmpty {
+            if chartMode == .gbEnergy && displayGBPoints.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "square.split.2x1")
+                        .font(.system(size: 44))
+                        .foregroundColor(.secondary.opacity(0.5))
+                    Text("No Grain Boundary Energy Data Yet")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Text("Run a Bicrystal simulation (at α = 0) to compute the specific grain boundary energy γ_GB = E_GB / L_GB. Each angle Δθ you run is automatically appended to gb_energy_vs_misorientation.csv and plotted here.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 460)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(BlueHour.canvasBackground)
+            } else if chartMode == .eigenvalue && runner.eigenPoints.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "waveform.path.ecg")
                         .font(.system(size: 44))
@@ -405,7 +535,7 @@ struct StressStrainChartView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(BlueHour.canvasBackground)
-            } else if runner.curvePoints.isEmpty {
+            } else if chartMode != .gbEnergy && runner.curvePoints.isEmpty {
                 VStack(spacing: 14) {
                     Image(systemName: "chart.xyaxis.line")
                         .font(.system(size: 48))
@@ -423,7 +553,60 @@ struct StressStrainChartView: View {
                 .background(BlueHour.canvasBackground)
             } else {
                 Chart {
-                    if chartMode == .eigenvalue {
+                    if chartMode == .gbEnergy {
+                        ForEach(displayGBPoints) { pt in
+                            let yVal = gbEnergyValue(for: pt)
+                            LineMark(
+                                x: .value("Misorientation Δθ (°)", pt.misorientationDeg),
+                                y: .value("Grain Boundary Energy γ_GB", yVal)
+                            )
+                            .foregroundStyle(Color.green)
+                            .interpolationMethod(.linear)
+                            
+                            PointMark(
+                                x: .value("Misorientation Δθ (°)", pt.misorientationDeg),
+                                y: .value("Grain Boundary Energy γ_GB", yVal)
+                            )
+                            .symbol(Circle())
+                            .symbolSize(displayGBPoints.count > 25 ? 36 : 52)
+                            .foregroundStyle(Color.green)
+                            .annotation(position: .top) {
+                                let isMajorCusp = (pt.sigma > 1 && pt.sigma <= 17)
+                                if showGBSigmaLabels && (displayGBPoints.count <= 22 || isMajorCusp) {
+                                    Text(pt.sigma > 0
+                                         ? String(format: "Σ%d (%.1f°)", pt.sigma, pt.misorientationDeg)
+                                         : String(format: "%.1f°", pt.misorientationDeg))
+                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        
+                        // Highlight current run's point if present
+                        if let cur = runner.currentGBEnergy {
+                            let curY = gbEnergyValue(for: cur)
+                            PointMark(
+                                x: .value("Current Δθ (°)", cur.misorientationDeg),
+                                y: .value("Current γ_GB", curY)
+                            )
+                            .symbol(Circle().strokeBorder(lineWidth: 2.0))
+                            .symbolSize(105)
+                            .foregroundStyle(Color.orange)
+                        }
+                        
+                        if let selAngle = selectedAlpha, let gbPt = findClosestGBPoint(to: selAngle) {
+                            RuleMark(x: .value("Selected Δθ", gbPt.misorientationDeg))
+                                .foregroundStyle(Color.secondary.opacity(0.4))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                            
+                            PointMark(
+                                x: .value("Selected Δθ", gbPt.misorientationDeg),
+                                y: .value("γ_GB", gbEnergyValue(for: gbPt))
+                            )
+                            .symbolSize(90)
+                            .foregroundStyle(Color.cyan)
+                        }
+                    } else if chartMode == .eigenvalue {
                         // Zero-eigenvalue stability threshold line
                         RuleMark(y: .value("Stability Threshold", 0.0))
                             .foregroundStyle(Color.red.opacity(0.65))
@@ -597,7 +780,54 @@ struct StressStrainChartView: View {
                 .background(BlueHour.canvasBackground)
                 
                 // Hovered point details bar
-                if chartMode == .eigenvalue, let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha) {
+                if chartMode == .gbEnergy, let gbPt = (selectedAlpha.flatMap { findClosestGBPoint(to: $0) } ?? runner.currentGBEnergy ?? displayGBPoints.last) {
+                    HStack(spacing: 12) {
+                        Text(gbPt.sigma > 0
+                             ? String(format: "Δθ: %.2f° (Σ%d, %d %d 0)", gbPt.misorientationDeg, gbPt.sigma, gbPt.m, gbPt.n)
+                             : String(format: "Δθ: %.3f° (θ = ±%.3f°)", gbPt.misorientationDeg, gbPt.halfAngleDeg))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        Text("γ_GB (Int): \(String(format: "%.6f", gbPt.gbEnergyInterior))")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.green)
+                        Text("γ_GB (Tot): \(String(format: "%.6f", gbPt.gbEnergyTotal))")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.teal)
+                        Text("L_GB: \(String(format: "%.0f", gbPt.lengthGBA0))a₀ (\(gbPt.nx)×\(gbPt.ny))")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                        
+                        if !gbPt.relaxedVTKPath.isEmpty && FileManager.default.fileExists(atPath: gbPt.relaxedVTKPath) {
+                            Button(action: {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: gbPt.relaxedVTKPath))
+                            }) {
+                                Label("Open Angle VTK", systemImage: "cube.transparent")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            .help("Open relaxed configuration VTK for Δθ = \(String(format: "%.2f°", gbPt.misorientationDeg)) in ParaView")
+                        }
+                        
+                        Button(action: { runner.openSweepTextFile() }) {
+                            Label("angle_vs_energy.txt", systemImage: "doc.text")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        
+                        Button(action: { runner.openSweepRelaxedVTKFolder() }) {
+                            Label("VTK Folder", systemImage: "folder")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(BlueHour.controlSurface)
+                } else if chartMode == .eigenvalue, let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha) {
                     HStack(spacing: 18) {
                         Text("Step: \(eigPt.iteration)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -656,6 +886,18 @@ struct StressStrainChartView: View {
                 }
             }
         }
+        .onAppear {
+            if let req = runner.requestedChartMode {
+                chartMode = req
+            } else if runner.isSweepRunning || runner.activeConfig?.protocolMode == .sweepMisorientation || runner.activeConfig?.protocolMode == .relaxOnly {
+                chartMode = .gbEnergy
+            }
+        }
+        .onReceive(runner.$requestedChartMode) { newMode in
+            if let m = newMode {
+                chartMode = m
+            }
+        }
     }
     
     private var displayCurvePoints: [StressStrainPoint] {
@@ -708,6 +950,12 @@ struct StressStrainChartView: View {
         return runner.eigenPoints.min(by: { abs($0.alpha - alpha) < abs($1.alpha - alpha) })
     }
     
+    private func findClosestGBPoint(to angle: Double) -> GBEnergyPoint? {
+        let pts = displayGBPoints
+        guard !pts.isEmpty else { return nil }
+        return pts.min(by: { abs($0.misorientationDeg - angle) < abs($1.misorientationDeg - angle) })
+    }
+    
     // MARK: - Export Methods
     
     private func generateCurveCSV() -> String {
@@ -718,9 +966,45 @@ struct StressStrainChartView: View {
         return csv
     }
     
+    private func generateGBEnergyCSV() -> String {
+        var csv = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0,Sigma,m,n,RelaxedVTKPath\n"
+        for pt in displayGBPoints {
+            csv += "\(pt.misorientationDeg),\(pt.halfAngleDeg),\(pt.theta1Deg),\(pt.theta2Deg),\(pt.gbAngleDeg),\(pt.nx),\(pt.ny),\(pt.lengthGBA0),\(pt.lengthIntA0),\(pt.totalEnergy),\(pt.interiorEnergy),\(pt.gbEnergyTotal),\(pt.gbEnergyInterior),\(pt.normalGapA0),\(pt.seamDMinA0),\(pt.sigma),\(pt.m),\(pt.n),\(pt.relaxedVTKPath)\n"
+        }
+        return csv
+    }
+    
+    private func generateGBEnergyText() -> String {
+        var txt = "# Symmetric Tilt Grain Boundary Energy vs. Misorientation Angle (alpha = 0)\n"
+        txt += "#  1:DeltaTheta_deg  2:HalfAngle_deg  3:Sigma  4:m  5:n  6:Gamma_GB_interior  7:Gamma_GB_total  8:E_total_relaxed  9:E_interior_relaxed  10:L_GB_a0  11:NX  12:NY  13:Gap_a0  14:d_min_a0  15:Relaxed_VTK_File\n"
+        for p in displayGBPoints {
+            let vtkName = p.relaxedVTKPath.isEmpty ? "configuration_0_post.vtk" : (p.relaxedVTKPath as NSString).lastPathComponent
+            txt += String(
+                format: "%10.4f %10.4f %6d %4d %4d %16.8f %16.8f %16.8f %16.8f %10.2f %5d %5d %9.4f %9.4f  %@\n",
+                p.misorientationDeg, p.halfAngleDeg, p.sigma, p.m, p.n,
+                p.gbEnergyInterior, p.gbEnergyTotal, p.totalEnergy, p.interiorEnergy,
+                p.lengthGBA0, p.nx, p.ny, p.normalGapA0, p.seamDMinA0, vtkName
+            )
+        }
+        return txt
+    }
+    
     private func exportCurveCSV() {
         let csv = generateCurveCSV()
         ExportDataHelper.saveStringToFile(content: csv, defaultFileName: "stress_strain_curve.csv")
+    }
+    
+    private func exportGBEnergyText() {
+        ExportDataHelper.saveStringToFile(content: generateGBEnergyText(), defaultFileName: "angle_vs_energy.txt")
+    }
+    
+    private func exportGBEnergyCSV() {
+        let csv = generateGBEnergyCSV()
+        ExportDataHelper.saveStringToFile(content: csv, defaultFileName: "gb_energy_vs_misorientation.csv")
+    }
+    
+    private func copyGBEnergyCSVToClipboard() {
+        ExportDataHelper.copyToClipboard(text: generateGBEnergyCSV())
     }
     
     private func exportAvalanchesCSV() {

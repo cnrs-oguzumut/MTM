@@ -171,7 +171,12 @@ struct MicrostructureConfig {
     SeamOverlapResolution seam_resolution = SeamOverlapResolution::MergeMidpoint;
     double min_seam_distance_a0 = 0.55; // Minimum interatomic spacing across GB seam in units of a_0
     double max_gb_edge_a0 = 2.60;       // Max allowed element edge length across GB / interior (in units of a_0)
-    bool pre_relax_gb = true;           // Relax grain boundaries with traction-free surfaces before applying BCs
+    bool pre_relax_gb = true;           // Stage 1: Relax grain boundaries with GB-Frame Roller BCs at alpha = 0 before loading
+    bool relax_only = false;            // Stop cleanly after Stage 1 (alpha = 0) equilibration and GB energy logging
+    bool reanchor_ref_after_relax = true; // Re-anchor X_0 <- x_eq(alpha = 0) before Stage 2 loading
+    int max_relax_remesh_passes = 5;    // Max L-BFGS + Delaunay core reconstruction passes during Stage 1
+    std::string loading_bc_preset = "x_grips_y_roller"; // Stage 2 Loading BCs: "x_grips_y_roller", "affine_from_relaxed", "y_grips_x_roller", "keep_studio"
+    std::string stage2_load_type = "shear_parallel_gb"; // Stage 2 Load Direction: "shear_parallel_gb", "tension_normal_x", "compression_normal_x", "shear_horizontal", "tension_vertical_y", "compression_vertical_y"
 
     // Bicrystal parameters (Method A)
     double gb_cx = 0.50;        // Normalized point on GB plane
@@ -205,9 +210,11 @@ struct MacroscopicGeometryConfig {
     // Cutouts (holes, slots, notches, cracks)
     std::vector<GeometryCutout> cutouts;
 
-    // Boundary condition rules (evaluated in order; later rules override earlier rules,
-    // or Fixed/Driven rules take precedence over FreeSurface)
+    // Boundary condition rules for Stage 2 Loading (or single-stage runs)
     std::vector<BoundaryZoneRule> boundary_rules;
+
+    // Boundary condition rules for Stage 1 Relaxation (alpha = 0 equilibration)
+    std::vector<BoundaryZoneRule> stage1_boundary_rules;
 
     // Nanoindenter Contact Tool configuration
     IndenterConfig indenter;
@@ -289,6 +296,12 @@ struct MacroscopicGeometryConfig {
         std::vector<std::pair<int, int>>& full_mapping,
         std::vector<int>& node_bc_role,
         std::vector<Eigen::Vector2d>& node_bc_velocity) const;
+
+    // Build Stage 1 (alpha = 0) relaxation boundary rules (GB-Frame Roller for Bicrystals)
+    std::vector<BoundaryZoneRule> buildStage1RelaxationRules() const;
+
+    // Build Stage 2 (alpha > 0) loading boundary rules from loading_bc_preset (or keep studio rules)
+    std::vector<BoundaryZoneRule> buildStage2LoadingRules(const std::string& fallback_affine_mode = "simple_shear_x") const;
 
     // Apply load step alpha to points (updates Fixed and Driven nodes exactly,
     // and applies a smooth predictor increment to Free nodes)

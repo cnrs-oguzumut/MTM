@@ -49,7 +49,6 @@ enum MainDisplayTab: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @ObservedObject var config: SimulationConfig
-    @EnvironmentObject var runner: ProcessRunner
     @StateObject private var previewManager = StiffnessStudyManager()
     @State private var appTab: AppNavigationTab = .simulation
     @State private var displayTab: MainDisplayTab = .curve
@@ -89,6 +88,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
+            .frame(height: 44)
             .background(BlueHour.windowBackground)
             
             Divider()
@@ -105,7 +105,8 @@ struct ContentView: View {
                         // Unified Top Header: Status, Live Metrics & View Switcher
                         LiveStatusHeaderView(config: config, displayTab: $displayTab)
                             .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
+                            .padding(.vertical, 8)
+                            .frame(height: 50)
                             .background(BlueHour.controlSurface)
                         
                         Divider()
@@ -129,7 +130,6 @@ struct ContentView: View {
                             InitialLatticeVisualizerView(manager: previewManager)
                         } else {
                             TerminalView(
-                                logLines: runner.logLines,
                                 filterText: $filterText,
                                 autoScroll: $autoScroll
                             )
@@ -145,14 +145,6 @@ struct ContentView: View {
                     }
                     .frame(minWidth: 580)
                 }
-                .onAppear {
-                    runner.loadExistingIfAvailable(dir: config.targetDirectory)
-                }
-                .onChange(of: config.targetDirectory) { newDir in
-                    if !runner.status.isRunning {
-                        runner.loadExistingIfAvailable(dir: newDir)
-                    }
-                }
             } else if appTab == .acousticStudy {
                 AcousticStudyView()
             } else if appTab == .stiffnessStudy {
@@ -167,6 +159,7 @@ struct SidebarControlsView: View {
     @ObservedObject var config: SimulationConfig
     @ObservedObject var previewManager: StiffnessStudyManager
     @Binding var displayTab: MainDisplayTab
+    @EnvironmentObject var runner: ProcessRunner
     
     var body: some View {
         ScrollView {
@@ -196,12 +189,39 @@ struct SidebarControlsView: View {
                                 Text("Presets:")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
-                                ForEach([(50, 50), (100, 100), (150, 150), (200, 200), (300, 300)], id: \.0) { size in
-                                    Button("\(size.0)×\(size.1)") {
+                                ForEach([(50, 50), (100, 100), (150, 150), (200, 200), (300, 300), (400, 400)], id: \.0) { size in
+                                    let isSelected = (config.nx == size.0 && config.ny == size.1)
+                                    Button(action: {
                                         config.setSize(nx: size.0, ny: size.1)
+                                    }) {
+                                        HStack(spacing: 3) {
+                                            if isSelected {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                    .font(.system(size: 8.5, weight: .bold))
+                                            }
+                                            Text("\(size.0)×\(size.1)")
+                                                .font(.system(size: 10, weight: isSelected ? .bold : .medium, design: .monospaced))
+                                        }
+                                        .foregroundColor(isSelected ? .white : BlueHour.ice.opacity(0.88))
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 3.5)
+                                        .background(
+                                            isSelected
+                                                ? Color(red: 0.12, green: 0.64, blue: 0.54)
+                                                : BlueHour.midnight.opacity(0.85),
+                                            in: RoundedRectangle(cornerRadius: 5)
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 5)
+                                                .strokeBorder(
+                                                    isSelected
+                                                        ? Color(red: 0.42, green: 0.96, blue: 0.84)
+                                                        : BlueHour.steel.opacity(0.55),
+                                                    lineWidth: isSelected ? 1.3 : 1.0
+                                                )
+                                        )
                                     }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.mini)
+                                    .buttonStyle(.plain)
                                 }
                             }
                         }
@@ -745,32 +765,250 @@ struct SidebarControlsView: View {
                         .padding(8)
                     }
                 } else if config.mode != .volterra {
-                    GroupBox(label: Label("Loading Schedule (|α|)", systemImage: "chart.line.uptrend.xyaxis")) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Start strain |α_start|:")
-                                    .font(.subheadline)
-                                Spacer()
-                                DoubleField(title: "0.14", value: $config.alphaStart, width: 80)
+                    GroupBox(label: Label("Simulation Protocol & Schedule", systemImage: "slider.horizontal.below.square.filled.and.square")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            // 3-Mode Protocol Switcher: 1. Relax Only | 2. Relax -> Load | 3. Sweep Δθ
+                            Picker("Protocol", selection: $config.protocolMode) {
+                                ForEach(SimulationProtocolMode.allCases) { mode in
+                                    Text(mode.shortTitle).tag(mode)
+                                }
                             }
-                            HStack {
-                                Text("End strain |α_end|:")
-                                    .font(.subheadline)
-                                Spacer()
-                                DoubleField(title: "1.0", value: $config.alphaEnd, width: 80)
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .onChange(of: config.protocolMode) { newMode in
+                                config.geometryConfig.microstructure.relax_only = (newMode != .relaxThenLoad)
+                                if newMode == .relaxThenLoad {
+                                    config.geometryConfig.microstructure.pre_relax_gb = true
+                                } else {
+                                    runner.requestedChartMode = .gbEnergy
+                                    displayTab = .curve
+                                }
                             }
-                            HStack {
-                                Text("Step size |dα|:")
-                                    .font(.subheadline)
-                                Spacer()
-                                DoubleField(title: "0.00006", value: $config.stepSize, width: 90)
-                            }
-                            Divider()
-                            HStack {
-                                Text("Save VTK every N steps:")
-                                    .font(.subheadline)
-                                Spacer()
-                                IntField(title: "50", value: $config.saveVTKInterval, width: 70)
+                            
+                            if config.protocolMode == .relaxOnly {
+                                // MODE 1: RELAX ONLY
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "checkmark.seal.fill")
+                                            .foregroundColor(.green)
+                                            .font(.caption)
+                                        Text("Relaxation Step")
+                                            .font(.caption.bold())
+                                    }
+                                    Text("Relaxes the grain boundary / crystal under the Relaxation Step BCs, performs Delaunay core reconstruction until ΔE converges, saves the equilibrium VTK, and records γ_GB(Δθ).")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(8)
+                                .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                                
+                            } else if config.protocolMode == .relaxThenLoad {
+                                // MODE 2: RELAX -> LOAD (Two-Stage Handover)
+                                VStack(alignment: .leading, spacing: 7) {
+                                    HStack(spacing: 5) {
+                                        Circle().fill(Color.green).frame(width: 7, height: 7)
+                                        Text("1. Relaxation Step")
+                                            .font(.caption.bold())
+                                    }
+                                    Toggle("Equilibrate GB before loading", isOn: $config.geometryConfig.microstructure.pre_relax_gb)
+                                        .font(.caption)
+                                    if config.geometryConfig.microstructure.pre_relax_gb {
+                                        Text("Relaxation Step BCs: \(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) active rules • Indenter OFF")
+                                            .font(.caption2)
+                                            .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                                        Toggle("Re-anchor reference frame (X₀ ← x_eq)", isOn: $config.geometryConfig.microstructure.reanchor_ref_after_relax)
+                                            .font(.caption)
+                                            .help("Prevents boundary snap by measuring Loading Step boundary displacements and indenter surface contact from the relaxed positions.")
+                                    }
+                                    
+                                    Divider().padding(.vertical, 2)
+                                    
+                                    HStack(spacing: 5) {
+                                        Circle().fill(Color.blue).frame(width: 7, height: 7)
+                                        Text("2. Loading Step")
+                                            .font(.caption.bold())
+                                        Spacer()
+                                        Button("BCs & Indenter →") {
+                                            displayTab = .geometryStudio
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.mini)
+                                    }
+                                    
+                                    let indenterActive = config.geometryConfig.indenter.enabled
+                                    let hasDrivenBC = config.geometryConfig.boundary_rules.contains {
+                                        $0.enabled && ($0.kind == .prescribed || $0.kind == .affine)
+                                    }
+                                    if indenterActive {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "arrow.down.to.line.compact")
+                                                .foregroundColor(.yellow)
+                                                .font(.caption2)
+                                            Text("Nanoindenter (\(config.geometryConfig.indenter.shape.displayName), δ_max = \(String(format: "%.1f", config.geometryConfig.indenter.max_depth_a0))a₀) + \(config.geometryConfig.boundary_rules.filter(\.enabled).count) BCs")
+                                                .font(.caption2)
+                                                .foregroundColor(BlueHour.ice)
+                                        }
+                                    } else if hasDrivenBC {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "arrow.up.and.down.and.sparkles")
+                                                .foregroundColor(BlueHour.ice)
+                                                .font(.caption2)
+                                            Text("Using BCs & Indenter rules (\(config.geometryConfig.boundary_rules.filter(\.enabled).count) active, \(config.geometryConfig.primary_stress_component))")
+                                                .font(.caption2)
+                                                .foregroundColor(BlueHour.ice)
+                                        }
+                                    } else {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .foregroundColor(.orange)
+                                                .font(.caption2)
+                                            Text("No driven load or Indenter enabled in BCs & Indenter")
+                                                .font(.caption2)
+                                                .foregroundColor(.orange)
+                                        }
+                                    }
+                                    
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        HStack {
+                                            Text(indenterActive ? "Start depth ratio α_start:" : "Start strain |α_start|:")
+                                                .font(.subheadline)
+                                            Spacer()
+                                            DoubleField(title: "0.0", value: $config.alphaStart, width: 80)
+                                        }
+                                        HStack {
+                                            Text(indenterActive ? "End depth ratio α_end:" : "End strain |α_end|:")
+                                                .font(.subheadline)
+                                            Spacer()
+                                            DoubleField(title: "0.25", value: $config.alphaEnd, width: 80)
+                                        }
+                                        HStack {
+                                            Text("Step size |dα|:")
+                                                .font(.subheadline)
+                                            Spacer()
+                                            DoubleField(title: "0.0005", value: $config.stepSize, width: 90)
+                                        }
+                                        Divider()
+                                        HStack {
+                                            Text("Save VTK every N steps:")
+                                                .font(.subheadline)
+                                            Spacer()
+                                            IntField(title: "50", value: $config.saveVTKInterval, width: 70)
+                                        }
+                                    }
+                                }
+                                .padding(8)
+                                .background(BlueHour.pillSurface.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
+                                
+                            } else {
+                                // MODE 3: SWEEP Δθ (Continuous or CSL Grain Boundary Energy Curve Builder)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "chart.xyaxis.line")
+                                            .foregroundColor(.orange)
+                                            .font(.caption)
+                                        Text("Misorientation Sweep γ_GB(Δθ) (α = 0)")
+                                            .font(.caption.bold())
+                                    }
+                                    
+                                    Picker("Sweep Sampling", selection: $config.sweepContinuousMode) {
+                                        Text("Continuous Δθ Grid").tag(true)
+                                        Text("Discrete Σ Catalog").tag(false)
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .labelsHidden()
+                                    .controlSize(.small)
+                                    
+                                    HStack {
+                                        Text("Half-Angle θ_min (°):")
+                                            .font(.caption)
+                                        Spacer()
+                                        DoubleField(title: "0.0", value: $config.sweepThetaMinDeg, width: 65, minValue: 0.0, maxValue: 44.5)
+                                    }
+                                    HStack {
+                                        Text("Half-Angle θ_max (°):")
+                                            .font(.caption)
+                                        Spacer()
+                                        DoubleField(title: config.latticeSymmetry == .triangular ? "30.0" : "45.0",
+                                                    value: $config.sweepThetaMaxDeg,
+                                                    width: 65,
+                                                    minValue: 0.5,
+                                                    maxValue: config.latticeSymmetry == .triangular ? 30.0 : 45.0)
+                                    }
+                                    
+                                    if config.sweepContinuousMode {
+                                        HStack(spacing: 6) {
+                                            Text("Step d(Δθ) (°):")
+                                                .font(.caption)
+                                            Spacer()
+                                            ForEach([1.0, 2.0, 3.0], id: \.self) { st in
+                                                Button("\(Int(st))°") {
+                                                    config.sweepDeltaThetaStepDeg = st
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.mini)
+                                            }
+                                            DoubleField(title: "2.0", value: $config.sweepDeltaThetaStepDeg, width: 52, minValue: 0.5, maxValue: 15.0)
+                                        }
+                                        Toggle("Include exact low-Σ cusp angles (Σ5, Σ7, Σ13)", isOn: $config.sweepIncludeExactCusps)
+                                            .font(.caption2)
+                                    } else {
+                                        Toggle("Curated CSL catalog (0°–90° arch, 21 angles)", isOn: $config.sweepUseCuratedCSLOnly)
+                                            .font(.caption2)
+                                    }
+                                    
+                                    Toggle("Auto-adjust box to commensurate K·L_CSL per angle", isOn: $config.sweepAutoCommensurateBox)
+                                        .font(.caption2)
+                                        .help("Automatically sets each angle's box size to K·round(L_CSL) closest to your System Geometry NX×NY.")
+                                    
+                                    let cands = config.sweepCSLCandidates
+                                    let previewStr = cands.prefix(8).map {
+                                        $0.sigma > 0 ? String(format: "%.1f°(Σ%d)", $0.fullMisoriDeg, $0.sigma) : String(format: "%.1f°", $0.fullMisoriDeg)
+                                    }.joined(separator: ", ")
+                                    Text(config.sweepAutoCommensurateBox
+                                         ? "Target box ≈ \(config.nx)×\(config.ny) a₀ (each angle snaps to K·L_CSL near \(config.nx)a₀)"
+                                         : "Uniform box size: \(config.nx)×\(config.ny) a₀ across all \(cands.count) angles")
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(BlueHour.ice)
+                                    Text("Scheduled \(cands.count) angles (Δθ = 2θ): \(previewStr)\(cands.count > 8 ? "..." : "")")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    
+                                    Button(action: {
+                                        displayTab = .curve
+                                        runner.requestedChartMode = .gbEnergy
+                                        runner.startCSLSweep(config: config, candidates: cands)
+                                    }) {
+                                        Label("Launch Δθ Angle Sweep (\(cands.count) runs)", systemImage: "play.circle.fill")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.orange)
+                                    .controlSize(.small)
+                                    .disabled(runner.status.isRunning || cands.isEmpty)
+                                    
+                                    if !runner.gbEnergyPoints.isEmpty {
+                                        HStack(spacing: 6) {
+                                            Button(action: { runner.openSweepTextFile() }) {
+                                                Label("Open angle_vs_energy.txt", systemImage: "doc.text")
+                                                    .font(.system(size: 10, weight: .semibold))
+                                                    .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.mini)
+                                            
+                                            Button(action: { runner.openSweepRelaxedVTKFolder() }) {
+                                                Label("Open Relaxed VTKs", systemImage: "folder")
+                                                    .font(.system(size: 10, weight: .semibold))
+                                                    .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.mini)
+                                        }
+                                    }
+                                }
+                                .padding(8)
+                                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
                             }
                         }
                         .padding(8)
@@ -989,6 +1227,13 @@ struct LiveStatusHeaderView: View {
                             valueColor: root.macroStressRelaxed ? .green : .primary
                         )
                     } else {
+                        if !runner.currentStageLabel.isEmpty {
+                            MetricPill(
+                                label: "Protocol Stage",
+                                value: runner.currentStageLabel,
+                                valueColor: runner.currentStageLabel.contains("Stage 1") || runner.currentStageLabel.contains("Sweep") ? .green : .cyan
+                            )
+                        }
                         MetricPill(label: "Step", value: "\(runner.currentStep)")
                         MetricPill(label: config.mode == .shift ? "Shift (u/a₀)" : "Strain |α|", value: String(format: "%.4f", runner.currentAlpha))
                         MetricPill(label: "Stress σ", value: String(format: "%.4f", runner.currentStress))
@@ -1007,9 +1252,19 @@ struct LiveStatusHeaderView: View {
                 }
                 .padding(.vertical, 1)
             }
+            .frame(height: 34)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(height: 34)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            runner.loadExistingIfAvailable(dir: config.targetDirectory)
+        }
+        .onChange(of: config.targetDirectory) { newDir in
+            if !runner.status.isRunning {
+                runner.loadExistingIfAvailable(dir: newDir)
+            }
+        }
     }
     
     private var shortStatusLabel: String {
@@ -1049,28 +1304,30 @@ struct MetricPill: View {
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundColor(BlueHour.mist)
             Text(value)
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                .monospacedDigit()
                 .foregroundColor(valueColor)
         }
+        .frame(minWidth: 56, minHeight: 26, maxHeight: 26)
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
         .background(BlueHour.pillSurface)
         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(BlueHour.border, lineWidth: 1))
         .cornerRadius(6)
         .lineLimit(1)
-        .fixedSize()
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
 // MARK: - Terminal View
 struct TerminalView: View {
-    let logLines: [LogMessage]
+    @EnvironmentObject var runner: ProcessRunner
     @Binding var filterText: String
     @Binding var autoScroll: Bool
     
     var filteredLines: [LogMessage] {
-        if filterText.isEmpty { return logLines }
-        return logLines.filter { $0.text.localizedCaseInsensitiveContains(filterText) }
+        if filterText.isEmpty { return runner.logLines }
+        return runner.logLines.filter { $0.text.localizedCaseInsensitiveContains(filterText) }
     }
     
     private func colorForLine(_ msg: LogMessage) -> Color {
@@ -1107,7 +1364,7 @@ struct TerminalView: View {
                     .toggleStyle(.checkbox)
                     .controlSize(.small)
                 
-                Text("\(logLines.count) lines")
+                Text("\(runner.logLines.count) lines")
                     .font(.caption2)
                     .foregroundColor(BlueHour.mist)
             }
@@ -1132,7 +1389,7 @@ struct TerminalView: View {
                     .padding(8)
                 }
                 .background(BlueHour.canvasBackground)
-                .onChange(of: logLines.count) { _ in
+                .onChange(of: runner.logLines.count) { _ in
                     if autoScroll, let last = filteredLines.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
@@ -1180,7 +1437,7 @@ struct BottomActionBar: View {
             
             if runner.status.isRunning {
                 Button(role: .destructive, action: { runner.stop() }) {
-                    Label("Stop Simulation", systemImage: "stop.fill")
+                    Label(runner.isSweepRunning ? "Stop CSL Sweep" : "Stop Simulation", systemImage: "stop.fill")
                         .font(.headline)
                         .padding(.horizontal, 8)
                 }
@@ -1188,13 +1445,29 @@ struct BottomActionBar: View {
                 .tint(.red)
                 .controlSize(.large)
             } else {
-                Button(action: { runner.start(config: config) }) {
-                    Label("Launch Simulation", systemImage: "play.fill")
+                Button(action: {
+                    if config.mode != .volterra && config.mode != .shift && config.protocolMode == .sweepMisorientation {
+                        runner.startCSLSweep(config: config, candidates: config.sweepCSLCandidates)
+                    } else {
+                        runner.start(config: config)
+                    }
+                }) {
+                    let btnTitle: String = {
+                        if config.mode != .volterra && config.mode != .shift {
+                            switch config.protocolMode {
+                            case .relaxOnly: return "Launch Relax Only (α = 0)"
+                            case .relaxThenLoad: return "Launch Simulation (Relax → Load)"
+                            case .sweepMisorientation: return "Launch CSL Sweep (\(config.sweepCSLCandidates.count) runs)"
+                            }
+                        }
+                        return "Launch Simulation"
+                    }()
+                    Label(btnTitle, systemImage: "play.fill")
                         .font(.headline)
                         .padding(.horizontal, 12)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(.accentColor)
+                .tint(config.protocolMode == .sweepMisorientation ? .orange : .accentColor)
                 .controlSize(.large)
             }
         }

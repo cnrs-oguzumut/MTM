@@ -150,3 +150,71 @@ public struct EigenPoint: Identifiable, Equatable {
     }
 }
 
+public struct GBEnergyPoint: Identifiable, Equatable {
+    public var id: String { String(format: "%.4f", misorientationDeg) }
+    public let misorientationDeg: Double
+    public let halfAngleDeg: Double
+    public let theta1Deg: Double
+    public let theta2Deg: Double
+    public let gbAngleDeg: Double
+    public let nx: Int
+    public let ny: Int
+    public let lengthGBA0: Double
+    public let lengthIntA0: Double
+    public let totalEnergy: Double
+    public let interiorEnergy: Double
+    public let gbEnergyTotal: Double
+    public let gbEnergyInterior: Double
+    public let normalGapA0: Double
+    public let seamDMinA0: Double
+    public var sigma: Int
+    public var m: Int
+    public var n: Int
+    public var relaxedVTKPath: String
+
+    public init(
+        misorientationDeg: Double,
+        halfAngleDeg: Double,
+        theta1Deg: Double,
+        theta2Deg: Double,
+        gbAngleDeg: Double,
+        nx: Int,
+        ny: Int,
+        lengthGBA0: Double,
+        lengthIntA0: Double,
+        totalEnergy: Double,
+        interiorEnergy: Double,
+        gbEnergyTotal: Double,
+        gbEnergyInterior: Double,
+        normalGapA0: Double,
+        seamDMinA0: Double,
+        sigma: Int? = nil,
+        m: Int? = nil,
+        n: Int? = nil,
+        relaxedVTKPath: String = ""
+    ) {
+        self.misorientationDeg = misorientationDeg
+        self.halfAngleDeg = halfAngleDeg
+        self.theta1Deg = theta1Deg
+        self.theta2Deg = theta2Deg
+        self.gbAngleDeg = gbAngleDeg
+        self.nx = nx
+        self.ny = ny
+        self.lengthGBA0 = lengthGBA0
+        self.lengthIntA0 = lengthIntA0
+        self.totalEnergy = totalEnergy
+        self.interiorEnergy = interiorEnergy
+        self.gbEnergyTotal = gbEnergyTotal
+        self.gbEnergyInterior = gbEnergyInterior
+        self.normalGapA0 = normalGapA0
+        self.seamDMinA0 = seamDMinA0
+        let match = CSLRationalizer.closestMatch(forHalfAngleDeg: max(0.5, halfAngleDeg), maxIndex: 18)
+        let isClose = abs(match.halfAngleDeg - halfAngleDeg) < 0.15
+        self.sigma = sigma ?? (isClose ? match.sigma : 0)
+        self.m = m ?? (isClose ? match.m : 0)
+        self.n = n ?? (isClose ? match.n : 0)
+        self.relaxedVTKPath = relaxedVTKPath
+    }
+}
+
+

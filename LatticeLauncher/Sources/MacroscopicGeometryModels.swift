@@ -412,12 +412,90 @@ public struct VoronoiGrainSeedModel: Codable, Equatable, Identifiable {
     }
 }
 
+public enum SimulationProtocolMode: String, CaseIterable, Codable, Identifiable {
+    case relaxOnly = "relax_only"
+    case relaxThenLoad = "relax_then_load"
+    case sweepMisorientation = "sweep_misorientation"
+    
+    public var id: String { rawValue }
+    public var shortTitle: String {
+        switch self {
+        case .relaxOnly: return "1. Relax Only"
+        case .relaxThenLoad: return "2. Relax → Load"
+        case .sweepMisorientation: return "3. Sweep Δθ"
+        }
+    }
+}
+
+public enum Stage2LoadingBCPreset: String, CaseIterable, Codable, Identifiable {
+    case xGripsYRoller = "x_grips_y_roller"
+    case affineFromRelaxed = "affine_from_relaxed"
+    case yGripsXRoller = "y_grips_x_roller"
+    case keepStudio = "keep_studio"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .xGripsYRoller: return "X-Grips Driven + Y-Roller (Left Fixed, Right Driven)"
+        case .affineFromRelaxed: return "Affine Driven from Relaxed X₀ (All 4 Walls)"
+        case .yGripsXRoller: return "Y-Grips Driven + X-Roller (Bottom Fixed, Top Driven)"
+        case .keepStudio: return "Keep Custom Studio Boundary Rules"
+        }
+    }
+}
+
+public enum Stage2LoadTypePreset: String, CaseIterable, Codable, Identifiable {
+    case shearParallelGB = "shear_parallel_gb"
+    case tensionNormalX = "tension_normal_x"
+    case compressionNormalX = "compression_normal_x"
+    case shearHorizontal = "shear_horizontal"
+    case tensionVerticalY = "tension_vertical_y"
+    case compressionVerticalY = "compression_vertical_y"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .shearParallelGB: return "Shear Parallel to Vertical GB (+uy on Right Grip)"
+        case .tensionNormalX: return "Tension Normal to Vertical GB (+ux on Right Grip)"
+        case .compressionNormalX: return "Compression Normal to Vertical GB (-ux on Right Grip)"
+        case .shearHorizontal: return "Horizontal Simple Shear (+ux on Top Grip)"
+        case .tensionVerticalY: return "Vertical Tension (+uy on Top Grip)"
+        case .compressionVerticalY: return "Vertical Compression (-uy on Top Grip)"
+        }
+    }
+    
+    public var recommendedGripPreset: Stage2LoadingBCPreset {
+        switch self {
+        case .shearParallelGB, .tensionNormalX, .compressionNormalX:
+            return .xGripsYRoller
+        case .shearHorizontal, .tensionVerticalY, .compressionVerticalY:
+            return .yGripsXRoller
+        }
+    }
+    
+    public var primaryStressComponent: String {
+        switch self {
+        case .shearParallelGB, .shearHorizontal:
+            return "sigma_xy"
+        case .tensionNormalX, .compressionNormalX:
+            return "sigma_xx"
+        case .tensionVerticalY, .compressionVerticalY:
+            return "sigma_yy"
+        }
+    }
+}
+
 public struct MicrostructureConfigModel: Codable, Equatable {
     public var mode: MicrostructureModeModel = .singleCrystal
     public var seam_resolution: SeamOverlapResolutionModel = .mergeMidpoint
     public var min_seam_distance_a0: Double = 0.55
     public var max_gb_edge_a0: Double = 2.60
     public var pre_relax_gb: Bool = true
+    public var relax_only: Bool = false
+    public var reanchor_ref_after_relax: Bool = true
+    public var max_relax_remesh_passes: Int = 5
+    public var loading_bc_preset: String = Stage2LoadingBCPreset.xGripsYRoller.rawValue
+    public var stage2_load_type: String = Stage2LoadTypePreset.shearParallelGB.rawValue
     
     // Bicrystal parameters
     public var gb_cx: Double = 0.50
@@ -441,6 +519,11 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         case min_seam_distance_a0
         case max_gb_edge_a0
         case pre_relax_gb
+        case relax_only
+        case reanchor_ref_after_relax
+        case max_relax_remesh_passes
+        case loading_bc_preset
+        case stage2_load_type
         case gb_cx
         case gb_cy
         case gb_angle_deg
@@ -466,6 +549,11 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         self.min_seam_distance_a0 = try c.decodeIfPresent(Double.self, forKey: .min_seam_distance_a0) ?? 0.55
         self.max_gb_edge_a0 = try c.decodeIfPresent(Double.self, forKey: .max_gb_edge_a0) ?? 2.60
         self.pre_relax_gb = try c.decodeIfPresent(Bool.self, forKey: .pre_relax_gb) ?? true
+        self.relax_only = try c.decodeIfPresent(Bool.self, forKey: .relax_only) ?? false
+        self.reanchor_ref_after_relax = try c.decodeIfPresent(Bool.self, forKey: .reanchor_ref_after_relax) ?? true
+        self.max_relax_remesh_passes = try c.decodeIfPresent(Int.self, forKey: .max_relax_remesh_passes) ?? 5
+        self.loading_bc_preset = try c.decodeIfPresent(String.self, forKey: .loading_bc_preset) ?? Stage2LoadingBCPreset.xGripsYRoller.rawValue
+        self.stage2_load_type = try c.decodeIfPresent(String.self, forKey: .stage2_load_type) ?? Stage2LoadTypePreset.shearParallelGB.rawValue
         self.gb_cx = try c.decodeIfPresent(Double.self, forKey: .gb_cx) ?? 0.50
         self.gb_cy = try c.decodeIfPresent(Double.self, forKey: .gb_cy) ?? 0.50
         self.gb_angle_deg = try c.decodeIfPresent(Double.self, forKey: .gb_angle_deg) ?? 0.0
@@ -621,6 +709,12 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
         BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0),
+        BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
+    ]
+    public var stage1_boundary_rules: [BoundaryZoneRuleModel] = [
+        BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
+        BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
+        BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
         BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
     ]
     public var indenter: IndenterConfigModel = IndenterConfigModel()
@@ -928,14 +1022,55 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         return 1.0
     }
     
+    /// Returns the Stage 1 (α = 0) relaxation boundary rules (user-editable stage1_boundary_rules)
+    public func stage1RelaxationRules() -> [BoundaryZoneRuleModel] {
+        if !stage1_boundary_rules.isEmpty {
+            return stage1_boundary_rules
+        }
+        return Self.defaultStage1RollerRules(forAngleDeg: microstructure.gb_angle_deg)
+    }
+
+    public static func defaultStage1RollerRules(forAngleDeg gbAngleDeg: Double) -> [BoundaryZoneRuleModel] {
+        let phiRad = gbAngleDeg * .pi / 180.0
+        let isVerticalGB = abs(cos(phiRad)) >= abs(sin(phiRad))
+        if isVerticalGB {
+            return [
+                BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
+                BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
+                BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
+                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
+            ]
+        } else {
+            return [
+                BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
+                BoundaryZoneRuleModel(region: .right, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
+                BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
+                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5)
+            ]
+        }
+    }
+
+    public mutating func resetStage1ToGBFrameRollerBCs(forAngleDeg gbAngleDeg: Double) {
+        stage1_boundary_rules = Self.defaultStage1RollerRules(forAngleDeg: gbAngleDeg)
+    }
+
     /// Returns 0 = Free, 1 = Fixed, 2 = Driven, 3 = RollerY (X-locked), 4 = RollerX (Y-locked)
-    public func classifyNodeRole(xHat: Double, yHat: Double, nx: Int, ny: Int) -> Int {
+    public func classifyNodeRole(
+        xHat: Double,
+        yHat: Double,
+        nx: Int,
+        ny: Int,
+        overrideRules: [BoundaryZoneRuleModel]? = nil,
+        overrideIndenterEnabled: Bool? = nil
+    ) -> Int {
         var lockedX = false
         var lockedY = false
         var drivenX = false
         var drivenY = false
         let a0x = 1.0 / Double(max(1, nx - 1))
         let a0y = 1.0 / Double(max(1, ny - 1))
+        let activeRules = overrideRules ?? boundary_rules
+        let indenterActive = overrideIndenterEnabled ?? indenter.enabled
         
         var domMinX = 0.0, domMaxX = 1.0, domMinY = 0.0, domMaxY = 1.0
         if outer_shape == .polygon && outer_polygon.count >= 3 {
@@ -950,12 +1085,17 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             domMaxY = min(1.0, 0.5 + disk_radius)
         }
         
-        for rule in boundary_rules where rule.enabled {
+        for rule in activeRules where rule.enabled {
             let stripX = max(0.35, rule.thickness_a0) * a0x
             let stripY = max(0.35, rule.thickness_a0) * a0y
             var matches = false
             switch rule.region {
-            case .top: matches = (yHat >= domMaxY - stripY)
+            case .top:
+                if indenterActive && rule.kind != .free {
+                    matches = false
+                } else {
+                    matches = (yHat >= domMaxY - stripY)
+                }
             case .bottom: matches = (yHat <= domMinY + stripY)
             case .left: matches = (xHat <= domMinX + stripX)
             case .right: matches = (xHat >= domMaxX - stripX)
@@ -1024,7 +1164,7 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         } else {
             role = 0
         }
-        if indenter.enabled && role == 0 {
+        if indenterActive && role == 0 {
             let rNorm = indenter.radius_a0 * a0x
             let cx = indenter.cx
             let yTop = topSurfaceYHat(at: cx)
@@ -1107,6 +1247,7 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         microstructure.gb_angle_deg = newPhiDeg
         microstructure.theta1_deg = newPhiDeg + rel1
         microstructure.theta2_deg = newPhiDeg + rel2
+        resetStage1ToGBFrameRollerBCs(forAngleDeg: newPhiDeg)
         let allRollers = !boundary_rules.isEmpty && boundary_rules.allSatisfy { $0.kind == .rollerX || $0.kind == .rollerY }
         if allRollers {
             applyGBFrameRollerBCs(forAngleDeg: newPhiDeg)
@@ -1135,10 +1276,13 @@ public struct CSLRationalMatch: Equatable, Identifiable {
     public let recommendedDMinA0: Double
     public let recommendedGapA0: Double
 
-    public var id: String { "\(m)_\(n)" }
+    public var id: String { String(format: "%.3f_%d_%d", fullMisoriDeg, m, n) }
 
     public var shortLabel: String {
-        String(format: "Σ%d (%d %d 0) • ±%.2f° (Δθ=%.2f°)", sigma, m, n, halfAngleDeg, fullMisoriDeg)
+        if sigma > 0 {
+            return String(format: "Σ%d (%d %d 0) • ±%.2f° (Δθ=%.2f°)", sigma, m, n, halfAngleDeg, fullMisoriDeg)
+        }
+        return String(format: "Δθ = %.2f° (θ = ±%.2f°)", fullMisoriDeg, halfAngleDeg)
     }
 
     public func commensurateSize(periods k: Int) -> Int {
@@ -1146,7 +1290,13 @@ public struct CSLRationalMatch: Equatable, Identifiable {
     }
 
     public func suggestedPeriodCounts(around targetN: Int) -> [Int] {
-        let kCenter = max(2, Int(round(Double(targetN) / periodA0)))
+        let p = max(1.0, periodA0)
+        let kRaw = max(2, Int(round(Double(targetN) / p)))
+        // Quantize the 3-button window into fixed blocks of 6 periods
+        // (e.g. [43, 45, 47] for kRaw in 43...48) so clicking any of the 3
+        // commensurate buttons never shifts the button list under the cursor.
+        let block = max(0, (kRaw - 1) / 6)
+        let kCenter = max(3, block * 6 + 3)
         var counts: [Int] = []
         for dk in [-2, 0, 2] {
             let k = max(1, kCenter + dk)
@@ -1171,6 +1321,23 @@ public enum CSLRationalizer {
     }
 
     public static func makeMatch(m: Int, n: Int) -> CSLRationalMatch {
+        if n <= 0 {
+            return CSLRationalMatch(
+                m: 1, n: 0, sigma: 1,
+                halfAngleDeg: 0.0, fullMisoriDeg: 0.0,
+                periodA0: 1.0, layerSpacingA0: 1.0,
+                recommendedDMinA0: 0.48, recommendedGapA0: 0.0
+            )
+        }
+        if m == 1 && n == 1 {
+            let s2 = sqrt(2.0)
+            return CSLRationalMatch(
+                m: 1, n: 1, sigma: 1,
+                halfAngleDeg: 45.0, fullMisoriDeg: 90.0,
+                periodA0: s2, layerSpacingA0: 1.0 / s2,
+                recommendedDMinA0: 0.48, recommendedGapA0: 0.0
+            )
+        }
         let sumSq = m * m + n * n
         let g2 = gcd(sumSq, 2)
         let sigma = sumSq / g2
@@ -1179,17 +1346,26 @@ public enum CSLRationalizer {
         let dLayer = 1.0 / period
         let recDMin: Double
         if m == 3 && n == 1 {
-            recDMin = 0.68
+            recDMin = 0.48
         } else if m == 2 && n == 1 {
             recDMin = 0.50
         } else {
-            recDMin = min(0.65, max(0.48, (round((1.12 * dLayer) * 100.0) / 100.0)))
+            recDMin = min(0.60, max(0.48, (round((1.12 * dLayer) * 100.0) / 100.0)))
         }
-        // First unmerged symmetric cross-grain layer k_first satisfies 2 * k_first * dLayer >= recDMin
-        let kFirst = max(1, Int(ceil((recDMin - 1e-6) / (2.0 * dLayer))))
-        let rFirst = 2.0 * Double(kFirst) * dLayer
-        let rawGap = (m == 2 && n == 1) ? 0.0 : max(0.0, 0.94 - rFirst)
-        let recGap = min(0.38, max(0.0, (round(rawGap * 50.0) / 50.0)))
+        let recGap: Double
+        if m == 3 && n == 1 {
+            recGap = 0.26
+        } else if m == 2 && n == 1 {
+            recGap = 0.0
+        } else if m - n == 1 && m >= 4 {
+            // High-angle (m, m-1) branch approaching (110) single crystal at Δθ = 90°
+            recGap = min(0.16, max(0.0, (round((0.68 / Double(m)) * 50.0) / 50.0)))
+        } else {
+            let kFirst = max(1, Int(ceil((recDMin - 1e-6) / (2.0 * dLayer))))
+            let rFirst = 2.0 * Double(kFirst) * dLayer
+            let rawGap = max(0.0, 0.94 - rFirst)
+            recGap = min(0.38, max(0.0, (round(rawGap * 50.0) / 50.0)))
+        }
         return CSLRationalMatch(
             m: m,
             n: n,
@@ -1204,7 +1380,7 @@ public enum CSLRationalizer {
     }
 
     public static let allCandidates: [CSLRationalMatch] = {
-        var list: [CSLRationalMatch] = []
+        var list: [CSLRationalMatch] = [makeMatch(m: 1, n: 0)]
         for m in 1...18 {
             for n in 1...m {
                 if gcd(m, n) == 1 {
@@ -1216,32 +1392,42 @@ public enum CSLRationalizer {
         return list
     }()
 
-    /// Curated CSL sequence from low-angle tilt walls (~4.8°) up to high-angle Σ5 / Σ13 / Σ17 / Σ25 / Σ29 boundaries
+    /// Curated CSL sequence spanning the full [0°, 90°] misorientation arch on a 2D Square Lattice
     public static let curatedCatalog: [CSLRationalMatch] = {
         let pairs: [(Int, Int)] = [
-            (12, 1), // ±4.76° (Δθ = 9.53°, Σ145)
-            (10, 1), // ±5.71° (Δθ = 11.42°, Σ101)
-            (9, 1),  // ±6.34° (Δθ = 12.68°, Σ41)
-            (8, 1),  // ±7.13° (Δθ = 14.25°, Σ65)
-            (7, 1),  // ±8.13° (Δθ = 16.26°, Σ25)
-            (6, 1),  // ±9.46° (Δθ = 18.92°, Σ37)
-            (5, 1),  // ±11.31° (Δθ = 22.62°, Σ13)
-            (4, 1),  // ±14.04° (Δθ = 28.07°, Σ17)
-            (3, 1),  // ±18.43° (Δθ = 36.87°, Σ5)
-            (5, 2),  // ±21.80° (Δθ = 43.60°, Σ29)
-            (2, 1),  // ±26.57° (Δθ = 53.13°, Σ5)
-            (5, 3),  // ±30.96° (Δθ = 61.93°, Σ17)
-            (3, 2),  // ±33.69° (Δθ = 67.38°, Σ13)
-            (4, 3)   // ±36.87° (Δθ = 73.74°, Σ25)
+            (1, 0),   // ±0.00°  (Δθ = 0.00°,  Σ1 (100) Single Crystal)
+            (12, 1),  // ±4.76°  (Δθ = 9.53°,  Σ145)
+            (10, 1),  // ±5.71°  (Δθ = 11.42°, Σ101)
+            (9, 1),   // ±6.34°  (Δθ = 12.68°, Σ41)
+            (8, 1),   // ±7.13°  (Δθ = 14.25°, Σ65)
+            (7, 1),   // ±8.13°  (Δθ = 16.26°, Σ25)
+            (6, 1),   // ±9.46°  (Δθ = 18.92°, Σ37)
+            (5, 1),   // ±11.31° (Δθ = 22.62°, Σ13)
+            (4, 1),   // ±14.04° (Δθ = 28.07°, Σ17)
+            (3, 1),   // ±18.43° (Δθ = 36.87°, Σ5 (310) Cusp)
+            (5, 2),   // ±21.80° (Δθ = 43.60°, Σ29)
+            (2, 1),   // ±26.57° (Δθ = 53.13°, Σ5 (210) Deep Cusp)
+            (5, 3),   // ±30.96° (Δθ = 61.93°, Σ17)
+            (3, 2),   // ±33.69° (Δθ = 67.38°, Σ13)
+            (4, 3),   // ±36.87° (Δθ = 73.74°, Σ25)
+            (5, 4),   // ±38.66° (Δθ = 77.32°, Σ41)
+            (6, 5),   // ±39.81° (Δθ = 79.61°, Σ61)
+            (8, 7),   // ±41.19° (Δθ = 82.37°, Σ113)
+            (10, 9),  // ±41.99° (Δθ = 83.97°, Σ181)
+            (12, 11), // ±42.51° (Δθ = 85.01°, Σ265)
+            (1, 1)    // ±45.00° (Δθ = 90.00°, Σ1 (110) Single Crystal)
         ]
         return pairs.map { makeMatch(m: $0.0, n: $0.1) }
     }()
 
     public static func closestMatch(forHalfAngleDeg targetDeg: Double, maxIndex: Int = 18) -> CSLRationalMatch {
-        let absTarget = max(0.5, min(45.0, abs(targetDeg)))
+        let absTarget = max(0.0, min(45.0, abs(targetDeg)))
+        if absTarget < 0.25 {
+            return makeMatch(m: 1, n: 0)
+        }
         var best = makeMatch(m: 3, n: 1)
         var bestErr = Double.infinity
-        for cand in allCandidates where cand.m <= maxIndex {
+        for cand in allCandidates where cand.m <= maxIndex && cand.n > 0 {
             // Slightly favor lower-index (higher-coincidence) boundaries when within 0.15 deg
             let angleErr = abs(cand.halfAngleDeg - absTarget)
             let complexityPenalty = 0.008 * Double(cand.m)
@@ -1252,5 +1438,103 @@ public enum CSLRationalizer {
             }
         }
         return best
+    }
+
+    public static func makeContinuousCandidate(
+        fullMisoriDeg: Double,
+        isTriangular: Bool,
+        sigma: Int = 0,
+        m: Int = 0,
+        n: Int = 0,
+        periodA0: Double = 1.0
+    ) -> CSLRationalMatch {
+        let symDeg = isTriangular ? 60.0 : 90.0
+        let clampedDTheta = min(symDeg, max(0.0, fullMisoriDeg))
+        let halfDeg = 0.5 * clampedDTheta
+        let isEndpoint = (clampedDTheta <= 0.05 || clampedDTheta >= symDeg - 0.05)
+        let dMin = isTriangular ? 0.52 : 0.50
+        let gap: Double = isEndpoint
+            ? 0.0
+            : (round((0.08 * sin(.pi * clampedDTheta / symDeg)) * 100.0) / 100.0)
+        let effPeriod: Double = (periodA0 > 1.01 || isEndpoint)
+            ? max(1.0, periodA0)
+            : closestMatch(forHalfAngleDeg: halfDeg).periodA0
+        return CSLRationalMatch(
+            m: m,
+            n: n,
+            sigma: sigma,
+            halfAngleDeg: halfDeg,
+            fullMisoriDeg: clampedDTheta,
+            periodA0: effPeriod,
+            layerSpacingA0: 1.0 / max(1.0, effPeriod),
+            recommendedDMinA0: dMin,
+            recommendedGapA0: gap
+        )
+    }
+
+    public static func buildContinuousSweep(
+        thetaMinDeg: Double,
+        thetaMaxDeg: Double,
+        stepDeltaThetaDeg: Double,
+        isTriangular: Bool,
+        includeExactCusps: Bool
+    ) -> [CSLRationalMatch] {
+        let symDeg = isTriangular ? 60.0 : 90.0
+        let dThetaMin = min(symDeg, max(0.0, 2.0 * min(thetaMinDeg, thetaMaxDeg)))
+        let dThetaMax = min(symDeg, max(0.0, 2.0 * max(thetaMinDeg, thetaMaxDeg)))
+        let step = max(0.5, min(30.0, stepDeltaThetaDeg))
+
+        // Major cusps for Square (0-90°) vs Triangular (0-60°)
+        let exactCusps: [(dtheta: Double, sigma: Int, m: Int, n: Int, per: Double)] = isTriangular
+            ? [
+                (0.0, 1, 1, 0, 1.0),
+                (21.786789, 7, 2, 1, sqrt(7.0)),
+                (27.795772, 13, 3, 1, sqrt(13.0)),
+                (32.204228, 13, 3, 2, sqrt(13.0)),
+                (38.213211, 7, 3, 2, sqrt(7.0)),
+                (60.0, 1, 1, 1, 1.0)
+            ]
+            : [
+                (0.0, 1, 1, 0, 1.0),
+                (22.619865, 13, 5, 1, sqrt(26.0)),
+                (28.072487, 17, 4, 1, sqrt(17.0)),
+                (36.869898, 5, 3, 1, sqrt(10.0)),
+                (53.130102, 5, 2, 1, sqrt(5.0)),
+                (67.380135, 13, 3, 2, sqrt(13.0)),
+                (90.0, 1, 1, 1, sqrt(2.0))
+            ]
+
+        var angles: [Double] = []
+        var cur = dThetaMin
+        while cur <= dThetaMax + 1e-6 {
+            angles.append(cur)
+            cur += step
+        }
+        if let last = angles.last, abs(last - dThetaMax) > 0.15 {
+            angles.append(dThetaMax)
+        }
+
+        if includeExactCusps {
+            for cusp in exactCusps where cusp.dtheta >= dThetaMin - 1e-4 && cusp.dtheta <= dThetaMax + 1e-4 {
+                // Replace any grid point within 0.45 * step of an exact cusp so the cusp isn't duplicated
+                angles.removeAll { abs($0 - cusp.dtheta) < min(0.85, 0.42 * step) }
+                angles.append(cusp.dtheta)
+            }
+        }
+        angles.sort()
+
+        return angles.map { ang in
+            if let cusp = exactCusps.first(where: { abs($0.dtheta - ang) < 0.05 }) {
+                return makeContinuousCandidate(
+                    fullMisoriDeg: cusp.dtheta,
+                    isTriangular: isTriangular,
+                    sigma: cusp.sigma,
+                    m: cusp.m,
+                    n: cusp.n,
+                    periodA0: cusp.per
+                )
+            }
+            return makeContinuousCandidate(fullMisoriDeg: ang, isTriangular: isTriangular)
+        }
     }
 }

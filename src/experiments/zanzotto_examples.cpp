@@ -680,14 +680,28 @@ void example_1_conti_zanzotto_loading(
       MeshGenerator::create_domain_maps(original_domain_size, domain_dims,
                                         offsets);
 
-  // Boundary conditions
+  // Boundary conditions & Two-Stage Protocol (Stage 1 Relaxation -> Stage 2 Loading)
   std::vector<std::pair<int, int>> interior_mapping;
   std::vector<std::pair<int, int>> full_mapping;
   std::vector<int> node_bc_role;
   std::vector<int> baseline_node_bc_role;
   std::vector<Eigen::Vector2d> node_bc_velocity;
 
+  const std::vector<BoundaryZoneRule> original_studio_rules =
+      has_custom_geom ? macro_geom.boundary_rules : std::vector<BoundaryZoneRule>{};
+  const bool original_indenter_enabled =
+      has_custom_geom ? macro_geom.indenter.enabled : false;
+  const bool stage1_pre_relax_active =
+      has_custom_geom && (restart_chk == nullptr) &&
+      (macro_geom.microstructure.relax_only ||
+       macro_geom.microstructure.pre_relax_gb);
+
   if (has_custom_geom) {
+    if (stage1_pre_relax_active) {
+      macro_geom.boundary_rules = macro_geom.buildStage1RelaxationRules();
+      macro_geom.indenter.enabled = false;
+      std::cout << "[Stage 1/2] Equilibrating microstructure at alpha = 0 (GB-Frame Roller BCs, Indenter disengaged)..." << std::endl;
+    }
     macro_geom.buildBoundaryDOFs(square_points, interior_mapping, full_mapping,
                                  node_bc_role, node_bc_velocity);
     baseline_node_bc_role = node_bc_role;
@@ -835,9 +849,17 @@ void example_1_conti_zanzotto_loading(
 
   // Generate loading sequence
   std::vector<double> alpha_values;
-  alpha_values.reserve(num_alpha_points);
-  for (int i = 0; i < num_alpha_points; i++) {
-    alpha_values.push_back(alpha_min + i * step_size);
+  if (has_custom_geom && macro_geom.microstructure.relax_only) {
+    alpha_values.push_back(0.0);
+    std::cout << "[Protocol] Relax-Only mode active: executing single Stage 1 equilibration at alpha = 0.0" << std::endl;
+  } else {
+    alpha_values.reserve(num_alpha_points + 1);
+    if (stage1_pre_relax_active && std::abs(alpha_min) > 1e-12) {
+      alpha_values.push_back(0.0);
+    }
+    for (int i = 0; i < num_alpha_points; i++) {
+      alpha_values.push_back(alpha_min + i * step_size);
+    }
   }
 
   int file_counter = (restart_chk != nullptr ? restart_chk->iteration + 1 : 0);
@@ -1146,6 +1168,133 @@ void example_1_conti_zanzotto_loading(
     }
     post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
 
+    // ==================== GRAIN BOUNDARY ENERGY SUMMARY (alpha = 0) ====================
+    if (i == 0 && has_custom_geom &&
+        macro_geom.microstructure.mode == MicrostructureMode::Bicrystal &&
+        !square_points.empty()) {
+      const double a0_gb = (optimal_lattice_parameter > 1e-8) ? optimal_lattice_parameter : 1.0;
+      const double phi_rad = macro_geom.microstructure.gb_angle_deg * M_PI / 180.0;
+      const Eigen::Vector2d t_gb(-std::sin(phi_rad), std::cos(phi_rad));
+      const Eigen::Vector2d p_gb(
+          macro_geom.x_min + macro_geom.microstructure.gb_cx * macro_geom.Lx,
+          macro_geom.y_min + macro_geom.microstructure.gb_cy * macro_geom.Ly);
+
+      double s_min = 1e30, s_max = -1e30;
+      for (const auto &pt : square_points) {
+        const double s = (pt.coord - p_gb).dot(t_gb);
+        s_min = std::min(s_min, s);
+        s_max = std::max(s_max, s);
+      }
+      const double L_gb_phys = std::max(a0_gb, s_max - s_min);
+      const double L_gb_a0 = L_gb_phys / a0_gb;
+      const double collar_phys = std::min(4.0 * a0_gb, 0.15 * L_gb_phys);
+      const double L_int_a0 = std::max(a0_gb, L_gb_phys - 2.0 * collar_phys) / a0_gb;
+
+      double interior_energy = 0.0;
+      const double norm_area = calculator.getUnitCellArea();
+      for (size_t elem_idx : active_elements) {
+        if (elem_idx >= elements.size()) continue;
+        auto &el = elements[elem_idx];
+        if (!el.isInitialized()) continue;
+        const Eigen::Vector2d c_el =
+            (square_points[el.getNodeIndex(0)].coord +
+             square_points[el.getNodeIndex(1)].coord +
+             square_points[el.getNodeIndex(2)].coord) / 3.0;
+        const double s_c = (c_el - p_gb).dot(t_gb);
+        if (s_c >= s_min + collar_phys && s_c <= s_max - collar_phys) {
+          el.setExternalDeformation(F_ext);
+          el.calculate_deformation_gradient(square_points);
+          const Eigen::Matrix2d F_el = el.getDeformationGradient();
+          const Eigen::Matrix2d C_el = F_el.transpose() * F_el;
+          const auto red = lagrange::reduce(C_el);
+          const double e_el = calculator.calculate_energy(
+                                  red.C_reduced, potential_func, zero) /
+                              norm_area;
+          interior_energy += e_el * el.getReferenceArea();
+        }
+      }
+
+      const double gamma_gb_total = post_energy / L_gb_a0;
+      const double gamma_gb_interior = interior_energy / L_int_a0;
+      const double th1_deg = macro_geom.microstructure.theta1_deg;
+      const double th2_deg = macro_geom.microstructure.theta2_deg;
+      const double misori_deg = std::abs(th2_deg - th1_deg);
+      const double half_tilt_deg = 0.5 * misori_deg;
+
+      std::cout << "\n======================================================================\n"
+                << "[GRAIN BOUNDARY ENERGY SUMMARY (alpha = 0)]\n"
+                << "  Misorientation Δθ       = " << std::fixed << std::setprecision(4) << misori_deg
+                << "° (θ1 = " << th1_deg << "°, θ2 = " << th2_deg
+                << "°, φ_GB = " << macro_geom.microstructure.gb_angle_deg << "°)\n"
+                << "  GB Length L_GB          = " << std::fixed << std::setprecision(3) << L_gb_a0
+                << " a0 (Interior Gauge L_int = " << L_int_a0 << " a0)\n"
+                << "  Total Excess Energy E   = " << std::scientific << std::setprecision(6) << post_energy << "\n"
+                << "  γ_GB (Total E / L_GB)   = " << std::fixed << std::setprecision(6) << gamma_gb_total << "\n"
+                << "  γ_GB (Interior Gauge)   = " << std::fixed << std::setprecision(6) << gamma_gb_interior << "\n"
+                << "======================================================================\n"
+                << std::endl;
+
+      // 1) Write per-run gb_energy_summary.csv
+      {
+        std::ofstream gb_out("gb_energy_summary.csv");
+        gb_out << "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0\n";
+        gb_out << std::fixed << std::setprecision(8)
+               << misori_deg << "," << half_tilt_deg << "," << th1_deg << "," << th2_deg << ","
+               << macro_geom.microstructure.gb_angle_deg << "," << nx << "," << ny << ","
+               << L_gb_a0 << "," << L_int_a0 << ","
+               << post_energy << "," << interior_energy << ","
+               << gamma_gb_total << "," << gamma_gb_interior << ","
+               << macro_geom.microstructure.gb_normal_gap_a0 << ","
+               << macro_geom.microstructure.min_seam_distance_a0 << "\n";
+      }
+
+      // 2) Update cumulative ../gb_energy_vs_misorientation.csv sorted by MisorientationDeg
+      {
+        const std::string cum_path = "../gb_energy_vs_misorientation.csv";
+        struct GBRow {
+          double misori;
+          std::string line;
+        };
+        std::vector<GBRow> rows;
+        std::string header = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0";
+        if (std::filesystem::exists(cum_path)) {
+          std::ifstream in_cum(cum_path);
+          std::string ln;
+          while (std::getline(in_cum, ln)) {
+            if (ln.empty() || ln.rfind("MisorientationDeg", 0) == 0) continue;
+            std::stringstream ss(ln);
+            std::string first_tok;
+            if (std::getline(ss, first_tok, ',')) {
+              try {
+                double m_val = std::stod(first_tok);
+                if (std::abs(m_val - misori_deg) > 0.02) {
+                  rows.push_back({m_val, ln});
+                }
+              } catch (...) {}
+            }
+          }
+        }
+        std::ostringstream new_ln;
+        new_ln << std::fixed << std::setprecision(8)
+               << misori_deg << "," << half_tilt_deg << "," << th1_deg << "," << th2_deg << ","
+               << macro_geom.microstructure.gb_angle_deg << "," << nx << "," << ny << ","
+               << L_gb_a0 << "," << L_int_a0 << ","
+               << post_energy << "," << interior_energy << ","
+               << gamma_gb_total << "," << gamma_gb_interior << ","
+               << macro_geom.microstructure.gb_normal_gap_a0 << ","
+               << macro_geom.microstructure.min_seam_distance_a0;
+        rows.push_back({misori_deg, new_ln.str()});
+        std::sort(rows.begin(), rows.end(), [](const GBRow &a, const GBRow &b) {
+          return a.misori < b.misori;
+        });
+        std::ofstream out_cum(cum_path);
+        out_cum << header << "\n";
+        for (const auto &r : rows) {
+          out_cum << r.line << "\n";
+        }
+      }
+    }
+
     // Log fractional drops to separate CSV for investigation
     static std::ofstream frac_file;
     static std::filesystem::path frac_dir;
@@ -1354,6 +1503,40 @@ void example_1_conti_zanzotto_loading(
 
     post_energy_previous = post_energy;
     post_stress_previous = post_stress;
+
+    // ==================== STAGE 1 -> STAGE 2 PROTOCOL HANDOVER ====================
+    if (has_custom_geom && i == 0) {
+      if (macro_geom.microstructure.relax_only || alpha_values.size() <= 1) {
+        std::cout << "[Stage 1/1] Equilibration complete at alpha = 0 (Relax Only mode). Stopping cleanly." << std::endl;
+        break;
+      }
+      if (stage1_pre_relax_active) {
+        macro_geom.indenter.enabled = original_indenter_enabled;
+        if (macro_geom.microstructure.reanchor_ref_after_relax) {
+          square_points_ref = square_points;
+          macro_geom.setPhysicalBoundsFromPoints(square_points_ref, optimal_lattice_parameter);
+        } else if (macro_geom.isIndenterActive()) {
+          macro_geom.setupIndenterBounds(optimal_lattice_parameter, &square_points);
+        }
+        macro_geom.boundary_rules = original_studio_rules;
+        if (macro_geom.isIndenterActive()) {
+          macro_geom.primary_stress_component = "indentation_load";
+        }
+        macro_geom.buildBoundaryDOFs(square_points_ref, interior_mapping, full_mapping,
+                                     node_bc_role, node_bc_velocity);
+        baseline_node_bc_role = node_bc_role;
+        for (auto &elem : elements) {
+          elem.set_dof_mapping(full_mapping);
+        }
+        active_elements = initialize_active_elements(elements, full_mapping, square_points.size());
+        std::cout << "[Stage 2/2] Handover complete: X_0 re-anchored to relaxed equilibrium state, switched to Stage 2 BCs & Indenter ("
+                  << macro_geom.boundary_rules.size() << " boundary rules"
+                  << (macro_geom.isIndenterActive()
+                      ? (", Nanoindenter ACTIVE at y_top = " + std::to_string(macro_geom.indenter.physical_y_top))
+                      : "")
+                  << ")." << std::endl;
+      }
+    }
 
     if (stress_drop_detected || i == 0) {
       avalanche_counter++;

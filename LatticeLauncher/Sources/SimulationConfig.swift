@@ -112,11 +112,35 @@ public class SimulationConfig: ObservableObject {
     @Published public var stressTol: Double = 1e-5
     @Published public var maxMacroIters: Int = 30
     
-    // 3. Loading Schedule (Shear modes)
+    // 3. Loading Schedule & Two-Stage Protocol (Shear & Microstructure modes)
+    @Published public var protocolMode: SimulationProtocolMode = .relaxThenLoad
+    @Published public var sweepContinuousMode: Bool = true
+    @Published public var sweepDeltaThetaStepDeg: Double = 2.0
+    @Published public var sweepIncludeExactCusps: Bool = true
+    @Published public var sweepThetaMinDeg: Double = 0.0
+    @Published public var sweepThetaMaxDeg: Double = 45.0
+    @Published public var sweepUseCuratedCSLOnly: Bool = true
+    @Published public var sweepAutoCommensurateBox: Bool = true
     @Published public var boundaryCondition: BoundaryConditionMode = .periodic
-    @Published public var alphaStart: Double = 0.14
-    @Published public var alphaEnd: Double = 1.0
-    @Published public var stepSize: Double = 0.00006
+    @Published public var alphaStart: Double = 0.0
+    @Published public var alphaEnd: Double = 0.25
+    @Published public var stepSize: Double = 0.0005
+
+    public var sweepCSLCandidates: [CSLRationalMatch] {
+        if sweepContinuousMode {
+            return CSLRationalizer.buildContinuousSweep(
+                thetaMinDeg: sweepThetaMinDeg,
+                thetaMaxDeg: sweepThetaMaxDeg,
+                stepDeltaThetaDeg: sweepDeltaThetaStepDeg,
+                isTriangular: latticeSymmetry == .triangular,
+                includeExactCusps: sweepIncludeExactCusps
+            )
+        }
+        let lo = min(sweepThetaMinDeg, sweepThetaMaxDeg)
+        let hi = max(sweepThetaMinDeg, sweepThetaMaxDeg)
+        let source = sweepUseCuratedCSLOnly ? CSLRationalizer.curatedCatalog : CSLRationalizer.allCandidates
+        return source.filter { $0.halfAngleDeg >= lo - 1e-4 && $0.halfAngleDeg <= hi + 1e-4 }
+    }
     
     // 3b. Staircase Shift Schedule (Shift mode)
     @Published public var shiftAmplitude: Double = 2.0
@@ -271,12 +295,22 @@ public class SimulationConfig: ObservableObject {
     }
     
     /// Constructs the array of command-line arguments for the executable
-    public func buildArguments() -> [String] {
+    public func buildArguments(
+        overrideRunDirectory: String? = nil,
+        overrideNx: Int? = nil,
+        overrideNy: Int? = nil,
+        overrideGeometryConfig: MacroscopicGeometryConfigModel? = nil,
+        overrideProtocolMode: SimulationProtocolMode? = nil
+    ) -> [String] {
         var args: [String] = []
+        let activeProtocol = overrideProtocolMode ?? protocolMode
+        let activeGeometry = overrideGeometryConfig ?? geometryConfig
         
         // Positional arguments: nx ny mode seed remesh
-        args.append(String(nx))
-        let effectiveNy = (latticeSymmetry == .triangular && ny % 2 != 0) ? (ny + 1) : ny
+        let useNx = overrideNx ?? nx
+        let baseNy = overrideNy ?? ny
+        args.append(String(useNx))
+        let effectiveNy = (latticeSymmetry == .triangular && baseNy % 2 != 0) ? (baseNy + 1) : baseNy
         args.append(String(effectiveNy))
         args.append(mode.rawValue)
         args.append(String(seed))
@@ -320,6 +354,10 @@ public class SimulationConfig: ObservableObject {
             args.append("--shift-h-steps=\(shiftHorizontalSteps)")
             args.append("--shift-v-steps=\(shiftVerticalSteps)")
             args.append("--shift-perturb=\(shiftPerturbMesh ? 1 : 0)")
+        } else if activeProtocol == .relaxOnly || activeProtocol == .sweepMisorientation {
+            args.append("--alpha-start=0.000000")
+            args.append("--alpha-end=0.000000")
+            args.append(String(format: "--step-size=%.8f", max(1e-6, stepSize)))
         } else {
             args.append(String(format: "--alpha-start=%.6f", alphaStart))
             args.append(String(format: "--alpha-end=%.6f", alphaEnd))
@@ -377,17 +415,19 @@ public class SimulationConfig: ObservableObject {
         
         // Boundary condition & Macroscopic Geometry Studio
         if mode != .shift && mode != .volterra {
-            if geometryConfig.enabled {
+            if activeGeometry.enabled {
                 args.append("--bc=fixed")
+                var effectiveGeom = activeGeometry
+                effectiveGeom.microstructure.relax_only = (activeProtocol != .relaxThenLoad)
                 let scratchDir = "\(projectRoot)/scratch"
                 try? FileManager.default.createDirectory(atPath: scratchDir, withIntermediateDirectories: true)
                 let scratchGeomPath = "\(scratchDir)/geometry_config.json"
-                _ = try? geometryConfig.writeJSON(to: scratchGeomPath)
+                _ = try? effectiveGeom.writeJSON(to: scratchGeomPath)
                 
-                let targetDir = targetDirectory
+                let targetDir = overrideRunDirectory ?? targetDirectory
                 try? FileManager.default.createDirectory(atPath: targetDir, withIntermediateDirectories: true)
                 let runGeomPath = "\(targetDir)/geometry_config.json"
-                if (try? geometryConfig.writeJSON(to: runGeomPath)) != nil {
+                if (try? effectiveGeom.writeJSON(to: runGeomPath)) != nil {
                     args.append("--geometry-json=\(runGeomPath)")
                 } else {
                     args.append("--geometry-json=\(scratchGeomPath)")
@@ -400,7 +440,7 @@ public class SimulationConfig: ObservableObject {
         // Rotated Crystal Orientation / CSL
         if mode != .volterra && useRotation {
             args.append("--use-rotation")
-            if boundaryCondition == .fixed || geometryConfig.enabled || mode == .shift {
+            if boundaryCondition == .fixed || activeGeometry.enabled || mode == .shift {
                 args.append(String(format: "--rotation-angle=%.4f", rotationAngle))
             } else {
                 args.append("--csl-m=\(cslM)")
