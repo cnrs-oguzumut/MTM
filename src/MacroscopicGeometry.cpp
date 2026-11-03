@@ -1,6 +1,8 @@
 #include "../include/geometry/MacroscopicGeometry.h"
+#include "../include/geometry/DomainInfo.h"
 #include "../include/optimization/LatticeOptimizer.h"
 #include "../include/mesh/ElementTriangle2D.h"
+#include "../include/utils/dislocation_utils.h"
 #include <unordered_set>
 
 #include <fstream>
@@ -381,6 +383,8 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
             out_config.microstructure.mode = MicrostructureMode::Bicrystal;
         } else if (mode_str == "voronoi" || mode_str == "voronoi_polycrystal" || mode_str == "VoronoiPolycrystal") {
             out_config.microstructure.mode = MicrostructureMode::VoronoiPolycrystal;
+        } else if (mode_str == "periodic_dislocations" || mode_str == "PeriodicDislocations" || mode_str == "dislocations") {
+            out_config.microstructure.mode = MicrostructureMode::PeriodicDislocations;
         } else {
             out_config.microstructure.mode = MicrostructureMode::SingleCrystal;
         }
@@ -413,6 +417,28 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
         out_config.microstructure.theta_min_deg = extractDouble(micro_raw, "theta_min_deg", -30.0);
         out_config.microstructure.theta_max_deg = extractDouble(micro_raw, "theta_max_deg", +30.0);
 
+        // Multi-Plane Single-Dislocation Periodic Setup parameters
+        out_config.microstructure.dislocation_pair_count = std::clamp(static_cast<int>(extractDouble(micro_raw, "dislocation_pair_count", 2.0)), 1, 16);
+        out_config.microstructure.dislocation_layout = extractString(micro_raw, "dislocation_layout", "alternating_random_x");
+        out_config.microstructure.min_plane_spacing_rows = std::clamp(static_cast<int>(extractDouble(micro_raw, "min_plane_spacing_rows", 6.0)), 2, 40);
+        out_config.microstructure.dislocation_core_radius_a0 = std::clamp(extractDouble(micro_raw, "dislocation_core_radius_a0", 0.80), 0.1, 5.0);
+        out_config.microstructure.bound_strip_excess = extractBool(micro_raw, "bound_strip_excess", true);
+        out_config.microstructure.enforce_periodic_bc = extractBool(micro_raw, "enforce_periodic_bc", true);
+
+        out_config.microstructure.dislocations.clear();
+        std::string dislocs_raw = extractRawValue(micro_raw, "dislocations");
+        int disloc_idx = 0;
+        for (const auto& d_json : splitJSONObjectArray(dislocs_raw)) {
+            SeededDislocation d;
+            d.id = static_cast<int>(extractDouble(d_json, "id", disloc_idx));
+            d.glide_plane_row = static_cast<int>(extractDouble(d_json, "glide_plane_row", 20.0));
+            d.x_frac = std::clamp(extractDouble(d_json, "x_frac", 0.50), 0.01, 0.99);
+            d.burgers_sign = (extractDouble(d_json, "burgers_sign", 1.0) < 0) ? -1 : 1;
+            d.enabled = extractBool(d_json, "enabled", true);
+            out_config.microstructure.dislocations.push_back(d);
+            ++disloc_idx;
+        }
+
         out_config.microstructure.seeds.clear();
         std::string seeds_raw = extractRawValue(micro_raw, "seeds");
         int seed_idx = 0;
@@ -430,6 +456,7 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
     std::string micro_label = "SINGLE";
     if (out_config.microstructure.mode == MicrostructureMode::Bicrystal) micro_label = "BICRYSTAL";
     else if (out_config.microstructure.mode == MicrostructureMode::VoronoiPolycrystal) micro_label = "VORONOI";
+    else if (out_config.microstructure.mode == MicrostructureMode::PeriodicDislocations) micro_label = "PERIODIC_DISLOCATIONS";
 
     std::cout << "[MacroscopicGeometry] Loaded '" << out_config.preset_name << "' from " << filepath
               << " (" << out_config.cutouts.size() << " cutouts, "
@@ -445,7 +472,12 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
     const std::string& lattice_type,
     int nx, int ny,
     double lattice_a0,
-    double fallback_theta_deg) {
+    double fallback_theta_deg,
+    int potential_mode) {
+
+    if (microstructure.mode == MicrostructureMode::PeriodicDislocations) {
+        return generatePeriodicDislocationLattice(lattice_type, nx, ny, lattice_a0, potential_mode);
+    }
 
     const double a = (lattice_a0 > 0.0) ? lattice_a0 : 1.0;
     const double sqrt3 = std::sqrt(3.0);
@@ -796,6 +828,206 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
 
     return {filtered_points, DomainDimensions(size_x + std::abs(delta_perp * nx_gb_sep),
                                               size_y + std::abs(delta_perp * ny_gb_sep))};
+}
+
+std::pair<std::vector<Point2D>, DomainDimensions>
+MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
+    const std::string& lattice_type,
+    int nx, int ny,
+    double lattice_a0,
+    int potential_mode) {
+
+    const double a = (lattice_a0 > 0.0) ? lattice_a0 : 1.0;
+    const bool is_triangular = (lattice_type == "triangular");
+    const double sqrt3 = std::sqrt(3.0);
+    const double h_y = is_triangular ? (a * sqrt3 * 0.5) : a;
+
+    int effective_ny = ny;
+    if (is_triangular && (effective_ny % 2 != 0)) {
+        effective_ny++;
+    }
+
+    const double Lx = nx * a;
+    const double Ly = effective_ny * h_y;
+
+    int M = std::max(1, microstructure.dislocation_pair_count);
+    std::vector<SeededDislocation> active_dislocs;
+
+    if (microstructure.dislocation_layout == "custom" && !microstructure.dislocations.empty()) {
+        for (const auto& d : microstructure.dislocations) {
+            if (d.enabled && d.glide_plane_row >= 1 && d.glide_plane_row < effective_ny - 1) {
+                active_dislocs.push_back(d);
+            }
+        }
+    }
+
+    int sum_b = 0;
+    for (const auto& d : active_dislocs) sum_b += d.burgers_sign;
+
+    if (active_dislocs.size() < 2 || active_dislocs.size() % 2 != 0 || sum_b != 0 || microstructure.dislocation_layout != "custom") {
+        active_dislocs.clear();
+        int total_planes = 2 * M;
+
+        int min_row = std::max(2, 2);
+        int max_row = std::max(min_row + total_planes, effective_ny - 3);
+
+        std::vector<int> plane_rows;
+        if (microstructure.dislocation_layout == "alternating_staggered" || microstructure.dislocation_layout == "alternating_random_x") {
+            double step = static_cast<double>(max_row - min_row) / std::max(1, total_planes - 1);
+            for (int k = 0; k < total_planes; ++k) {
+                int r = std::clamp(static_cast<int>(std::round(min_row + k * step)), min_row, max_row);
+                if (!plane_rows.empty() && r <= plane_rows.back()) {
+                    r = plane_rows.back() + 1;
+                }
+                plane_rows.push_back(r);
+            }
+        } else {
+            std::mt19937 rng(microstructure.random_seed);
+            int min_space = std::max(2, microstructure.min_plane_spacing_rows);
+            int attempts = 0;
+            bool success = false;
+            while (attempts++ < 1000 && !success) {
+                std::vector<int> candidates;
+                for (int r = min_row; r <= max_row; ++r) candidates.push_back(r);
+                std::shuffle(candidates.begin(), candidates.end(), rng);
+                plane_rows.clear();
+                for (int r : candidates) {
+                    bool ok = true;
+                    for (int existing : plane_rows) {
+                        if (std::abs(r - existing) < min_space) { ok = false; break; }
+                    }
+                    if (ok) {
+                        plane_rows.push_back(r);
+                        if (plane_rows.size() == static_cast<size_t>(total_planes)) break;
+                    }
+                }
+                if (plane_rows.size() == static_cast<size_t>(total_planes)) {
+                    std::sort(plane_rows.begin(), plane_rows.end());
+                    success = true;
+                }
+            }
+            if (!success) {
+                plane_rows.clear();
+                double step = static_cast<double>(max_row - min_row) / std::max(1, total_planes - 1);
+                for (int k = 0; k < total_planes; ++k) {
+                    int r = std::clamp(static_cast<int>(std::round(min_row + k * step)), min_row, max_row);
+                    if (!plane_rows.empty() && r <= plane_rows.back()) r = plane_rows.back() + 1;
+                    plane_rows.push_back(r);
+                }
+            }
+        }
+
+        std::mt19937 x_rng(microstructure.random_seed + 101);
+        std::uniform_real_distribution<double> x_dist(0.18, 0.82);
+
+        std::vector<int> signs(total_planes);
+        if (microstructure.dislocation_layout == "random_planes_random_signs" && !microstructure.bound_strip_excess) {
+            for (int k = 0; k < total_planes; ++k) signs[k] = (k < M) ? 1 : -1;
+            std::shuffle(signs.begin(), signs.end(), x_rng);
+        } else {
+            for (int k = 0; k < total_planes; ++k) signs[k] = (k % 2 == 0) ? 1 : -1;
+        }
+
+        for (int k = 0; k < total_planes; ++k) {
+            SeededDislocation d;
+            d.id = k;
+            d.glide_plane_row = plane_rows[k];
+            d.burgers_sign = signs[k];
+            if (microstructure.dislocation_layout == "alternating_staggered") {
+                d.x_frac = (k % 2 == 0) ? 0.35 : 0.65;
+            } else {
+                d.x_frac = x_dist(x_rng);
+            }
+            d.enabled = true;
+            active_dislocs.push_back(d);
+        }
+    }
+
+    std::sort(active_dislocs.begin(), active_dislocs.end(), [](const SeededDislocation& a, const SeededDislocation& b) {
+        return a.glide_plane_row < b.glide_plane_row;
+    });
+
+    std::vector<int> n_strip(effective_ny, 0);
+    for (int j = 0; j < effective_ny; ++j) {
+        int sum_s = 0;
+        for (const auto& d : active_dislocs) {
+            if (d.glide_plane_row < j) {
+                sum_s += d.burgers_sign;
+            }
+        }
+        n_strip[j] = sum_s;
+    }
+
+    DislocationSolutionParams disloc_params =
+        (potential_mode == 3)
+            ? DislocationSolutionParams::fromCurrentZanzottoPotential(lattice_type)
+            : DislocationSolutionParams::fromPotentialMode(potential_mode, lattice_type);
+
+    const double core_r0 = std::clamp(microstructure.dislocation_core_radius_a0, 0.1, 5.0) * a;
+
+    std::vector<Point2D> points;
+    points.reserve(nx * effective_ny + 2 * M);
+
+    for (int j = 0; j < effective_ny; ++j) {
+        const int Nj = std::max(4, nx + n_strip[j]);
+        const double row_y = j * h_y;
+        const double stagger_x = is_triangular ? (0.5 * (j % 2)) : 0.0;
+
+        for (int i = 0; i < Nj; ++i) {
+            double bx = (i + stagger_x) * (Lx / static_cast<double>(Nj));
+            double by = row_y;
+
+            double total_ux = 0.0;
+            double total_uy = 0.0;
+
+            for (const auto& d : active_dislocs) {
+                double disloc_x = d.x_frac * Lx;
+                double disloc_y = (d.glide_plane_row + 0.5) * h_y;
+                Eigen::Vector2d b_vec(d.burgers_sign * a, 0.0);
+
+                double dx_raw = bx - disloc_x;
+                double dx_wrap = dx_raw - Lx * std::round(dx_raw / Lx);
+
+                for (int my = -1; my <= 1; ++my) {
+                    double dy = by - (disloc_y + my * Ly);
+                    Eigen::Vector2d rel_pos(dx_wrap, dy);
+
+                    Eigen::Vector2d u_analytic = NonSingularDisplacement::calculateEdgeDisplacement(
+                        rel_pos, b_vec, core_r0, disloc_params);
+
+                    double sgn_y = (dy >= 0.0) ? 1.0 : -1.0;
+                    double u_corr_x = sgn_y * (b_vec.x() / (2.0 * Lx)) * dx_wrap;
+
+                    total_ux += u_analytic.x() + u_corr_x;
+                    total_uy += u_analytic.y();
+                }
+            }
+
+            double final_x = bx + total_ux;
+            double final_y = by + total_uy;
+
+            while (final_x < 0.0) final_x += Lx;
+            while (final_x >= Lx) final_x -= Lx;
+
+            points.emplace_back(final_x, final_y, 0, 0.0);
+        }
+    }
+
+    std::sort(points.begin(), points.end(), [](const Point2D& p1, const Point2D& p2) {
+        if (std::abs(p1.coord.y() - p2.coord.y()) > 1e-5) {
+            return p1.coord.y() < p2.coord.y();
+        }
+        return p1.coord.x() < p2.coord.x();
+    });
+
+    DomainInfo dinfo = compute_domain_size(points);
+    DomainDimensions dims(dinfo.get_width(), dinfo.get_height());
+
+    std::cout << "[PeriodicDislocations] Generated " << points.size() << " atoms with "
+              << active_dislocs.size() << " glide-plane dislocations (M = " << M
+              << " pairs, ∑b = 0, lattice = " << lattice_type << ")\n";
+
+    return {points, dims};
 }
 
 void MacroscopicGeometryConfig::setupIndenterBounds(double lattice_a0,

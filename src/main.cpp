@@ -185,21 +185,21 @@ int main(int argc, char **argv) {
       std::string val = arg.substr(17);
       if (val == "mode1" || val == "1") potential_mode = 1;
       else if (val == "mode2" || val == "2") potential_mode = 2;
-      else if (val == "mode3" || val == "3") potential_mode = 3;
+      else if (val == "mode3" || val == "3" || val == "zanzotto") potential_mode = 3;
       else if (val == "mode4" || val == "4") potential_mode = 4;
       else potential_mode = std::stoi(val);
     } else if (arg.rfind("--potential=", 0) == 0) {
       std::string val = arg.substr(12);
       if (val == "mode1" || val == "1") potential_mode = 1;
       else if (val == "mode2" || val == "2") potential_mode = 2;
-      else if (val == "mode3" || val == "3") potential_mode = 3;
+      else if (val == "mode3" || val == "3" || val == "zanzotto") potential_mode = 3;
       else if (val == "mode4" || val == "4") potential_mode = 4;
       else potential_mode = std::stoi(val);
     } else if (arg.rfind("--acoustic-mode=", 0) == 0) {
       std::string val = arg.substr(16);
       if (val == "mode1" || val == "1") potential_mode = 1;
       else if (val == "mode2" || val == "2") potential_mode = 2;
-      else if (val == "mode3" || val == "3") potential_mode = 3;
+      else if (val == "mode3" || val == "3" || val == "zanzotto") potential_mode = 3;
       else if (val == "mode4" || val == "4") potential_mode = 4;
       else potential_mode = std::stoi(val);
     } else if (arg.rfind("--t-max=", 0) == 0) {

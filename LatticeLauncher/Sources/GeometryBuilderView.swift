@@ -78,6 +78,7 @@ public struct GeometryBuilderView: View {
         case outerPolygonVertex(Int)
         case moveBicrystalGB
         case moveVoronoiSeed(Int)
+        case moveDislocationCore(Int)
     }
     
     public init(
@@ -172,7 +173,7 @@ public struct GeometryBuilderView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             if inspectorSection == .microstructure || inspectorSection == .all {
                                 microstructureCard
-                                if config.geometryConfig.microstructure.mode == .singleCrystal {
+                                if config.geometryConfig.microstructure.mode == .singleCrystal || config.geometryConfig.microstructure.mode == .periodicDislocations {
                                     crystalLatticeCard
                                 }
                             }
@@ -796,7 +797,7 @@ public struct GeometryBuilderView: View {
         boxH: CGFloat
     ) {
         if case .none = activeDragMode {
-            // Hit-test Bicrystal GB center handle or Voronoi grain seed handles first
+            // Hit-test Bicrystal GB center handle, Voronoi grain seeds, or Periodic Dislocation cores
             let micro = config.geometryConfig.microstructure
             if micro.mode == .bicrystal {
                 let gbPt = toScreen(micro.gb_cx, micro.gb_cy)
@@ -808,6 +809,16 @@ public struct GeometryBuilderView: View {
                     let sPt = toScreen(s.cx, s.cy)
                     if hypot(startLocation.x - sPt.x, startLocation.y - sPt.y) < 16 {
                         activeDragMode = .moveVoronoiSeed(sIdx)
+                        break
+                    }
+                }
+            } else if micro.mode == .periodicDislocations {
+                let ny = max(4, config.ny)
+                for (dIdx, d) in micro.dislocations.enumerated() where d.enabled {
+                    let yFrac = (Double(d.glide_plane_row) + 0.5) / Double(ny - 1)
+                    let dPt = toScreen(d.x_frac, yFrac)
+                    if hypot(startLocation.x - dPt.x, startLocation.y - dPt.y) < 18 {
+                        activeDragMode = .moveDislocationCore(dIdx)
                         break
                     }
                 }
@@ -915,6 +926,13 @@ public struct GeometryBuilderView: View {
             if sIdx >= 0 && sIdx < config.geometryConfig.microstructure.seeds.count {
                 config.geometryConfig.microstructure.seeds[sIdx].cx = (round(xh * 200) / 200)
                 config.geometryConfig.microstructure.seeds[sIdx].cy = (round(yh * 200) / 200)
+            }
+        case .moveDislocationCore(let dIdx):
+            if dIdx >= 0 && dIdx < config.geometryConfig.microstructure.dislocations.count {
+                config.geometryConfig.microstructure.dislocations[dIdx].x_frac = min(0.95, max(0.05, round(xh * 100) / 100.0))
+                let ny = max(4, config.ny)
+                let targetRow = Int(round(yh * Double(ny - 1) - 0.5))
+                config.geometryConfig.microstructure.dislocations[dIdx].glide_plane_row = min(ny - 3, max(2, targetRow))
             }
         case .outerPolygonVertex(let idx):
             if idx < config.geometryConfig.outer_polygon.count {
@@ -1098,6 +1116,7 @@ public struct GeometryBuilderView: View {
                     Text("Single Crystal").tag(MicrostructureModeModel.singleCrystal)
                     Text("Bicrystal (GB)").tag(MicrostructureModeModel.bicrystal)
                     Text("2D Voronoi").tag(MicrostructureModeModel.voronoi)
+                    Text("Periodic Dislocs").tag(MicrostructureModeModel.periodicDislocations)
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
@@ -1108,6 +1127,11 @@ public struct GeometryBuilderView: View {
                         config.geometryConfig.enabled = true
                         if newMode == .voronoi && config.geometryConfig.microstructure.seeds.isEmpty {
                             config.geometryConfig.microstructure.regenerateSeeds()
+                        } else if newMode == .periodicDislocations {
+                            if config.geometryConfig.microstructure.dislocations.isEmpty {
+                                config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+                            }
+                            config.boundaryCondition = .periodic
                         }
                     }
                 }
@@ -1424,9 +1448,11 @@ public struct GeometryBuilderView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
                     .background(BlueHour.midnight.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+                } else if config.geometryConfig.microstructure.mode == .periodicDislocations {
+                    periodicDislocationsSection
                 }
                 
-                if config.geometryConfig.microstructure.mode != .singleCrystal {
+                if config.geometryConfig.microstructure.mode == .bicrystal || config.geometryConfig.microstructure.mode == .voronoi {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
                             Text("Seam Overlap (r_ij < d_min):")
@@ -1496,6 +1522,255 @@ public struct GeometryBuilderView: View {
             Color(red: 0.75, green: 0.68, blue: 1.00)
         ]
         return palette[abs(gid) % palette.count]
+    }
+    
+    // MARK: - Periodic Dislocations Section (2M Planes, 1 Dislocation Per Plane, Net b = 0)
+    private var periodicDislocationsSection: some View {
+        let micro = config.geometryConfig.microstructure
+        let dislocations = micro.dislocations
+        let totalDislocs = dislocations.filter(\.enabled).count
+        let sumB = dislocations.filter(\.enabled).reduce(0) { $0 + $1.burgers_sign }
+        let posCount = dislocations.filter { $0.enabled && $0.burgers_sign > 0 }.count
+        let negCount = dislocations.filter { $0.enabled && $0.burgers_sign < 0 }.count
+        let isBalanced = (sumB == 0) && (totalDislocs > 0)
+        let isTri = (config.latticeSymmetry == .triangular)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            // Pair Count & Presets
+            HStack(spacing: 6) {
+                Text("Dislocation Pairs M:")
+                    .font(.caption2.bold())
+                Stepper(
+                    "\(config.geometryConfig.microstructure.dislocation_pair_count) (\(config.geometryConfig.microstructure.dislocation_pair_count * 2) planes)",
+                    value: $config.geometryConfig.microstructure.dislocation_pair_count,
+                    in: 1...16,
+                    onEditingChanged: { _ in
+                        config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+                    }
+                )
+                .font(.caption2.monospacedDigit())
+                Spacer()
+                Button("Randomize") {
+                    config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+            }
+
+            // Quick Pair Selection Chips
+            HStack(spacing: 4) {
+                Text("Quick M:")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(BlueHour.mist)
+                ForEach([1, 2, 3, 4], id: \.self) { mVal in
+                    let isSel = (config.geometryConfig.microstructure.dislocation_pair_count == mVal)
+                    selectableChipButton(
+                        title: "\(mVal) Pair (\(2 * mVal)D)",
+                        isSelected: isSel
+                    ) {
+                        config.geometryConfig.microstructure.dislocation_pair_count = mVal
+                        config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+                    }
+                }
+            }
+
+            // Layout Preset & Spacing
+            HStack(spacing: 6) {
+                Text("Layout:")
+                    .font(.caption2.bold())
+                Picker("", selection: $config.geometryConfig.microstructure.dislocation_layout) {
+                    ForEach(DislocationLayoutPreset.allCases) { preset in
+                        Text(preset.displayName).tag(preset.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.mini)
+                .frame(maxWidth: .infinity)
+                .onChange(of: config.geometryConfig.microstructure.dislocation_layout) { _ in
+                    config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text("Min Spacing Δj:")
+                    .font(.caption2)
+                Stepper("\(config.geometryConfig.microstructure.min_plane_spacing_rows) rows",
+                        value: $config.geometryConfig.microstructure.min_plane_spacing_rows,
+                        in: 2...20)
+                    .font(.caption2.monospacedDigit())
+                Spacer()
+                Text("Core r₀:")
+                    .font(.caption2)
+                DoubleField(title: "0.8", value: $config.geometryConfig.microstructure.dislocation_core_radius_a0, width: 42, minValue: 0.2, maxValue: 3.0)
+                Text("a₀").font(.caption2)
+            }
+
+            // Topological Balance Indicator
+            HStack(spacing: 6) {
+                if isBalanced {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundColor(Color(red: 0.45, green: 0.90, blue: 0.62))
+                    Text("Topologically Balanced: ∑b = 0 (\(posCount)×[+a₀] ⊥, \(negCount)×[-a₀] ⊤) · Full 2D PBC Valid")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(Color(red: 0.45, green: 0.90, blue: 0.62))
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text("Net ∑b = \(sumB > 0 ? "+\(sumB)" : "\(sumB)") a₀ ≠ 0! Periodic boundary conditions require ∑b = 0.")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(.orange)
+                    Spacer()
+                    Button("Auto-Balance") {
+                        balanceBurgersVector()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+            }
+            .padding(5)
+            .background(BlueHour.midnight.opacity(0.55), in: RoundedRectangle(cornerRadius: 5))
+
+            if isTri && (config.ny % 2 != 0) {
+                HStack(spacing: 4) {
+                    Image(systemName: "info.circle")
+                        .foregroundColor(.orange)
+                    Text("Triangular lattice vertical periodicity requires even Ny (Ny = \(config.ny) is odd). Auto-adjust to \(config.ny + 1)?")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.orange)
+                    Spacer()
+                    Button("Set Ny = \(config.ny + 1)") {
+                        config.ny += 1
+                        config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+                .padding(4)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            }
+
+            // Per-Plane Dislocation Table
+            Text("Single Dislocation per Glide Plane (Drag ⊥/⊤ on canvas or edit below):")
+                .font(.system(size: 9.5))
+                .foregroundColor(.secondary)
+
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach(config.geometryConfig.microstructure.dislocations.indices, id: \.self) { idx in
+                        let disloc = config.geometryConfig.microstructure.dislocations[idx]
+                        HStack(spacing: 5) {
+                            Text("D\(idx)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(disloc.burgers_sign > 0 ? Color(red: 0.35, green: 0.90, blue: 0.85) : Color(red: 1.0, green: 0.65, blue: 0.45))
+                                .frame(width: 24, alignment: .leading)
+
+                            Text("Row j:")
+                                .font(.system(size: 9.5))
+                            IntField(title: "20", value: $config.geometryConfig.microstructure.dislocations[idx].glide_plane_row, width: 38)
+
+                            Text("x/L:")
+                                .font(.system(size: 9.5))
+                            DoubleField(title: "0.50", value: $config.geometryConfig.microstructure.dislocations[idx].x_frac, width: 44, minValue: 0.02, maxValue: 0.98)
+
+                            Button(action: {
+                                config.geometryConfig.microstructure.dislocations[idx].burgers_sign *= -1
+                            }) {
+                                Text(disloc.burgers_sign > 0 ? "⊥ +a₀" : "⊤ -a₀")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(disloc.burgers_sign > 0 ? Color(red: 0.20, green: 1.0, blue: 0.85) : Color(red: 1.0, green: 0.70, blue: 0.50))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        disloc.burgers_sign > 0
+                                            ? Color(red: 0.12, green: 0.60, blue: 0.50).opacity(0.35)
+                                            : Color(red: 0.80, green: 0.40, blue: 0.20).opacity(0.35),
+                                        in: RoundedRectangle(cornerRadius: 4)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .strokeBorder(
+                                                disloc.burgers_sign > 0
+                                                    ? Color(red: 0.20, green: 1.0, blue: 0.85).opacity(0.6)
+                                                    : Color(red: 1.0, green: 0.70, blue: 0.50).opacity(0.6),
+                                                lineWidth: 1
+                                            )
+                                    )
+                            }
+                            .buttonStyle(.plain)
+
+                            Spacer()
+
+                            Toggle("", isOn: $config.geometryConfig.microstructure.dislocations[idx].enabled)
+                                .labelsHidden()
+                                .controlSize(.mini)
+
+                            if config.geometryConfig.microstructure.dislocations.count > 2 {
+                                Button(role: .destructive, action: {
+                                    config.geometryConfig.microstructure.dislocations.remove(at: idx)
+                                    config.geometryConfig.microstructure.dislocation_pair_count = max(1, config.geometryConfig.microstructure.dislocations.count / 2)
+                                }) {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(.red.opacity(0.8))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(BlueHour.midnight.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                }
+            }
+            .frame(maxHeight: 140)
+
+            HStack {
+                Button("+ Add Balanced (±b) Pair") {
+                    addDislocationPair()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                
+                Spacer()
+                
+                Text("\(totalDislocs) dislocations across \(totalDislocs) distinct glide planes")
+                    .font(.system(size: 9))
+                    .foregroundColor(BlueHour.mist)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(6)
+        .background(BlueHour.midnight.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func balanceBurgersVector() {
+        var dislocs = config.geometryConfig.microstructure.dislocations
+        let total = dislocs.count
+        guard total >= 2 else { return }
+        let half = total / 2
+        for i in 0..<total {
+            dislocs[i].burgers_sign = (i < half) ? 1 : -1
+        }
+        config.geometryConfig.microstructure.dislocations = dislocs
+    }
+
+    private func addDislocationPair() {
+        let ny = max(6, config.ny)
+        var dislocs = config.geometryConfig.microstructure.dislocations
+        let usedRows = Set(dislocs.map(\.glide_plane_row))
+        var candidate1 = 3
+        while candidate1 < ny - 3 && usedRows.contains(candidate1) {
+            candidate1 += 1
+        }
+        var candidate2 = candidate1 + 4
+        while candidate2 < ny - 3 && (usedRows.contains(candidate2) || candidate2 == candidate1) {
+            candidate2 += 1
+        }
+        let nextID = (dislocs.map(\.id).max() ?? 0) + 1
+        dislocs.append(SeededDislocationModel(id: nextID, glide_plane_row: candidate1, x_frac: 0.35, burgers_sign: 1, enabled: true))
+        dislocs.append(SeededDislocationModel(id: nextID + 1, glide_plane_row: candidate2, x_frac: 0.65, burgers_sign: -1, enabled: true))
+        config.geometryConfig.microstructure.dislocations = dislocs
+        config.geometryConfig.microstructure.dislocation_pair_count = dislocs.count / 2
     }
     
     private struct CanvasLatticeSite {
@@ -1623,11 +1898,68 @@ public struct GeometryBuilderView: View {
                     micro.grainAt(xHat: x, yHat: y).0 == k
                 }
             }
+        case .periodicDislocations:
+            let ny = config.ny
+            let nx = config.nx
+            let hy = isTri ? (aCanvas * sqrt3 * 0.5) : aCanvas
+            let activeDislocs = micro.dislocations.filter(\.enabled)
+            let rc2 = pow(max(0.4, micro.dislocation_core_radius_a0 * aCanvas), 2)
+            let nu = 0.30
+
+            for j in 0..<ny {
+                var nStrip = 0
+                for d in activeDislocs where d.glide_plane_row < j {
+                    nStrip += d.burgers_sign
+                }
+                let Nj = max(2, nx + nStrip)
+                let rowStagger = isTri ? (0.5 * Double(j % 2) * aCanvas) : 0.0
+                let y0 = Double(j) * hy
+
+                for i in 0..<Nj {
+                    var x0 = (Double(i) * aCanvas + rowStagger) * (Lx / Double(Nj))
+                    x0 = fmod(x0, Lx)
+                    if x0 < 0 { x0 += Lx }
+
+                    var ux = 0.0
+                    var uy = 0.0
+
+                    for d in activeDislocs {
+                        let yk = (Double(d.glide_plane_row) + 0.5) * hy
+                        let xk = d.x_frac * Lx
+                        let bk = Double(d.burgers_sign) * aCanvas
+
+                        var xi = x0 - xk
+                        while xi < -0.5 * Lx { xi += Lx }
+                        while xi >= 0.5 * Lx { xi -= Lx }
+                        let eta = y0 - yk
+                        let r2 = xi * xi + eta * eta + rc2
+
+                        let thetaK = atan2(eta, xi)
+                        let termX = (bk / (2.0 * .pi)) * (thetaK + (xi * eta) / (2.0 * (1.0 - nu) * r2))
+                        let termY = -(bk / (2.0 * .pi)) * (((1.0 - 2.0 * nu) / (4.0 * (1.0 - nu))) * log(r2) + (xi * xi - eta * eta) / (4.0 * (1.0 - nu) * r2))
+                        let sgnEta = eta >= 0 ? 1.0 : -1.0
+                        let closureTilt = sgnEta * (bk / (2.0 * Lx)) * xi
+
+                        ux += termX + closureTilt
+                        uy += termY
+                    }
+
+                    let xFinal = x0 + ux
+                    let yFinal = y0 + uy
+                    let xHat = xFinal / Lx
+                    let yHat = yFinal / Ly
+                    if xHat >= 0.0 && xHat <= 1.0 && yHat >= 0.0 && yHat <= 1.0 {
+                        if config.geometryConfig.isPointInsideSolid(xHat: xHat, yHat: yHat) {
+                            rawSites.append(CanvasLatticeSite(xPhys: xHat * Lx, yPhys: yHat * Ly, gid: 0, thetaDeg: 0.0))
+                        }
+                    }
+                }
+            }
         }
 
         // Apply live Seam Overlap Filter using fast 2D spatial grid (O(N) on UI thread)
         var filteredSites = rawSites
-        if micro.mode != .singleCrystal && filteredSites.count > 1 {
+        if (micro.mode == .bicrystal || micro.mode == .voronoi) && filteredSites.count > 1 {
             let dMinPhys = max(0.15, min(0.98, micro.min_seam_distance_a0)) * aCanvas
             let dMinSq = dMinPhys * dMinPhys
             let dSameSafeSq = pow(min(dMinPhys, 0.68 * aCanvas), 2)
@@ -1980,6 +2312,66 @@ public struct GeometryBuilderView: View {
                     Text(String(format: "G%d (%.0f°)", idx, s.theta_deg))
                         .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                         .foregroundColor(col),
+                    at: labelPt
+                )
+            }
+        } else if micro.mode == .periodicDislocations {
+            let ny = max(4, config.ny)
+            let h_y_norm = 1.0 / Double(ny - 1)
+            
+            for (dIdx, d) in micro.dislocations.enumerated() where d.enabled {
+                let yFrac = (Double(d.glide_plane_row) + 0.5) * h_y_norm
+                let pLeft = toScreen(0.0, yFrac)
+                let pRight = toScreen(1.0, yFrac)
+                let pCore = toScreen(d.x_frac, yFrac)
+                
+                let isPos = (d.burgers_sign > 0)
+                let planeColor = isPos
+                    ? Color(red: 0.20, green: 0.88, blue: 0.85)
+                    : Color(red: 1.0, green: 0.62, blue: 0.42)
+                
+                // Horizontal dashed glide plane line
+                var planePath = Path()
+                planePath.move(to: pLeft)
+                planePath.addLine(to: pRight)
+                ctx.stroke(planePath, with: .color(planeColor.opacity(0.70)), style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
+                
+                // Glide motion arrow under shear tau_xy > 0 (+b moves right, -b moves left)
+                let arrowDir: CGFloat = isPos ? 1.0 : -1.0
+                let arrowStartX = pCore.x - arrowDir * 22
+                let arrowEndX = pCore.x + arrowDir * 22
+                var arrowPath = Path()
+                arrowPath.move(to: CGPoint(x: arrowStartX, y: pCore.y))
+                arrowPath.addLine(to: CGPoint(x: arrowEndX, y: pCore.y))
+                arrowPath.addLine(to: CGPoint(x: arrowEndX - arrowDir * 5, y: pCore.y - 3.5))
+                arrowPath.move(to: CGPoint(x: arrowEndX, y: pCore.y))
+                arrowPath.addLine(to: CGPoint(x: arrowEndX - arrowDir * 5, y: pCore.y + 3.5))
+                ctx.stroke(arrowPath, with: .color(planeColor.opacity(0.85)), lineWidth: 1.2)
+                
+                // Core handle with ⊥ or ⊤ symbol
+                let coreR: CGFloat = 8.5
+                let hRect = CGRect(x: pCore.x - coreR, y: pCore.y - coreR, width: 2 * coreR, height: 2 * coreR)
+                ctx.fill(Path(ellipseIn: hRect), with: .color(BlueHour.midnight))
+                ctx.stroke(Path(ellipseIn: hRect), with: .color(planeColor), lineWidth: 1.8)
+                
+                ctx.draw(
+                    Text(isPos ? "⊥" : "⊤")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundColor(planeColor),
+                    at: CGPoint(x: pCore.x, y: pCore.y)
+                )
+                
+                // Core tag pill
+                let labelPt = CGPoint(x: pCore.x, y: pCore.y - 15)
+                let pillW: CGFloat = 74
+                let pillH: CGFloat = 16
+                let pillRect = CGRect(x: labelPt.x - pillW * 0.5, y: labelPt.y - pillH * 0.5, width: pillW, height: pillH)
+                ctx.fill(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(BlueHour.abyss.opacity(0.88)))
+                ctx.stroke(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(planeColor.opacity(0.60)), lineWidth: 0.8)
+                ctx.draw(
+                    Text("D\(dIdx) \(isPos ? "+a₀" : "-a₀") j=\(d.glide_plane_row)")
+                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(planeColor),
                     at: labelPt
                 )
             }

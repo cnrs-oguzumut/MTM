@@ -481,7 +481,12 @@ void example_1_conti_zanzotto_loading(
     }
   }
 
-  bool pbc = !has_custom_geom && (bc == "periodic" || bc == "Periodic" || bc == "pbc" || bc == "PBC");
+  bool is_periodic_dislocs = has_custom_geom &&
+      macro_geom.microstructure.mode == MicrostructureMode::PeriodicDislocations &&
+      macro_geom.microstructure.enforce_periodic_bc;
+
+  bool pbc = is_periodic_dislocs ||
+      (!has_custom_geom && (bc == "periodic" || bc == "Periodic" || bc == "pbc" || bc == "PBC"));
 
   // Parameters for lattice
   if (nx <= 0 || ny <= 0) {
@@ -588,7 +593,7 @@ void example_1_conti_zanzotto_loading(
 
   if (has_custom_geom && macro_geom.microstructure.mode != MicrostructureMode::SingleCrystal) {
     auto [pts, dims] = macro_geom.generateMicrostructureLattice(
-        lattice_type, nx, ny, lattice_constant, use_rotation ? rotation_angle : 0.0);
+        lattice_type, nx, ny, lattice_constant, use_rotation ? rotation_angle : 0.0, potential_mode);
     square_points = pts;
     square_points_ref = pts;
     domain_dims = dims;
@@ -668,7 +673,7 @@ void example_1_conti_zanzotto_loading(
   }
   ConfigurationSaver::setReferenceRotationDeg(theta_rot);
 
-  if (has_custom_geom) {
+  if (has_custom_geom && !is_periodic_dislocs) {
     square_points = macro_geom.carveLatticePoints(square_points, lattice_constant);
     square_points_ref = square_points;
   }
@@ -696,7 +701,13 @@ void example_1_conti_zanzotto_loading(
       (macro_geom.microstructure.relax_only ||
        macro_geom.microstructure.pre_relax_gb);
 
-  if (has_custom_geom) {
+  if (is_periodic_dislocs) {
+    std::tie(interior_mapping, full_mapping) =
+        create_dof_mapping_original(square_points, 0.25 * lattice_constant, /*pbc=*/true);
+    node_bc_role.assign(square_points.size(), 0);
+    baseline_node_bc_role = node_bc_role;
+    node_bc_velocity.assign(square_points.size(), Eigen::Vector2d::Zero());
+  } else if (has_custom_geom) {
     if (stage1_pre_relax_active) {
       macro_geom.boundary_rules = macro_geom.buildStage1RelaxationRules();
       macro_geom.indenter.enabled = false;
@@ -770,7 +781,7 @@ void example_1_conti_zanzotto_loading(
   std::vector<ElementTriangle2D> elements;
   std::vector<size_t> active_elements;
 
-  if (has_custom_geom) {
+  if (has_custom_geom && !is_periodic_dislocs) {
     AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &square_points_ref);
   } else {
     AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
@@ -905,7 +916,7 @@ void example_1_conti_zanzotto_loading(
     dF_ext << 1.0, step_size, 0.0, 1.0;
 
     std::vector<int> indenter_contacts;
-    if (has_custom_geom) {
+    if (has_custom_geom && !is_periodic_dislocs) {
       if (macro_geom.isIndenterActive()) {
         node_bc_role = baseline_node_bc_role;
       }
@@ -972,7 +983,7 @@ void example_1_conti_zanzotto_loading(
 
     ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
                                                  stress_tensor, true);
-    pre_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
+    pre_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
     pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     if (verbose_log) {
@@ -1022,7 +1033,7 @@ void example_1_conti_zanzotto_loading(
     stress_tensor.setZero();
     ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy,
                                                  stress_tensor, true);
-    post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
+    post_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
     post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     AvalancheRecorder::instance().recordStep(
@@ -1096,7 +1107,7 @@ void example_1_conti_zanzotto_loading(
 
       remesh_iterations = std::abs(iterations);
       post_energy = post_energy_re;
-      post_stress = has_custom_geom ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor_re(0, 1);
+      post_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor_re(0, 1);
 
       // Update DOF mapping
       for (auto &element : elements) {

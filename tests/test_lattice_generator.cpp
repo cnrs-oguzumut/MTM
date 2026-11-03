@@ -185,6 +185,50 @@ static void test_nanoindenter_shapes_and_penalty() {
     std::cout << "[PASS] Nanoindenter (Cylinder, FlatPunch, Wedge) kinematics, penalty & Hessian verified." << std::endl;
 }
 
+static void test_periodic_dislocations_setup() {
+    MacroscopicGeometryConfig config;
+    config.enabled = true;
+    config.microstructure.mode = MicrostructureMode::PeriodicDislocations;
+    config.microstructure.dislocation_pair_count = 2;
+    config.microstructure.dislocation_layout = "custom";
+    config.microstructure.enforce_periodic_bc = true;
+
+    // 4 glide planes: rows 10, 20, 30, 40 with signs +1, -1, +1, -1
+    config.microstructure.dislocations = {
+        {0, 10, 0.35, +1, true},
+        {1, 20, 0.65, -1, true},
+        {2, 30, 0.40, +1, true},
+        {3, 40, 0.70, -1, true}
+    };
+
+    int nx = 40;
+    int ny = 50;
+    double a0 = 1.0;
+    
+    // Test square lattice
+    auto [sq_points, sq_domain] = config.generatePeriodicDislocationLattice("square", nx, ny, a0, 3);
+    assert(!sq_points.empty());
+    
+    // Total atoms:
+    // Rows 0..10: 11 rows with 40 atoms = 440
+    // Rows 11..20: 10 rows with 41 atoms = 410
+    // Rows 21..30: 10 rows with 40 atoms = 400
+    // Rows 31..40: 10 rows with 41 atoms = 410
+    // Rows 41..49: 9 rows with 40 atoms = 360
+    // Total = 440 + 410 + 400 + 410 + 360 = 2020 atoms
+    assert(sq_points.size() == 2020);
+    assert(std::abs(sq_domain.get_width() - (nx - 1) * a0) < 1e-6);
+    assert(std::abs(sq_domain.get_height() - (ny - 1) * a0) < 1e-6);
+
+    // Test triangular lattice
+    auto [tri_points, tri_domain] = config.generatePeriodicDislocationLattice("triangular", nx, ny, a0, 3);
+    assert(tri_points.size() == 2020);
+    double expected_hy = (std::sqrt(3.0) / 2.0) * a0;
+    assert(std::abs(tri_domain.get_height() - (ny - 1) * expected_hy) < 1e-6);
+
+    std::cout << "[PASS] Multi-Plane Single-Dislocation Periodic Setup (Square & Triangular, net b = 0) verified." << std::endl;
+}
+
 int main() {
     // Test square lattice generation
     int nx = 2;
@@ -213,6 +257,7 @@ int main() {
     
     test_polygon_ray_casting_and_cutouts();
     test_nanoindenter_shapes_and_penalty();
+    test_periodic_dislocations_setup();
 
     std::cout << "All tests passed!" << std::endl;
     return 0;

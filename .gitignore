@@ -28,6 +28,7 @@ vtk_defects/
 vtk_output/
 .build/
 LatticeLauncher/.build/
+*.app/
 LatticeLauncher/*.app/
 *.csv
 *.json

@@ -367,6 +367,7 @@ public enum MicrostructureModeModel: String, CaseIterable, Codable, Identifiable
     case singleCrystal = "single_crystal"
     case bicrystal = "bicrystal"
     case voronoi = "voronoi_polycrystal"
+    case periodicDislocations = "periodic_dislocations"
     
     public var id: String { rawValue }
     public var displayName: String {
@@ -374,6 +375,7 @@ public enum MicrostructureModeModel: String, CaseIterable, Codable, Identifiable
         case .singleCrystal: return "Single Crystal"
         case .bicrystal: return "Bicrystal (Planar GB)"
         case .voronoi: return "2D Voronoi Polycrystal"
+        case .periodicDislocations: return "Periodic Dislocations (2M Glide Planes)"
         }
     }
     public var shortBadge: String {
@@ -381,6 +383,7 @@ public enum MicrostructureModeModel: String, CaseIterable, Codable, Identifiable
         case .singleCrystal: return "SINGLE"
         case .bicrystal: return "BICRYSTAL"
         case .voronoi: return "VORONOI"
+        case .periodicDislocations: return "DISLOC (2M)"
         }
     }
 }
@@ -409,6 +412,39 @@ public struct VoronoiGrainSeedModel: Codable, Equatable, Identifiable {
         self.cx = cx
         self.cy = cy
         self.theta_deg = theta_deg
+    }
+}
+
+public struct SeededDislocationModel: Codable, Equatable, Identifiable {
+    public var id: Int
+    public var glide_plane_row: Int
+    public var x_frac: Double
+    public var burgers_sign: Int
+    public var enabled: Bool
+    
+    public init(id: Int = 0, glide_plane_row: Int = 25, x_frac: Double = 0.50, burgers_sign: Int = 1, enabled: Bool = true) {
+        self.id = id
+        self.glide_plane_row = glide_plane_row
+        self.x_frac = x_frac
+        self.burgers_sign = burgers_sign
+        self.enabled = enabled
+    }
+}
+
+public enum DislocationLayoutPreset: String, CaseIterable, Codable, Identifiable {
+    case alternatingRandomX = "alternating_random_x"
+    case alternatingStaggered = "alternating_staggered"
+    case randomBalanced = "random_planes_random_signs"
+    case custom = "custom"
+    
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .alternatingRandomX: return "Alternating ±b (Random X)"
+        case .alternatingStaggered: return "Alternating ±b (Staggered X)"
+        case .randomBalanced: return "Random Planes & ±b (∑b = 0)"
+        case .custom: return "Custom Dislocation Table"
+        }
     }
 }
 
@@ -513,6 +549,15 @@ public struct MicrostructureConfigModel: Codable, Equatable {
     public var theta_max_deg: Double = +30.0
     public var seeds: [VoronoiGrainSeedModel] = []
     
+    // Multi-Plane Single-Dislocation Periodic Setup (2M active glide planes, 1 dislocation per plane, sum(b) = 0)
+    public var dislocation_pair_count: Int = 2
+    public var dislocation_layout: String = DislocationLayoutPreset.alternatingRandomX.rawValue
+    public var min_plane_spacing_rows: Int = 6
+    public var dislocation_core_radius_a0: Double = 0.8
+    public var bound_strip_excess: Bool = true
+    public var enforce_periodic_bc: Bool = true
+    public var dislocations: [SeededDislocationModel] = []
+    
     enum CodingKeys: String, CodingKey {
         case mode
         case seam_resolution
@@ -536,10 +581,18 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         case theta_min_deg
         case theta_max_deg
         case seeds
+        case dislocation_pair_count
+        case dislocation_layout
+        case min_plane_spacing_rows
+        case dislocation_core_radius_a0
+        case bound_strip_excess
+        case enforce_periodic_bc
+        case dislocations
     }
     
     public init() {
         self.regenerateSeeds()
+        self.regeneratePeriodicDislocations()
     }
     
     public init(from decoder: Decoder) throws {
@@ -569,6 +622,17 @@ public struct MicrostructureConfigModel: Codable, Equatable {
             self.seeds = decodedSeeds
         } else {
             self.regenerateSeeds()
+        }
+        self.dislocation_pair_count = try c.decodeIfPresent(Int.self, forKey: .dislocation_pair_count) ?? 2
+        self.dislocation_layout = try c.decodeIfPresent(String.self, forKey: .dislocation_layout) ?? DislocationLayoutPreset.alternatingRandomX.rawValue
+        self.min_plane_spacing_rows = try c.decodeIfPresent(Int.self, forKey: .min_plane_spacing_rows) ?? 6
+        self.dislocation_core_radius_a0 = try c.decodeIfPresent(Double.self, forKey: .dislocation_core_radius_a0) ?? 0.8
+        self.bound_strip_excess = try c.decodeIfPresent(Bool.self, forKey: .bound_strip_excess) ?? true
+        self.enforce_periodic_bc = try c.decodeIfPresent(Bool.self, forKey: .enforce_periodic_bc) ?? true
+        if let decodedDislocs = try c.decodeIfPresent([SeededDislocationModel].self, forKey: .dislocations), !decodedDislocs.isEmpty {
+            self.dislocations = decodedDislocs
+        } else {
+            self.regeneratePeriodicDislocations()
         }
     }
     
@@ -602,10 +666,75 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         self.seeds = out
     }
     
+    public mutating func regeneratePeriodicDislocations(nx: Int = 60, ny: Int = 60) {
+        let M = max(1, dislocation_pair_count)
+        let totalPlanes = 2 * M
+        let minRow = max(2, 2)
+        let maxRow = max(minRow + totalPlanes, ny - 3)
+        
+        var planeRows: [Int] = []
+        if dislocation_layout == DislocationLayoutPreset.alternatingStaggered.rawValue || dislocation_layout == DislocationLayoutPreset.alternatingRandomX.rawValue {
+            let step = Double(maxRow - minRow) / Double(max(1, totalPlanes - 1))
+            for k in 0..<totalPlanes {
+                var r = min(maxRow, max(minRow, Int((Double(minRow) + Double(k) * step).rounded())))
+                if let last = planeRows.last, r <= last {
+                    r = last + 1
+                }
+                planeRows.append(r)
+            }
+        } else {
+            var candidates = Array(minRow...maxRow).shuffled()
+            let minSpace = max(2, min_plane_spacing_rows)
+            var chosen: [Int] = []
+            for r in candidates {
+                if !chosen.contains(where: { abs($0 - r) < minSpace }) {
+                    chosen.append(r)
+                    if chosen.count == totalPlanes { break }
+                }
+            }
+            if chosen.count == totalPlanes {
+                planeRows = chosen.sorted()
+            } else {
+                let step = Double(maxRow - minRow) / Double(max(1, totalPlanes - 1))
+                for k in 0..<totalPlanes {
+                    var r = min(maxRow, max(minRow, Int((Double(minRow) + Double(k) * step).rounded())))
+                    if let last = planeRows.last, r <= last { r = last + 1 }
+                    planeRows.append(r)
+                }
+            }
+        }
+        
+        var signs = [Int](repeating: 1, count: totalPlanes)
+        if dislocation_layout == DislocationLayoutPreset.randomBalanced.rawValue && !bound_strip_excess {
+            for k in 0..<totalPlanes { signs[k] = (k < M) ? 1 : -1 }
+            signs.shuffle()
+        } else {
+            for k in 0..<totalPlanes { signs[k] = (k % 2 == 0) ? 1 : -1 }
+        }
+        
+        var newDislocs: [SeededDislocationModel] = []
+        for k in 0..<totalPlanes {
+            let xFrac: Double
+            if dislocation_layout == DislocationLayoutPreset.alternatingStaggered.rawValue {
+                xFrac = (k % 2 == 0) ? 0.35 : 0.65
+            } else {
+                xFrac = Double.random(in: 0.20...0.80)
+            }
+            newDislocs.append(SeededDislocationModel(
+                id: k,
+                glide_plane_row: planeRows[k],
+                x_frac: (xFrac * 100).rounded() / 100.0,
+                burgers_sign: signs[k],
+                enabled: true
+            ))
+        }
+        self.dislocations = newDislocs
+    }
+    
     /// Returns (grainID, thetaDeg) at normalized coordinate (xHat, yHat)
     public func grainAt(xHat: Double, yHat: Double, fallbackTheta: Double = 0.0) -> (Int, Double) {
         switch mode {
-        case .singleCrystal:
+        case .singleCrystal, .periodicDislocations:
             return (0, fallbackTheta)
         case .bicrystal:
             let phi = gb_angle_deg * .pi / 180.0

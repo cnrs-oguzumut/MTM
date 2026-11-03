@@ -151,7 +151,16 @@ struct BoundaryZoneRule {
 enum class MicrostructureMode {
     SingleCrystal = 0,
     Bicrystal = 1,
-    VoronoiPolycrystal = 2
+    VoronoiPolycrystal = 2,
+    PeriodicDislocations = 3
+};
+
+struct SeededDislocation {
+    int id = 0;
+    int glide_plane_row = 25; // Horizontal slip plane between row j and j+1: y_k = (glide_plane_row + 0.5) * h_y
+    double x_frac = 0.50;     // Normalized horizontal core coordinate in (0, 1): x_k = x_frac * Lx
+    int burgers_sign = 1;     // +1 for b = (+a0, 0), -1 for b = (-a0, 0)
+    bool enabled = true;
 };
 
 enum class SeamOverlapResolution {
@@ -193,6 +202,15 @@ struct MicrostructureConfig {
     double theta_min_deg = -30.0;
     double theta_max_deg = +30.0;
     std::vector<VoronoiGrainSeed> seeds;
+
+    // Multi-Plane Single-Dislocation Periodic Setup (2M active glide planes, 1 dislocation per plane, sum(b) = 0)
+    int dislocation_pair_count = 2;              // M pairs -> 2M active glide planes
+    std::string dislocation_layout = "alternating_random_x"; // "alternating_staggered", "alternating_random_x", "random_planes_random_signs", "custom"
+    int min_plane_spacing_rows = 6;              // Minimum vertical spacing between active glide planes (in lattice rows)
+    double dislocation_core_radius_a0 = 0.8;     // Core regularization radius r_0 / a_0 for Stroh/Volterra initialization
+    bool bound_strip_excess = true;              // Keep |n_strip(j)| <= 1 (alternating +b / -b across sorted glide planes)
+    bool enforce_periodic_bc = true;             // Enforce full 2D periodic boundary conditions (T^2 torus)
+    std::vector<SeededDislocation> dislocations; // Explicit list of seeded glide-plane dislocations
 };
 
 struct MacroscopicGeometryConfig {
@@ -219,7 +237,7 @@ struct MacroscopicGeometryConfig {
     // Nanoindenter Contact Tool configuration
     IndenterConfig indenter;
 
-    // Microstructure configuration (SingleCrystal, Bicrystal, VoronoiPolycrystal)
+    // Microstructure configuration (SingleCrystal, Bicrystal, VoronoiPolycrystal, PeriodicDislocations)
     MicrostructureConfig microstructure;
 
     // Primary macroscopic stress component to log in Stress-Strain curves:
@@ -242,12 +260,20 @@ struct MacroscopicGeometryConfig {
     // Load from JSON file
     static bool loadFromJSON(const std::string& filepath, MacroscopicGeometryConfig& out_config);
 
-    // Generate multi-grain (Bicrystal or 2D Voronoi Polycrystal) uncarved lattice points
+    // Generate multi-grain (Bicrystal, 2D Voronoi Polycrystal, or Periodic Dislocation Array) lattice points
     std::pair<std::vector<Point2D>, DomainDimensions> generateMicrostructureLattice(
         const std::string& lattice_type,
         int nx, int ny,
         double lattice_a0,
-        double fallback_theta_deg = 0.0);
+        double fallback_theta_deg = 0.0,
+        int potential_mode = 3);
+
+    // Generate 2D periodic crystal with 2M active glide planes (strictly 1 dislocation per glide plane, sum(b) = 0)
+    std::pair<std::vector<Point2D>, DomainDimensions> generatePeriodicDislocationLattice(
+        const std::string& lattice_type,
+        int nx, int ny,
+        double lattice_a0,
+        int potential_mode = 3);
 
     // Initialize bounding box from uncarved reference crystal
     void setPhysicalBoundsFromPoints(const std::vector<Point2D>& raw_points, double lattice_a0);
