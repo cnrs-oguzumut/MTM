@@ -115,8 +115,7 @@ struct VTKSnapshotViewer: View {
                 .help("Open any .vtk file")
             Button(action: openInParaView) { Label("ParaView", systemImage: "arrow.up.forward.app") }
                 .controlSize(.small)
-                .disabled(model.currentURL == nil)
-                .help("Open this snapshot in ParaView")
+                .help("Open current snapshot (or run VTK folder) in ParaView")
         }
         .padding(.horizontal, 12)
         .frame(height: 34)
@@ -330,17 +329,42 @@ struct VTKSnapshotViewer: View {
     }
     
     private func openInParaView() {
-        guard let url = model.currentURL else { return }
         let fm = FileManager.default
-        var appURL: URL?
-        for dir in ["/Applications", NSHomeDirectory() + "/Applications"] {
-            if let names = try? fm.contentsOfDirectory(atPath: dir),
-               let n = names.filter({ $0.lowercased().hasPrefix("paraview") && $0.hasSuffix(".app") }).sorted().last {
-                appURL = URL(fileURLWithPath: dir).appendingPathComponent(n)
-                break
+        var appURL: URL? = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "org.paraview.ParaView")
+        if appURL == nil {
+            for dir in ["/Applications", NSHomeDirectory() + "/Applications"] {
+                if let names = try? fm.contentsOfDirectory(atPath: dir),
+                   let n = names.filter({ $0.lowercased().hasPrefix("paraview") && $0.hasSuffix(".app") }).sorted().last {
+                    appURL = URL(fileURLWithPath: dir).appendingPathComponent(n)
+                    break
+                }
             }
         }
         guard let app = appURL else { paraViewMissing = true; return }
-        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+
+        let targetVTK = model.currentURL ?? model.files.last
+        let execURL = app.appendingPathComponent("Contents/MacOS/paraview")
+        if fm.isExecutableFile(atPath: execURL.path) {
+            let proc = Process()
+            proc.executableURL = execURL
+            if let vtk = targetVTK {
+                proc.arguments = [vtk.path]
+                proc.currentDirectoryURL = vtk.deletingLastPathComponent()
+            } else if !runDirectory.isEmpty && fm.fileExists(atPath: runDirectory) {
+                proc.currentDirectoryURL = URL(fileURLWithPath: runDirectory)
+            }
+            if (try? proc.run()) != nil {
+                return
+            }
+        }
+
+        let openConfig = NSWorkspace.OpenConfiguration()
+        openConfig.activates = true
+        if let vtk = targetVTK {
+            openConfig.arguments = [vtk.path]
+            NSWorkspace.shared.open([vtk], withApplicationAt: app, configuration: openConfig)
+        } else {
+            NSWorkspace.shared.openApplication(at: app, configuration: openConfig)
+        }
     }
 }

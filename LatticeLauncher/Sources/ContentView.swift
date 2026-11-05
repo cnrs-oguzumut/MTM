@@ -353,7 +353,10 @@ struct ContentView: View {
             .background(BlueHour.controlSurface)
             Divider()
             if resultsSub == .snapshots {
-                VTKSnapshotViewer(runDirectory: config.targetDirectory, isRunning: runner.status.isRunning)
+                let effectiveSnapDir = (!runner.outputDirectory.isEmpty && FileManager.default.fileExists(atPath: runner.outputDirectory))
+                    ? runner.outputDirectory
+                    : config.targetDirectory
+                VTKSnapshotViewer(runDirectory: effectiveSnapDir, isRunning: runner.status.isRunning)
             } else if config.mode == .volterra {
                 DislocationProfileChartView()
             } else {
@@ -2445,11 +2448,20 @@ struct BottomActionBar: View {
             .help(tickerText)
             
             // Reveal in Finder
-            Button(action: { runner.openOutputFolder() }) {
+            Button(action: { runner.openOutputFolder(fallbackDirectory: config.targetDirectory) }) {
                 Label("Output", systemImage: "folder")
             }
             .controlSize(.regular)
-            .help("Open output folder")
+            .help("Open output folder in Finder")
+
+            // Open in ParaView
+            Button(action: {
+                _ = runner.openInParaView(fallbackDirectory: config.targetDirectory)
+            }) {
+                Label("ParaView", systemImage: "arrow.up.forward.app")
+            }
+            .controlSize(.regular)
+            .help("Launch ParaView with the latest VTK snapshot from the output directory")
             
             // Copy CLI Command
             Button(action: {

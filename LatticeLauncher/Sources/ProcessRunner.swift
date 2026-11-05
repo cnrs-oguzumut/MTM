@@ -75,7 +75,7 @@ public class ProcessRunner: ObservableObject {
     private var csvPollingTimer: Timer?
     private var startTime: Date?
     private let maxLogLines = 10_000
-    private var outputDirectory: String = ""
+    @Published public var outputDirectory: String = ""
     private var pendingSweepCandidates: [CSLRationalMatch] = []
     private var currentSweepCandidate: CSLRationalMatch? = nil
     private var totalSweepCount: Int = 0
@@ -126,11 +126,97 @@ public class ProcessRunner: ObservableObject {
         self.pollDislocationProfiles(dir: dir)
     }
     
-    public func openOutputFolder() {
-        let dir = !sweepOutputDirectory.isEmpty && FileManager.default.fileExists(atPath: sweepOutputDirectory)
-            ? sweepOutputDirectory
-            : (outputDirectory.isEmpty ? FileManager.default.currentDirectoryPath : outputDirectory)
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir)
+    public func openOutputFolder(fallbackDirectory: String? = nil) {
+        let fm = FileManager.default
+        var candidate = ""
+        if !sweepOutputDirectory.isEmpty && fm.fileExists(atPath: sweepOutputDirectory) {
+            candidate = sweepOutputDirectory
+        } else if !outputDirectory.isEmpty && fm.fileExists(atPath: outputDirectory) {
+            candidate = outputDirectory
+        } else if let fb = fallbackDirectory, !fb.isEmpty {
+            candidate = fb
+        } else if !outputDirectory.isEmpty {
+            candidate = outputDirectory
+        } else {
+            candidate = SimulationConfig.detectProjectRoot()
+        }
+
+        if !fm.fileExists(atPath: candidate) {
+            try? fm.createDirectory(atPath: candidate, withIntermediateDirectories: true)
+        }
+        if !fm.fileExists(atPath: candidate) {
+            candidate = SimulationConfig.detectProjectRoot()
+        }
+
+        let folderURL = URL(fileURLWithPath: candidate, isDirectory: true)
+        if !NSWorkspace.shared.open(folderURL) {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: candidate)
+        }
+    }
+
+    public func openInParaView(fallbackDirectory: String? = nil, specificVTKURL: URL? = nil) -> Bool {
+        let fm = FileManager.default
+        var appURL: URL? = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "org.paraview.ParaView")
+        if appURL == nil {
+            for dir in ["/Applications", NSHomeDirectory() + "/Applications"] {
+                if let names = try? fm.contentsOfDirectory(atPath: dir),
+                   let n = names.filter({ $0.lowercased().hasPrefix("paraview") && $0.hasSuffix(".app") }).sorted().last {
+                    appURL = URL(fileURLWithPath: dir).appendingPathComponent(n)
+                    break
+                }
+            }
+        }
+        guard let app = appURL else { return false }
+
+        // Resolve target VTK file if none explicitly provided
+        var targetVTK: URL? = specificVTKURL
+        if targetVTK == nil {
+            let baseDir: String = {
+                if !sweepRelaxedVTKDirectory.isEmpty && fm.fileExists(atPath: sweepRelaxedVTKDirectory) {
+                    return sweepRelaxedVTKDirectory
+                }
+                if !outputDirectory.isEmpty && fm.fileExists(atPath: outputDirectory) {
+                    return outputDirectory
+                }
+                if let fb = fallbackDirectory, !fb.isEmpty && fm.fileExists(atPath: fb) {
+                    return fb
+                }
+                return SimulationConfig.detectProjectRoot()
+            }()
+            let vtkDir = fm.fileExists(atPath: "\(baseDir)/vtk_output") ? "\(baseDir)/vtk_output" : baseDir
+            if let items = try? fm.contentsOfDirectory(atPath: vtkDir) {
+                let vtkFiles = items.filter { $0.lowercased().hasSuffix(".vtk") }.sorted()
+                if let latest = vtkFiles.last {
+                    targetVTK = URL(fileURLWithPath: vtkDir).appendingPathComponent(latest)
+                }
+            }
+        }
+
+        let execURL = app.appendingPathComponent("Contents/MacOS/paraview")
+        if fm.isExecutableFile(atPath: execURL.path) {
+            let proc = Process()
+            proc.executableURL = execURL
+            if let vtk = targetVTK {
+                proc.arguments = [vtk.path]
+                proc.currentDirectoryURL = vtk.deletingLastPathComponent()
+            }
+            do {
+                try proc.run()
+                return true
+            } catch {
+                // Fall back to NSWorkspace below
+            }
+        }
+
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        if let vtk = targetVTK {
+            config.arguments = [vtk.path]
+            NSWorkspace.shared.open([vtk], withApplicationAt: app, configuration: config)
+        } else {
+            NSWorkspace.shared.openApplication(at: app, configuration: config)
+        }
+        return true
     }
     
     public func openSweepTextFile() {
