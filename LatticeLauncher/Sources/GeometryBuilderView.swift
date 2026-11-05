@@ -1555,14 +1555,26 @@ public struct GeometryBuilderView: View {
         let isTri = (config.latticeSymmetry == .triangular)
 
         return VStack(alignment: .leading, spacing: 8) {
-            // Pair Count & Presets
+            // Pair Count & Presets (supports up to M = 150 pairs = 300 dislocations)
             HStack(spacing: 6) {
-                Text("Dislocation Pairs M:")
+                Text("Pairs M:")
                     .font(.caption2.bold())
+                IntField(
+                    title: "30",
+                    value: Binding(
+                        get: { config.geometryConfig.microstructure.dislocation_pair_count },
+                        set: { newM in
+                            let clamped = max(1, min(150, newM))
+                            config.geometryConfig.microstructure.dislocation_pair_count = clamped
+                            config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+                        }
+                    ),
+                    width: 44
+                )
                 Stepper(
-                    "\(config.geometryConfig.microstructure.dislocation_pair_count) (\(config.geometryConfig.microstructure.dislocation_pair_count * 2) planes)",
+                    "= \(config.geometryConfig.microstructure.dislocation_pair_count * 2) dislocs",
                     value: $config.geometryConfig.microstructure.dislocation_pair_count,
-                    in: 1...16,
+                    in: 1...150,
                     onEditingChanged: { _ in
                         config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
                     }
@@ -1576,21 +1588,49 @@ public struct GeometryBuilderView: View {
                 .controlSize(.mini)
             }
 
-            // Quick Pair Selection Chips
-            HStack(spacing: 4) {
-                Text("Quick M:")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundColor(BlueHour.mist)
-                ForEach([1, 2, 3, 4], id: \.self) { mVal in
-                    let isSel = (config.geometryConfig.microstructure.dislocation_pair_count == mVal)
-                    selectableChipButton(
-                        title: "M=\(mVal) (\(2 * mVal)D)",
-                        isSelected: isSel
-                    ) {
-                        config.geometryConfig.microstructure.dislocation_pair_count = mVal
-                        config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+            // Quick Pair Selection Chips (including M=10, M=15, M=30 (60D), M=50 (100D))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    Text("Quick M:")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(BlueHour.mist)
+                    ForEach([1, 2, 3, 5, 10, 15, 30, 50], id: \.self) { mVal in
+                        let isSel = (config.geometryConfig.microstructure.dislocation_pair_count == mVal)
+                        selectableChipButton(
+                            title: "M=\(mVal) (\(2 * mVal)D)",
+                            isSelected: isSel
+                        ) {
+                            config.geometryConfig.microstructure.dislocation_pair_count = mVal
+                            if config.ny < 4 * mVal {
+                                let recN = max(config.nx, ((6 * mVal + 49) / 50) * 50)
+                                config.setSize(nx: recN, ny: recN)
+                            } else {
+                                config.geometryConfig.microstructure.regeneratePeriodicDislocations(nx: config.nx, ny: config.ny)
+                            }
+                        }
                     }
                 }
+            }
+
+            let targetPlanes = 2 * config.geometryConfig.microstructure.dislocation_pair_count
+            if config.ny < 3 * targetPlanes {
+                let recNy = ((4 * targetPlanes + 49) / 50) * 50
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .foregroundColor(.orange)
+                    Text("\(targetPlanes) planes on Ny=\(config.ny) gives Δj ≈ \(String(format: "%.1f", Double(config.ny) / Double(targetPlanes))) rows.")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.orange)
+                    Spacer()
+                    Button("Set \(recNy)×\(recNy)") {
+                        config.setSize(nx: recNy, ny: recNy)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .controlSize(.mini)
+                }
+                .padding(4)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
             }
 
             // Layout Preset & Spacing
@@ -1983,12 +2023,13 @@ public struct GeometryBuilderView: View {
         case .periodicDislocations:
             let ny = config.ny
             let nx = config.nx
-            let hy = isTri ? (aCanvas * sqrt3 * 0.5) : aCanvas
+            let hy = isTri ? (a0 * sqrt3 * 0.5) : a0
             let activeDislocs = micro.dislocations.filter(\.enabled)
-            let rc2 = pow(max(0.4, micro.dislocation_core_radius_a0 * aCanvas), 2)
+            let rc2 = pow(max(0.4, micro.dislocation_core_radius_a0 * a0), 2)
             let nu = 0.30
+            let pStride = max(1, Int(ceil(sqrt(Double(nx * ny) / 9000.0))))
 
-            for j in 0..<ny {
+            for j in stride(from: 0, to: ny, by: pStride) {
                 var nStrip = 0
                 for d in activeDislocs where d.glide_plane_row < j {
                     nStrip += d.burgers_sign
@@ -1997,7 +2038,7 @@ public struct GeometryBuilderView: View {
                 let rowStagger = isTri ? (0.5 * Double(j % 2)) : 0.0
                 let y0 = Double(j) * hy
 
-                for i in 0..<Nj {
+                for i in stride(from: 0, to: Nj, by: pStride) {
                     var x0 = (Double(i) + 0.5 + rowStagger) * (Lx / Double(Nj))
                     x0 = fmod(x0, Lx)
                     if x0 < 0 { x0 += Lx }
@@ -2008,7 +2049,7 @@ public struct GeometryBuilderView: View {
                     for d in activeDislocs {
                         let yk = (Double(d.glide_plane_row) + 0.5) * hy
                         let xk = d.x_frac * Lx
-                        let bk = Double(d.burgers_sign) * aCanvas
+                        let bk = Double(d.burgers_sign) * a0
 
                         var xi = x0 - xk
                         while xi < -0.5 * Lx { xi += Lx }
@@ -2406,6 +2447,8 @@ public struct GeometryBuilderView: View {
         } else if micro.mode == .periodicDislocations {
             let ny = max(4, config.ny)
             let h_y_norm = 1.0 / Double(ny - 1)
+            let activeCount = micro.dislocations.filter(\.enabled).count
+            let isDense = (activeCount > 14)
             
             for (dIdx, d) in micro.dislocations.enumerated() where d.enabled {
                 let yFrac = (Double(d.glide_plane_row) + 0.5) * h_y_norm
@@ -2422,48 +2465,55 @@ public struct GeometryBuilderView: View {
                 var planePath = Path()
                 planePath.move(to: pLeft)
                 planePath.addLine(to: pRight)
-                ctx.stroke(planePath, with: .color(planeColor.opacity(0.70)), style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
+                ctx.stroke(
+                    planePath,
+                    with: .color(planeColor.opacity(isDense ? 0.38 : 0.70)),
+                    style: StrokeStyle(lineWidth: isDense ? 0.8 : 1.4, dash: [4, 3])
+                )
                 
                 // Glide motion arrow under shear tau_xy > 0 (+b moves right, -b moves left)
                 let arrowDir: CGFloat = isPos ? 1.0 : -1.0
-                let arrowStartX = pCore.x - arrowDir * 22
-                let arrowEndX = pCore.x + arrowDir * 22
+                let arrowHalfLen: CGFloat = isDense ? 13 : 22
+                let arrowStartX = pCore.x - arrowDir * arrowHalfLen
+                let arrowEndX = pCore.x + arrowDir * arrowHalfLen
                 var arrowPath = Path()
                 arrowPath.move(to: CGPoint(x: arrowStartX, y: pCore.y))
                 arrowPath.addLine(to: CGPoint(x: arrowEndX, y: pCore.y))
-                arrowPath.addLine(to: CGPoint(x: arrowEndX - arrowDir * 5, y: pCore.y - 3.5))
+                arrowPath.addLine(to: CGPoint(x: arrowEndX - arrowDir * 4, y: pCore.y - 3.0))
                 arrowPath.move(to: CGPoint(x: arrowEndX, y: pCore.y))
-                arrowPath.addLine(to: CGPoint(x: arrowEndX - arrowDir * 5, y: pCore.y + 3.5))
-                ctx.stroke(arrowPath, with: .color(planeColor.opacity(0.85)), lineWidth: 1.2)
+                arrowPath.addLine(to: CGPoint(x: arrowEndX - arrowDir * 4, y: pCore.y + 3.0))
+                ctx.stroke(arrowPath, with: .color(planeColor.opacity(isDense ? 0.65 : 0.85)), lineWidth: isDense ? 0.9 : 1.2)
                 
                 // Core handle with ⊥ or ⊤ symbol
-                let coreR: CGFloat = 8.5
+                let coreR: CGFloat = isDense ? 6.0 : 8.5
                 let hRect = CGRect(x: pCore.x - coreR, y: pCore.y - coreR, width: 2 * coreR, height: 2 * coreR)
                 ctx.fill(Path(ellipseIn: hRect), with: .color(BlueHour.midnight))
-                ctx.stroke(Path(ellipseIn: hRect), with: .color(planeColor), lineWidth: 1.8)
+                ctx.stroke(Path(ellipseIn: hRect), with: .color(planeColor), lineWidth: isDense ? 1.3 : 1.8)
                 
                 ctx.draw(
                     Text(isPos ? "⊥" : "⊤")
-                        .font(.system(size: 11, weight: .heavy))
+                        .font(.system(size: isDense ? 8.5 : 11, weight: .heavy))
                         .foregroundColor(planeColor),
                     at: CGPoint(x: pCore.x, y: pCore.y)
                 )
                 
-                // Core tag pill (clamp y inside the canvas box so top/bottom planes never clip)
-                let clampedLabelY = max(originY + 12, min(originY + boxH - 12, pCore.y - 15))
-                let clampedLabelX = max(originX + 40, min(originX + boxW - 40, pCore.x))
-                let labelPt = CGPoint(x: clampedLabelX, y: clampedLabelY)
-                let pillW: CGFloat = 76
-                let pillH: CGFloat = 16
-                let pillRect = CGRect(x: labelPt.x - pillW * 0.5, y: labelPt.y - pillH * 0.5, width: pillW, height: pillH)
-                ctx.fill(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(BlueHour.abyss.opacity(0.88)))
-                ctx.stroke(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(planeColor.opacity(0.60)), lineWidth: 0.8)
-                ctx.draw(
-                    Text("D\(dIdx) \(isPos ? "+a₀" : "-a₀") j=\(d.glide_plane_row)")
-                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(planeColor),
-                    at: labelPt
-                )
+                if !isDense {
+                    // Core tag pill (clamp y inside the canvas box so top/bottom planes never clip)
+                    let clampedLabelY = max(originY + 12, min(originY + boxH - 12, pCore.y - 15))
+                    let clampedLabelX = max(originX + 40, min(originX + boxW - 40, pCore.x))
+                    let labelPt = CGPoint(x: clampedLabelX, y: clampedLabelY)
+                    let pillW: CGFloat = 76
+                    let pillH: CGFloat = 16
+                    let pillRect = CGRect(x: labelPt.x - pillW * 0.5, y: labelPt.y - pillH * 0.5, width: pillW, height: pillH)
+                    ctx.fill(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(BlueHour.abyss.opacity(0.88)))
+                    ctx.stroke(Path(roundedRect: pillRect, cornerRadius: 4), with: .color(planeColor.opacity(0.60)), lineWidth: 0.8)
+                    ctx.draw(
+                        Text("D\(dIdx) \(isPos ? "+a₀" : "-a₀") j=\(d.glide_plane_row)")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(planeColor),
+                        at: labelPt
+                    )
+                }
             }
         }
     }
