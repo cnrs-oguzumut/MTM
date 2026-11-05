@@ -602,16 +602,23 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         }
 
     } else if (microstructure.mode == MicrostructureMode::VoronoiPolycrystal) {
+        // Ensure physical bounds are initialized before checking solid containment of Voronoi seeds
+        x_min = 0.0;
+        y_min = 0.0;
+        Lx = size_x;
+        Ly = size_y;
+        a0 = a;
+
         std::vector<VoronoiGrainSeed> seeds = microstructure.seeds;
         if (seeds.empty()) {
             int ng = std::clamp(microstructure.num_grains, 2, 64);
             std::mt19937 rng(static_cast<unsigned int>(microstructure.random_seed));
-            std::uniform_real_distribution<double> u01(0.12, 0.88);
+            std::uniform_real_distribution<double> u01(0.10, 0.90);
             std::uniform_real_distribution<double> utheta(
                 std::min(microstructure.theta_min_deg, microstructure.theta_max_deg),
                 std::max(microstructure.theta_min_deg, microstructure.theta_max_deg));
 
-            // Stratified / Poisson-disc-like placement so Voronoi grains are well-spaced
+            // Stratified / Poisson-disc-like placement constrained to the solid specimen
             int cols = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(ng)))));
             int rows = std::max(1, static_cast<int>(std::ceil(static_cast<double>(ng) / cols)));
             for (int k = 0; k < ng; ++k) {
@@ -621,12 +628,64 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                 std::uniform_real_distribution<double> jy(0.20, 0.80);
                 VoronoiGrainSeed s;
                 s.id = k;
-                s.cx = std::clamp((c + jx(rng)) / cols, 0.06, 0.94);
-                s.cy = std::clamp((r + jy(rng)) / rows, 0.06, 0.94);
+                s.cx = std::clamp((c + jx(rng)) / cols, 0.08, 0.92);
+                s.cy = std::clamp((r + jy(rng)) / rows, 0.08, 0.92);
                 s.theta_deg = utheta(rng);
                 seeds.push_back(s);
             }
-            microstructure.seeds = seeds;
+        }
+
+        // Guarantee every Voronoi seed lies strictly inside the carved solid domain
+        // (e.g., never in the empty carved waist of a Dogbone, outside a Disk, or inside a Hole)
+        int num_relocated_seeds = 0;
+        for (auto& s : seeds) {
+            if (!isPointInsideSolid(s.cx * size_x, s.cy * size_y)) {
+                ++num_relocated_seeds;
+                bool relocated = false;
+                // First try pulling horizontally toward x_hat = 0.5 at the seed's y_hat (ideal for Dogbone waist)
+                for (int step = 1; step <= 20; ++step) {
+                    double t = static_cast<double>(step) / 20.0;
+                    double cand_x = s.cx + t * (0.5 - s.cx);
+                    double cand_y = s.cy;
+                    if (isPointInsideSolid(cand_x * size_x, cand_y * size_y)) {
+                        // Step slightly further inward from the boundary rim
+                        double inward_t = std::min(1.0, t + 0.12);
+                        double inner_x = s.cx + inward_t * (0.5 - s.cx);
+                        if (isPointInsideSolid(inner_x * size_x, cand_y * size_y)) {
+                            cand_x = inner_x;
+                        }
+                        s.cx = cand_x;
+                        s.cy = cand_y;
+                        relocated = true;
+                        break;
+                    }
+                }
+                // Next try pulling radially toward (0.5, 0.5) (ideal for Disk or Polygon)
+                if (!relocated) {
+                    for (int step = 1; step <= 25; ++step) {
+                        double t = static_cast<double>(step) / 25.0;
+                        double cand_x = s.cx + t * (0.5 - s.cx);
+                        double cand_y = s.cy + t * (0.5 - s.cy);
+                        if (isPointInsideSolid(cand_x * size_x, cand_y * size_y)) {
+                            double inward_t = std::min(1.0, t + 0.10);
+                            double inner_x = s.cx + inward_t * (0.5 - s.cx);
+                            double inner_y = s.cy + inward_t * (0.5 - s.cy);
+                            if (isPointInsideSolid(inner_x * size_x, inner_y * size_y)) {
+                                cand_x = inner_x;
+                                cand_y = inner_y;
+                            }
+                            s.cx = cand_x;
+                            s.cy = cand_y;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        microstructure.seeds = seeds;
+        if (num_relocated_seeds > 0) {
+            std::cout << "[Microstructure] Relocated " << num_relocated_seeds
+                      << " Voronoi seed(s) from outside the carved solid into the specimen interior\n";
         }
 
         const int ng = static_cast<int>(seeds.size());
@@ -1791,23 +1850,27 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
             const double strip = std::max(0.35, rule.thickness_a0) * a0;
             bool matches = false;
 
+            const double disk_cap_strip = (outer_shape == OuterDomainShapeType::Disk)
+                ? std::max(strip, 0.075 * disk_radius * std::min(Lx, Ly))
+                : strip;
+
             switch (rule.region) {
             case BoundaryRegionType::TopEdge:
                 // When the Nanoindenter is active, keep the top surface free for contact
                 if (isIndenterActive() && rule.kind != BoundaryConditionKind::FreeSurface) {
                     matches = false;
                 } else {
-                    matches = (y >= eff_y_max - strip);
+                    matches = (y >= eff_y_max - disk_cap_strip);
                 }
                 break;
             case BoundaryRegionType::BottomEdge:
-                matches = (y <= eff_y_min + strip);
+                matches = (y <= eff_y_min + disk_cap_strip);
                 break;
             case BoundaryRegionType::LeftEdge:
-                matches = (x <= eff_x_min + strip);
+                matches = (x <= eff_x_min + disk_cap_strip);
                 break;
             case BoundaryRegionType::RightEdge:
-                matches = (x >= eff_x_max - strip);
+                matches = (x >= eff_x_max - disk_cap_strip);
                 break;
             case BoundaryRegionType::OuterPerimeter:
                 if (outer_shape == OuterDomainShapeType::Disk) {
@@ -1889,20 +1952,25 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
                 locked_y = true;
                 driven_x = true;
                 driven_y = true;
-                Eigen::Vector2d rel(x - x_min, y - y_min);
+                Eigen::Vector2d rel_corner(x - x_min, y - y_min);
+                Eigen::Vector2d rel_center(x - center.x(), y - center.y());
                 if (rule.affine_mode == "simple_shear_y") {
-                    vel = Eigen::Vector2d(0.0, rel.x());
+                    vel = Eigen::Vector2d(0.0, rel_corner.x());
                 } else if (rule.affine_mode == "uniaxial_y") {
-                    vel = Eigen::Vector2d(0.0, rel.y());
+                    vel = Eigen::Vector2d(0.0, rel_corner.y());
                 } else if (rule.affine_mode == "uniaxial_x") {
-                    vel = Eigen::Vector2d(rel.x(), 0.0);
+                    vel = Eigen::Vector2d(rel_corner.x(), 0.0);
                 } else if (rule.affine_mode == "pure_shear") {
-                    vel = Eigen::Vector2d(rel.x(), -rel.y());
-                } else if (rule.affine_mode == "biaxial") {
-                    vel = Eigen::Vector2d(rel.x(), rel.y());
+                    vel = Eigen::Vector2d(rel_center.x(), -rel_center.y());
+                } else if (rule.affine_mode == "biaxial" || rule.affine_mode == "radial_outward") {
+                    vel = Eigen::Vector2d(rel_center.x(), rel_center.y());
+                } else if (rule.affine_mode == "radial_inward" || rule.affine_mode == "biaxial_compression") {
+                    vel = Eigen::Vector2d(-rel_center.x(), -rel_center.y());
+                } else if (rule.affine_mode == "circumferential_shear" || rule.affine_mode == "torsion") {
+                    vel = Eigen::Vector2d(-rel_center.y(), rel_center.x());
                 } else {
                     // default: simple_shear_x -> u_x = alpha * (y - y_min)
-                    vel = Eigen::Vector2d(rel.y(), 0.0);
+                    vel = Eigen::Vector2d(rel_corner.y(), 0.0);
                 }
             }
         }
@@ -2208,9 +2276,15 @@ Eigen::Matrix2d MacroscopicGeometryConfig::computeMacroscopicF(double alpha) con
             } else if (rule.affine_mode == "pure_shear") {
                 F(0, 0) = 1.0 + alpha;
                 F(1, 1) = 1.0 - alpha;
-            } else if (rule.affine_mode == "biaxial") {
+            } else if (rule.affine_mode == "biaxial" || rule.affine_mode == "radial_outward") {
                 F(0, 0) = 1.0 + alpha;
                 F(1, 1) = 1.0 + alpha;
+            } else if (rule.affine_mode == "radial_inward" || rule.affine_mode == "biaxial_compression") {
+                F(0, 0) = 1.0 - alpha;
+                F(1, 1) = 1.0 - alpha;
+            } else if (rule.affine_mode == "circumferential_shear" || rule.affine_mode == "torsion") {
+                F(0, 1) = -alpha;
+                F(1, 0) = alpha;
             } else if (rule.affine_mode == "simple_shear_y") {
                 F(1, 0) = alpha;
             } else {
@@ -2249,7 +2323,21 @@ void MacroscopicGeometryConfig::applyLoadStep(
 
     Eigen::Matrix2d F_macro_alpha = computeMacroscopicF(alpha);
     Eigen::Matrix2d dF_macro = computeMacroscopicF(dalpha) - Eigen::Matrix2d::Identity();
-    Eigen::Vector2d origin(x_min, y_min);
+    bool use_center_origin = false;
+    for (const auto& rule : boundary_rules) {
+        if (!rule.enabled) continue;
+        if (rule.kind == BoundaryConditionKind::AffineDeformation &&
+            (rule.affine_mode == "biaxial" || rule.affine_mode == "radial_outward" ||
+             rule.affine_mode == "radial_inward" || rule.affine_mode == "biaxial_compression" ||
+             rule.affine_mode == "pure_shear" || rule.affine_mode == "circumferential_shear" ||
+             rule.affine_mode == "torsion")) {
+            use_center_origin = true;
+            break;
+        }
+    }
+    Eigen::Vector2d origin = use_center_origin
+        ? Eigen::Vector2d(x_min + 0.5 * Lx, y_min + 0.5 * Ly)
+        : Eigen::Vector2d(x_min, y_min);
 
     if (is_first_step) {
         if (std::abs(alpha) > 1e-12) {
@@ -2367,7 +2455,13 @@ double MacroscopicGeometryConfig::extractPrimaryStress(
         } else if (rule.kind == BoundaryConditionKind::AffineDeformation) {
             if (rule.affine_mode == "uniaxial_y") return stress_tensor(1, 1);
             if (rule.affine_mode == "uniaxial_x") return stress_tensor(0, 0);
-            if (rule.affine_mode == "biaxial") return 0.5 * (stress_tensor(0, 0) + stress_tensor(1, 1));
+            if (rule.affine_mode == "biaxial" || rule.affine_mode == "radial_outward" ||
+                rule.affine_mode == "radial_inward" || rule.affine_mode == "biaxial_compression") {
+                return 0.5 * (stress_tensor(0, 0) + stress_tensor(1, 1));
+            }
+            if (rule.affine_mode == "pure_shear") {
+                return 0.5 * (stress_tensor(0, 0) - stress_tensor(1, 1));
+            }
             return stress_tensor(0, 1);
         }
     }

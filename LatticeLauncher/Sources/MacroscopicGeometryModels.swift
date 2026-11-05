@@ -1059,7 +1059,138 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             microstructure.theta_min_deg = -25.0
             microstructure.theta_max_deg = +25.0
             microstructure.regenerateSeeds()
+            sanitizeVoronoiSeedsInsideSolid()
             primary_stress_component = "sigma_yy"
+        }
+        
+        // Synchronize Stage 1 (Relaxation) boundary rules with the selected preset
+        switch preset {
+        case .bicrystalTiltTension:
+            resetStage1ToGBFrameRollerBCs(forAngleDeg: microstructure.gb_angle_deg)
+        case .nanoIndentation, .bicrystalIndentation:
+            stage1_boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.5, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
+                BoundaryZoneRuleModel(region: .right, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
+                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5)
+            ]
+        default:
+            stage1_boundary_rules = boundary_rules
+        }
+    }
+    
+    /// Half-width of the dogbone cross-section at normalized vertical position yHat in [0, 1].
+    public func dogboneHalfWidth(atYHat yHat: Double) -> Double {
+        let halfGW = 0.5 * min(0.98, max(0.15, dogbone_gauge_width))
+        let halfGL = 0.5 * min(0.90, max(0.10, dogbone_gauge_length))
+        let rf = max(0.02, dogbone_fillet_radius)
+        let dy = abs(yHat - 0.5)
+        if dy <= halfGL {
+            return halfGW
+        } else if dy <= halfGL + rf {
+            let u = dy - halfGL
+            let filletDx = rf - sqrt(max(0.0, rf * rf - u * u))
+            return min(0.5, halfGW + filletDx * ((0.5 - halfGW) / rf))
+        } else {
+            return 0.5
+        }
+    }
+    
+    /// Clamps a candidate normalized point (xHat, yHat) so it lies strictly inside the carved solid domain
+    /// with a safe margin from the outer contour and any interior cutouts.
+    public func clampSeedToSolid(xHat: Double, yHat: Double) -> (x: Double, y: Double) {
+        var cx = min(0.95, max(0.05, xHat))
+        var cy = min(0.95, max(0.05, yHat))
+        let margin = 0.04
+        
+        switch outer_shape {
+        case .rectangle:
+            cx = min(1.0 - margin, max(margin, cx))
+            cy = min(1.0 - margin, max(margin, cy))
+        case .dogbone:
+            cy = min(1.0 - margin, max(margin, cy))
+            let maxHalfW = max(0.04, dogboneHalfWidth(atYHat: cy) - margin)
+            if abs(cx - 0.5) > maxHalfW {
+                // Map proportional offset into the allowed dogbone waist width
+                let sign = cx >= 0.5 ? 1.0 : -1.0
+                let mapped = min(maxHalfW, abs(cx - 0.5) * (maxHalfW / 0.45))
+                cx = 0.5 + sign * max(0.03, mapped)
+            }
+        case .disk:
+            let dx = cx - 0.5
+            let dy = cy - 0.5
+            let r = hypot(dx, dy)
+            let maxR = max(0.05, disk_radius - margin)
+            if r > maxR && r > 1e-9 {
+                let scale = maxR / r
+                cx = 0.5 + dx * scale
+                cy = 0.5 + dy * scale
+            }
+        case .polygon:
+            if outer_polygon.count >= 3 {
+                let pcx = outer_polygon.map(\.x).reduce(0.0, +) / Double(outer_polygon.count)
+                let pcy = outer_polygon.map(\.y).reduce(0.0, +) / Double(outer_polygon.count)
+                let inside = Self.pointInPolygon(x: cx, y: cy, poly: outer_polygon)
+                let edgeDist = Self.distanceToPolygonEdges(x: cx, y: cy, poly: outer_polygon)
+                if !inside || edgeDist < margin {
+                    for step in 1...40 {
+                        let t = Double(step) / 40.0
+                        let tx = cx + t * (pcx - cx)
+                        let ty = cy + t * (pcy - cy)
+                        if Self.pointInPolygon(x: tx, y: ty, poly: outer_polygon) &&
+                           Self.distanceToPolygonEdges(x: tx, y: ty, poly: outer_polygon) >= margin * 0.75 {
+                            cx = tx
+                            cy = ty
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Also push away from any active cutouts
+        if isPointInsideCutout(xHat: cx, yHat: cy, margin: 0.03) || !isPointInsideSolid(xHat: cx, yHat: cy) {
+            var targetX = 0.5
+            var targetY = 0.5
+            if outer_shape == .polygon && outer_polygon.count >= 3 {
+                targetX = outer_polygon.map(\.x).reduce(0.0, +) / Double(outer_polygon.count)
+                targetY = outer_polygon.map(\.y).reduce(0.0, +) / Double(outer_polygon.count)
+            }
+            var found = false
+            for rStep in 1...30 where !found {
+                let rad = Double(rStep) * 0.025
+                for aStep in 0..<24 {
+                    let ang = Double(aStep) * (2.0 * .pi / 24.0)
+                    let tx = cx + rad * cos(ang)
+                    let ty = cy + rad * sin(ang)
+                    if isPointInsideSolid(xHat: tx, yHat: ty) &&
+                       !isPointInsideCutout(xHat: tx, yHat: ty, margin: 0.025) {
+                        cx = tx
+                        cy = ty
+                        found = true
+                        break
+                    }
+                }
+            }
+            if !found && isPointInsideSolid(xHat: targetX, yHat: targetY) {
+                cx = targetX
+                cy = targetY
+            }
+        }
+        return (
+            x: (cx * 1000).rounded() / 1000,
+            y: (cy * 1000).rounded() / 1000
+        )
+    }
+    
+    /// Relocates any Voronoi grain seeds that fall outside the carved outer shape or inside a cutout.
+    public mutating func sanitizeVoronoiSeedsInsideSolid() {
+        guard !microstructure.seeds.isEmpty else { return }
+        for i in microstructure.seeds.indices {
+            let s = microstructure.seeds[i]
+            let clamped = clampSeedToSolid(xHat: s.cx, yHat: s.cy)
+            microstructure.seeds[i].cx = clamped.x
+            microstructure.seeds[i].cy = clamped.y
         }
     }
     
@@ -1213,6 +1344,139 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         stage1_boundary_rules = Self.defaultStage1RollerRules(forAngleDeg: gbAngleDeg)
     }
 
+    /// Bounding box of the carved outer shape in normalized coordinates (matches C++ domain bounds).
+    public func outerDomainBounds() -> (minX: Double, maxX: Double, minY: Double, maxY: Double) {
+        if outer_shape == .polygon && outer_polygon.count >= 3 {
+            return (outer_polygon.map(\.x).min() ?? 0.0, outer_polygon.map(\.x).max() ?? 1.0,
+                    outer_polygon.map(\.y).min() ?? 0.0, outer_polygon.map(\.y).max() ?? 1.0)
+        } else if outer_shape == .disk {
+            return (max(0.0, 0.5 - disk_radius), min(1.0, 0.5 + disk_radius),
+                    max(0.0, 0.5 - disk_radius), min(1.0, 0.5 + disk_radius))
+        }
+        return (0.0, 1.0, 0.0, 1.0)
+    }
+    
+    /// True if (xHat, yHat) lies inside the boundary zone selected by `rule.region` (same logic as the C++ solver).
+    public func ruleRegionMatches(
+        _ rule: BoundaryZoneRuleModel,
+        xHat: Double,
+        yHat: Double,
+        nx: Int,
+        ny: Int,
+        indenterActive: Bool
+    ) -> Bool {
+        let a0x = 1.0 / Double(max(1, nx - 1))
+        let a0y = 1.0 / Double(max(1, ny - 1))
+        let b = outerDomainBounds()
+        let stripX = max(0.35, rule.thickness_a0) * a0x
+        let stripY = max(0.35, rule.thickness_a0) * a0y
+        let capX = outer_shape == .disk ? max(stripX, 0.075 * disk_radius) : stripX
+        let capY = outer_shape == .disk ? max(stripY, 0.075 * disk_radius) : stripY
+        switch rule.region {
+        case .top:
+            if indenterActive && rule.kind != .free { return false }
+            return yHat >= b.maxY - capY
+        case .bottom: return yHat <= b.minY + capY
+        case .left: return xHat <= b.minX + capX
+        case .right: return xHat >= b.maxX - capX
+        case .outerPerimeter:
+            if outer_shape == .disk {
+                return hypot(xHat - 0.5, yHat - 0.5) >= disk_radius - max(stripX, stripY)
+            } else if outer_shape == .polygon && outer_polygon.count >= 3 {
+                return Self.distanceToPolygonEdges(x: xHat, y: yHat, poly: outer_polygon) <= max(stripX, stripY)
+            } else if outer_shape == .dogbone {
+                let hw = dogboneHalfWidth(atYHat: yHat)
+                return yHat <= stripY || yHat >= 1.0 - stripY || (hw - abs(xHat - 0.5)) <= stripX
+            }
+            return xHat <= b.minX + stripX || xHat >= b.maxX - stripX ||
+                   yHat <= b.minY + stripY || yHat >= b.maxY - stripY
+        case .holeSurfaces:
+            return isPointInsideCutout(xHat: xHat, yHat: yHat, margin: max(stripX, stripY))
+        case .customBox:
+            return xHat >= rule.box_x_min && xHat <= rule.box_x_max &&
+                   yHat >= rule.box_y_min && yHat <= rule.box_y_max
+        }
+    }
+    
+    /// Samples the true outer contour of the carved shape: points on the boundary with outward unit normals
+    /// (normalized coordinates, y up).
+    public func outerContourSamples(perUnitLength: Int = 120) -> [(x: Double, y: Double, nx: Double, ny: Double)] {
+        var out: [(x: Double, y: Double, nx: Double, ny: Double)] = []
+        let density = Double(max(16, perUnitLength))
+        func addSegment(_ ax: Double, _ ay: Double, _ bx: Double, _ by: Double, _ nX: Double, _ nY: Double) {
+            let len = hypot(bx - ax, by - ay)
+            let n = max(2, Int(ceil(len * density)))
+            for k in 0..<n {
+                let t = (Double(k) + 0.5) / Double(n)
+                out.append((ax + t * (bx - ax), ay + t * (by - ay), nX, nY))
+            }
+        }
+        switch outer_shape {
+        case .rectangle:
+            addSegment(0, 0, 1, 0, 0, -1)
+            addSegment(1, 0, 1, 1, 1, 0)
+            addSegment(1, 1, 0, 1, 0, 1)
+            addSegment(0, 1, 0, 0, -1, 0)
+        case .disk:
+            let n = max(48, Int(ceil(2.0 * .pi * disk_radius * density)))
+            for k in 0..<n {
+                let th = 2.0 * .pi * (Double(k) + 0.5) / Double(n)
+                out.append((0.5 + disk_radius * cos(th), 0.5 + disk_radius * sin(th), cos(th), sin(th)))
+            }
+        case .dogbone:
+            addSegment(0, 0, 1, 0, 0, -1)
+            addSegment(1, 1, 0, 1, 0, 1)
+            let n = max(40, Int(density))
+            let h = 1e-4
+            for k in 0..<n {
+                let y = (Double(k) + 0.5) / Double(n)
+                let hw = dogboneHalfWidth(atYHat: y)
+                let dhw = (dogboneHalfWidth(atYHat: min(1.0, y + h)) - dogboneHalfWidth(atYHat: max(0.0, y - h))) / (2.0 * h)
+                let norm = max(1e-9, hypot(1.0, dhw))
+                out.append((0.5 + hw, y, 1.0 / norm, -dhw / norm))
+                out.append((0.5 - hw, y, -1.0 / norm, -dhw / norm))
+            }
+        case .polygon:
+            let p = outer_polygon
+            guard p.count >= 3 else { break }
+            var area2 = 0.0
+            for i in 0..<p.count {
+                let j = (i + 1) % p.count
+                area2 += p[i].x * p[j].y - p[j].x * p[i].y
+            }
+            let ccw = area2 > 0
+            for i in 0..<p.count {
+                let a = p[i], bV = p[(i + 1) % p.count]
+                let dx = bV.x - a.x, dy = bV.y - a.y
+                let len = max(1e-9, hypot(dx, dy))
+                let nX = ccw ? dy / len : -dy / len
+                let nY = ccw ? -dx / len : dx / len
+                addSegment(a.x, a.y, bV.x, bV.y, nX, nY)
+            }
+        }
+        // Drop contour points that fall inside an edge notch / cutout
+        return out.filter { !isPointInsideCutout(xHat: $0.x, yHat: $0.y, margin: 0.0) }
+    }
+    
+    /// Unit-α displacement direction prescribed by an affine perimeter rule at (xHat, yHat).
+    /// Mirrors the C++ kinematics: center-symmetric modes are measured from the specimen centroid,
+    /// shear/uniaxial modes from the bottom-left of the domain bounds.
+    public func affineDisplacement(mode: String, xHat: Double, yHat: Double) -> (ux: Double, uy: Double) {
+        let b = outerDomainBounds()
+        let cx = 0.5 * (b.minX + b.maxX), cy = 0.5 * (b.minY + b.maxY)
+        let rx = xHat - cx, ry = yHat - cy
+        switch mode {
+        case "biaxial", "radial_outward": return (rx, ry)
+        case "radial_inward", "biaxial_compression": return (-rx, -ry)
+        case "pure_shear": return (rx, -ry)
+        case "circumferential_shear", "torsion": return (-ry, rx)
+        case "uniaxial_y": return (0.0, yHat - b.minY)
+        case "uniaxial_x": return (xHat - b.minX, 0.0)
+        case "simple_shear_y": return (0.0, xHat - b.minX)
+        default: return (yHat - b.minY, 0.0) // simple_shear_x
+        }
+    }
+
     /// Returns 0 = Free, 1 = Fixed, 2 = Driven, 3 = RollerY (X-locked), 4 = RollerX (Y-locked)
     public func classifyNodeRole(
         xHat: Double,
@@ -1231,66 +1495,8 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         let activeRules = overrideRules ?? boundary_rules
         let indenterActive = overrideIndenterEnabled ?? indenter.enabled
         
-        var domMinX = 0.0, domMaxX = 1.0, domMinY = 0.0, domMaxY = 1.0
-        if outer_shape == .polygon && outer_polygon.count >= 3 {
-            domMinX = outer_polygon.map(\.x).min() ?? 0.0
-            domMaxX = outer_polygon.map(\.x).max() ?? 1.0
-            domMinY = outer_polygon.map(\.y).min() ?? 0.0
-            domMaxY = outer_polygon.map(\.y).max() ?? 1.0
-        } else if outer_shape == .disk {
-            domMinX = max(0.0, 0.5 - disk_radius)
-            domMaxX = min(1.0, 0.5 + disk_radius)
-            domMinY = max(0.0, 0.5 - disk_radius)
-            domMaxY = min(1.0, 0.5 + disk_radius)
-        }
-        
         for rule in activeRules where rule.enabled {
-            let stripX = max(0.35, rule.thickness_a0) * a0x
-            let stripY = max(0.35, rule.thickness_a0) * a0y
-            var matches = false
-            switch rule.region {
-            case .top:
-                if indenterActive && rule.kind != .free {
-                    matches = false
-                } else {
-                    matches = (yHat >= domMaxY - stripY)
-                }
-            case .bottom: matches = (yHat <= domMinY + stripY)
-            case .left: matches = (xHat <= domMinX + stripX)
-            case .right: matches = (xHat >= domMaxX - stripX)
-            case .outerPerimeter:
-                if outer_shape == .disk {
-                    let dist = hypot(xHat - 0.5, yHat - 0.5)
-                    matches = (dist >= disk_radius - max(stripX, stripY))
-                } else if outer_shape == .polygon && outer_polygon.count >= 3 {
-                    let dist = Self.distanceToPolygonEdges(x: xHat, y: yHat, poly: outer_polygon)
-                    matches = (dist <= max(stripX, stripY))
-                } else if outer_shape == .dogbone {
-                    let halfGW = 0.5 * min(0.98, max(0.15, dogbone_gauge_width))
-                    let halfGL = 0.5 * min(0.90, max(0.10, dogbone_gauge_length))
-                    let rf = max(0.02, dogbone_fillet_radius)
-                    let dy = abs(yHat - 0.5)
-                    let halfWAllowed: Double
-                    if dy <= halfGL {
-                        halfWAllowed = halfGW
-                    } else if dy <= halfGL + rf {
-                        let u = dy - halfGL
-                        let filletDx = rf - sqrt(max(0.0, rf * rf - u * u))
-                        halfWAllowed = min(0.5, halfGW + filletDx * ((0.5 - halfGW) / rf))
-                    } else {
-                        halfWAllowed = 0.5
-                    }
-                    matches = (yHat <= stripY || yHat >= 1.0 - stripY || (halfWAllowed - abs(xHat - 0.5)) <= stripX)
-                } else {
-                    matches = (xHat <= domMinX + stripX || xHat >= domMaxX - stripX ||
-                               yHat <= domMinY + stripY || yHat >= domMaxY - stripY)
-                }
-            case .holeSurfaces:
-                matches = isPointInsideCutout(xHat: xHat, yHat: yHat, margin: max(stripX, stripY))
-            case .customBox:
-                matches = (xHat >= rule.box_x_min && xHat <= rule.box_x_max &&
-                           yHat >= rule.box_y_min && yHat <= rule.box_y_max)
-            }
+            let matches = ruleRegionMatches(rule, xHat: xHat, yHat: yHat, nx: nx, ny: ny, indenterActive: indenterActive)
             if matches {
                 switch rule.kind {
                 case .free:

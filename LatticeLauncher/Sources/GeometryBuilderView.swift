@@ -217,7 +217,15 @@ public struct GeometryBuilderView: View {
     
     private var canvasSurfaceBadgeTitle: String {
         if isViewingStage1RelaxBCs {
-            return "STAGE 1 RELAXATION (Free/Roller BCs, α = 0)"
+            let s1 = config.geometryConfig.stage1_boundary_rules.filter(\.enabled)
+            let s2 = config.geometryConfig.boundary_rules.filter(\.enabled)
+            let sameAsLoading = !s1.isEmpty && s1.count == s2.count && zip(s1, s2).allSatisfy { a, b in
+                a.region == b.region && a.kind == b.kind && a.affine_mode == b.affine_mode
+            }
+            if sameAsLoading {
+                return "STAGE 1 RELAXATION (α = 0, Noise OFF • Same Grips as Loading Step)"
+            }
+            return "STAGE 1 RELAXATION (α = 0, Noise OFF • \(s1.count) Active Rules)"
         }
         switch config.activeMechanicalLoading {
         case .simpleShearPos:
@@ -232,8 +240,18 @@ public struct GeometryBuilderView: View {
             return "STAGE 2: UNIAXIAL TENSION X (+ε_xx) • Pulling Right ux → • Rollers"
         case .shearParallelGB:
             return "STAGE 2: SHEAR ∥ VERTICAL GB (+uy) • Driven Right Wall"
+        case .radialExpansionOutward:
+            return "STAGE 2: RADIAL OUTWARD PULL (+ε_r) • Rim Driven u = +α·(r - r_c)"
+        case .radialCompressionInward:
+            return "STAGE 2: RADIAL INWARD PUSH (-ε_r) • Rim Driven u = -α·(r - r_c)"
         case .affineShearBox:
-            return "STAGE 2: AFFINE SHEAR BOX (4 WALLS) • Linear Shear Gradient F_xy"
+            let affineMode = config.geometryConfig.boundary_rules.first(where: { $0.enabled && $0.kind == .affine })?.affine_mode ?? "simple_shear_x"
+            if affineMode == "pure_shear" {
+                return "STAGE 2: PURE SHEAR (±ε) • Rim Driven ux = +α·Δx, uy = -α·Δy"
+            } else if affineMode == "circumferential_shear" || affineMode == "torsion" {
+                return "STAGE 2: CIRCUMFERENTIAL TORSION (u_θ = +α·r) • Rim Driven"
+            }
+            return "STAGE 2: AFFINE SHEAR PERIMETER • Linear Shear Gradient F_xy"
         case .nanoindentation:
             return "STAGE 2: NANOINDENTATION • Tip δ_max = \(String(format: "%.1f", config.geometryConfig.indenter.max_depth_a0)) a₀"
         default:
@@ -414,9 +432,9 @@ public struct GeometryBuilderView: View {
     // MARK: - Interactive Canvas
     private func interactiveCanvas(size: CGSize) -> some View {
         let isIndenterActive = config.geometryConfig.indenter.enabled
-        let padSide: CGFloat = 44.0
-        let padTop: CGFloat = isIndenterActive ? 75.0 : 44.0
-        let padBottom: CGFloat = 44.0
+        let padSide: CGFloat = 48.0
+        let padTop: CGFloat = isIndenterActive ? 82.0 : 66.0
+        let padBottom: CGFloat = 46.0
         let availW = max(100.0, size.width - 2 * padSide)
         let availH = max(100.0, size.height - (padTop + padBottom))
         let aspect = (config.latticeSymmetry == .triangular)
@@ -628,6 +646,15 @@ public struct GeometryBuilderView: View {
                 }
                 path.closeSubpath()
             }
+        }
+        return path
+    }
+    
+    /// Carved solid region (outer shape minus area cutouts) for even-odd clipping of GB overlays.
+    private func buildSolidClipPath(originX: CGFloat, originY: CGFloat, boxW: CGFloat, boxH: CGFloat) -> Path {
+        var path = buildOuterDomainPath(originX: originX, originY: originY, boxW: boxW, boxH: boxH)
+        for cutout in config.geometryConfig.cutouts where cutout.enabled && cutout.type != .preCrack {
+            path.addPath(buildCutoutPath(cutout: cutout, originX: originX, originY: originY, boxW: boxW, boxH: boxH))
         }
         return path
     }
@@ -873,32 +900,132 @@ public struct GeometryBuilderView: View {
         let nx = max(2, config.nx)
         let ny = max(2, config.ny)
         let r: CGFloat = 2.8
+        let eps = 0.25 / Double(max(nx, ny))
         
         let countX = min(nx, 80)
         let countY = min(ny, 60)
         
         var coords: [(Double, Double)] = []
-        coords.reserveCapacity(countX * 2 + countY * 2)
+        coords.reserveCapacity(countX * 2 + countY * 2 + 160)
         
-        // Bottom edge: y = 0
-        for i in 0..<countX {
-            let x = Double(i) / Double(countX - 1)
-            coords.append((x, 0.0))
+        switch config.geometryConfig.outer_shape {
+        case .rectangle:
+            for i in 0..<countX {
+                let x = Double(i) / Double(countX - 1)
+                coords.append((x, 0.0))
+                coords.append((x, 1.0))
+            }
+            for j in 1..<(countY - 1) {
+                let y = Double(j) / Double(countY - 1)
+                coords.append((0.0, y))
+                coords.append((1.0, y))
+            }
+            
+        case .disk:
+            let rimCount = min(160, max(72, countX + countY))
+            let rDisk = max(0.02, config.geometryConfig.disk_radius - eps)
+            for k in 0..<rimCount {
+                let theta = 2.0 * .pi * Double(k) / Double(rimCount)
+                let x = 0.5 + rDisk * cos(theta)
+                let y = 0.5 + rDisk * sin(theta)
+                coords.append((x, y))
+            }
+            
+        case .dogbone:
+            for i in 0..<countX {
+                let x = Double(i) / Double(countX - 1)
+                coords.append((x, 0.0))
+                coords.append((x, 1.0))
+            }
+            let sideSamples = max(countY, 64)
+            for j in 1..<(sideSamples - 1) {
+                let y = Double(j) / Double(sideSamples - 1)
+                let hw = max(0.02, config.geometryConfig.dogboneHalfWidth(atYHat: y) - eps)
+                coords.append((0.5 - hw, y))
+                coords.append((0.5 + hw, y))
+            }
+            
+        case .polygon:
+            let verts = config.geometryConfig.outer_polygon
+            if verts.count >= 3 {
+                let pcx = verts.map(\.x).reduce(0.0, +) / Double(verts.count)
+                let pcy = verts.map(\.y).reduce(0.0, +) / Double(verts.count)
+                for idx in 0..<verts.count {
+                    let v1 = verts[idx]
+                    let v2 = verts[(idx + 1) % verts.count]
+                    let edgeLen = hypot(v2.x - v1.x, v2.y - v1.y)
+                    let segSteps = max(8, Int(ceil(edgeLen * Double(countX))))
+                    for s in 0..<segSteps {
+                        let t = Double(s) / Double(segSteps)
+                        let ex = v1.x + t * (v2.x - v1.x)
+                        let ey = v1.y + t * (v2.y - v1.y)
+                        let toCx = pcx - ex
+                        let toCy = pcy - ey
+                        let dC = max(1e-6, hypot(toCx, toCy))
+                        coords.append((ex + eps * (toCx / dC), ey + eps * (toCy / dC)))
+                    }
+                }
+            }
         }
-        // Top edge: y = 1
-        for i in 0..<countX {
-            let x = Double(i) / Double(countX - 1)
-            coords.append((x, 1.0))
-        }
-        // Left edge: x = 0
-        for j in 1..<(countY - 1) {
-            let y = Double(j) / Double(countY - 1)
-            coords.append((0.0, y))
-        }
-        // Right edge: x = 1
-        for j in 1..<(countY - 1) {
-            let y = Double(j) / Double(countY - 1)
-            coords.append((1.0, y))
+        
+        // Sample points along enabled cutout rims so hole boundary conditions are also visible
+        for cutout in config.geometryConfig.cutouts where cutout.enabled {
+            let rimEps = max(eps, 0.004)
+            switch cutout.type {
+            case .circle:
+                let cSteps = 44
+                let rad = cutout.rx + rimEps
+                for k in 0..<cSteps {
+                    let ang = 2.0 * .pi * Double(k) / Double(cSteps)
+                    coords.append((cutout.cx + rad * cos(ang), cutout.cy + rad * sin(ang)))
+                }
+            case .ellipse:
+                let cSteps = 44
+                let rx = cutout.rx + rimEps
+                let ry = cutout.ry + rimEps
+                let phi = cutout.rotation_deg * .pi / 180.0
+                let cosP = cos(phi), sinP = sin(phi)
+                for k in 0..<cSteps {
+                    let ang = 2.0 * .pi * Double(k) / Double(cSteps)
+                    let lx = rx * cos(ang)
+                    let ly = ry * sin(ang)
+                    coords.append((cutout.cx + cosP * lx - sinP * ly, cutout.cy + sinP * lx + cosP * ly))
+                }
+            case .rectangle:
+                let rx = cutout.rx + rimEps
+                let ry = cutout.ry + rimEps
+                let phi = cutout.rotation_deg * .pi / 180.0
+                let cosP = cos(phi), sinP = sin(phi)
+                let sideN = 12
+                for k in 0...sideN {
+                    let u = -1.0 + 2.0 * Double(k) / Double(sideN)
+                    for (lx, ly) in [(u * rx, -ry), (u * rx, ry), (-rx, u * ry), (rx, u * ry)] {
+                        coords.append((cutout.cx + cosP * lx - sinP * ly, cutout.cy + sinP * lx + cosP * ly))
+                    }
+                }
+            case .polygon:
+                let pVerts = cutout.vertices
+                if pVerts.count >= 3 {
+                    let ccx = pVerts.map(\.x).reduce(0.0, +) / Double(pVerts.count)
+                    let ccy = pVerts.map(\.y).reduce(0.0, +) / Double(pVerts.count)
+                    for idx in 0..<pVerts.count {
+                        let v1 = pVerts[idx]
+                        let v2 = pVerts[(idx + 1) % pVerts.count]
+                        let segSteps = 10
+                        for s in 0..<segSteps {
+                            let t = Double(s) / Double(segSteps)
+                            let ex = v1.x + t * (v2.x - v1.x)
+                            let ey = v1.y + t * (v2.y - v1.y)
+                            let outX = ex - ccx
+                            let outY = ey - ccy
+                            let dOut = max(1e-6, hypot(outX, outY))
+                            coords.append((ex + rimEps * (outX / dOut), ey + rimEps * (outY / dOut)))
+                        }
+                    }
+                }
+            default:
+                break
+            }
         }
         
         for (xHat, yHat) in coords {
@@ -915,12 +1042,19 @@ public struct GeometryBuilderView: View {
                 )
             let pt = toScreen(xHat, yHat)
             let rect = CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)
+            let baseColor: Color
+            if micro.mode == .bicrystal || micro.mode == .voronoi {
+                let gid = micro.grainAt(xHat: xHat, yHat: yHat).0
+                baseColor = grainPaletteColor(gid).opacity(0.90)
+            } else {
+                baseColor = BlueHour.ice.opacity(0.85)
+            }
             let dotColor: Color
             switch role {
             case 1: dotColor = Color(red: 1.0, green: 0.42, blue: 0.42) // Fixed (red)
             case 2: dotColor = Color(red: 0.31, green: 0.85, blue: 0.78) // Driven (cyan)
             case 3, 4: dotColor = Color(red: 0.98, green: 0.72, blue: 0.24) // Roller (yellow)
-            default: dotColor = BlueHour.ice.opacity(0.85) // Free / Interior (ice)
+            default: dotColor = baseColor // Free / Interior
             }
             ctx.fill(Path(ellipseIn: rect), with: .color(dotColor))
             ctx.stroke(Path(ellipseIn: rect), with: .color(BlueHour.abyss.opacity(0.8)), lineWidth: 0.8)
@@ -990,89 +1124,105 @@ public struct GeometryBuilderView: View {
 
         // -------------------------------------------------------------
         // CASE 2: SURFACE BOUNDARY CONDITIONS (FINITE SPECIMEN)
+        // All markers are attached to the TRUE carved contour (rectangle, disk rim,
+        // dogbone shoulders/fillets/waist, polygon edges, cutout rims).
         // -------------------------------------------------------------
         let drivenColor = Color(red: 0.31, green: 0.85, blue: 0.78)
         let fixedColor = Color(red: 1.0, green: 0.42, blue: 0.42)
         let rollerColor = Color(red: 0.98, green: 0.72, blue: 0.24)
+        let geo = config.geometryConfig
+        let nxL = max(2, config.nx)
+        let nyL = max(2, config.ny)
+        let indenterOn = activeCanvasIndenterEnabled
+        let insetEps = 0.6 / Double(max(nxL, nyL))
         
-        let hasOuterAffine = activeCanvasBoundaryRules.contains { $0.enabled && ($0.region == .outerPerimeter || $0.kind == .affine) }
-        
-        if hasOuterAffine {
-            // =========================================================
-            // AFFINE SHEAR BOX (4 WALLS): ALL 4 BOUNDARY WALLS DRIVEN
-            // =========================================================
-            // Top Wall: Full rightward shear displacement
-            let topY = originY - 14
-            for k in 1...6 {
-                let t = CGFloat(k) / 7.0
-                let x = originX + t * boxW
-                let start = CGPoint(x: x - 12, y: topY)
-                let end = CGPoint(x: x + 12, y: topY)
-                drawVectorArrow(ctx: &ctx, start: start, end: end, color: drivenColor, lineWidth: 2.2, headLength: 6.5)
-            }
-            ctx.draw(
-                Text("Top Wall Driven: +ux = +γ·Ly (Max Shear)")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(drivenColor),
-                at: CGPoint(x: originX + boxW * 0.5, y: originY - 26)
-            )
-            
-            // Bottom Wall: Fixed Base u = 0 (clamped support)
-            for k in 1...7 {
-                let t = CGFloat(k) / 8.0
-                let x = originX + t * boxW
-                let pt = CGPoint(x: x, y: originY + boxH)
-                drawFixedClampSupport(ctx: &ctx, at: pt, tangent: CGPoint(x: 1, y: 0), normalOut: CGPoint(x: 0, y: 1))
-            }
-            ctx.draw(
-                Text("Bottom Wall: Fixed Base u = 0 (Clamped)")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(fixedColor),
-                at: CGPoint(x: originX + boxW * 0.5, y: originY + boxH + 22)
-            )
-            
-            // Left Wall: Affine shear gradient ux(y) = γ·y
-            for k in 1...5 {
-                let t = CGFloat(k) / 6.0
-                let y = originY + boxH * (1.0 - t)
-                let arrowLen = 5.0 + 17.0 * t
-                let end = CGPoint(x: originX - 4, y: y)
-                let start = CGPoint(x: originX - 4 - arrowLen, y: y)
-                drawVectorArrow(ctx: &ctx, start: start, end: end, color: drivenColor, lineWidth: 1.8, headLength: 5.5)
-            }
-            ctx.draw(
-                Text("Left: ux(y) = γ·y")
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(drivenColor),
-                at: CGPoint(x: originX - 35, y: originY + boxH * 0.5)
-            )
-            
-            // Right Wall: Affine shear gradient ux(y) = γ·y
-            for k in 1...5 {
-                let t = CGFloat(k) / 6.0
-                let y = originY + boxH * (1.0 - t)
-                let arrowLen = 5.0 + 17.0 * t
-                let start = CGPoint(x: originX + boxW + 4, y: y)
-                let end = CGPoint(x: originX + boxW + 4 + arrowLen, y: y)
-                drawVectorArrow(ctx: &ctx, start: start, end: end, color: drivenColor, lineWidth: 1.8, headLength: 5.5)
-            }
-            ctx.draw(
-                Text("Right: ux(y) = γ·y")
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(drivenColor),
-                at: CGPoint(x: originX + boxW + 35, y: originY + boxH * 0.5)
-            )
-            
-            // Outer Glowing Frame
-            let frameRect = CGRect(x: originX, y: originY, width: boxW, height: boxH)
-            ctx.stroke(Path(frameRect), with: .color(drivenColor.opacity(0.85)), style: StrokeStyle(lineWidth: 1.8, dash: [6, 4]))
-            return
+        func scr(_ x: Double, _ y: Double) -> CGPoint {
+            CGPoint(x: originX + CGFloat(x) * boxW, y: originY + CGFloat(1.0 - y) * boxH)
         }
-
-        // =============================================================
-        // REGIONAL RULES (TOP, BOTTOM, LEFT, RIGHT, CUSTOM BOX)
-        // =============================================================
+        func scrDir(_ dx: Double, _ dy: Double) -> CGPoint {
+            // Screen direction (y down) of a normalized vector, accounting for box aspect.
+            let sx = CGFloat(dx) * boxW
+            let sy = -CGFloat(dy) * boxH
+            let len = max(1e-6, hypot(sx, sy))
+            return CGPoint(x: sx / len, y: sy / len)
+        }
+        
+        let contour = geo.outerContourSamples(perUnitLength: 140)
+        
+        /// Contour samples whose (slightly inset) lattice point belongs to `rule.region`.
+        func matchedContour(_ rule: BoundaryZoneRuleModel) -> [(x: Double, y: Double, nx: Double, ny: Double)] {
+            contour.filter { s in
+                let ix = s.x - insetEps * s.nx
+                let iy = s.y - insetEps * s.ny
+                guard geo.ruleRegionMatches(rule, xHat: ix, yHat: iy, nx: nxL, ny: nyL, indenterActive: indenterOn) else { return false }
+                // Keep visual markers on the face that actually looks toward the selected side
+                switch rule.region {
+                case .top: return s.ny > 0.25
+                case .bottom: return s.ny < -0.25
+                case .left: return s.nx < -0.25
+                case .right: return s.nx > 0.25
+                default: return true
+                }
+            }
+        }
+        
+        /// Evenly sub-samples a list to at most `n` entries (ordered along the contour).
+        func pick<T>(_ arr: [T], _ n: Int) -> [T] {
+            guard arr.count > n, n > 0 else { return arr }
+            return (0..<n).map { arr[Int((Double($0) + 0.5) * Double(arr.count) / Double(n))] }
+        }
+        
+        func drawLabel(_ text: String, at pt: CGPoint, color: Color, anchor: UnitPoint = .center) {
+            let resolved = ctx.resolve(
+                Text(text)
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(color)
+            )
+            let sz = resolved.measure(in: CGSize(width: 900, height: 40))
+            let w = sz.width + 10, h = sz.height + 4
+            let ox = pt.x - anchor.x * w
+            let oy = pt.y - anchor.y * h
+            let rect = CGRect(x: ox, y: oy, width: w, height: h)
+            ctx.fill(Path(roundedRect: rect, cornerRadius: 4), with: .color(BlueHour.abyss.opacity(0.86)))
+            ctx.stroke(Path(roundedRect: rect, cornerRadius: 4), with: .color(color.opacity(0.45)), lineWidth: 0.8)
+            ctx.draw(resolved, at: CGPoint(x: rect.midX, y: rect.midY))
+        }
+        
+        /// Places a region label just outside the region's centroid, kept clear of the top-left stage badge.
+        func labelPoint(for pts: [(x: Double, y: Double, nx: Double, ny: Double)], region: BoundaryRegionSelector) -> (CGPoint, UnitPoint) {
+            switch region {
+            case .top:
+                // Inside the reference box, right-aligned, below the top edge (never collides with the stage capsule)
+                return (CGPoint(x: originX + boxW - 6, y: originY + 6), UnitPoint(x: 1.0, y: 0.0))
+            case .bottom:
+                return (CGPoint(x: originX + boxW * 0.5, y: originY + boxH + 22), .center)
+            default:
+                guard !pts.isEmpty else { return (CGPoint(x: originX + boxW * 0.5, y: originY + boxH * 0.5), .center) }
+                let mx = pts.map(\.x).reduce(0, +) / Double(pts.count)
+                let my = pts.map(\.y).reduce(0, +) / Double(pts.count)
+                let mnx = pts.map(\.nx).reduce(0, +) / Double(pts.count)
+                let mny = pts.map(\.ny).reduce(0, +) / Double(pts.count)
+                let p = scr(mx, my)
+                let d = scrDir(mnx, mny)
+                let anchor: UnitPoint = d.x > 0.4 ? UnitPoint(x: 0.0, y: 0.5) : (d.x < -0.4 ? UnitPoint(x: 1.0, y: 0.5) : .center)
+                return (CGPoint(x: p.x + d.x * 30, y: p.y + d.y * 30), anchor)
+            }
+        }
+        
+        func regionName(_ r: BoundaryRegionSelector) -> String {
+            switch r {
+            case .top: return "Top"
+            case .bottom: return "Bottom"
+            case .left: return "Left"
+            case .right: return "Right"
+            case .outerPerimeter: return "Outer Rim"
+            case .holeSurfaces: return "Hole Rims"
+            case .customBox: return "Box"
+            }
+        }
+        
         for rule in activeCanvasBoundaryRules where rule.enabled {
+            // ---------------- Custom Box: shaded box + markers on enclosed lattice ----------------
             if rule.region == .customBox {
                 let bx = originX + CGFloat(rule.box_x_min) * boxW
                 let by = originY + CGFloat(1.0 - rule.box_y_max) * boxH
@@ -1088,147 +1238,114 @@ public struct GeometryBuilderView: View {
                 }
                 ctx.fill(Path(rect), with: .color(col.opacity(0.12)))
                 ctx.stroke(Path(rect), with: .color(col.opacity(0.85)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                if rule.kind == .prescribed {
+                    let mag = hypot(rule.ux, rule.uy)
+                    if mag > 1e-4 {
+                        let d = scrDir(rule.ux / mag, rule.uy / mag)
+                        let c = CGPoint(x: rect.midX, y: rect.midY)
+                        drawVectorArrow(ctx: &ctx, start: CGPoint(x: c.x - d.x * 12, y: c.y - d.y * 12),
+                                        end: CGPoint(x: c.x + d.x * 12, y: c.y + d.y * 12), color: drivenColor)
+                    }
+                }
+                drawLabel("Box: \(rule.kind.shortBadge)", at: CGPoint(x: rect.midX, y: rect.minY - 9), color: col)
+                continue
             }
-
-            if rule.kind == .fixed {
-                let count = 7
-                for k in 1..<count {
-                    let t = CGFloat(k) / CGFloat(count)
-                    var pt = CGPoint.zero
-                    var tang = CGPoint(x: 1, y: 0)
-                    var nOut = CGPoint(x: 0, y: 1)
-                    if rule.region == .bottom {
-                        pt = CGPoint(x: originX + t * boxW, y: originY + boxH)
-                        tang = CGPoint(x: 1, y: 0)
-                        nOut = CGPoint(x: 0, y: 1)
-                    } else if rule.region == .top {
-                        pt = CGPoint(x: originX + t * boxW, y: originY)
-                        tang = CGPoint(x: 1, y: 0)
-                        nOut = CGPoint(x: 0, y: -1)
-                    } else if rule.region == .left {
-                        pt = CGPoint(x: originX, y: originY + t * boxH)
-                        tang = CGPoint(x: 0, y: 1)
-                        nOut = CGPoint(x: -1, y: 0)
-                    } else if rule.region == .right {
-                        pt = CGPoint(x: originX + boxW, y: originY + t * boxH)
-                        tang = CGPoint(x: 0, y: 1)
-                        nOut = CGPoint(x: 1, y: 0)
-                    } else { continue }
-                    drawFixedClampSupport(ctx: &ctx, at: pt, tangent: tang, normalOut: nOut, color: fixedColor)
+            
+            // ---------------- Hole surfaces: highlight every enabled cutout rim ----------------
+            if rule.region == .holeSurfaces {
+                guard rule.kind != .free else { continue }
+                let col: Color = rule.kind == .fixed ? fixedColor : ((rule.kind == .rollerX || rule.kind == .rollerY) ? rollerColor : drivenColor)
+                for cutout in geo.cutouts where cutout.enabled {
+                    let cPath = buildCutoutPath(cutout: cutout, originX: originX, originY: originY, boxW: boxW, boxH: boxH)
+                    ctx.stroke(cPath, with: .color(col.opacity(0.9)), style: StrokeStyle(lineWidth: 3.0, dash: [5, 3]))
                 }
-                if rule.region == .bottom {
-                    ctx.draw(
-                        Text("Bottom Fixed Base: u = 0 (Clamped)")
-                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(fixedColor),
-                        at: CGPoint(x: originX + boxW * 0.5, y: originY + boxH + 22)
-                    )
+                continue
+            }
+            
+            let pts = matchedContour(rule)
+            guard !pts.isEmpty else { continue }
+            let rName = regionName(rule.region)
+            
+            switch rule.kind {
+            case .fixed:
+                for s in pick(pts, rule.region == .outerPerimeter ? 18 : 7) {
+                    let n = scrDir(s.nx, s.ny)
+                    drawFixedClampSupport(ctx: &ctx, at: scr(s.x, s.y), tangent: CGPoint(x: -n.y, y: n.x), normalOut: n, color: fixedColor)
                 }
-            } else if rule.kind == .rollerX || rule.kind == .rollerY {
-                let count = 6
-                for k in 1...count {
-                    let t = CGFloat(k) / CGFloat(count + 1)
-                    var pt = CGPoint.zero
-                    var freeDir = CGPoint(x: 1, y: 0)
-                    var nOut = CGPoint(x: 0, y: 1)
-                    if rule.region == .bottom {
-                        pt = CGPoint(x: originX + t * boxW, y: originY + boxH)
-                        freeDir = CGPoint(x: 1, y: 0)
-                        nOut = CGPoint(x: 0, y: 1)
-                    } else if rule.region == .top {
-                        pt = CGPoint(x: originX + t * boxW, y: originY)
-                        freeDir = CGPoint(x: 1, y: 0)
-                        nOut = CGPoint(x: 0, y: -1)
-                    } else if rule.region == .left {
-                        pt = CGPoint(x: originX, y: originY + t * boxH)
-                        freeDir = CGPoint(x: 0, y: 1)
-                        nOut = CGPoint(x: -1, y: 0)
-                    } else if rule.region == .right {
-                        pt = CGPoint(x: originX + boxW, y: originY + t * boxH)
-                        freeDir = CGPoint(x: 0, y: 1)
-                        nOut = CGPoint(x: 1, y: 0)
-                    } else { continue }
-                    drawRollerSupport(ctx: &ctx, at: pt, freeDir: freeDir, normalOut: nOut, color: rollerColor)
-                }
-            } else if rule.kind == .prescribed || rule.kind == .affine {
-                var vx = rule.ux
-                var vy = rule.uy
-                if rule.kind == .affine {
-                    if rule.affine_mode == "uniaxial_y" { vx = 0.0; vy = 1.0 }
-                    else if rule.affine_mode == "uniaxial_x" { vx = 1.0; vy = 0.0 }
-                    else { vx = 1.0; vy = 0.0 }
-                }
-                let mag = hypot(vx, vy)
-                guard mag > 1e-4 else { continue }
-                let dx = CGFloat(vx / mag) * 20.0
-                let dy = CGFloat(-vy / mag) * 20.0
+                let (lp, an) = labelPoint(for: pts, region: rule.region)
+                drawLabel("\(rName) Fixed: u = 0 (Clamped)", at: lp, color: fixedColor, anchor: an)
                 
-                let count = 6
-                for k in 1...count {
-                    let t = CGFloat(k) / CGFloat(count + 1)
-                    var edgePt = CGPoint.zero
-                    if rule.region == .top {
-                        edgePt = CGPoint(x: originX + t * boxW, y: originY - 4)
-                    } else if rule.region == .bottom {
-                        edgePt = CGPoint(x: originX + t * boxW, y: originY + boxH + 4)
-                    } else if rule.region == .right {
-                        edgePt = CGPoint(x: originX + boxW + 4, y: originY + t * boxH)
-                    } else if rule.region == .left {
-                        edgePt = CGPoint(x: originX - 4, y: originY + t * boxH)
-                    } else {
+            case .rollerX, .rollerY:
+                let freeDir = rule.kind == .rollerX ? CGPoint(x: 1, y: 0) : CGPoint(x: 0, y: 1)
+                for s in pick(pts, rule.region == .outerPerimeter ? 16 : 6) {
+                    drawRollerSupport(ctx: &ctx, at: scr(s.x, s.y), freeDir: freeDir, normalOut: scrDir(s.nx, s.ny), color: rollerColor)
+                }
+                if rule.region == .left || rule.region == .right || rule.region == .outerPerimeter {
+                    let (lp, an) = labelPoint(for: pts, region: rule.region)
+                    drawLabel(rule.kind == .rollerX ? "\(rName) Roller (uy = 0)" : "\(rName) Roller (ux = 0)", at: lp, color: rollerColor, anchor: an)
+                }
+                
+            case .prescribed:
+                let mag = hypot(rule.ux, rule.uy)
+                guard mag > 1e-4 else { continue }
+                let d = scrDir(rule.ux / mag, rule.uy / mag)
+                for s in pick(pts, rule.region == .outerPerimeter ? 16 : 6) {
+                    let p = scr(s.x, s.y)
+                    let n = scrDir(s.nx, s.ny)
+                    let start = CGPoint(x: p.x + n.x * 4, y: p.y + n.y * 4)
+                    drawVectorArrow(ctx: &ctx, start: start, end: CGPoint(x: start.x + d.x * 20, y: start.y + d.y * 20),
+                                    color: drivenColor, lineWidth: 2.2, headLength: 6.5)
+                }
+                let modeNoun: String
+                if abs(rule.ux) > 0.5 && abs(rule.uy) < 0.5 {
+                    modeNoun = rule.ux > 0 ? "+ux (Shear)" : "-ux (Reverse Shear)"
+                } else if abs(rule.uy) > 0.5 && abs(rule.ux) < 0.5 {
+                    modeNoun = rule.uy > 0 ? "+uy (Pull)" : "-uy (Push)"
+                } else {
+                    modeNoun = String(format: "(%.1f, %.1f)", rule.ux, rule.uy)
+                }
+                let (lp, an) = labelPoint(for: pts, region: rule.region)
+                drawLabel("\(rName) Driven: \(modeNoun)", at: lp, color: drivenColor, anchor: an)
+                
+            case .affine:
+                let mode = rule.affine_mode
+                let samples = pick(pts, 28)
+                let vecs = samples.map { geo.affineDisplacement(mode: mode, xHat: $0.x, yHat: $0.y) }
+                let maxMag = max(1e-9, vecs.map { hypot($0.ux, $0.uy) }.max() ?? 1.0)
+                for (s, v) in zip(samples, vecs) {
+                    let m = hypot(v.ux, v.uy)
+                    let p = scr(s.x, s.y)
+                    guard m > 0.04 * maxMag else {
+                        ctx.fill(Path(ellipseIn: CGRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4)), with: .color(drivenColor))
                         continue
                     }
-                    let start = edgePt
-                    let end = CGPoint(x: edgePt.x + dx, y: edgePt.y + dy)
-                    drawVectorArrow(ctx: &ctx, start: start, end: end, color: drivenColor, lineWidth: 2.2, headLength: 6.5)
+                    let d = scrDir(v.ux / m, v.uy / m)
+                    let len = 7.0 + 17.0 * CGFloat(m / maxMag)
+                    let inward = (d.x * scrDir(s.nx, s.ny).x + d.y * scrDir(s.nx, s.ny).y) < -0.3
+                    // Inward (pushing) vectors end ON the rim; outward/tangential vectors start on it.
+                    let start = inward ? CGPoint(x: p.x - d.x * len, y: p.y - d.y * len) : p
+                    let end = inward ? p : CGPoint(x: p.x + d.x * len, y: p.y + d.y * len)
+                    drawVectorArrow(ctx: &ctx, start: start, end: end, color: drivenColor, lineWidth: 1.9, headLength: 5.5)
                 }
+                let outerPath = buildOuterDomainPath(originX: originX, originY: originY, boxW: boxW, boxH: boxH)
+                ctx.stroke(outerPath, with: .color(drivenColor.opacity(0.75)), style: StrokeStyle(lineWidth: 1.8, dash: [6, 4]))
+                let title: String
+                switch mode {
+                case "biaxial", "radial_outward": title = "Outer Rim Driven: Radial Outward Pull  u = +α·(X − X_c)"
+                case "radial_inward", "biaxial_compression": title = "Outer Rim Driven: Radial Inward Push  u = −α·(X − X_c)"
+                case "pure_shear": title = "Outer Rim Driven: Pure Shear  ux = +α·Δx, uy = −α·Δy"
+                case "circumferential_shear", "torsion": title = "Outer Rim Driven: Circumferential Torsion  u_θ = +α·r"
+                case "uniaxial_y": title = "Outer Rim Driven: Uniaxial Y  uy = α·(y − y_min)"
+                case "uniaxial_x": title = "Outer Rim Driven: Uniaxial X  ux = α·(x − x_min)"
+                case "simple_shear_y": title = "Outer Rim Driven: Simple Shear Y  uy = α·(x − x_min)"
+                default: title = "Outer Rim Driven: Simple Shear X  ux = α·(y − y_min)"
+                }
+                drawLabel(title, at: CGPoint(x: originX + boxW * 0.5, y: originY + boxH + 24), color: drivenColor)
                 
-                let modeNoun: String
-                if abs(vx) > 0.5 && abs(vy) < 0.5 {
-                    modeNoun = (vx > 0 ? "Driven Grip: +ux (Shear)" : "Driven Grip: -ux (Reverse Shear)")
-                } else if abs(vy) > 0.5 && abs(vx) < 0.5 {
-                    modeNoun = (vy > 0 ? "Driven Grip: +uy (Tension)" : "Driven Grip: -uy (Compression)")
-                } else {
-                    modeNoun = String(format: "Driven Grip: (%.1f, %.1f)", vx, vy)
-                }
-                if rule.region == .top {
-                    ctx.draw(
-                        Text("Top \(modeNoun)")
-                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(drivenColor),
-                        at: CGPoint(x: originX + boxW * 0.5, y: originY - 26)
-                    )
-                } else if rule.region == .right {
-                    ctx.draw(
-                        Text("Right \(modeNoun)")
-                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(drivenColor),
-                        at: CGPoint(x: originX + boxW + 35, y: originY + boxH * 0.5)
-                    )
-                }
-            } else if rule.kind == .free {
-                if rule.region == .left {
-                    var line = Path()
-                    line.move(to: CGPoint(x: originX, y: originY))
-                    line.addLine(to: CGPoint(x: originX, y: originY + boxH))
-                    ctx.stroke(line, with: .color(BlueHour.ice.opacity(0.35)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
-                    ctx.draw(
-                        Text("Free Surface")
-                            .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                            .foregroundColor(BlueHour.mist.opacity(0.85)),
-                        at: CGPoint(x: originX - 35, y: originY + boxH * 0.5)
-                    )
-                } else if rule.region == .right {
-                    var line = Path()
-                    line.move(to: CGPoint(x: originX + boxW, y: originY))
-                    line.addLine(to: CGPoint(x: originX + boxW, y: originY + boxH))
-                    ctx.stroke(line, with: .color(BlueHour.ice.opacity(0.35)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 4]))
-                    ctx.draw(
-                        Text("Free Surface")
-                            .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                            .foregroundColor(BlueHour.mist.opacity(0.85)),
-                        at: CGPoint(x: originX + boxW + 35, y: originY + boxH * 0.5)
-                    )
+            case .free:
+                if rule.region == .left || rule.region == .right {
+                    let (lp, an) = labelPoint(for: pts, region: rule.region)
+                    drawLabel("Free Surface", at: lp, color: BlueHour.mist.opacity(0.9), anchor: an)
                 }
             }
         }
@@ -1371,8 +1488,9 @@ public struct GeometryBuilderView: View {
             config.geometryConfig.microstructure.gb_cy = (round(yh * 200) / 200)
         case .moveVoronoiSeed(let sIdx):
             if sIdx >= 0 && sIdx < config.geometryConfig.microstructure.seeds.count {
-                config.geometryConfig.microstructure.seeds[sIdx].cx = (round(xh * 200) / 200)
-                config.geometryConfig.microstructure.seeds[sIdx].cy = (round(yh * 200) / 200)
+                let clamped = config.geometryConfig.clampSeedToSolid(xHat: round(xh * 200) / 200, yHat: round(yh * 200) / 200)
+                config.geometryConfig.microstructure.seeds[sIdx].cx = clamped.x
+                config.geometryConfig.microstructure.seeds[sIdx].cy = clamped.y
             }
         case .moveDislocationCore(let dIdx):
             if dIdx >= 0 && dIdx < config.geometryConfig.microstructure.dislocations.count {
@@ -1898,6 +2016,7 @@ public struct GeometryBuilderView: View {
                                 in: 2...32,
                                 onEditingChanged: { _ in
                                     config.geometryConfig.microstructure.regenerateSeeds()
+                                    config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
                                 }
                             )
                             .font(.caption2.monospacedDigit())
@@ -1907,6 +2026,7 @@ public struct GeometryBuilderView: View {
                             IntField(title: "42", value: $config.geometryConfig.microstructure.random_seed, width: 44)
                             Button("Regenerate") {
                                 config.geometryConfig.microstructure.regenerateSeeds()
+                                config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.mini)
@@ -2832,7 +2952,7 @@ public struct GeometryBuilderView: View {
             let p2 = toScreen(micro.gb_cx + 1.5 * tx, micro.gb_cy + 1.5 * ty)
             
             var clipCtx = ctx
-            clipCtx.clip(to: Path(CGRect(x: originX, y: originY, width: boxW, height: boxH)))
+            clipCtx.clip(to: buildSolidClipPath(originX: originX, originY: originY, boxW: boxW, boxH: boxH), style: FillStyle(eoFill: true))
             var gbLine = Path()
             gbLine.move(to: p1)
             gbLine.addLine(to: p2)
@@ -2871,7 +2991,7 @@ public struct GeometryBuilderView: View {
             let ng = seeds.count
             if ng >= 2 {
                 var clipCtx = ctx
-                clipCtx.clip(to: Path(CGRect(x: originX, y: originY, width: boxW, height: boxH)))
+                clipCtx.clip(to: buildSolidClipPath(originX: originX, originY: originY, boxW: boxW, boxH: boxH), style: FillStyle(eoFill: true))
                 var voronoiPath = Path()
                 for i in 0..<ng {
                     for j in (i + 1)..<ng {
@@ -3068,13 +3188,18 @@ public struct GeometryBuilderView: View {
                     }
                 }
                 .controlSize(.small)
+                .onChange(of: config.geometryConfig.outer_shape) { newShape in
+                    handleOuterShapeChanged(newShape)
+                }
                 
                 if config.geometryConfig.outer_shape == .dogbone {
                     HStack {
                         Text("Gauge Width Ratio (w/Lx):")
                             .font(.caption2)
                         Spacer()
-                        Slider(value: $config.geometryConfig.dogbone_gauge_width, in: 0.25...0.85)
+                        Slider(value: $config.geometryConfig.dogbone_gauge_width, in: 0.25...0.85, onEditingChanged: { editing in
+                            if !editing { config.geometryConfig.sanitizeVoronoiSeedsInsideSolid() }
+                        })
                             .frame(width: 110)
                         Text(String(format: "%.2f", config.geometryConfig.dogbone_gauge_width))
                             .font(.caption2.monospacedDigit())
@@ -3093,11 +3218,14 @@ public struct GeometryBuilderView: View {
                         Text("Disk Radius (R/L):")
                             .font(.caption2)
                         Spacer()
-                        Slider(value: $config.geometryConfig.disk_radius, in: 0.25...0.50)
+                        Slider(value: $config.geometryConfig.disk_radius, in: 0.25...0.50, onEditingChanged: { editing in
+                            if !editing { config.geometryConfig.sanitizeVoronoiSeedsInsideSolid() }
+                        })
                             .frame(width: 110)
                         Text(String(format: "%.2f", config.geometryConfig.disk_radius))
                             .font(.caption2.monospacedDigit())
                     }
+                    diskLoadingChips
                 } else if config.geometryConfig.outer_shape == .polygon {
                     VStack(alignment: .leading, spacing: 6) {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -3658,12 +3786,18 @@ public struct GeometryBuilderView: View {
                                 ]
                                 config.geometryConfig.primary_stress_component = "sigma_xy"
                             }
-                            selectableChipButton(title: "Affine Shear Box", isSelected: isAffine) {
+                            selectableChipButton(title: "Affine Shear Box", isSelected: isAffine && (ruleOf(.outerPerimeter)?.affine_mode ?? "") == "simple_shear_x") {
                                 config.geometryConfig.boundary_rules = [
                                     BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: "simple_shear_x"),
                                     BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
                                 ]
                                 config.geometryConfig.primary_stress_component = "sigma_xy"
+                            }
+                            selectableChipButton(title: "Radial Outward (+ε_r)", isSelected: isAffine && ["radial_outward", "biaxial"].contains(ruleOf(.outerPerimeter)?.affine_mode ?? "")) {
+                                config.applyMechanicalLoading(.radialExpansionOutward)
+                            }
+                            selectableChipButton(title: "Radial Inward (-ε_r)", isSelected: isAffine && ["radial_inward", "biaxial_compression"].contains(ruleOf(.outerPerimeter)?.affine_mode ?? "")) {
+                                config.applyMechanicalLoading(.radialCompressionInward)
                             }
                             selectableChipButton(title: "GB Roller (Auto X/Y)", isSelected: isGBRoller2) {
                                 config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: config.geometryConfig.microstructure.gb_angle_deg)
@@ -3824,8 +3958,12 @@ public struct GeometryBuilderView: View {
                                     Text("Simple Shear X").tag("simple_shear_x")
                                     Text("Uniaxial Y").tag("uniaxial_y")
                                     Text("Uniaxial X").tag("uniaxial_x")
+                                    Text("Simple Shear Y").tag("simple_shear_y")
                                     Text("Pure Shear").tag("pure_shear")
-                                    Text("Biaxial").tag("biaxial")
+                                    Text("Radial Outward (+ε_r)").tag("radial_outward")
+                                    Text("Radial Inward (-ε_r)").tag("radial_inward")
+                                    Text("Circumferential Torsion").tag("circumferential_shear")
+                                    Text("Biaxial (legacy = Radial Outward)").tag("biaxial")
                                 }
                                 .controlSize(.mini)
                                 Text("Strip:").font(.caption2)
@@ -3852,6 +3990,70 @@ public struct GeometryBuilderView: View {
                 .controlSize(.mini)
             }
             .padding(6)
+        }
+    }
+    
+    // MARK: - Disk / Shape Loading Helpers
+    private func setOuterAffine(_ mode: String, stress: String) {
+        config.mode = .positive
+        config.boundaryCondition = .fixed
+        config.geometryConfig.enabled = true
+        config.geometryConfig.indenter.enabled = false
+        config.geometryConfig.boundary_rules = [
+            BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: mode),
+            BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+        ]
+        config.geometryConfig.primary_stress_component = stress
+        if config.geometryConfig.microstructure.mode != .bicrystal {
+            config.geometryConfig.stage1_boundary_rules = config.geometryConfig.boundary_rules
+        }
+    }
+    
+    private var currentOuterAffineMode: String? {
+        config.geometryConfig.boundary_rules.first(where: { $0.enabled && $0.region == .outerPerimeter && $0.kind == .affine })?.affine_mode
+    }
+    
+    private var diskLoadingChips: some View {
+        let m = currentOuterAffineMode ?? ""
+        let rules = config.geometryConfig.boundary_rules.filter(\.enabled)
+        let isDiametral = rules.contains { $0.region == .bottom && $0.kind == .fixed } &&
+            rules.contains { $0.region == .top && $0.kind == .prescribed && $0.uy < -0.5 }
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Disk Loading (rim BCs, centered at disk center):")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundColor(BlueHour.mist)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    selectableChipButton(title: "Radial Outward Pull (+ε_r)", isSelected: m == "radial_outward" || m == "biaxial") {
+                        setOuterAffine("radial_outward", stress: "hydrostatic")
+                    }
+                    selectableChipButton(title: "Radial Inward Push (-ε_r)", isSelected: m == "radial_inward" || m == "biaxial_compression") {
+                        setOuterAffine("radial_inward", stress: "hydrostatic")
+                    }
+                    selectableChipButton(title: "Pure Shear", isSelected: m == "pure_shear") {
+                        setOuterAffine("pure_shear", stress: "pure_shear")
+                    }
+                    selectableChipButton(title: "Circumferential Torsion", isSelected: m == "circumferential_shear" || m == "torsion") {
+                        setOuterAffine("circumferential_shear", stress: "sigma_xy")
+                    }
+                    selectableChipButton(title: "Diametral Compression (Caps)", isSelected: isDiametral) {
+                        config.applyMechanicalLoading(.uniaxialCompY)
+                    }
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+    
+    private func handleOuterShapeChanged(_ newShape: OuterDomainShape) {
+        config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
+        guard newShape == .disk else { return }
+        // Rectangular top/bottom grips on a disk only grab the polar caps; default to a true rim load instead.
+        let rules = config.geometryConfig.boundary_rules.filter(\.enabled)
+        let hasRectGrips = rules.contains { $0.region == .top && $0.kind == .prescribed } &&
+            rules.contains { $0.region == .bottom && $0.kind == .fixed }
+        if hasRectGrips && !config.geometryConfig.indenter.enabled {
+            setOuterAffine("radial_outward", stress: "hydrostatic")
         }
     }
     

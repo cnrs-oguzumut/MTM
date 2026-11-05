@@ -508,6 +508,8 @@ public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
     case uniaxialTensionX = "uniaxial_tension_x"
     case shearParallelGB = "shear_parallel_gb"
     case affineShearBox = "affine_shear_box"
+    case radialExpansionOutward = "radial_expansion_outward"
+    case radialCompressionInward = "radial_compression_inward"
     case nanoindentation = "nanoindentation"
     case staircaseShift = "staircase_shift"
     case volterraDislocation = "volterra"
@@ -524,6 +526,8 @@ public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
             .uniaxialCompY,
             .uniaxialTensionX,
             .shearParallelGB,
+            .radialExpansionOutward,
+            .radialCompressionInward,
             .affineShearBox,
             .nanoindentation
         ]
@@ -538,6 +542,8 @@ public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
         case .uniaxialTensionX: return "Uniaxial Tension X (+ε_xx)"
         case .shearParallelGB: return "Shear ∥ Vertical GB (+Y)"
         case .affineShearBox: return "Affine Shear Box (4 Walls)"
+        case .radialExpansionOutward: return "Radial Outward Pull (+ε_r)"
+        case .radialCompressionInward: return "Radial Inward Push (-ε_r)"
         case .nanoindentation: return "Nanoindentation (Top Tip)"
         case .staircaseShift: return "Staircase Shift"
         case .volterraDislocation: return "Volterra Dislocation Core"
@@ -555,7 +561,9 @@ public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
         case .uniaxialCompY: return "Top pushed -Y, Bottom fixed, Sides free • Measures σ_yy"
         case .uniaxialTensionX: return "Right pulled +X, Left roller, Top/Bot roller • Measures σ_xx"
         case .shearParallelGB: return "Right driven +Y, Left fixed, Top/Bot free • Measures σ_xy"
-        case .affineShearBox: return "All 4 outer walls driven by F_xy = +α • Measures σ_xy"
+        case .affineShearBox: return "All outer walls driven by F_xy = +α • Measures σ_xy"
+        case .radialExpansionOutward: return "Outer rim pulled radially outward u = +α(r - r_c) • Measures ½(σ_xx+σ_yy)"
+        case .radialCompressionInward: return "Outer rim pushed radially inward u = -α(r - r_c) • Measures ½(σ_xx+σ_yy)"
         case .nanoindentation: return "Rigid tip pressing into top free surface • Measures Load P(δ)"
         case .staircaseShift: return "Alternating horizontal & vertical block shifts"
         case .volterraDislocation: return "Single edge dislocation inside cylindrical R_free"
@@ -572,6 +580,8 @@ public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
         case .uniaxialTensionX: return "arrow.left.and.right.square.fill"
         case .shearParallelGB: return "arrow.up.right.and.arrow.down.left.rectangle.fill"
         case .affineShearBox: return "skew"
+        case .radialExpansionOutward: return "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left"
+        case .radialCompressionInward: return "arrow.down.right.and.arrow.up.left"
         case .nanoindentation: return "Scope"
         case .staircaseShift: return "stairs"
         case .volterraDislocation: return " hurricane"
@@ -588,6 +598,8 @@ public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
         case .uniaxialTensionX: return "arrow.left.and.right.circle.fill"
         case .shearParallelGB: return "arrow.up.and.down.circle.fill"
         case .affineShearBox: return "skew"
+        case .radialExpansionOutward: return "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left"
+        case .radialCompressionInward: return "arrow.down.right.and.arrow.up.left"
         case .nanoindentation: return "arrow.down.to.line.circle.fill"
         case .staircaseShift: return "stairs"
         case .volterraDislocation: return "scope"
@@ -647,6 +659,10 @@ public extension SimulationConfig {
                 return sign >= 0 ? .uniaxialTensionY : .uniaxialCompY
             } else if perim.affine_mode == "uniaxial_x" {
                 return .uniaxialTensionX
+            } else if perim.affine_mode == "biaxial" || perim.affine_mode == "radial_outward" {
+                return sign >= 0 ? .radialExpansionOutward : .radialCompressionInward
+            } else if perim.affine_mode == "radial_inward" || perim.affine_mode == "biaxial_compression" {
+                return sign >= 0 ? .radialCompressionInward : .radialExpansionOutward
             }
             return .affineShearBox
         }
@@ -842,6 +858,34 @@ public extension SimulationConfig {
             ]
             geometryConfig.primary_stress_component = "sigma_xy"
             
+        case .radialExpansionOutward:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: "radial_outward"),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "hydrostatic"
+            
+        case .radialCompressionInward:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: "radial_inward"),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "hydrostatic"
+            
         case .nanoindentation:
             mode = .positive
             boundaryCondition = .fixed
@@ -874,6 +918,10 @@ public extension SimulationConfig {
             boundaryCondition = .fixed
             geometryConfig.enabled = true
         }
+        
+        if geometryConfig.enabled && geometryConfig.microstructure.mode != .bicrystal && load != .customRegional {
+            geometryConfig.stage1_boundary_rules = geometryConfig.boundary_rules
+        }
     }
     
     var activeStressComponentLabel: String {
@@ -886,6 +934,8 @@ public extension SimulationConfig {
             return "Compressive Stress σ_yy"
         case .uniaxialTensionX:
             return "Axial Stress σ_xx"
+        case .radialExpansionOutward, .radialCompressionInward:
+            return "Mean Radial Stress ½(σ_xx+σ_yy)"
         case .nanoindentation:
             return "Indentation Load P(δ)"
         case .staircaseShift:
@@ -907,6 +957,10 @@ public extension SimulationConfig {
             return "compressive strain |ε_yy|"
         case .uniaxialTensionX:
             return "axial strain ε_xx"
+        case .radialExpansionOutward:
+            return "radial outward strain +ε_r"
+        case .radialCompressionInward:
+            return "radial inward strain |ε_r|"
         case .nanoindentation:
             return "depth ratio α = δ/δ_max"
         default:

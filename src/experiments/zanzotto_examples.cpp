@@ -711,7 +711,8 @@ void example_1_conti_zanzotto_loading(
     if (stage1_pre_relax_active) {
       macro_geom.boundary_rules = macro_geom.buildStage1RelaxationRules();
       macro_geom.indenter.enabled = false;
-      std::cout << "[Stage 1/2] Equilibrating microstructure at alpha = 0 (GB-Frame Roller BCs, Indenter disengaged)..." << std::endl;
+      std::cout << "[Stage 1/2] Equilibrating microstructure at alpha = 0 (Relaxation Step BCs: "
+                << macro_geom.boundary_rules.size() << " rule(s), Indenter disengaged, Noise OFF)..." << std::endl;
     }
     macro_geom.buildBoundaryDOFs(square_points, interior_mapping, full_mapping,
                                  node_bc_role, node_bc_velocity);
