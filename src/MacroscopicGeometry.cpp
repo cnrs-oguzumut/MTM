@@ -304,18 +304,18 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
             r.id = extractString(item_json, "id", "bc");
             r.enabled = extractBool(item_json, "enabled", true);
             std::string reg_str = extractString(item_json, "region", "top");
-            if (reg_str == "bottom" || reg_str == "bottomEdge") r.region = BoundaryRegionType::BottomEdge;
-            else if (reg_str == "left" || reg_str == "leftEdge") r.region = BoundaryRegionType::LeftEdge;
-            else if (reg_str == "right" || reg_str == "rightEdge") r.region = BoundaryRegionType::RightEdge;
+            if (reg_str == "bottom" || reg_str == "bottomEdge" || reg_str == "bottom_edge") r.region = BoundaryRegionType::BottomEdge;
+            else if (reg_str == "left" || reg_str == "leftEdge" || reg_str == "left_edge") r.region = BoundaryRegionType::LeftEdge;
+            else if (reg_str == "right" || reg_str == "rightEdge" || reg_str == "right_edge") r.region = BoundaryRegionType::RightEdge;
             else if (reg_str == "outer" || reg_str == "outer_perimeter" || reg_str == "outerPerimeter") r.region = BoundaryRegionType::OuterPerimeter;
             else if (reg_str == "hole" || reg_str == "hole_surfaces" || reg_str == "holeSurfaces") r.region = BoundaryRegionType::HoleSurfaces;
             else if (reg_str == "custom_box" || reg_str == "customBox" || reg_str == "box") r.region = BoundaryRegionType::CustomBox;
             else r.region = BoundaryRegionType::TopEdge;
 
             std::string kind_str = extractString(item_json, "kind", "free");
-            if (kind_str == "fixed" || kind_str == "fixedClamped") r.kind = BoundaryConditionKind::FixedClamped;
-            else if (kind_str == "prescribed" || kind_str == "prescribedDisplacement" || kind_str == "driven") r.kind = BoundaryConditionKind::PrescribedDisplacement;
-            else if (kind_str == "affine" || kind_str == "affineDeformation") r.kind = BoundaryConditionKind::AffineDeformation;
+            if (kind_str == "fixed" || kind_str == "fixedClamped" || kind_str == "fixed_clamped") r.kind = BoundaryConditionKind::FixedClamped;
+            else if (kind_str == "prescribed" || kind_str == "prescribedDisplacement" || kind_str == "prescribed_displacement" || kind_str == "driven") r.kind = BoundaryConditionKind::PrescribedDisplacement;
+            else if (kind_str == "affine" || kind_str == "affineDeformation" || kind_str == "affine_deformation" || kind_str == "affine_detachment") r.kind = BoundaryConditionKind::AffineDeformation;
             else if (kind_str == "roller_x" || kind_str == "rollerX") r.kind = BoundaryConditionKind::RollerX;
             else if (kind_str == "roller_y" || kind_str == "rollerY") r.kind = BoundaryConditionKind::RollerY;
             else r.kind = BoundaryConditionKind::FreeSurface;
@@ -2224,8 +2224,9 @@ Eigen::Matrix2d MacroscopicGeometryConfig::computeMacroscopicF(double alpha) con
                 F(1, 1) += sign * alpha * rule.uy;
             } else if (rule.region == BoundaryRegionType::RightEdge || rule.region == BoundaryRegionType::LeftEdge) {
                 double sign = (rule.region == BoundaryRegionType::RightEdge) ? 1.0 : -1.0;
-                F(0, 0) += sign * alpha * rule.ux;
-                F(1, 0) += sign * alpha * rule.uy;
+                double scale = (Lx > 1e-8) ? (Ly / Lx) : 1.0;
+                F(0, 0) += sign * alpha * rule.ux * scale;
+                F(1, 0) += sign * alpha * rule.uy * scale;
             }
         }
     }
@@ -2250,6 +2251,21 @@ void MacroscopicGeometryConfig::applyLoadStep(
     Eigen::Matrix2d dF_macro = computeMacroscopicF(dalpha) - Eigen::Matrix2d::Identity();
     Eigen::Vector2d origin(x_min, y_min);
 
+    if (is_first_step) {
+        if (std::abs(alpha) > 1e-12) {
+            std::cout << std::defaultfloat << std::setprecision(6)
+                      << "  📐 [Affine Pre-Strain] Deforming full crystal (interior + boundaries) to α_start = "
+                      << alpha << " | F_macro = [[" << F_macro_alpha(0,0) << ", " << F_macro_alpha(0,1)
+                      << "], [" << F_macro_alpha(1,0) << ", " << F_macro_alpha(1,1) << "]]" << std::endl;
+        }
+        if (noise_level > 0.0) {
+            std::cout << std::scientific << std::setprecision(2)
+                      << "  🎲 [Loading Stage Noise] Seeding positional thermal noise (σ = "
+                      << noise_level << ", seed = " << seed << ") at loading onset"
+                      << std::defaultfloat << std::endl;
+        }
+    }
+
     std::mt19937 gen(seed);
     std::normal_distribution<double> noise_dist(0.0, std::max(0.0, noise_level));
 
@@ -2257,6 +2273,12 @@ void MacroscopicGeometryConfig::applyLoadStep(
         Eigen::Vector2d noise_vec = (is_first_step && noise_level > 0.0)
             ? Eigen::Vector2d(noise_dist(gen), noise_dist(gen))
             : Eigen::Vector2d::Zero();
+
+        // At the first loading step (`is_first_step`), measure `rel` from the Stage 1 relaxed
+        // coordinates `current_points[j].coord` so that any Stage 1 grain-boundary or defect
+        // relaxation is preserved and affinely mapped by F_macro(alpha), even if
+        // `reanchor_ref_after_relax` is false.
+        const Eigen::Vector2d base_coord = is_first_step ? current_points[j].coord : points_ref[j].coord;
 
         if (node_bc_role[j] == 1) {
             // Fixed / Clamped node: stays strictly at reference position X_0.
@@ -2273,7 +2295,7 @@ void MacroscopicGeometryConfig::applyLoadStep(
             current_points[j].coord = points_ref[j].coord + alpha * node_bc_velocity[j];
         } else if (node_bc_role[j] == 3) {
             // Roller-Y / X-Constrained, Y-Free: lock x(alpha) = X_0.x + alpha * vx, free predictor on y
-            Eigen::Vector2d rel = points_ref[j].coord - origin;
+            Eigen::Vector2d rel = base_coord - origin;
             current_points[j].coord.x() = points_ref[j].coord.x() + alpha * node_bc_velocity[j].x();
             if (is_first_step) {
                 current_points[j].coord.y() = (origin + F_macro_alpha * rel + noise_vec).y();
@@ -2282,7 +2304,7 @@ void MacroscopicGeometryConfig::applyLoadStep(
             }
         } else if (node_bc_role[j] == 4) {
             // Roller-X / Y-Constrained, X-Free: lock y(alpha) = X_0.y + alpha * vy, free predictor on x
-            Eigen::Vector2d rel = points_ref[j].coord - origin;
+            Eigen::Vector2d rel = base_coord - origin;
             current_points[j].coord.y() = points_ref[j].coord.y() + alpha * node_bc_velocity[j].y();
             if (is_first_step) {
                 current_points[j].coord.x() = (origin + F_macro_alpha * rel + noise_vec).x();
@@ -2291,8 +2313,8 @@ void MacroscopicGeometryConfig::applyLoadStep(
             }
         } else {
             // Free node (interior or traction-free hole/outer surface):
-            // Warm-start predictor using smooth macroscopic increment
-            Eigen::Vector2d rel = points_ref[j].coord - origin;
+            // Warm-start predictor using smooth macroscopic affine map at is_first_step, or increment thereafter
+            Eigen::Vector2d rel = base_coord - origin;
             if (is_first_step) {
                 current_points[j].coord = origin + F_macro_alpha * rel + noise_vec;
             } else {

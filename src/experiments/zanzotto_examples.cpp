@@ -909,11 +909,25 @@ void example_1_conti_zanzotto_loading(
     double post_area = 1.0;
 
     // ==================== SETUP DEFORMATION ====================
+    // Stage 1 (i == 0 when stage1_pre_relax_active) is pure zero-strain relaxation (alpha = 0, NO noise).
+    // Stage 2 starts at first_loading_step (i == 1 when Stage 1 ran, or i == 0 otherwise):
+    // at first_loading_step, if alpha != 0, the entire crystal is affinely deformed by F(alpha)
+    // and thermal/positional noise is activated only here at the start of loading.
+    const bool is_stage1_relax_step =
+        stage1_pre_relax_active && (i == 0) && (restart_chk == nullptr);
+    const size_t first_loading_idx =
+        (stage1_pre_relax_active && restart_chk == nullptr) ? 1 : 0;
+    const bool is_first_loading_step =
+        !is_stage1_relax_step && (i == first_loading_idx) && (restart_chk == nullptr);
+    const double actual_dalpha =
+        (i == 0 || is_first_loading_step) ? alpha : (alpha - alpha_values[i - 1]);
+    const double effective_noise_level = is_stage1_relax_step ? 0.0 : noise_level;
+
     Eigen::Matrix2d F_ext;
     F_ext << 1.0, alpha, 0.0, 1.0;
 
     Eigen::Matrix2d dF_ext;
-    dF_ext << 1.0, step_size, 0.0, 1.0;
+    dF_ext << 1.0, actual_dalpha, 0.0, 1.0;
 
     std::vector<int> indenter_contacts;
     if (has_custom_geom && !is_periodic_dislocs) {
@@ -923,7 +937,7 @@ void example_1_conti_zanzotto_loading(
       F_ext = macro_geom.computeMacroscopicF(alpha);
       macro_geom.applyLoadStep(
           square_points, square_points_ref, baseline_node_bc_role, node_bc_velocity,
-          alpha, step_size, (i == 0 && restart_chk == nullptr), seed, noise_level);
+          alpha, actual_dalpha, is_first_loading_step, seed, effective_noise_level);
       if (macro_geom.isIndenterActive() &&
           macro_geom.indenter.contact_mode == IndenterContactMode::KinematicProjection) {
         macro_geom.updateIndenterContactKinematics(
@@ -935,21 +949,26 @@ void example_1_conti_zanzotto_loading(
         }
         active_elements = initialize_active_elements(elements, full_mapping, square_points.size());
       }
-    } else if (i == 0 && restart_chk == nullptr) {
-      if (noise_level > 0.0 && !is_periodic_dislocs) {
+    } else if (is_stage1_relax_step) {
+      // Stage 1 relaxation at alpha = 0 (e.g. periodic dislocations): no affine deformation and no noise
+      for (size_t j = 0; j < square_points.size(); j++) {
+        square_points[j].coord = F_ext * square_points[j].coord;
+      }
+    } else if (is_first_loading_step) {
+      if (effective_noise_level > 0.0 && !is_periodic_dislocs) {
         // Use deterministic seed so both positive and negative runs share the exact same initial noise
         std::mt19937 gen(seed);
-        std::normal_distribution<double> noise_dist(0.0, noise_level);
-        std::cout << "[Setup] Seeded initial thermal/positional noise (seed = " << seed
-                  << ", σ = " << noise_level << ")" << std::endl;
+        std::normal_distribution<double> noise_dist(0.0, effective_noise_level);
+        std::cout << "[Setup] Seeded loading-stage thermal/positional noise (seed = " << seed
+                  << ", σ = " << effective_noise_level << ")" << std::endl;
 
         for (size_t j = 0; j < square_points.size(); j++) {
           Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));
-          square_points[j].coord = F_ext * square_points[j].coord + noise;
+          square_points[j].coord = dF_ext * square_points[j].coord + noise;
         }
       } else {
         for (size_t j = 0; j < square_points.size(); j++) {
-          square_points[j].coord = F_ext * square_points[j].coord;
+          square_points[j].coord = dF_ext * square_points[j].coord;
         }
       }
     } else {
@@ -1162,11 +1181,12 @@ void example_1_conti_zanzotto_loading(
     // 1) Remeshing accepted topological changes (hasChanges > 0) [if remeshing enabled]
     // 2) Energy decreased (post_energy < post_energy_previous)
     // 3) Stress magnitude dropped by at least threshold (fractional_stress_drop >= stress_drop_threshold)
+    const bool can_detect_avalanche = (i > 0) && !is_first_loading_step;
     bool remesh_accepted = (hasChanges > 0);
     bool stress_drop_criterion = (fractional_stress_drop >= stress_drop_threshold);
     bool stress_drop_detected = enable_remeshing
-        ? ((i > 0) && remesh_accepted && energy_dropped && stress_drop_criterion)
-        : ((i > 0) && energy_dropped && stress_drop_criterion);
+        ? (can_detect_avalanche && remesh_accepted && energy_dropped && stress_drop_criterion)
+        : (can_detect_avalanche && energy_dropped && stress_drop_criterion);
 
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
@@ -1329,7 +1349,8 @@ void example_1_conti_zanzotto_loading(
               << hasChanges << "," << stress_drop_detected << "\n";
     frac_file.flush();
 
-    if (stress_drop_detected || i == 0) {
+    const bool is_initial_loaded_snapshot = is_first_loading_step && (std::abs(alpha) > 1e-12);
+    if (stress_drop_detected || i == 0 || is_initial_loaded_snapshot) {
       int eq_file_id = caller_id + file_counter;
       file_counter++;
       int pre_file_id = eq_file_id;
@@ -1419,8 +1440,10 @@ void example_1_conti_zanzotto_loading(
           post_file_id, true, coordination_post, alpha);
       ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
 
-      if (i == 0 && !stress_drop_detected) {
-        std::cout << "  💾 [VTK Snapshot] Initial equilibrium state saved -> configuration_"
+      if ((i == 0 || is_initial_loaded_snapshot) && !stress_drop_detected) {
+        std::cout << "  💾 [VTK Snapshot] "
+                  << (is_initial_loaded_snapshot ? "Initial Stage 2 loaded state (α = " + std::to_string(alpha) + ")" : "Initial equilibrium state")
+                  << " saved -> configuration_"
                   << std::setw(5) << std::setfill('0') << post_file_id << ".vtk" << std::setfill(' ')
                   << " (dislocations: " << num_dislocations_post << ")" << std::endl;
       } else {

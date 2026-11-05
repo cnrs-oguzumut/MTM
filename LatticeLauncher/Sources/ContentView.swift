@@ -1145,11 +1145,6 @@ struct SidebarControlsView: View {
                                     config.geometryConfig.enabled = enabled
                                     if enabled {
                                         config.boundaryCondition = .fixed
-                                        if config.alphaStart > 0.01 {
-                                            config.alphaStart = 0.0
-                                            config.alphaEnd = 0.15
-                                            config.stepSize = 0.001
-                                        }
                                     }
                                 }
                             )) {
@@ -1644,13 +1639,13 @@ struct SidebarControlsView: View {
                                 VStack(alignment: .leading, spacing: 7) {
                                     HStack(spacing: 5) {
                                         Circle().fill(Color.green).frame(width: 7, height: 7)
-                                        Text("1. Relaxation Step")
+                                        Text("1. Relaxation Step (α = 0, Noise OFF)")
                                             .font(.caption.bold())
                                     }
-                                    Toggle("Equilibrate GB before loading", isOn: $config.geometryConfig.microstructure.pre_relax_gb)
+                                    Toggle("Equilibrate crystal / GB before loading", isOn: $config.geometryConfig.microstructure.pre_relax_gb)
                                         .font(.caption)
                                     if config.geometryConfig.microstructure.pre_relax_gb {
-                                        Text("Relaxation Step BCs: \(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) active rules • Indenter OFF")
+                                        Text("Relaxation Step BCs: \(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) active rules • Indenter OFF • Thermal noise OFF")
                                             .font(.caption2)
                                             .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
                                         Toggle("Re-anchor reference frame (X₀ ← x_eq)", isOn: $config.geometryConfig.microstructure.reanchor_ref_after_relax)
@@ -1662,7 +1657,7 @@ struct SidebarControlsView: View {
                                     
                                     HStack(spacing: 5) {
                                         Circle().fill(Color.blue).frame(width: 7, height: 7)
-                                        Text("2. Loading Step")
+                                        Text("2. Loading Step (Affine to α_start, Noise ON)")
                                             .font(.caption.bold())
                                         Spacer()
                                         Button("BCs & Indenter →") {
