@@ -3538,18 +3538,25 @@ public struct GeometryBuilderView: View {
                     HStack(spacing: 6) {
                         if isViewingStage1RelaxBCs {
                             let s1 = config.geometryConfig.stage1_boundary_rules
+                            let s2 = config.geometryConfig.boundary_rules
                             let kindOf = { (reg: BoundaryRegionSelector) -> BoundaryConditionKindModel? in
                                 s1.first(where: { $0.enabled && $0.region == reg })?.kind
                             }
-                            let isGBRollerDefault = (kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerY && kindOf(.right) == .free)
-                                || (kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.bottom) == .rollerX && kindOf(.top) == .free)
-                            let is4EdgeRoller = (kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerX && kindOf(.right) == .rollerX)
-                                || (kindOf(.top) == .rollerY && kindOf(.bottom) == .rollerY && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY)
-                            let isIndentBase = kindOf(.bottom) == .fixed && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.top) == .free
-                            let isAllFree = kindOf(.bottom) == .free && kindOf(.top) == .free && kindOf(.left) == .free && kindOf(.right) == .free
+                            let isSameAsLoading = !s1.isEmpty && s1.count == s2.count && zip(s1, s2).allSatisfy { a, b in
+                                a.region == b.region && a.kind == b.kind && a.affine_mode == b.affine_mode
+                            }
+                            let isGBRollerDefault = !isSameAsLoading && ((kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerY && kindOf(.right) == .free)
+                                || (kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.bottom) == .rollerX && kindOf(.top) == .free))
+                            let is4EdgeRoller = !isSameAsLoading && ((kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerX && kindOf(.right) == .rollerX)
+                                || (kindOf(.top) == .rollerY && kindOf(.bottom) == .rollerY && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY))
+                            let isIndentBase = !isSameAsLoading && (kindOf(.bottom) == .fixed && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.top) == .free)
+                            let isAllFree = !isSameAsLoading && (kindOf(.bottom) == .free && kindOf(.top) == .free && kindOf(.left) == .free && kindOf(.right) == .free)
                             
                             selectableChipButton(title: "GB Roller (Default)", isSelected: isGBRollerDefault) {
                                 config.geometryConfig.resetStage1ToGBFrameRollerBCs(forAngleDeg: config.geometryConfig.microstructure.gb_angle_deg)
+                            }
+                            selectableChipButton(title: "Same as Loading (α = 0)", isSelected: isSameAsLoading) {
+                                config.geometryConfig.stage1_boundary_rules = config.geometryConfig.boundary_rules
                             }
                             selectableChipButton(title: "4-Edge Roller (Auto X/Y)", isSelected: is4EdgeRoller) {
                                 let phiRad = config.geometryConfig.microstructure.gb_angle_deg * .pi / 180.0

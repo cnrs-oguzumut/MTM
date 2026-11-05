@@ -107,6 +107,7 @@ struct ContentView: View {
     @State private var resultsSub: ResultsSubView = .curves
     @State private var inspectorStep: SetupInspectorStep = .crystal
     @AppStorage("showConsoleDrawer") private var showConsole: Bool = false
+    @AppStorage("geometryBCPreviewStage") private var geometryBCPreviewStageRaw: String = "Loading Step BCs & Indenter"
     
     // Onboarding & Help
     @AppStorage("uiComplexityMode") private var uiComplexityModeRaw: String = UIComplexityMode.guided.rawValue
@@ -556,6 +557,7 @@ struct SidebarControlsView: View {
     var onOpenWelcomeGallery: () -> Void = {}
     var onOpenDocs: (DocumentationTopic) -> Void = { _ in }
     @EnvironmentObject var runner: ProcessRunner
+    @AppStorage("geometryBCPreviewStage") private var geometryBCPreviewStageRaw: String = "Loading Step BCs & Indenter"
     
     @ViewBuilder
     private var quickStartExperimentBanner: some View {
@@ -1559,6 +1561,132 @@ struct SidebarControlsView: View {
                 }
     }
     
+    private var stage1RelaxationBCPresetSummary: (title: String, icon: String) {
+        if config.isEffectivePeriodicPBC {
+            return ("2D Periodic Torus (T² at α = 0)", "repeat.circle.fill")
+        }
+        if !config.geometryConfig.enabled {
+            return ("Standard Fixed Box (α = 0)", "rectangle.inset.filled")
+        }
+        let s1 = config.geometryConfig.stage1_boundary_rules.filter(\.enabled)
+        let s2 = config.geometryConfig.boundary_rules.filter(\.enabled)
+        func kindOf(_ reg: BoundaryRegionSelector) -> BoundaryConditionKindModel? {
+            s1.first(where: { $0.region == reg })?.kind
+        }
+        let sameAsLoading = !s1.isEmpty && s1.count == s2.count && zip(s1, s2).allSatisfy { a, b in
+            a.region == b.region && a.kind == b.kind && a.affine_mode == b.affine_mode
+        }
+        if sameAsLoading {
+            return ("Same as Loading Step BCs (α = 0, \(s1.count) active)", "link.circle.fill")
+        }
+        let isGBRoller = (kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerY && kindOf(.right) == .free)
+            || (kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.bottom) == .rollerX && kindOf(.top) == .free)
+        if isGBRoller {
+            return ("GB Roller BCs (Top/Bot Roller, Left Roller, Right Free)", "arrow.left.and.right.Righttriangle.left.righttriangle.right.fill")
+        }
+        let is4Roller = (kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerX && kindOf(.right) == .rollerX)
+            || (kindOf(.top) == .rollerY && kindOf(.bottom) == .rollerY && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY)
+        if is4Roller {
+            return ("4-Edge Roller BCs (\(s1.count) active)", "arrow.up.and.down.and.arrow.left.and.right")
+        }
+        let isIndentBase = kindOf(.bottom) == .fixed && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.top) == .free
+        if isIndentBase {
+            return ("Indent Base BCs (Bot Fixed, Sides RollerY, Top Free)", "pin.circle.fill")
+        }
+        let isAllFree = kindOf(.bottom) == .free && kindOf(.top) == .free && kindOf(.left) == .free && kindOf(.right) == .free
+        if isAllFree {
+            return ("All 4 Walls Free Surface (Traction-Free)", "square.dashed")
+        }
+        return ("Custom Relaxation BCs (\(s1.count) active rules)", "slider.horizontal.3")
+    }
+
+    @ViewBuilder
+    private var stage1RelaxationBCSummaryRow: some View {
+        let info = stage1RelaxationBCPresetSummary
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                    .font(.caption2)
+                if config.geometryConfig.enabled && !config.isEffectivePeriodicPBC {
+                    Menu {
+                        Section("Stage 1 Relaxation Boundary Conditions (α = 0)") {
+                            Button {
+                                config.geometryConfig.resetStage1ToGBFrameRollerBCs(forAngleDeg: config.geometryConfig.microstructure.gb_angle_deg)
+                            } label: {
+                                Label("GB Roller (Default — Top/Bot Roller, Left Roller, Right Free)", systemImage: "checkmark.seal.fill")
+                            }
+                            Button {
+                                config.geometryConfig.stage1_boundary_rules = config.geometryConfig.boundary_rules
+                            } label: {
+                                Label("Same as Loading Step BCs (evaluated at α = 0)", systemImage: "link.circle.fill")
+                            }
+                            Button {
+                                let phiRad = config.geometryConfig.microstructure.gb_angle_deg * .pi / 180.0
+                                let isVert = abs(cos(phiRad)) >= abs(sin(phiRad))
+                                let rk: BoundaryConditionKindModel = isVert ? .rollerX : .rollerY
+                                config.geometryConfig.stage1_boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: rk, thickness_a0: 2.0, lock_x: !isVert, lock_y: isVert),
+                                    BoundaryZoneRuleModel(region: .top, kind: rk, thickness_a0: 2.0, lock_x: !isVert, lock_y: isVert),
+                                    BoundaryZoneRuleModel(region: .left, kind: rk, thickness_a0: 2.0, lock_x: !isVert, lock_y: isVert),
+                                    BoundaryZoneRuleModel(region: .right, kind: rk, thickness_a0: 2.0, lock_x: !isVert, lock_y: isVert)
+                                ]
+                            } label: {
+                                Label("4-Edge Roller (Auto X/Y)", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                            }
+                            Button {
+                                config.geometryConfig.stage1_boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                                    BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .right, kind: .rollerY, thickness_a0: 2.0),
+                                    BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5)
+                                ]
+                            } label: {
+                                Label("Indent Base (Bottom Fixed, Sides RollerY, Top Free)", systemImage: "pin.circle.fill")
+                            }
+                            Button {
+                                config.geometryConfig.stage1_boundary_rules = [
+                                    BoundaryZoneRuleModel(region: .bottom, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                                    BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
+                                ]
+                            } label: {
+                                Label("All Free Surface (4 Traction-Free Walls)", systemImage: "square.dashed")
+                            }
+                        }
+                        Divider()
+                        Button {
+                            geometryBCPreviewStageRaw = "Relaxation Step BCs"
+                            inspectorStep = .shapeAndBCs
+                            displayTab = .geometryStudio
+                        } label: {
+                            Label("View & Edit Relaxation BCs on Specimen Canvas →", systemImage: "hand.draw.fill")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(info.title)
+                                .font(.caption2.bold())
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Click to change Stage 1 Relaxation BCs or preview them on the Specimen Canvas")
+                } else {
+                    Text(info.title)
+                        .font(.caption2)
+                        .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                }
+            }
+            Text("Indenter OFF • Thermal noise OFF during relaxation")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+        }
+    }
+
     @ViewBuilder
     private var protocolScheduleCard: some View {
                 // 5. Loading Schedule
@@ -1624,9 +1752,18 @@ struct SidebarControlsView: View {
                                         Image(systemName: "checkmark.seal.fill")
                                             .foregroundColor(.green)
                                             .font(.caption)
-                                        Text("Relaxation Step")
+                                        Text("Relaxation Step (α = 0, Noise OFF)")
                                             .font(.caption.bold())
+                                        Spacer()
+                                        Button("Relaxation BCs →") {
+                                            geometryBCPreviewStageRaw = "Relaxation Step BCs"
+                                            inspectorStep = .shapeAndBCs
+                                            displayTab = .geometryStudio
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.mini)
                                     }
+                                    stage1RelaxationBCSummaryRow
                                     Text("Relaxes the grain boundary / crystal under the Relaxation Step BCs, performs Delaunay core reconstruction until ΔE converges, saves the equilibrium VTK, and records γ_GB(Δθ).")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
@@ -1641,13 +1778,19 @@ struct SidebarControlsView: View {
                                         Circle().fill(Color.green).frame(width: 7, height: 7)
                                         Text("1. Relaxation Step (α = 0, Noise OFF)")
                                             .font(.caption.bold())
+                                        Spacer()
+                                        Button("Relaxation BCs →") {
+                                            geometryBCPreviewStageRaw = "Relaxation Step BCs"
+                                            inspectorStep = .shapeAndBCs
+                                            displayTab = .geometryStudio
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.mini)
                                     }
                                     Toggle("Equilibrate crystal / GB before loading", isOn: $config.geometryConfig.microstructure.pre_relax_gb)
                                         .font(.caption)
                                     if config.geometryConfig.microstructure.pre_relax_gb {
-                                        Text("Relaxation Step BCs: \(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) active rules • Indenter OFF • Thermal noise OFF")
-                                            .font(.caption2)
-                                            .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                                        stage1RelaxationBCSummaryRow
                                         Toggle("Re-anchor reference frame (X₀ ← x_eq)", isOn: $config.geometryConfig.microstructure.reanchor_ref_after_relax)
                                             .font(.caption)
                                             .help("Prevents boundary snap by measuring Loading Step boundary displacements and indenter surface contact from the relaxed positions.")
@@ -1661,6 +1804,7 @@ struct SidebarControlsView: View {
                                             .font(.caption.bold())
                                         Spacer()
                                         Button("BCs & Indenter →") {
+                                            geometryBCPreviewStageRaw = "Loading Step BCs & Indenter"
                                             inspectorStep = .shapeAndBCs
                                             displayTab = .geometryStudio
                                         }
