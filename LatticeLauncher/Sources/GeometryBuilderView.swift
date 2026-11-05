@@ -23,6 +23,15 @@ public struct GeometryBuilderView: View {
     @State private var dragStartCutout: GeometryCutoutItem? = nil
     @State private var inspectorSection: InspectorSection = .microstructure
     @State private var autoUpdateGBSeamParams: Bool = true
+    @State private var approvedLatticeSiteCount: Int? = nil
+    
+    /// Rough number of lattice sites the blueprint would draw.
+    private var estimatedLatticeSiteCount: Int { max(0, config.nx * config.ny) }
+    
+    /// Large crystal and the user has not asked to see every site → draw no individual sites.
+    private var latticeSitesAutoHidden: Bool {
+        LargeMeshPolicy.isLarge(estimatedLatticeSiteCount) && approvedLatticeSiteCount != estimatedLatticeSiteCount
+    }
     @AppStorage("geometryBCPreviewStage") private var previewStageRaw: String = BCStagePreviewMode.stage2Load.rawValue
     
     private var previewStage: BCStagePreviewMode {
@@ -121,6 +130,14 @@ public struct GeometryBuilderView: View {
                         Divider()
                         GeometryReader { geo in
                             interactiveCanvas(size: geo.size)
+                        }
+                        .overlay(alignment: .bottom) {
+                            if showDiscreteLatticePreview && latticeSitesAutoHidden {
+                                NodesHiddenNote(nodeCount: estimatedLatticeSiteCount, noun: "lattice sites") {
+                                    approvedLatticeSiteCount = estimatedLatticeSiteCount
+                                }
+                                .padding(.bottom, 10)
+                            }
                         }
                         Divider()
                         canvasFooterLegend
@@ -222,7 +239,9 @@ public struct GeometryBuilderView: View {
                 Divider().frame(height: 18)
                 
                 Button(action: {
-                    config.geometryConfig.enabled = true
+                    if !config.isEffectivePeriodicPBC {
+                        config.geometryConfig.enabled = true
+                    }
                     triggerCarvedMeshPreview()
                     onSwitchToCarvedMesh()
                 }) {
@@ -247,6 +266,20 @@ public struct GeometryBuilderView: View {
                 .padding(.vertical, 4)
                 .background(BlueHour.pillSurface, in: Capsule())
                 .overlay(Capsule().strokeBorder(BlueHour.border, lineWidth: 1))
+                
+                // Active Physics / BC Loading Badge
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(config.isEffectivePeriodicPBC ? Color(red: 0.45, green: 0.92, blue: 0.62) : Color(red: 0.31, green: 0.85, blue: 0.78))
+                        .frame(width: 7, height: 7)
+                    Text(config.activePhysicsSummaryBadge)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(config.isEffectivePeriodicPBC ? Color(red: 0.45, green: 0.92, blue: 0.62) : BlueHour.ice)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(BlueHour.pillSurface, in: Capsule())
+                .overlay(Capsule().strokeBorder(config.isEffectivePeriodicPBC ? Color.green.opacity(0.4) : BlueHour.border, lineWidth: 1))
                 
                 HelpPopoverButton(
                     title: "Macroscopic Geometry & BC Studio",
@@ -367,7 +400,8 @@ public struct GeometryBuilderView: View {
                 }
                 
                 // 4. Discrete Crystal Lattice Sites (Square or Triangular, Color-Coded by Grain & BC Role)
-                if showDiscreteLatticePreview {
+                //    Skipped for large crystals unless the user explicitly asks (keeps handle dragging smooth).
+                if showDiscreteLatticePreview && !latticeSitesAutoHidden {
                     drawDiscreteLatticeSitesPreview(ctx: &ctx, toScreen: toScreen, boxW: boxW, boxH: boxH)
                 }
                 
@@ -377,7 +411,7 @@ public struct GeometryBuilderView: View {
                 }
                 
                 // 5. Boundary Condition Velocity Arrows on Driven Edges (suppressed in Full 2D Periodic Dislocations mode)
-                if showBCArrows && config.geometryConfig.microstructure.mode != .periodicDislocations {
+                if showBCArrows && (config.isEffectivePeriodicPBC || config.geometryConfig.microstructure.mode != .periodicDislocations) {
                     drawBoundaryArrows(ctx: &ctx, originX: originX, originY: originY, boxW: boxW, boxH: boxH)
                 }
                 
@@ -403,23 +437,34 @@ public struct GeometryBuilderView: View {
                 }
             }
             .overlay(alignment: .topLeading) {
+                let isPeriodic = config.isEffectivePeriodicPBC
                 let isPeriodicDislocs = (config.geometryConfig.microstructure.mode == .periodicDislocations)
+                let surfaceBadgeTitle: String = isViewingStage1RelaxBCs
+                    ? "STAGE 1 RELAXATION (Free/Roller BCs, α = 0)"
+                    : "SURFACE BCs · \(config.activeMechanicalLoading.displayName.uppercased()) (\(config.geometryConfig.primary_stress_component))"
+                let surfaceBadgeColor: Color = isViewingStage1RelaxBCs
+                    ? Color(red: 0.45, green: 0.92, blue: 0.62)
+                    : Color(red: 0.31, green: 0.85, blue: 0.78)
                 HStack(spacing: 6) {
                     Circle()
-                        .fill((isPeriodicDislocs || isViewingStage1RelaxBCs) ? Color.green : Color(red: 0.31, green: 0.85, blue: 0.78))
+                        .fill((isPeriodic || isViewingStage1RelaxBCs) ? Color.green : Color(red: 0.31, green: 0.85, blue: 0.78))
                         .frame(width: 7, height: 7)
-                    if isPeriodicDislocs {
-                        Text(config.protocolMode == .relaxOnly
-                             ? "FULL 2D PERIODIC TORUS (PBC) · Stage 1 Core Relaxation Only (α = 0)"
-                             : "FULL 2D PERIODIC TORUS (PBC) · Stage 1 Relax (α = 0) → Stage 2 Shear (α > 0)")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                    if isPeriodic {
+                        if isPeriodicDislocs {
+                            Text(config.protocolMode == .relaxOnly
+                                 ? "FULL 2D PERIODIC TORUS (PBC) · Stage 1 Core Relaxation Only (α = 0)"
+                                 : "FULL 2D PERIODIC TORUS (PBC) · Stage 1 Relax (α = 0) → Stage 2 Shear (\(config.mode == .negative ? "-α" : "+α"))")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                        } else {
+                            Text("FULL 2D PERIODIC TORUS (PBC) · SIMPLE SHEAR γ_xy (\(config.mode == .negative ? "-α" : "+α"))")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                        }
                     } else {
-                        Text(isViewingStage1RelaxBCs
-                             ? "RELAXATION STEP BCs (\(config.geometryConfig.stage1_boundary_rules.filter(\.enabled).count) rules)"
-                             : "LOADING STEP BCs & INDENTER (\(config.geometryConfig.boundary_rules.filter(\.enabled).count) rules)\(config.geometryConfig.indenter.enabled ? " + Indenter" : "")")
+                        Text(surfaceBadgeTitle)
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(isViewingStage1RelaxBCs ? Color(red: 0.45, green: 0.92, blue: 0.62) : BlueHour.ice)
+                            .foregroundColor(surfaceBadgeColor)
                         if config.protocolMode == .relaxThenLoad {
                             Button(isViewingStage1RelaxBCs ? "Loading Step BCs →" : "← Relaxation Step BCs") {
                                 previewStage = isViewingStage1RelaxBCs ? .stage2Load : .stage1Relax
@@ -432,7 +477,7 @@ public struct GeometryBuilderView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(BlueHour.abyss.opacity(0.88), in: Capsule())
-                .overlay(Capsule().strokeBorder((isPeriodicDislocs || isViewingStage1RelaxBCs) ? Color.green.opacity(0.55) : BlueHour.ice.opacity(0.45), lineWidth: 1))
+                .overlay(Capsule().strokeBorder((isPeriodic || isViewingStage1RelaxBCs) ? Color.green.opacity(0.55) : BlueHour.ice.opacity(0.45), lineWidth: 1))
                 .padding(10)
             }
             .gesture(
@@ -650,6 +695,42 @@ public struct GeometryBuilderView: View {
         boxW: CGFloat,
         boxH: CGFloat
     ) {
+        if config.isEffectivePeriodicPBC {
+            // Draw horizontal macroscopic shear arrows (tau_xy) along top & bottom periodic boundaries
+            let shearSign: CGFloat = (config.mode == .negative) ? -1.0 : 1.0
+            let pbcColor = Color(red: 0.45, green: 0.90, blue: 0.62)
+            let count = 6
+            for k in 1...count {
+                let t = CGFloat(k) / CGFloat(count + 1)
+                // Top edge: shear arrow in +X direction (or -X if negative)
+                let topX = originX + t * boxW
+                let topY = originY - 10
+                let topStart = CGPoint(x: topX - shearSign * 11, y: topY)
+                let topEnd = CGPoint(x: topX + shearSign * 11, y: topY)
+                var topArrow = Path()
+                topArrow.move(to: topStart)
+                topArrow.addLine(to: topEnd)
+                topArrow.addLine(to: CGPoint(x: topEnd.x - shearSign * 4, y: topY - 3))
+                topArrow.move(to: topEnd)
+                topArrow.addLine(to: CGPoint(x: topEnd.x - shearSign * 4, y: topY + 3))
+                ctx.stroke(topArrow, with: .color(pbcColor), lineWidth: 2.0)
+                
+                // Bottom edge: complementary arrow in -X direction
+                let botX = originX + t * boxW
+                let botY = originY + boxH + 10
+                let botStart = CGPoint(x: botX + shearSign * 11, y: botY)
+                let botEnd = CGPoint(x: botX - shearSign * 11, y: botY)
+                var botArrow = Path()
+                botArrow.move(to: botStart)
+                botArrow.addLine(to: botEnd)
+                botArrow.addLine(to: CGPoint(x: botEnd.x + shearSign * 4, y: botY - 3))
+                botArrow.move(to: botEnd)
+                botArrow.addLine(to: CGPoint(x: botEnd.x + shearSign * 4, y: botY + 3))
+                ctx.stroke(botArrow, with: .color(pbcColor.opacity(0.85)), lineWidth: 1.6)
+            }
+            return
+        }
+
         let drivenColor = Color(red: 0.31, green: 0.85, blue: 0.78)
         let fixedColor = Color(red: 1.0, green: 0.42, blue: 0.42)
         let rollerColor = Color(red: 0.98, green: 0.72, blue: 0.24)
@@ -993,7 +1074,7 @@ public struct GeometryBuilderView: View {
     
     // MARK: - Right Inspector Cards
     private var crystalLatticeCard: some View {
-        GroupBox(label: Label("1. Discrete Crystal & Rotation (Fills Box)", systemImage: "atom")) {
+        GroupBox(label: Label("Discrete Crystal & Rotation (Fills Box)", systemImage: "atom")) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Step 1: The discrete crystal lattice completely fills the rectangular bounding box [0, Lx] × [0, Ly] at rotation angle θ. Step 2: Macroscopic geometry then carves the outer shape, cutouts, and regional boundary conditions.")
                     .font(.caption2)
@@ -1062,7 +1143,7 @@ public struct GeometryBuilderView: View {
     // MARK: - Microstructure Card (Bicrystal & 2D Voronoi Polycrystal)
     private var microstructureCard: some View {
         GroupBox(label: HStack {
-            Label("1. Microstructure, Grain Boundaries & Dislocations", systemImage: "square.split.diagonal.2x2")
+            Label("Grains & Dislocations", systemImage: "square.split.diagonal.2x2")
             Spacer()
             HelpPopoverButton(
                 title: "Microstructure, Grain Boundaries & Periodic Dislocations",
@@ -1877,6 +1958,18 @@ public struct GeometryBuilderView: View {
         config.geometryConfig.microstructure.max_gb_edge_a0 = 2.60
         if config.protocolMode == .relaxOnly && !config.geometryConfig.indenter.enabled {
             config.geometryConfig.applyGBFrameRollerBCs(forAngleDeg: phiGB)
+        } else {
+            config.geometryConfig.primary_stress_component = "sigma_xy"
+            config.geometryConfig.microstructure.stage2_load_type = "shear_parallel_gb"
+            if config.geometryConfig.boundary_rules.contains(where: { $0.uy > 0.5 && $0.region == .top && $0.kind == .prescribed }) {
+                config.geometryConfig.boundary_rules = [
+                    BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                    BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
+                    BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                    BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                ]
+            }
         }
         config.noiseLevel = 0.0
         let kPeriodsX = max(2, Int(round(Double(max(config.nx, 32)) / match.periodA0)))

@@ -822,7 +822,7 @@ public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
     public var subtitle: String {
         switch self {
         case .perfectCrystalSlab:
-            return "Pristine rectangular single crystal without holes or notches; bottom clamped, top driven, left/right traction-free."
+            return "Pristine rectangular single crystal without holes or notches; bottom clamped, top driven in simple shear (+X), left/right traction-free."
         case .plateWithHoleTension:
             return "Central circular void (R=0.16 L), bottom clamped, top pulled (+α Ly), left/right/hole traction-free."
         case .plateWithHoleShear:
@@ -866,7 +866,7 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     public var cutouts: [GeometryCutoutItem] = []
     public var boundary_rules: [BoundaryZoneRuleModel] = [
         BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-        BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
+        BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
     ]
@@ -878,7 +878,7 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     ]
     public var indenter: IndenterConfigModel = IndenterConfigModel()
     public var microstructure: MicrostructureConfigModel = MicrostructureConfigModel()
-    public var primary_stress_component: String = "auto"
+    public var primary_stress_component: String = "sigma_xy"
     
     public init() {}
     
@@ -893,11 +893,11 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             cutouts = []
             boundary_rules = [
                 BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
+                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
                 BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
                 BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
             ]
-            primary_stress_component = "sigma_yy"
+            primary_stress_component = "sigma_xy"
             
         case .plateWithHoleTension:
             outer_shape = .rectangle

@@ -61,6 +61,11 @@ struct LatticeLauncherApp: App {
                     runner.openOutputFolder()
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
+                
+                Button("Open VTK Snapshot…") {
+                    NotificationCenter.default.post(name: .openVTKFile, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: [.command])
             }
             
             // 2. View Menu Shortcuts
@@ -85,6 +90,11 @@ struct LatticeLauncherApp: App {
                     NotificationCenter.default.post(name: .switchMainDisplayTab, object: "split")
                 }
                 .keyboardShortcut("4", modifiers: [.command])
+                
+                Button("VTK Snapshot Viewer") {
+                    NotificationCenter.default.post(name: .switchMainDisplayTab, object: "snapshots")
+                }
+                .keyboardShortcut("5", modifiers: [.command])
                 
                 Divider()
                 

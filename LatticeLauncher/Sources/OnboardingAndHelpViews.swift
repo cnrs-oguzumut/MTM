@@ -39,6 +39,8 @@ public extension Notification.Name {
     static let applySampleExperiment = Notification.Name("LatticeLauncher.applySampleExperiment")
     static let switchMainDisplayTab = Notification.Name("LatticeLauncher.switchMainDisplayTab")
     static let toggleConsoleDrawer = Notification.Name("LatticeLauncher.toggleConsoleDrawer")
+    static let openVTKFile = Notification.Name("LatticeLauncher.openVTKFile")
+    static let openVTKFilePanel = Notification.Name("LatticeLauncher.openVTKFilePanel")
     static let toggleComplexityMode = Notification.Name("LatticeLauncher.toggleComplexityMode")
     static let runSimulationCommand = Notification.Name("LatticeLauncher.runSimulationCommand")
     static let stopSimulationCommand = Notification.Name("LatticeLauncher.stopSimulationCommand")
@@ -320,12 +322,12 @@ public enum SampleExperimentPreset: String, CaseIterable, Identifiable {
             config.geometryConfig.microstructure.min_seam_distance_a0 = match.recommendedDMinA0
             config.geometryConfig.microstructure.gb_normal_gap_a0 = match.recommendedGapA0
             config.geometryConfig.boundary_rules = [
-                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
-                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
-                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
+                BoundaryZoneRuleModel(region: .left, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .right, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0, lock_x: true, lock_y: true),
+                BoundaryZoneRuleModel(region: .bottom, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5)
             ]
-            config.geometryConfig.primary_stress_component = "sigma_yy"
+            config.geometryConfig.primary_stress_component = "sigma_xy"
             config.protocolMode = .relaxThenLoad
             config.alphaStart = 0.0
             config.alphaEnd = 0.12

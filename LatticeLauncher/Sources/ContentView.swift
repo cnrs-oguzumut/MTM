@@ -56,6 +56,9 @@ enum SpecimenSubView: String, CaseIterable, Identifiable {
     }
 }
 
+/// Results workspace: live curves or the built-in VTK snapshot viewer.
+enum ResultsSubView: String { case curves, snapshots }
+
 /// The four steps of the unified left setup inspector.
 enum SetupInspectorStep: String, CaseIterable, Identifiable {
     case crystal
@@ -101,6 +104,7 @@ struct ContentView: View {
     // Layout state (one sidebar, one viewport, one console drawer)
     @State private var workspace: WorkspaceMode = .specimen
     @State private var specimenSub: SpecimenSubView = .blueprint
+    @State private var resultsSub: ResultsSubView = .curves
     @State private var inspectorStep: SetupInspectorStep = .crystal
     @AppStorage("showConsoleDrawer") private var showConsole: Bool = false
     
@@ -328,12 +332,28 @@ struct ContentView: View {
     
     private var resultsPane: some View {
         VStack(spacing: 0) {
-            LiveStatusHeaderView(config: config)
-                .padding(.horizontal, 12)
-                .frame(height: 44)
-                .background(BlueHour.controlSurface)
+            HStack(spacing: 10) {
+                Text("Results")
+                    .font(.system(size: 11.5, weight: .bold))
+                    .foregroundColor(BlueHour.ice)
+                Picker("Results view", selection: $resultsSub) {
+                    Label("Curves", systemImage: "chart.xyaxis.line").tag(ResultsSubView.curves)
+                    Label("Snapshots", systemImage: "cube.transparent").tag(ResultsSubView.snapshots)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .fixedSize()
+                Divider().frame(height: 18)
+                LiveStatusHeaderView(config: config)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 44)
+            .background(BlueHour.controlSurface)
             Divider()
-            if config.mode == .volterra {
+            if resultsSub == .snapshots {
+                VTKSnapshotViewer(runDirectory: config.targetDirectory, isRunning: runner.status.isRunning)
+            } else if config.mode == .volterra {
                 DislocationProfileChartView()
             } else {
                 StressStrainChartView()
@@ -489,9 +509,21 @@ struct ContentView: View {
             switch raw {
             case "blueprint": workspace = .specimen; specimenSub = .blueprint
             case "femMesh": workspace = .specimen; specimenSub = .femMesh
-            case "results": workspace = .results
+            case "results": workspace = .results; resultsSub = .curves
             case "split": workspace = .split
+            case "snapshots":
+                if workspace == .specimen { workspace = .results }
+                resultsSub = .snapshots
             default: break
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openVTKFile)) { _ in
+            appTab = .simulation
+            if workspace == .specimen { workspace = .results }
+            resultsSub = .snapshots
+            // Give the viewer a moment to appear, then ask it to show the open panel
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                NotificationCenter.default.post(name: .openVTKFilePanel, object: nil)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleConsoleDrawer)) { _ in
@@ -596,6 +628,7 @@ struct SidebarControlsView: View {
                     case .crystal:
                         quickStartExperimentBanner
                         systemGeometryCard
+                        boundaryAndLoadingSelectorCard
                         latticePotentialCard
                         if config.mode != .volterra && config.mode != .shift {
                             GeometryBuilderView(
@@ -613,8 +646,9 @@ struct SidebarControlsView: View {
                                 "Shape & boundary conditions are fixed by the selected loading mode (\(config.mode.displayName)). Switch the loading mode in step 3 to carve a custom specimen."
                             )
                         } else {
+                            boundaryAndLoadingSelectorCard
                             specimenShapeCard
-                            if config.geometryConfig.enabled {
+                            if config.geometryConfig.enabled && !config.isEffectivePeriodicPBC {
                                 GeometryBuilderView(
                                     config: config,
                                     previewManager: previewManager,
@@ -625,6 +659,7 @@ struct SidebarControlsView: View {
                             }
                         }
                     case .protocolAndSchedule:
+                        boundaryAndLoadingSelectorCard
                         loadingModeCard
                         protocolScheduleCard
                     case .solver:
@@ -731,10 +766,10 @@ struct SidebarControlsView: View {
     private var systemGeometryCard: some View {
                 // 1. System Size
                 GroupBox(label: HStack {
-                    Label("Step 1: System Geometry", systemImage: "grid")
+                    Label("System Size", systemImage: "grid")
                     Spacer()
                     HelpPopoverButton(
-                        title: "Step 1: System Geometry (NX × NY)",
+                        title: "System Size (NX × NY)",
                         summary: "Sets the number of discrete crystal unit cells along X (columns) and Y (rows). Each node represents a discrete atom or lattice site.",
                         formulaOrTip: "• 100×100 (10,000 atoms): Fast interactive runs (< 1 min).\n• 200×200 to 400×400: High-resolution dislocation ensembles & multi-plane DDD.",
                         docTopic: .quickStart,
@@ -804,14 +839,176 @@ struct SidebarControlsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 }
+    }
+    
+    // MARK: - Unified Boundary Regime & Loading Selector Card
+    @ViewBuilder
+    private var boundaryAndLoadingSelectorCard: some View {
+        GroupBox(label: HStack {
+            Label("Boundary Regime & Mechanical Loading", systemImage: "arrow.triangle.swap")
+            Spacer()
+            HelpPopoverButton(
+                title: "Boundary Conditions & Loading Mode",
+                summary: "Controls whether the crystal is wrapped as a continuous 2D periodic torus (PBC) or treated as a finite specimen with surface grips/rollers.\n\n• Full 2D Periodic (PBC): Enforces periodic boundary conditions across X and Y. Deforms via macroscopic simple shear (F_xy = ±α).\n• Surface Grips / Custom BCs: Fixes or pulls specific specimen surfaces (e.g. top edge, bottom edge, indenter).",
+                formulaOrTip: "• For pure shear on an infinite crystal: Select 'Full 2D Periodic (PBC)'.\n• For tension/compression or cutouts: Select 'Surface Grips / Custom BCs'.",
+                docTopic: .geometryAndBCs,
+                onOpenDocs: onOpenDocs
+            )
+        }) {
+            VStack(alignment: .leading, spacing: 12) {
+                // 1. Boundary Regime Selector
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Boundary Condition Regime:")
+                        .font(.caption.bold())
+                        .foregroundColor(BlueHour.ice)
+                    
+                    HStack(spacing: 6) {
+                        ForEach(ActiveBoundaryRegime.allCases) { regime in
+                            let isSel = (config.activeBoundaryRegime == regime)
+                            Button(action: {
+                                config.setBoundaryRegime(regime)
+                            }) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: isSel ? "checkmark.circle.fill" : regime.icon)
+                                        .font(.system(size: 11, weight: .bold))
+                                    Text(regime.title)
+                                        .font(.system(size: 11, weight: isSel ? .bold : .medium))
+                                }
+                                .foregroundColor(isSel ? .white : BlueHour.ice.opacity(0.85))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 6)
+                                .background(
+                                    isSel
+                                        ? (regime == .periodicPBC ? Color(red: 0.12, green: 0.64, blue: 0.54) : Color(red: 0.20, green: 0.50, blue: 0.85))
+                                        : BlueHour.midnight.opacity(0.75),
+                                    in: RoundedRectangle(cornerRadius: 6)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .strokeBorder(
+                                            isSel
+                                                ? (regime == .periodicPBC ? Color(red: 0.45, green: 0.95, blue: 0.80) : Color(red: 0.50, green: 0.80, blue: 1.0))
+                                                : BlueHour.steel.opacity(0.55),
+                                            lineWidth: isSel ? 1.4 : 0.9
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    
+                    Text(config.isEffectivePeriodicPBC
+                         ? "✓ Full 2D Periodic (T² torus): X ∈ [0, Lx) and Y ∈ [0, Ly). No artificial surfaces. Driven by macroscopic simple shear F_xy = ±α."
+                         : "Specimen has physical outer surfaces (clamped bottom, driven top, or traction-free sides/cutouts).")
+                        .font(.caption2)
+                        .foregroundColor(config.isEffectivePeriodicPBC ? Color(red: 0.45, green: 0.90, blue: 0.62) : .secondary)
+                }
                 
+                Divider()
+                
+                // 2. Mechanical Loading Type Selector
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Mechanical Deformation / Loading:")
+                            .font(.caption.bold())
+                            .foregroundColor(BlueHour.ice)
+                        Spacer()
+                        Text("Measures: \(config.activeStressComponentLabel)")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color(red: 1.0, green: 0.82, blue: 0.35))
+                    }
+                    
+                    let active = config.activeMechanicalLoading
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                        ForEach(ActiveMechanicalLoading.primaryGridModes) { load in
+                            let isSel = (active == load)
+                            Button(action: {
+                                config.applyMechanicalLoading(load)
+                            }) {
+                                HStack(spacing: 5) {
+                                    Image(systemName: isSel ? "checkmark.circle.fill" : load.sfSymbol)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(isSel ? .white : Color(red: 0.31, green: 0.85, blue: 0.78))
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(load.shortTitle)
+                                            .font(.system(size: 10.5, weight: isSel ? .bold : .medium))
+                                            .lineLimit(1)
+                                        Text(load.supportsPeriodicPBC ? "PBC or Surface" : "Surface BCs")
+                                            .font(.system(size: 8.5))
+                                            .foregroundColor(isSel ? .white.opacity(0.85) : BlueHour.mist)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .foregroundColor(isSel ? .white : BlueHour.ice.opacity(0.90))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 5)
+                                .background(
+                                    isSel ? Color(red: 0.14, green: 0.58, blue: 0.52) : BlueHour.midnight.opacity(0.80),
+                                    in: RoundedRectangle(cornerRadius: 6)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .strokeBorder(
+                                            isSel ? Color(red: 0.45, green: 0.95, blue: 0.80) : BlueHour.steel.opacity(0.50),
+                                            lineWidth: isSel ? 1.3 : 0.8
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .help(load.detailSubtitle)
+                        }
+                    }
+                }
+                
+                // 3. Prominent Live Confirmation Banner
+                HStack(alignment: .center, spacing: 8) {
+                    Circle()
+                        .fill(config.isEffectivePeriodicPBC ? Color(red: 0.45, green: 0.90, blue: 0.62) : Color(red: 0.31, green: 0.85, blue: 0.78))
+                        .frame(width: 8, height: 8)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("Active Physics:")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundColor(BlueHour.mist)
+                            Text(config.activePhysicsSummaryBadge)
+                                .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(BlueHour.ice)
+                        }
+                        Text(config.activeMechanicalLoading.detailSubtitle)
+                            .font(.system(size: 9))
+                            .foregroundColor(BlueHour.mist)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                }
+                .padding(8)
+                .background(
+                    (config.isEffectivePeriodicPBC
+                        ? Color(red: 0.12, green: 0.64, blue: 0.54).opacity(0.25)
+                        : Color(red: 0.20, green: 0.50, blue: 0.85).opacity(0.25)),
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(
+                            (config.isEffectivePeriodicPBC
+                                ? Color(red: 0.45, green: 0.90, blue: 0.62).opacity(0.55)
+                                : Color(red: 0.40, green: 0.75, blue: 1.0).opacity(0.55)),
+                            lineWidth: 1
+                        )
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        }
     }
     
     @ViewBuilder
     private var loadingModeCard: some View {
                 // 2. Loading Mode & Remeshing
                 GroupBox(label: HStack {
-                    Label("Step 2: Loading Mode & Remeshing", systemImage: "arrow.triangle.swap")
+                    Label("Loading Mode & Remeshing", systemImage: "arrow.triangle.swap")
                     Spacer()
                     HelpPopoverButton(
                         title: "Loading Mode & Delaunay Remeshing",
@@ -902,41 +1099,22 @@ struct SidebarControlsView: View {
                         } else if config.mode != .volterra {
                             Divider().padding(.vertical, 2)
                             
-                            // Boundary Conditions Selector
-                            if config.geometryConfig.enabled {
-                                let isPeriodicDislocs = (config.geometryConfig.microstructure.mode == .periodicDislocations)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Text("Boundary Condition:")
-                                            .font(.subheadline)
-                                        Spacer()
-                                        HStack(spacing: 4) {
-                                            Circle().fill(isPeriodicDislocs ? Color(red: 0.45, green: 0.90, blue: 0.62) : Color(red: 0.31, green: 0.85, blue: 0.78)).frame(width: 6, height: 6)
-                                            Text(isPeriodicDislocs ? "Full 2D Periodic (Torus PBC)" : "Managed by Geometry Studio")
-                                                .font(.system(size: 10, weight: .bold))
-                                                .foregroundColor(isPeriodicDislocs ? Color(red: 0.45, green: 0.90, blue: 0.62) : BlueHour.ice)
-                                        }
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(BlueHour.pillSurface, in: RoundedRectangle(cornerRadius: 5))
-                                    }
-                                    Text(isPeriodicDislocs
-                                         ? "Full 2D periodic boundary conditions (T²) are enforced across x ∈ [0, Lx) and y ∈ [0, Ly). Stage 1 relaxes cores at α=0; Stage 2 shears the periodic torus."
-                                         : "Global PBC is disabled. Surface boundary conditions (Free, Fixed, Driven, Affine) are configured per-region in the Geometry & BC Studio below.")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
+                            HStack {
+                                Text("Active Boundary Regime:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(config.isEffectivePeriodicPBC ? Color(red: 0.45, green: 0.90, blue: 0.62) : Color(red: 0.31, green: 0.85, blue: 0.78))
+                                        .frame(width: 6, height: 6)
+                                    Text(config.isEffectivePeriodicPBC ? "2D Periodic (PBC)" : "Surface Grips / Custom BCs")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(config.isEffectivePeriodicPBC ? Color(red: 0.45, green: 0.90, blue: 0.62) : BlueHour.ice)
                                 }
-                            } else {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Boundary Condition:")
-                                        .font(.subheadline)
-                                    Picker("Boundary Condition", selection: $config.boundaryCondition) {
-                                        ForEach(BoundaryConditionMode.allCases) { bc in
-                                            Text(bc.displayName).tag(bc)
-                                        }
-                                    }
-                                    .pickerStyle(.segmented)
-                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(BlueHour.pillSurface, in: RoundedRectangle(cornerRadius: 5))
                             }
                         }
                     }
@@ -950,7 +1128,7 @@ struct SidebarControlsView: View {
                 if config.mode != .volterra && config.mode != .shift {
                     // 2b. Macroscopic Geometry & Regional Boundary Conditions Studio
                     GroupBox(label: HStack {
-                        Label("Step 2b: Macroscopic Geometry & BCs", systemImage: "skew")
+                        Label("Specimen Shape & Custom BCs", systemImage: "skew")
                         Spacer()
                         HelpPopoverButton(
                             title: "Macroscopic Geometry, Dislocations & BCs",
@@ -1073,7 +1251,7 @@ struct SidebarControlsView: View {
     private var latticePotentialCard: some View {
                 // 3. Lattice & Potential Model
                 GroupBox(label: HStack {
-                    Label("Step 3: Lattice & Potential Model", systemImage: "atom")
+                    Label("Lattice & Potential", systemImage: "atom")
                     Spacer()
                     HelpPopoverButton(
                         title: "Lattice Symmetry & Interatomic Potential",
@@ -1170,7 +1348,7 @@ struct SidebarControlsView: View {
                 if config.mode != .volterra {
                     // 3b. Rotated Crystal Orientation / CSL
                     GroupBox(label: HStack {
-                        Label("Step 3b: Crystal Orientation & Mesh Preview", systemImage: "rotate.right")
+                        Label("Crystal Orientation & Mesh Preview", systemImage: "rotate.right")
                         Spacer()
                         HelpPopoverButton(
                             title: "Rotated Crystal & Initial Mesh Preview",
@@ -1390,7 +1568,7 @@ struct SidebarControlsView: View {
     private var protocolScheduleCard: some View {
                 // 5. Loading Schedule
                 if config.mode == .shift {
-                    GroupBox(label: Label("Step 4: Staircase Shift Schedule", systemImage: "stairs")) {
+                    GroupBox(label: Label("Staircase Shift Schedule", systemImage: "stairs")) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text("Shift Amplitude (in a₀):")
@@ -1415,7 +1593,7 @@ struct SidebarControlsView: View {
                     }
                 } else if config.mode != .volterra {
                     GroupBox(label: HStack {
-                        Label("Step 4: Simulation Protocol & Schedule", systemImage: "slider.horizontal.below.square.filled.and.square")
+                        Label("Simulation Protocol & Schedule", systemImage: "slider.horizontal.below.square.filled.and.square")
                         Spacer()
                         HelpPopoverButton(
                             title: "Simulation Protocol & Loading Schedule",
@@ -2079,10 +2257,10 @@ struct BottomActionBar: View {
     @State private var copiedCLI: Bool = false
     
     private var tickerText: String {
-        if let last = runner.logLines.last?.text.trimmingCharacters(in: .whitespacesAndNewlines), !last.isEmpty {
+        if runner.status.isRunning, let last = runner.logLines.last?.text.trimmingCharacters(in: .whitespacesAndNewlines), !last.isEmpty {
             return last
         }
-        return "Ready — \(config.nx)×\(config.ny) \(config.latticeSymmetry == .square ? "square" : "triangular") lattice"
+        return "▶ \(config.activePhysicsSummaryBadge)"
     }
     
     private var tickerColor: Color {
@@ -2090,7 +2268,7 @@ struct BottomActionBar: View {
         case .running: return .green
         case .failed, .terminated: return .red
         case .completed(let code, _): return code == 0 ? .blue : .orange
-        case .idle: return .gray
+        case .idle: return Color(red: 0.45, green: 0.90, blue: 0.62)
         }
     }
     
@@ -2159,16 +2337,7 @@ struct BottomActionBar: View {
                 .controlSize(.large)
             } else {
                 Button(action: onLaunch) {
-                    let btnTitle: String = {
-                        if config.mode != .volterra && config.mode != .shift {
-                            switch config.protocolMode {
-                            case .relaxOnly: return "Launch Relax Only (α = 0)"
-                            case .relaxThenLoad: return "Launch Simulation (Relax → Load)"
-                            case .sweepMisorientation: return "Launch CSL Sweep (\(config.sweepCSLCandidates.count) runs)"
-                            }
-                        }
-                        return "Launch Simulation"
-                    }()
+                    let btnTitle: String = config.launchButtonSummaryTitle
                     Label(btnTitle, systemImage: "play.fill")
                         .font(.headline)
                         .padding(.horizontal, 12)
