@@ -1,10 +1,19 @@
 import SwiftUI
 import AppKit
 
+public enum GeometryBuilderDisplayMode {
+    case canvasOnly
+    case inspectorMicrostructure
+    case inspectorShapeAndBCs
+    case splitCanvasAndInspector
+}
+
 public struct GeometryBuilderView: View {
     @ObservedObject var config: SimulationConfig
     @ObservedObject var previewManager: StiffnessStudyManager
+    var displayMode: GeometryBuilderDisplayMode = .canvasOnly
     var onSwitchToCarvedMesh: () -> Void
+    var onOpenDocs: (DocumentationTopic) -> Void = { _ in }
     
     @State private var selectedCutoutID: String? = nil
     @State private var selectedRuleID: String? = nil
@@ -14,7 +23,12 @@ public struct GeometryBuilderView: View {
     @State private var dragStartCutout: GeometryCutoutItem? = nil
     @State private var inspectorSection: InspectorSection = .microstructure
     @State private var autoUpdateGBSeamParams: Bool = true
-    @State private var previewStage: BCStagePreviewMode = .stage2Load
+    @AppStorage("geometryBCPreviewStage") private var previewStageRaw: String = BCStagePreviewMode.stage2Load.rawValue
+    
+    private var previewStage: BCStagePreviewMode {
+        get { BCStagePreviewMode(rawValue: previewStageRaw) ?? .stage2Load }
+        nonmutating set { previewStageRaw = newValue.rawValue }
+    }
     
     private enum BCStagePreviewMode: String, CaseIterable, Identifiable {
         case stage1Relax = "Relaxation Step BCs"
@@ -84,125 +98,78 @@ public struct GeometryBuilderView: View {
     public init(
         config: SimulationConfig,
         previewManager: StiffnessStudyManager,
-        onSwitchToCarvedMesh: @escaping () -> Void
+        displayMode: GeometryBuilderDisplayMode = .canvasOnly,
+        onSwitchToCarvedMesh: @escaping () -> Void,
+        onOpenDocs: @escaping (DocumentationTopic) -> Void = { _ in }
     ) {
         self.config = config
         self.previewManager = previewManager
+        self.displayMode = displayMode
         self.onSwitchToCarvedMesh = onSwitchToCarvedMesh
+        self.onOpenDocs = onOpenDocs
     }
     
     public var body: some View {
-        VStack(spacing: 0) {
-            studioTopBar
-            Divider()
-            HStack(spacing: 0) {
-                // LEFT: Interactive Macroscopic Geometry & Discrete Lattice Canvas
+        Group {
+            switch displayMode {
+            case .canvasOnly:
                 VStack(spacing: 0) {
-                    canvasHeaderHintBar
+                    studioTopBar
                     Divider()
-                    GeometryReader { geo in
-                        interactiveCanvas(size: geo.size)
+                    VStack(spacing: 0) {
+                        canvasHeaderHintBar
+                        Divider()
+                        GeometryReader { geo in
+                            interactiveCanvas(size: geo.size)
+                        }
+                        Divider()
+                        canvasFooterLegend
                     }
-                    Divider()
-                    canvasFooterLegend
+                    .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+                    .background(BlueHour.canvasBackground)
                 }
-                .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
-                .background(BlueHour.canvasBackground)
-                
-                Divider()
-                
-                // RIGHT: Organized Inspector Panel with Section Switcher (Fixed Width)
+            case .inspectorMicrostructure:
+                VStack(alignment: .leading, spacing: 12) {
+                    microstructureCard
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            case .inspectorShapeAndBCs:
+                VStack(alignment: .leading, spacing: 12) {
+                    presetsCard
+                    outerDomainCard
+                    cutoutsCard
+                    stageProtocolBannerCard
+                    boundaryConditionsCard
+                    nanoindenterCard
+                        .onChange(of: config.geometryConfig.indenter.enabled) { enabled in
+                            if enabled {
+                                if config.protocolMode == .relaxOnly {
+                                    config.protocolMode = .relaxThenLoad
+                                    config.geometryConfig.microstructure.relax_only = false
+                                }
+                                previewStage = .stage2Load
+                            }
+                        }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            case .splitCanvasAndInspector:
                 VStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Label("Geometry & GB Inspector", systemImage: "slider.horizontal.3")
-                                .font(.caption.bold())
-                                .foregroundColor(BlueHour.ice)
-                            Spacer()
-                            Text("\(config.nx)×\(config.ny)")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .monospacedDigit()
-                                .foregroundColor(Color(red: 0.31, green: 0.85, blue: 0.78))
-                                .frame(minWidth: 56)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(BlueHour.midnight.opacity(0.65), in: Capsule())
-                        }
-                        HStack(spacing: 3) {
-                            ForEach([
-                                (InspectorSection.microstructure, "Grains & GB"),
-                                (InspectorSection.shapeAndCutouts, "Shape & Holes"),
-                                (InspectorSection.bcsAndIndenter, "BCs & Indenter"),
-                                (InspectorSection.all, "All")
-                            ], id: \.0.id) { item in
-                                let isSelected = (inspectorSection == item.0)
-                                Button(action: { inspectorSection = item.0 }) {
-                                    Text(item.1)
-                                        .font(.system(size: 10, weight: isSelected ? .bold : .medium))
-                                        .foregroundColor(isSelected ? .white : BlueHour.ice.opacity(0.85))
-                                        .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22)
-                                        .background(
-                                            isSelected
-                                                ? Color(red: 0.12, green: 0.64, blue: 0.54)
-                                                : BlueHour.midnight.opacity(0.65),
-                                            in: RoundedRectangle(cornerRadius: 5)
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 5)
-                                                .strokeBorder(
-                                                    isSelected
-                                                        ? Color(red: 0.42, green: 0.96, blue: 0.84)
-                                                        : BlueHour.steel.opacity(0.45),
-                                                    lineWidth: isSelected ? 1.2 : 0.8
-                                                )
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .frame(height: 24)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(height: 60)
-                    .background(BlueHour.controlSurface)
-                    
+                    studioTopBar
                     Divider()
-                    
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            if inspectorSection == .microstructure || inspectorSection == .all {
-                                microstructureCard
-                                if config.geometryConfig.microstructure.mode == .singleCrystal || config.geometryConfig.microstructure.mode == .periodicDislocations {
-                                    crystalLatticeCard
-                                }
+                    HStack(spacing: 0) {
+                        VStack(spacing: 0) {
+                            canvasHeaderHintBar
+                            Divider()
+                            GeometryReader { geo in
+                                interactiveCanvas(size: geo.size)
                             }
-                            if inspectorSection == .shapeAndCutouts || inspectorSection == .all {
-                                presetsCard
-                                outerDomainCard
-                                cutoutsCard
-                            }
-                        if inspectorSection == .bcsAndIndenter || inspectorSection == .all {
-                                stageProtocolBannerCard
-                                boundaryConditionsCard
-                                nanoindenterCard
-                                    .onChange(of: config.geometryConfig.indenter.enabled) { enabled in
-                                        if enabled {
-                                            if config.protocolMode == .relaxOnly {
-                                                config.protocolMode = .relaxThenLoad
-                                                config.geometryConfig.microstructure.relax_only = false
-                                            }
-                                            previewStage = .stage2Load
-                                        }
-                                    }
-                            }
+                            Divider()
+                            canvasFooterLegend
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                        .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+                        .background(BlueHour.canvasBackground)
                     }
                 }
-                .frame(width: 400)
-                .background(BlueHour.sidebarBackground)
             }
         }
         .onAppear {
@@ -244,39 +211,6 @@ public struct GeometryBuilderView: View {
                 
                 Divider().frame(height: 18)
                 
-                // Discrete Crystal Symmetry Picker (Synced with SimulationConfig)
-                HStack(spacing: 6) {
-                    Text("Symmetry:")
-                        .font(.caption2.bold())
-                        .foregroundColor(.secondary)
-                    Picker("", selection: $config.latticeSymmetry) {
-                        ForEach(LatticeSymmetry.allCases) { sym in
-                            Text(sym.displayName).tag(sym)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .fixedSize()
-                }
-                
-                // Rotated Crystal Controls in Studio Top Bar
-                HStack(spacing: 6) {
-                    Toggle(isOn: $config.useRotation) {
-                        Text("Rotate θ:")
-                            .font(.caption2.bold())
-                    }
-                    .toggleStyle(.checkbox)
-                    
-                    if config.useRotation {
-                        DoubleField(title: "0.0", value: $config.rotationAngle, width: 44, minValue: 0.0, maxValue: 360.0)
-                        Text("°").font(.caption2)
-                        Slider(value: $config.rotationAngle, in: 0...360, step: 1.0)
-                            .frame(width: 80)
-                    }
-                }
-                
-                Divider().frame(height: 18)
-                
                 Toggle("Show Discrete Lattice Sites", isOn: $showDiscreteLatticePreview)
                     .font(.caption)
                     .toggleStyle(.checkbox)
@@ -313,6 +247,14 @@ public struct GeometryBuilderView: View {
                 .padding(.vertical, 4)
                 .background(BlueHour.pillSurface, in: Capsule())
                 .overlay(Capsule().strokeBorder(BlueHour.border, lineWidth: 1))
+                
+                HelpPopoverButton(
+                    title: "Macroscopic Geometry & BC Studio",
+                    summary: "Design your specimen in 3 steps using the right-hand inspector:\n1. Grains & Dislocs: Single Crystal, Bicrystal, Tri-Crystal, Voronoi, or Periodic Dislocations.\n2. Shape & Holes: Carve notches, dogbones, circular/elliptical holes, or cracks.\n3. BCs & Indenter: Configure Stage 1 (Relaxation) and Stage 2 (Loading) boundary conditions or Nanoindentation.",
+                    formulaOrTip: "• Drag handles directly on the canvas to move grain boundaries, Voronoi seeds, cutouts, or dislocation cores.\n• Click 'Generate & View Carved Triangulation' to inspect the exact finite-element mesh.",
+                    docTopic: .geometryAndBCs,
+                    onOpenDocs: onOpenDocs
+                )
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -1119,7 +1061,17 @@ public struct GeometryBuilderView: View {
     
     // MARK: - Microstructure Card (Bicrystal & 2D Voronoi Polycrystal)
     private var microstructureCard: some View {
-        GroupBox(label: Label("1b. Grain Boundaries & Polycrystal", systemImage: "square.split.diagonal.2x2")) {
+        GroupBox(label: HStack {
+            Label("1. Microstructure, Grain Boundaries & Dislocations", systemImage: "square.split.diagonal.2x2")
+            Spacer()
+            HelpPopoverButton(
+                title: "Microstructure, Grain Boundaries & Periodic Dislocations",
+                summary: "Choose between:\n• Single Crystal: Defect-free crystal block.\n• Bicrystal (GB): Symmetric tilt or general grain boundary with Σ CSL presets.\n• 2D Voronoi: Multi-grain polycrystal or Tri-Crystal Y-junction.\n• Periodic Dislocs: Multi-plane edge dislocation dipoles (up to 100 dislocations) on a 2D periodic torus.",
+                formulaOrTip: "• For Periodic Dislocs: Net Burgers vector Σ b_k = 0 is required for 2D PBC.\n• Keep vertical plane spacing Δr ≥ 5 rows so cores do not annihilate at α = 0.",
+                docTopic: config.geometryConfig.microstructure.mode == .periodicDislocations ? .dislocationsGuide : .grainBoundaries,
+                onOpenDocs: onOpenDocs
+            )
+        }) {
             VStack(alignment: .leading, spacing: 8) {
                 Picker("", selection: $config.geometryConfig.microstructure.mode) {
                     Text("Single Crystal").tag(MicrostructureModeModel.singleCrystal)

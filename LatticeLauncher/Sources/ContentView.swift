@@ -16,131 +16,410 @@ enum AppNavigationTab: String, CaseIterable, Identifiable {
     }
 }
 
+/// Navigation intents used by the sidebar ("show me the blueprint / the mesh / the results").
+/// The actual on-screen layout is driven by `WorkspaceMode` + `SpecimenSubView`.
 enum MainDisplayTab: String, CaseIterable, Identifiable {
-    case curve = "Curve"
-    case geometryStudio = "Geometry & BCs"
-    case initialMesh = "Initial Mesh"
-    case terminal = "Terminal Log"
+    case geometryStudio = "blueprint"
+    case initialMesh = "femMesh"
+    case curve = "results"
     
     var id: String { rawValue }
+}
+
+/// The three top-level workspaces of the main viewport.
+enum WorkspaceMode: String, CaseIterable, Identifiable {
+    case specimen = "Specimen & Mesh"
+    case results = "Results & Plots"
+    case split = "Split View"
     
-    func title(mode: LoadingMode) -> String {
-        switch self {
-        case .curve:
-            return mode == .volterra ? "Dislocation Profiles" : "Stress–Strain Curve"
-        case .geometryStudio:
-            return "Macroscopic Geometry & BC Studio"
-        case .initialMesh:
-            return "Initial Mesh"
-        case .terminal:
-            return "Terminal Log"
-        }
-    }
-    
+    var id: String { rawValue }
     var icon: String {
         switch self {
-        case .curve: return "chart.xyaxis.line"
-        case .geometryStudio: return "skew"
-        case .initialMesh: return "square.stack.3d.down.right.fill"
-        case .terminal: return "terminal"
+        case .specimen: return "square.on.square.dashed"
+        case .results: return "chart.xyaxis.line"
+        case .split: return "rectangle.split.2x1"
+        }
+    }
+}
+
+/// Two views of the same initial specimen.
+enum SpecimenSubView: String, CaseIterable, Identifiable {
+    case blueprint = "Blueprint"
+    case femMesh = "FEM Mesh"
+    
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .blueprint: return "hand.draw"
+        case .femMesh: return "triangle"
+        }
+    }
+}
+
+/// The four steps of the unified left setup inspector.
+enum SetupInspectorStep: String, CaseIterable, Identifiable {
+    case crystal
+    case shapeAndBCs
+    case protocolAndSchedule
+    case solver
+    
+    var id: String { rawValue }
+    var shortTitle: String {
+        switch self {
+        case .crystal: return "1 Crystal"
+        case .shapeAndBCs: return "2 Shape & BCs"
+        case .protocolAndSchedule: return "3 Protocol"
+        case .solver: return "4 Solver"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .crystal: return "atom"
+        case .shapeAndBCs: return "skew"
+        case .protocolAndSchedule: return "slider.horizontal.below.square.filled.and.square"
+        case .solver: return "gearshape.2"
+        }
+    }
+    var helpText: String {
+        switch self {
+        case .crystal: return "Size, lattice, potential, grains & dislocations"
+        case .shapeAndBCs: return "Specimen shape, holes, boundary conditions & indenter"
+        case .protocolAndSchedule: return "Loading mode, noise, remeshing & strain schedule"
+        case .solver: return "Preconditioner, eigenvalues, output & threads"
         }
     }
 }
 
 struct ContentView: View {
     @ObservedObject var config: SimulationConfig
+    @EnvironmentObject var runner: ProcessRunner
     @StateObject private var previewManager = StiffnessStudyManager()
     @State private var appTab: AppNavigationTab = .simulation
-    @State private var displayTab: MainDisplayTab = .curve
     @State private var filterText: String = ""
     @State private var autoScroll: Bool = true
     
-    var body: some View {
-        VStack(spacing: 0) {
-            // Global App Top Bar
-            HStack(spacing: 12) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Picker("Navigation Mode", selection: $appTab) {
-                        ForEach(AppNavigationTab.allCases) { tab in
-                            Label(tab.rawValue, systemImage: tab.icon).tag(tab)
-                        }
+    // Layout state (one sidebar, one viewport, one console drawer)
+    @State private var workspace: WorkspaceMode = .specimen
+    @State private var specimenSub: SpecimenSubView = .blueprint
+    @State private var inspectorStep: SetupInspectorStep = .crystal
+    @AppStorage("showConsoleDrawer") private var showConsole: Bool = false
+    
+    // Onboarding & Help
+    @AppStorage("uiComplexityMode") private var uiComplexityModeRaw: String = UIComplexityMode.guided.rawValue
+    @AppStorage("showWelcomeOnStartup_v2") private var showWelcomeOnStartup: Bool = true
+    @State private var didCheckStartupWelcome: Bool = false
+    @State private var showWelcomeSheet: Bool = false
+    @State private var showDocsSheet: Bool = false
+    @State private var selectedDocTopic: DocumentationTopic = .quickStart
+    
+    private var uiComplexityMode: UIComplexityMode {
+        UIComplexityMode(rawValue: uiComplexityModeRaw) ?? .guided
+    }
+    
+    // MARK: Navigation
+    
+    /// Sidebar-facing binding: maps "show blueprint / mesh / results" intents onto the workspace layout.
+    private var displayTabBinding: Binding<MainDisplayTab> {
+        Binding(
+            get: {
+                if workspace == .results { return .curve }
+                return specimenSub == .femMesh ? .initialMesh : .geometryStudio
+            },
+            set: { navigate(to: $0) }
+        )
+    }
+    
+    private func navigate(to tab: MainDisplayTab) {
+        appTab = .simulation
+        switch tab {
+        case .geometryStudio:
+            specimenSub = .blueprint
+            if workspace == .results { workspace = .specimen }
+        case .initialMesh:
+            specimenSub = .femMesh
+            if workspace == .results { workspace = .specimen }
+        case .curve:
+            if workspace == .specimen { workspace = .results }
+        }
+    }
+    
+    private func applyPreset(_ preset: SampleExperimentPreset, runNow: Bool = false) {
+        appTab = .simulation
+        let openStudio = preset.apply(to: config)
+        inspectorStep = .crystal
+        navigate(to: openStudio ? .geometryStudio : .curve)
+        if runNow && !runner.status.isRunning {
+            navigate(to: .curve)
+            launchRun()
+        }
+    }
+    
+    private func launchRun() {
+        guard !runner.status.isRunning else { return }
+        if config.mode != .volterra && config.mode != .shift && config.protocolMode == .sweepMisorientation {
+            runner.startCSLSweep(config: config, candidates: config.sweepCSLCandidates)
+        } else {
+            runner.start(config: config)
+        }
+    }
+    
+    /// Syncs the preview manager with the current configuration and regenerates the FEM mesh.
+    private func refreshMeshPreview() {
+        previewManager.nx = config.nx
+        previewManager.ny = config.ny
+        previewManager.latticeSymmetry = config.latticeSymmetry
+        previewManager.potentialMode = config.potentialMode
+        previewManager.boundaryCondition = (config.mode == .shift || config.geometryConfig.enabled) ? .fixed : config.boundaryCondition
+        previewManager.beta = config.beta
+        previewManager.bulkK = config.bulkK
+        previewManager.useRotation = config.useRotation
+        previewManager.rotationAngle = config.rotationAngle
+        previewManager.cslM = config.cslM
+        previewManager.cslN = config.cslN
+        previewManager.cslKx = config.cslKx
+        previewManager.cslKy = config.cslKy
+        if config.geometryConfig.enabled {
+            let root = SimulationConfig.detectProjectRoot()
+            let scratchDir = "\(root)/scratch"
+            try? FileManager.default.createDirectory(atPath: scratchDir, withIntermediateDirectories: true)
+            let geomPath = "\(scratchDir)/geometry_config.json"
+            try? config.geometryConfig.writeJSON(to: geomPath)
+            previewManager.geometryJSONPath = geomPath
+        } else {
+            previewManager.geometryJSONPath = ""
+        }
+        previewManager.generateInitialMeshPreview()
+    }
+    
+    // MARK: Top Bar
+    
+    private var globalTopHeaderBar: some View {
+        HStack(spacing: 12) {
+            // Left: module selector (compact menu instead of 3 big tabs)
+            Menu {
+                ForEach(AppNavigationTab.allCases) { tab in
+                    Button(action: { appTab = tab }) {
+                        Label(tab.rawValue, systemImage: tab.icon)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .fixedSize()
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                
-                // Active Lattice Badge
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(config.latticeSymmetry == .square ? BlueHour.mist : BlueHour.ice)
-                        .frame(width: 8, height: 8)
-                    Text(config.latticeSymmetry == .square ? "Square" : "Triangular")
-                        .font(.caption.bold())
-                        .foregroundColor(BlueHour.ice)
+            } label: {
+                Label(appTab.rawValue, systemImage: appTab.icon)
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Switch tool: Lattice Simulation, Parametric Acoustic Study or Stiffness Spectrum K(α)")
+            
+            Spacer(minLength: 8)
+            
+            // Center: the ONE viewport switcher
+            if appTab == .simulation {
+                Picker("Workspace", selection: $workspace) {
+                    ForEach(WorkspaceMode.allCases) { mode in
+                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(BlueHour.pillSurface, in: Capsule())
-                .overlay(Capsule().strokeBorder(BlueHour.border, lineWidth: 1))
+                .labelsHidden()
+                .pickerStyle(.segmented)
                 .fixedSize()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .frame(height: 44)
-            .background(BlueHour.windowBackground)
+            
+            Spacer(minLength: 8)
+            
+            // Right: examples & help
+            Menu {
+                Section("1-Click Sample Experiments") {
+                    ForEach(SampleExperimentPreset.allCases) { preset in
+                        Button(action: { applyPreset(preset) }) {
+                            Label(preset.title, systemImage: preset.icon)
+                        }
+                    }
+                }
+                Divider()
+                Button(action: { showWelcomeSheet = true }) {
+                    Label("Browse Visual Experiment Gallery…", systemImage: "sparkles.rectangle.stack")
+                }
+            } label: {
+                Label("Examples", systemImage: "flask")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .menuStyle(.borderedButton)
+            .controlSize(.small)
+            .fixedSize()
+            
+            Button(action: { showWelcomeSheet = true }) {
+                Label("Tour", systemImage: "sparkles")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Welcome tour & sample gallery")
+            
+            Button(action: { showDocsSheet = true }) {
+                Label("Help", systemImage: "questionmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Physics & user guide (⌘?)")
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .background(BlueHour.windowBackground)
+    }
+    
+    // MARK: Viewport Panes
+    
+    private var specimenPane: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text("Specimen")
+                    .font(.system(size: 11.5, weight: .bold))
+                    .foregroundColor(BlueHour.ice)
+                Picker("View", selection: $specimenSub) {
+                    ForEach(SpecimenSubView.allCases) { sub in
+                        Label(sub.rawValue, systemImage: sub.icon).tag(sub)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .fixedSize()
+                
+                if specimenSub == .femMesh {
+                    Button(action: refreshMeshPreview) {
+                        if previewManager.isGeneratingPreview {
+                            ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
+                        } else {
+                            Label("Regenerate Mesh", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .controlSize(.small)
+                    .help("Re-mesh using the current crystal, shape and BC settings")
+                }
+                Spacer()
+                Text("\(config.nx)×\(config.ny) \(config.latticeSymmetry == .square ? "square" : "triangular") lattice")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(BlueHour.mist)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(BlueHour.controlSurface)
             
             Divider()
             
-            // Tab Contents
+            if specimenSub == .blueprint {
+                GeometryBuilderView(
+                    config: config,
+                    previewManager: previewManager,
+                    displayMode: .canvasOnly,
+                    onSwitchToCarvedMesh: { specimenSub = .femMesh },
+                    onOpenDocs: { topic in
+                        selectedDocTopic = topic
+                        showDocsSheet = true
+                    }
+                )
+            } else {
+                InitialLatticeVisualizerView(manager: previewManager)
+            }
+        }
+        .onChange(of: specimenSub) { sub in
+            if sub == .femMesh { refreshMeshPreview() }
+        }
+    }
+    
+    private var resultsPane: some View {
+        VStack(spacing: 0) {
+            LiveStatusHeaderView(config: config)
+                .padding(.horizontal, 12)
+                .frame(height: 44)
+                .background(BlueHour.controlSurface)
+            Divider()
+            if config.mode == .volterra {
+                DislocationProfileChartView()
+            } else {
+                StressStrainChartView()
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var viewport: some View {
+        switch workspace {
+        case .specimen:
+            specimenPane
+        case .results:
+            resultsPane
+        case .split:
+            HSplitView {
+                specimenPane.frame(minWidth: 360)
+                resultsPane.frame(minWidth: 360)
+            }
+        }
+    }
+    
+    private var consoleDrawer: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "terminal")
+                    .foregroundColor(BlueHour.ice)
+                Text("Console")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(BlueHour.ice)
+                Spacer()
+                Button(action: { runner.clearLogs() }) {
+                    Label("Clear", systemImage: "trash")
+                }
+                .controlSize(.small)
+                Button(action: { withAnimation(.easeInOut(duration: 0.15)) { showConsole = false } }) {
+                    Image(systemName: "chevron.down")
+                }
+                .buttonStyle(.borderless)
+                .help("Hide console (⌘J)")
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .background(BlueHour.controlSurface)
+            Divider()
+            TerminalView(filterText: $filterText, autoScroll: $autoScroll)
+        }
+        .frame(minHeight: 140, idealHeight: 220, maxHeight: 420)
+    }
+    
+    // MARK: Body
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            globalTopHeaderBar
+            Divider()
+            
             if appTab == .simulation {
                 HSplitView {
-                    // LEFT: Configuration Sidebar (Width ~420px)
-                    SidebarControlsView(config: config, previewManager: previewManager, displayTab: $displayTab)
-                        .frame(minWidth: 380, idealWidth: 420, maxWidth: 480)
+                    SidebarControlsView(
+                        config: config,
+                        previewManager: previewManager,
+                        displayTab: displayTabBinding,
+                        inspectorStep: $inspectorStep,
+                        uiComplexityMode: uiComplexityMode,
+                        onOpenWelcomeGallery: { showWelcomeSheet = true },
+                        onOpenDocs: { topic in
+                            selectedDocTopic = topic
+                            showDocsSheet = true
+                        }
+                    )
+                    .frame(minWidth: 360, idealWidth: 410, maxWidth: 480)
                     
-                    // RIGHT: Monitor & Live Terminal / Curve
                     VStack(spacing: 0) {
-                        // Unified Top Header: Status, Live Metrics & View Switcher
-                        LiveStatusHeaderView(config: config, displayTab: $displayTab)
+                        if showConsole {
+                            VSplitView {
+                                viewport.frame(minHeight: 260)
+                                consoleDrawer
+                            }
+                        } else {
+                            viewport
+                        }
+                        Divider()
+                        BottomActionBar(config: config, showConsole: $showConsole, onLaunch: launchRun)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
-                            .frame(height: 50)
-                            .background(BlueHour.controlSurface)
-                        
-                        Divider()
-                        
-                        // Main Content View: Live Curve, Geometry Studio, Initial Mesh, or Terminal
-                        if displayTab == .curve {
-                            if config.mode == .volterra {
-                                DislocationProfileChartView()
-                            } else {
-                                StressStrainChartView()
-                            }
-                        } else if displayTab == .geometryStudio {
-                            GeometryBuilderView(
-                                config: config,
-                                previewManager: previewManager,
-                                onSwitchToCarvedMesh: {
-                                    displayTab = .initialMesh
-                                }
-                            )
-                        } else if displayTab == .initialMesh {
-                            InitialLatticeVisualizerView(manager: previewManager)
-                        } else {
-                            TerminalView(
-                                filterText: $filterText,
-                                autoScroll: $autoScroll
-                            )
-                        }
-                        
-                        Divider()
-                        
-                        // Bottom Action Bar
-                        BottomActionBar(config: config)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
                             .background(BlueHour.windowBackground)
                     }
                     .frame(minWidth: 580)
@@ -151,6 +430,87 @@ struct ContentView: View {
                 StiffnessStudyView()
             }
         }
+        .onAppear {
+            if !didCheckStartupWelcome {
+                didCheckStartupWelcome = true
+                if showWelcomeOnStartup {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        showWelcomeSheet = true
+                    }
+                }
+            }
+        }
+        // When a run starts, bring the results into view.
+        .onChange(of: runner.status.isRunning) { running in
+            if running && workspace == .specimen { workspace = .results }
+        }
+        // Editing the crystal or the shape? Show the specimen.
+        .onChange(of: inspectorStep) { step in
+            if (step == .crystal || step == .shapeAndBCs) && workspace == .results && !runner.status.isRunning {
+                workspace = .specimen
+            }
+        }
+        .sheet(isPresented: $showWelcomeSheet) {
+            WelcomeOnboardingSheet(
+                config: config,
+                isPresented: $showWelcomeSheet,
+                onSelectExperiment: { preset, runImmediately in
+                    applyPreset(preset, runNow: runImmediately)
+                },
+                onOpenDocs: { topic in
+                    showWelcomeSheet = false
+                    selectedDocTopic = topic
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showDocsSheet = true
+                    }
+                }
+            )
+        }
+        .sheet(isPresented: $showDocsSheet) {
+            DocumentationCenterSheet(isPresented: $showDocsSheet, selectedTopic: $selectedDocTopic)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showWelcomeTour)) { _ in
+            showWelcomeSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showDocumentationCenter)) { note in
+            if let raw = note.object as? String, let topic = DocumentationTopic(rawValue: raw) {
+                selectedDocTopic = topic
+            }
+            showDocsSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .applySampleExperiment)) { note in
+            if let raw = note.object as? String, let preset = SampleExperimentPreset(rawValue: raw) {
+                applyPreset(preset)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .switchMainDisplayTab)) { note in
+            guard let raw = note.object as? String else { return }
+            appTab = .simulation
+            switch raw {
+            case "blueprint": workspace = .specimen; specimenSub = .blueprint
+            case "femMesh": workspace = .specimen; specimenSub = .femMesh
+            case "results": workspace = .results
+            case "split": workspace = .split
+            default: break
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleConsoleDrawer)) { _ in
+            withAnimation(.easeInOut(duration: 0.15)) { showConsole.toggle() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleComplexityMode)) { _ in
+            uiComplexityModeRaw = (uiComplexityMode == .guided)
+                ? UIComplexityMode.expert.rawValue
+                : UIComplexityMode.guided.rawValue
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .runSimulationCommand)) { _ in
+            appTab = .simulation
+            launchRun()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .stopSimulationCommand)) { _ in
+            if runner.status.isRunning {
+                runner.stop()
+            }
+        }
     }
 }
 
@@ -159,13 +519,228 @@ struct SidebarControlsView: View {
     @ObservedObject var config: SimulationConfig
     @ObservedObject var previewManager: StiffnessStudyManager
     @Binding var displayTab: MainDisplayTab
+    @Binding var inspectorStep: SetupInspectorStep
+    var uiComplexityMode: UIComplexityMode = .guided
+    var onOpenWelcomeGallery: () -> Void = {}
+    var onOpenDocs: (DocumentationTopic) -> Void = { _ in }
     @EnvironmentObject var runner: ProcessRunner
     
+    @ViewBuilder
+    private var quickStartExperimentBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "flask.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(Color(red: 0.31, green: 0.85, blue: 0.78))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Quick-Start Sample Experiments")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(BlueHour.ice)
+                    Text("New to Lattice Launcher? Load a ready-to-run crystal or defect setup.")
+                        .font(.system(size: 10))
+                        .foregroundColor(BlueHour.mist)
+                }
+                Spacer()
+                Button(action: onOpenWelcomeGallery) {
+                    Text("Gallery…")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 0.14, green: 0.62, blue: 0.56))
+                .controlSize(.mini)
+            }
+            
+            Menu {
+                ForEach(SampleExperimentPreset.allCases) { preset in
+                    Button(action: {
+                        let openStudio = preset.apply(to: config)
+                        displayTab = openStudio ? .geometryStudio : .curve
+                    }) {
+                        Label(preset.title, systemImage: preset.icon)
+                    }
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "sparkles")
+                    Text("Choose a 1-Click Sample Experiment…")
+                        .font(.system(size: 11, weight: .semibold))
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .menuStyle(.borderedButton)
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(
+            LinearGradient(
+                colors: [Color(red: 0.10, green: 0.25, blue: 0.34).opacity(0.65), BlueHour.pillSurface.opacity(0.85)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 9)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(Color(red: 0.31, green: 0.85, blue: 0.78).opacity(0.45), lineWidth: 1)
+        )
+    }
+    
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(spacing: 0) {
+            setupStepTabStrip
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    switch inspectorStep {
+                    case .crystal:
+                        quickStartExperimentBanner
+                        systemGeometryCard
+                        latticePotentialCard
+                        if config.mode != .volterra && config.mode != .shift {
+                            GeometryBuilderView(
+                                config: config,
+                                previewManager: previewManager,
+                                displayMode: .inspectorMicrostructure,
+                                onSwitchToCarvedMesh: { displayTab = .initialMesh },
+                                onOpenDocs: onOpenDocs
+                            )
+                        }
+                        crystalOrientationCard
+                    case .shapeAndBCs:
+                        if config.mode == .volterra || config.mode == .shift {
+                            stepNotApplicableNote(
+                                "Shape & boundary conditions are fixed by the selected loading mode (\(config.mode.displayName)). Switch the loading mode in step 3 to carve a custom specimen."
+                            )
+                        } else {
+                            specimenShapeCard
+                            if config.geometryConfig.enabled {
+                                GeometryBuilderView(
+                                    config: config,
+                                    previewManager: previewManager,
+                                    displayMode: .inspectorShapeAndBCs,
+                                    onSwitchToCarvedMesh: { displayTab = .initialMesh },
+                                    onOpenDocs: onOpenDocs
+                                )
+                            }
+                        }
+                    case .protocolAndSchedule:
+                        loadingModeCard
+                        protocolScheduleCard
+                    case .solver:
+                        if uiComplexityMode == .guided {
+                            stepNotApplicableNote(
+                                "These solver settings already have sensible defaults. You only need to change them for very large crystals or for stability (eigenvalue) studies."
+                            )
+                        }
+                        preconditionerCard
+                        solverAndOutputCards
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+            }
+            
+            Divider()
+            stepFooterNavigation
+        }
+        .background(BlueHour.sidebarBackground)
+    }
+    
+    // MARK: Step Tab Strip
+    private var setupStepTabStrip: some View {
+        HStack(spacing: 4) {
+            ForEach(SetupInspectorStep.allCases) { step in
+                let isSel = (inspectorStep == step)
+                Button(action: { inspectorStep = step }) {
+                    VStack(spacing: 2) {
+                        Image(systemName: step.icon)
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(step.shortTitle)
+                            .font(.system(size: 10, weight: isSel ? .bold : .medium))
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(isSel ? .white : BlueHour.ice.opacity(0.8))
+                    .frame(maxWidth: .infinity, minHeight: 40)
+                    .background(
+                        isSel ? Color(red: 0.12, green: 0.64, blue: 0.54) : BlueHour.midnight.opacity(0.55),
+                        in: RoundedRectangle(cornerRadius: 7)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(isSel ? Color(red: 0.42, green: 0.96, blue: 0.84) : BlueHour.steel.opacity(0.4), lineWidth: isSel ? 1.2 : 0.8)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(step.helpText)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(BlueHour.controlSurface)
+    }
+    
+    // MARK: Back / Next footer
+    private var stepFooterNavigation: some View {
+        let all = SetupInspectorStep.allCases
+        let idx = all.firstIndex(of: inspectorStep) ?? 0
+        return HStack {
+            if idx > 0 {
+                Button(action: { inspectorStep = all[idx - 1] }) {
+                    Label(all[idx - 1].shortTitle, systemImage: "chevron.left")
+                }
+                .controlSize(.small)
+            }
+            Spacer()
+            Text("Step \(idx + 1) of \(all.count)")
+                .font(.system(size: 10))
+                .foregroundColor(BlueHour.mist)
+            Spacer()
+            if idx < all.count - 1 {
+                Button(action: { inspectorStep = all[idx + 1] }) {
+                    HStack(spacing: 4) {
+                        Text("Next: \(all[idx + 1].shortTitle)")
+                        Image(systemName: "chevron.right")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(BlueHour.controlSurface)
+    }
+    
+    private func stepNotApplicableNote(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .foregroundColor(BlueHour.ice)
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundColor(BlueHour.mist)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(BlueHour.pillSurface, in: RoundedRectangle(cornerRadius: 8))
+    }
+    
+    @ViewBuilder
+    private var systemGeometryCard: some View {
                 // 1. System Size
-                GroupBox(label: Label("System Geometry", systemImage: "grid")) {
+                GroupBox(label: HStack {
+                    Label("Step 1: System Geometry", systemImage: "grid")
+                    Spacer()
+                    HelpPopoverButton(
+                        title: "Step 1: System Geometry (NX × NY)",
+                        summary: "Sets the number of discrete crystal unit cells along X (columns) and Y (rows). Each node represents a discrete atom or lattice site.",
+                        formulaOrTip: "• 100×100 (10,000 atoms): Fast interactive runs (< 1 min).\n• 200×200 to 400×400: High-resolution dislocation ensembles & multi-plane DDD.",
+                        docTopic: .quickStart,
+                        onOpenDocs: onOpenDocs
+                    )
+                }) {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
@@ -230,8 +805,22 @@ struct SidebarControlsView: View {
                     .padding(8)
                 }
                 
+    }
+    
+    @ViewBuilder
+    private var loadingModeCard: some View {
                 // 2. Loading Mode & Remeshing
-                GroupBox(label: Label("Mode & Triangulation", systemImage: "arrow.triangle.swap")) {
+                GroupBox(label: HStack {
+                    Label("Step 2: Loading Mode & Remeshing", systemImage: "arrow.triangle.swap")
+                    Spacer()
+                    HelpPopoverButton(
+                        title: "Loading Mode & Delaunay Remeshing",
+                        summary: "Selects how the crystal is deformed and whether topological Delaunay flips (surgery) are active.",
+                        formulaOrTip: "• Adaptive Remeshing (Delaunay Surgery) MUST be ON for plastic slip and dislocation nucleation.\n• Turn it OFF only to study purely hyperelastic (fixed-connectivity) response.",
+                        docTopic: .potentialsAndRemeshing,
+                        onOpenDocs: onOpenDocs
+                    )
+                }) {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("Loading Mode", selection: $config.mode) {
                             ForEach(LoadingMode.allCases) { m in
@@ -354,10 +943,23 @@ struct SidebarControlsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 }
-                
+    }
+    
+    @ViewBuilder
+    private var specimenShapeCard: some View {
                 if config.mode != .volterra && config.mode != .shift {
                     // 2b. Macroscopic Geometry & Regional Boundary Conditions Studio
-                    GroupBox(label: Label("Macroscopic Geometry & BCs", systemImage: "skew")) {
+                    GroupBox(label: HStack {
+                        Label("Step 2b: Macroscopic Geometry & BCs", systemImage: "skew")
+                        Spacer()
+                        HelpPopoverButton(
+                            title: "Macroscopic Geometry, Dislocations & BCs",
+                            summary: "Enables custom specimen shapes (notches, holes, pillars), polycrystals (Bicrystal, Tri-Crystal, Voronoi), Periodic Dislocations, and regional boundary conditions.",
+                            formulaOrTip: "• Click 'Open Geometry Studio' to visually edit grain boundaries, seed up to 100 edge dislocations, or configure Nanoindentation.",
+                            docTopic: .geometryAndBCs,
+                            onOpenDocs: onOpenDocs
+                        )
+                    }) {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle(isOn: Binding(
                                 get: { config.geometryConfig.enabled },
@@ -427,7 +1029,7 @@ struct SidebarControlsView: View {
                                     }
                                     displayTab = .geometryStudio
                                 }) {
-                                    Label("Open Geometry Studio", systemImage: "slider.horizontal.below.square.and.square.filled")
+                                    Label("Show Specimen on Canvas", systemImage: "slider.horizontal.below.square.and.square.filled")
                                         .frame(maxWidth: .infinity)
                                 }
                                 .buttonStyle(.borderedProminent)
@@ -465,9 +1067,22 @@ struct SidebarControlsView: View {
                         .padding(8)
                     }
                 }
-                
+    }
+    
+    @ViewBuilder
+    private var latticePotentialCard: some View {
                 // 3. Lattice & Potential Model
-                GroupBox(label: Label("Lattice & Potential Model", systemImage: "atom")) {
+                GroupBox(label: HStack {
+                    Label("Step 3: Lattice & Potential Model", systemImage: "atom")
+                    Spacer()
+                    HelpPopoverButton(
+                        title: "Lattice Symmetry & Interatomic Potential",
+                        summary: "Selects the Bravais lattice symmetry (Square or Hexagonal/Triangular) and the strain-energy density W(C).",
+                        formulaOrTip: "• Zanzotto GL Strain Energy: Exact invariant polynomial with GL3 reduction.\n  – Square preset: β = -0.25, K = 5.0\n  – Triangular preset: β = 4.0, K = 5.0\n• Lennard-Jones v2/v3: Pairwise potentials coarse-grained via Cauchy-Born.",
+                        docTopic: .potentialsAndRemeshing,
+                        onOpenDocs: onOpenDocs
+                    )
+                }) {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("Potential", selection: $config.potentialMode) {
                             ForEach(PotentialMode.allCases) { pot in
@@ -548,10 +1163,23 @@ struct SidebarControlsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                 }
-                
+    }
+    
+    @ViewBuilder
+    private var crystalOrientationCard: some View {
                 if config.mode != .volterra {
                     // 3b. Rotated Crystal Orientation / CSL
-                    GroupBox(label: Label("Rotated Crystal Orientation", systemImage: "rotate.right")) {
+                    GroupBox(label: HStack {
+                        Label("Step 3b: Crystal Orientation & Mesh Preview", systemImage: "rotate.right")
+                        Spacer()
+                        HelpPopoverButton(
+                            title: "Rotated Crystal & Initial Mesh Preview",
+                            summary: "Optionally rotates the reference crystal lattice by an angle θ (or a discrete Coincident Site Lattice Σ angle under PBC) and previews the discrete finite-element triangulation.",
+                            formulaOrTip: "• Click 'Preview Initial Mesh' at any time to inspect the discrete lattice before launching the C++ solver.",
+                            docTopic: .grainBoundaries,
+                            onOpenDocs: onOpenDocs
+                        )
+                    }) {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle(isOn: $config.useRotation) {
                                 Text("Enable Rotated Lattice")
@@ -714,37 +1342,55 @@ struct SidebarControlsView: View {
                         .padding(8)
                     }
                 }
-                
+    }
+    
+    @ViewBuilder
+    private var preconditionerCard: some View {
                 // 4. Preconditioning & Energy Relaxation
-                GroupBox(label: Label("L-BFGS Preconditioner", systemImage: "bolt.fill")) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker("Metric", selection: $config.preconditioner) {
-                            ForEach(PreconditionerType.allCases) { p in
-                                Text(p.displayName).tag(p)
+                VStack(alignment: .leading, spacing: 16) {
+                    GroupBox(label: HStack {
+                        Label("L-BFGS Preconditioner", systemImage: "bolt.fill")
+                        Spacer()
+                        HelpPopoverButton(
+                            title: "L-BFGS Metric Preconditioner",
+                            summary: "Accelerates energy minimization by preconditioning the L-BFGS search direction with a sparse Cholesky factorization (CHOLMOD).",
+                            formulaOrTip: "• 'Laplacian (Graph)' or 'Elastic Tangent' dramatically reduces iterations for large crystals (N ≥ 150).\n• Refresh = 0 re-factorizes adaptively when convergence slows.",
+                            docTopic: .solverAndEigenvalues,
+                            onOpenDocs: onOpenDocs
+                        )
+                    }) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Metric", selection: $config.preconditioner) {
+                                ForEach(PreconditionerType.allCases) { p in
+                                    Text(p.displayName).tag(p)
+                                }
+                            }
+                            
+                            if config.preconditioner != .none {
+                                HStack {
+                                    Text("Active from step:")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    IntField(title: "1", value: $config.precondFromStep, width: 70)
+                                }
+                                HStack {
+                                    Text("Refresh every N steps (0=adaptive):")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    IntField(title: "0", value: $config.precondRefresh, width: 70)
+                                }
                             }
                         }
-                        
-                        if config.preconditioner != .none {
-                            HStack {
-                                Text("Active from step:")
-                                    .font(.subheadline)
-                                Spacer()
-                                IntField(title: "1", value: $config.precondFromStep, width: 70)
-                            }
-                            HStack {
-                                Text("Refresh every N steps (0=adaptive):")
-                                    .font(.subheadline)
-                                Spacer()
-                                IntField(title: "0", value: $config.precondRefresh, width: 70)
-                            }
-                        }
+                        .padding(8)
                     }
-                    .padding(8)
                 }
-                
+    }
+    
+    @ViewBuilder
+    private var protocolScheduleCard: some View {
                 // 5. Loading Schedule
                 if config.mode == .shift {
-                    GroupBox(label: Label("Staircase Shift Schedule", systemImage: "stairs")) {
+                    GroupBox(label: Label("Step 4: Staircase Shift Schedule", systemImage: "stairs")) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text("Shift Amplitude (in a₀):")
@@ -768,7 +1414,17 @@ struct SidebarControlsView: View {
                         .padding(8)
                     }
                 } else if config.mode != .volterra {
-                    GroupBox(label: Label("Simulation Protocol & Schedule", systemImage: "slider.horizontal.below.square.filled.and.square")) {
+                    GroupBox(label: HStack {
+                        Label("Step 4: Simulation Protocol & Schedule", systemImage: "slider.horizontal.below.square.filled.and.square")
+                        Spacer()
+                        HelpPopoverButton(
+                            title: "Simulation Protocol & Loading Schedule",
+                            summary: "Choose between 3 protocols:\n1. Relax Only (α = 0): Equilibrates defects or grain boundaries with zero external load.\n2. Relax → Load: Two-stage handover (equilibrates at α = 0, then shears/loads from α_start to α_end).\n3. Sweep Δθ: Automated multi-angle grain boundary energy curve builder γ_GB(Δθ).",
+                            formulaOrTip: "• Step size |dα| = 0.0005–0.001 captures sharp plastic avalanches.\n• Re-anchor reference frame (X₀ ← x_eq) prevents boundary snap at Stage 1 → Stage 2 handover.",
+                            docTopic: .quickStart,
+                            onOpenDocs: onOpenDocs
+                        )
+                    }) {
                         VStack(alignment: .leading, spacing: 10) {
                             // 3-Mode Protocol Switcher: 1. Relax Only | 2. Relax -> Load | 3. Sweep Δθ
                             Picker("Protocol", selection: $config.protocolMode) {
@@ -832,6 +1488,7 @@ struct SidebarControlsView: View {
                                             .font(.caption.bold())
                                         Spacer()
                                         Button("BCs & Indenter →") {
+                                            inspectorStep = .shapeAndBCs
                                             displayTab = .geometryStudio
                                         }
                                         .buttonStyle(.bordered)
@@ -1018,168 +1675,179 @@ struct SidebarControlsView: View {
                     }
                 }
                 
-                // 6. Stability Monitor & Eigenvalues
-                if config.mode != .shift {
-                    GroupBox(label: Label("Stability & Eigenvalues", systemImage: "waveform.path.ecg")) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Toggle(config.mode == .volterra ? "Analyze Dislocation Core Stability" : "Compute Lowest Stiffness Eigenvalues", isOn: $config.enableEigenvalues)
-                                .toggleStyle(.switch)
+    }
+    
+    @ViewBuilder
+    private var solverAndOutputCards: some View {
+                VStack(alignment: .leading, spacing: 16) {
+                    // 6. Stability Monitor & Eigenvalues
+                    if config.mode != .shift {
+                        GroupBox(label: HStack {
+                            Label("Stability & Eigenvalues", systemImage: "waveform.path.ecg")
+                            Spacer()
+                            HelpPopoverButton(
+                                title: "Hessian Stability & Soft Modes",
+                                summary: "Computes the lowest eigenvalues λ_min of the tangent stiffness matrix H = ∂²E/∂u² via shift-invert Lanczos to detect incipient plastic instabilities and soft dislocation core modes.",
+                                formulaOrTip: "• λ_min → 0 signals a saddle-node bifurcation (plastic avalanche).",
+                                docTopic: .solverAndEigenvalues,
+                                onOpenDocs: onOpenDocs
+                            )
+                        }) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Toggle(config.mode == .volterra ? "Analyze Dislocation Core Stability" : "Compute Lowest Stiffness Eigenvalues", isOn: $config.enableEigenvalues)
+                                    .toggleStyle(.switch)
+                                
+                                if config.enableEigenvalues {
+                                    if config.mode == .volterra {
+                                        HStack {
+                                            Text("Modes to compute:")
+                                            Spacer()
+                                            Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
+                                        }
+                                        HStack {
+                                            Text("Soft modes exported:")
+                                            Spacer()
+                                            Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
+                                        }
+                                        Picker("Solver", selection: $config.eigSolver) {
+                                            ForEach(EigenSolverType.allCases) { s in
+                                                Text(s.displayName).tag(s)
+                                            }
+                                        }
+                                        Text("Computes the lowest eigenvalues and soft deformation modes of the relaxed dislocation core via Cholesky shift-invert Lanczos.")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    } else {
+                                        HStack {
+                                            Text("Every N steps:")
+                                            Spacer()
+                                            IntField(title: "5", value: $config.eigEvery, width: 60)
+                                        }
+                                        Toggle("Compute at avalanches / stress jumps", isOn: $config.eigAtAvalanche)
+                                        HStack {
+                                            Text("Modes to compute:")
+                                            Spacer()
+                                            Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
+                                        }
+                                        HStack {
+                                            Text("Soft modes exported:")
+                                            Spacer()
+                                            Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
+                                        }
+                                        Picker("Solver", selection: $config.eigSolver) {
+                                            ForEach(EigenSolverType.allCases) { s in
+                                                Text(s.displayName).tag(s)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(8)
+                        }
+                    }
+                    
+                    // 7. Data Saving & Output Controls
+                    GroupBox(label: HStack {
+                        Label("Output & Checkpoint Controls", systemImage: "externaldrive")
+                        Spacer()
+                        HelpPopoverButton(
+                            title: "VTK Snapshots & Checkpoints",
+                            summary: "Controls how frequently Legacy VTK meshes (.vtk) for ParaView and binary simulation checkpoints are written to disk.",
+                            formulaOrTip: "• 'Save Surgery VTK Snapshots' writes an extra VTK frame whenever Delaunay flips occur.",
+                            docTopic: .solverAndEigenvalues,
+                            onOpenDocs: onOpenDocs
+                        )
+                    }) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Inner iterations trace (--trace=1)", isOn: $config.traceInnerIterations)
+                            Toggle("Save Surgery VTK Snapshots (--surgery-vtk)", isOn: $config.saveSurgeryVTK)
+                            Toggle("Save Legacy triangle_data", isOn: $config.saveTriangleData)
                             
-                            if config.enableEigenvalues {
-                                if config.mode == .volterra {
+                            if config.mode != .shift && config.mode != .volterra {
+                                if config.protocolMode != .relaxThenLoad {
                                     HStack {
-                                        Text("Modes to compute:")
+                                        Text("Save VTK every N steps:")
                                         Spacer()
-                                        Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
+                                        IntField(title: "50", value: $config.saveVTKInterval, width: 70)
                                     }
-                                    HStack {
-                                        Text("Soft modes exported:")
-                                        Spacer()
-                                        Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
-                                    }
-                                    Picker("Solver", selection: $config.eigSolver) {
-                                        ForEach(EigenSolverType.allCases) { s in
-                                            Text(s.displayName).tag(s)
-                                        }
-                                    }
-                                    Text("Computes the lowest eigenvalues and soft deformation modes of the relaxed dislocation core via Cholesky shift-invert Lanczos.")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                } else {
-                                    HStack {
-                                        Text("Every N steps:")
-                                        Spacer()
-                                        IntField(title: "5", value: $config.eigEvery, width: 60)
-                                    }
-                                    Toggle("Compute at avalanches / stress jumps", isOn: $config.eigAtAvalanche)
-                                    HStack {
-                                        Text("Modes to compute:")
-                                        Spacer()
-                                        Stepper("\(config.eigModes)", value: $config.eigModes, in: 1...20)
-                                    }
-                                    HStack {
-                                        Text("Soft modes exported:")
-                                        Spacer()
-                                        Stepper("\(config.eigVectors)", value: $config.eigVectors, in: 0...10)
-                                    }
-                                    Picker("Solver", selection: $config.eigSolver) {
-                                        ForEach(EigenSolverType.allCases) { s in
-                                            Text(s.displayName).tag(s)
-                                        }
-                                    }
+                                }
+                                HStack {
+                                    Text("Checkpoint every N steps:")
+                                    Spacer()
+                                    IntField(title: "500", value: $config.checkpointInterval, width: 70)
+                                }
+                                HStack {
+                                    Text("Stress drop threshold Δσ/σ:")
+                                    Spacer()
+                                    DoubleField(title: "0.10", value: $config.stressDropThreshold, width: 70)
                                 }
                             }
                         }
                         .padding(8)
                     }
-                }
-                
-                // 7. Data Saving & Output Controls
-                GroupBox(label: Label("Output & Checkpoint Controls", systemImage: "externaldrive")) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle("Inner iterations trace (--trace=1)", isOn: $config.traceInnerIterations)
-                        Toggle("Save Surgery VTK Snapshots (--surgery-vtk)", isOn: $config.saveSurgeryVTK)
-                        Toggle("Save Legacy triangle_data", isOn: $config.saveTriangleData)
-                        
-                        if config.mode != .shift && config.mode != .volterra {
+                    
+                    // 8. Hardware & Threads
+                    GroupBox(label: Label("Hardware & CPU Threads", systemImage: "cpu")) {
+                        VStack(alignment: .leading, spacing: 8) {
                             HStack {
-                                Text("Save VTK every N steps:")
+                                Text("OpenMP threads (FEM loops):")
                                 Spacer()
-                                IntField(title: "50", value: $config.saveVTKInterval, width: 70)
+                                Stepper("\(config.ompThreads)", value: $config.ompThreads, in: 1...64)
                             }
                             HStack {
-                                Text("Checkpoint every N steps:")
+                                Text("BLAS threads (CHOLMOD):")
                                 Spacer()
-                                IntField(title: "500", value: $config.checkpointInterval, width: 70)
-                            }
-                            HStack {
-                                Text("Stress drop threshold Δσ/σ:")
-                                Spacer()
-                                DoubleField(title: "0.10", value: $config.stressDropThreshold, width: 70)
+                                Stepper("\(config.blasThreads)", value: $config.blasThreads, in: 1...64)
                             }
                         }
+                        .padding(8)
                     }
-                    .padding(8)
-                }
-                
-                // 7. Hardware & Threads
-                GroupBox(label: Label("Hardware & CPU Threads", systemImage: "cpu")) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("OpenMP threads (FEM loops):")
-                            Spacer()
-                            Stepper("\(config.ompThreads)", value: $config.ompThreads, in: 1...64)
-                        }
-                        HStack {
-                            Text("BLAS threads (CHOLMOD):")
-                            Spacer()
-                            Stepper("\(config.blasThreads)", value: $config.blasThreads, in: 1...64)
-                        }
-                    }
-                    .padding(8)
-                }
-                
-                // 8. Working & Output Directory
-                GroupBox(label: Label("Output Directory", systemImage: "folder.fill")) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(config.targetDirectory)
-                            .font(.system(size: 10, design: .monospaced))
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                            .foregroundColor(.secondary)
-                        
-                        HStack {
-                            Button("Change Base Folder...") {
-                                let panel = NSOpenPanel()
-                                panel.canChooseFiles = false
-                                panel.canChooseDirectories = true
-                                panel.allowsMultipleSelection = false
-                                if panel.runModal() == .OK, let url = panel.url {
-                                    config.projectRoot = url.path
+                    
+                    // 9. Working & Output Directory
+                    GroupBox(label: Label("Output Directory", systemImage: "folder.fill")) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(config.targetDirectory)
+                                .font(.system(size: 10, design: .monospaced))
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                                .foregroundColor(.secondary)
+                            
+                            HStack {
+                                Button("Change Base Folder...") {
+                                    let panel = NSOpenPanel()
+                                    panel.canChooseFiles = false
+                                    panel.canChooseDirectories = true
+                                    panel.allowsMultipleSelection = false
+                                    if panel.runModal() == .OK, let url = panel.url {
+                                        config.projectRoot = url.path
+                                    }
                                 }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                
+                                Spacer()
+                                
+                                Button("Reset") {
+                                    config.projectRoot = SimulationConfig.detectProjectRoot()
+                                }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            
-                            Spacer()
-                            
-                            Button("Reset") {
-                                config.projectRoot = SimulationConfig.detectProjectRoot()
-                            }
-                            .buttonStyle(.borderless)
-                            .controlSize(.small)
                         }
+                        .padding(8)
                     }
-                    .padding(8)
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-        }
-        .background(BlueHour.sidebarBackground)
     }
 }
 
 // MARK: - Unified Live Status & View Switcher Header
 struct LiveStatusHeaderView: View {
     @ObservedObject var config: SimulationConfig
-    @Binding var displayTab: MainDisplayTab
     @EnvironmentObject var runner: ProcessRunner
     
     var body: some View {
         HStack(spacing: 10) {
-            // 1. Pinned View Switcher (Curve vs Terminal) — never moves or clips
-            Picker("View", selection: $displayTab) {
-                ForEach(MainDisplayTab.allCases) { tab in
-                    Label(tab.rawValue, systemImage: tab.icon).tag(tab)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .fixedSize()
-            
-            // 2. Pinned Concise Status Pill
+            // 1. Concise Status Pill
             HStack(spacing: 5) {
                 Circle()
                     .fill(statusColor)
@@ -1405,22 +2073,66 @@ struct TerminalView: View {
 // MARK: - Bottom Action Bar
 struct BottomActionBar: View {
     @ObservedObject var config: SimulationConfig
+    @Binding var showConsole: Bool
+    var onLaunch: () -> Void
     @EnvironmentObject var runner: ProcessRunner
     @State private var copiedCLI: Bool = false
     
+    private var tickerText: String {
+        if let last = runner.logLines.last?.text.trimmingCharacters(in: .whitespacesAndNewlines), !last.isEmpty {
+            return last
+        }
+        return "Ready — \(config.nx)×\(config.ny) \(config.latticeSymmetry == .square ? "square" : "triangular") lattice"
+    }
+    
+    private var tickerColor: Color {
+        switch runner.status {
+        case .running: return .green
+        case .failed, .terminated: return .red
+        case .completed(let code, _): return code == 0 ? .blue : .orange
+        case .idle: return .gray
+        }
+    }
+    
     var body: some View {
         HStack(spacing: 10) {
-            // Clear Console
-            Button(action: { runner.clearLogs() }) {
-                Label("Clear Log", systemImage: "trash")
+            // Console drawer toggle
+            Button(action: { withAnimation(.easeInOut(duration: 0.15)) { showConsole.toggle() } }) {
+                HStack(spacing: 5) {
+                    Image(systemName: "terminal")
+                    Text("Console")
+                    if !runner.logLines.isEmpty {
+                        Text("\(runner.logLines.count)")
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(BlueHour.pillSurface, in: Capsule())
+                    }
+                    Image(systemName: showConsole ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 9, weight: .bold))
+                }
             }
             .controlSize(.regular)
+            .help("Show / hide the solver console (⌘J)")
+            
+            // Live one-line status ticker
+            HStack(spacing: 6) {
+                Circle().fill(tickerColor).frame(width: 7, height: 7)
+                Text(tickerText)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundColor(BlueHour.mist)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(tickerText)
             
             // Reveal in Finder
             Button(action: { runner.openOutputFolder() }) {
-                Label("Open Output Folder", systemImage: "folder")
+                Label("Output", systemImage: "folder")
             }
             .controlSize(.regular)
+            .help("Open output folder")
             
             // Copy CLI Command
             Button(action: {
@@ -1431,12 +2143,10 @@ struct BottomActionBar: View {
                     copiedCLI = false
                 }
             }) {
-                Label(copiedCLI ? "Copied CLI!" : "Copy CLI", systemImage: copiedCLI ? "checkmark" : "terminal")
+                Label(copiedCLI ? "Copied!" : "CLI", systemImage: copiedCLI ? "checkmark" : "doc.on.doc")
             }
             .controlSize(.regular)
-            .help(config.fullCommandLine())
-            
-            Spacer()
+            .help("Copy the equivalent command line:\n" + config.fullCommandLine())
             
             if runner.status.isRunning {
                 Button(role: .destructive, action: { runner.stop() }) {
@@ -1448,13 +2158,7 @@ struct BottomActionBar: View {
                 .tint(.red)
                 .controlSize(.large)
             } else {
-                Button(action: {
-                    if config.mode != .volterra && config.mode != .shift && config.protocolMode == .sweepMisorientation {
-                        runner.startCSLSweep(config: config, candidates: config.sweepCSLCandidates)
-                    } else {
-                        runner.start(config: config)
-                    }
-                }) {
+                Button(action: onLaunch) {
                     let btnTitle: String = {
                         if config.mode != .volterra && config.mode != .shift {
                             switch config.protocolMode {
