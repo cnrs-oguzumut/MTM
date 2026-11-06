@@ -115,6 +115,9 @@ public class SimulationConfig: ObservableObject {
     @Published public var pbcStressControl: String = "none"
     /// PBC Stage 1: relax all three box stresses to zero at α = 0 before loading
     @Published public var pbcRelaxBoxStress: Bool = false
+    /// Plain PBC + shear stress preset: relaxation step held at F12 = this strain (noise ON, strain
+    /// control) so dislocations nucleate; the stress schedule then rises from the relaxed stress. 0 = off
+    @Published public var pbcRelaxStrain: Double = 0.0
     @Published public var stressTol: Double = 1e-5
     @Published public var maxMacroIters: Int = 30
     
@@ -450,6 +453,9 @@ public class SimulationConfig: ObservableObject {
             if isPeriodicLoadingRun(geometry: activeGeometry) {
                 if pbcStressControl != "none" { args.append("--stress-control=\(pbcStressControl)") }
                 if pbcRelaxBoxStress { args.append("--relax-stress=1") }
+                if pbcRelaxStrainApplies(geometry: activeGeometry) && pbcRelaxStrain != 0 {
+                    args.append("--relax-strain=\(pbcRelaxStrain)")
+                }
             }
         }
         
@@ -949,6 +955,14 @@ public extension SimulationConfig {
         guard mode != .shift && mode != .volterra else { return false }
         let isPeriodicDislocs = geometry.enabled && geometry.microstructure.mode == .periodicDislocations
         return isPeriodicDislocs || boundaryCondition == .periodic
+    }
+
+    /// Relaxation at a nonzero shear strain: plain periodic cell (no periodic dislocations) + shear stress preset
+    var pbcRelaxStrainApplies: Bool { pbcRelaxStrainApplies(geometry: geometryConfig) }
+    func pbcRelaxStrainApplies(geometry: MacroscopicGeometryConfigModel) -> Bool {
+        let isPeriodicDislocs = geometry.enabled && geometry.microstructure.mode == .periodicDislocations
+        return isPeriodicLoadingRun(geometry: geometry) && !isPeriodicDislocs &&
+            ["shear", "cauchy_shear"].contains(pbcStressControl)
     }
 
     /// PBC stress preset that makes α a nominal stress (force control), if any.

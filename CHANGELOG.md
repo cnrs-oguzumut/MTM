@@ -39,6 +39,12 @@
   (about 6 passes). The controlled σ holds to about 1e-8. `MTM_STRESS_TRACE=1` prints the passes and the
   box stress from the solver's virial. In the GUI, the periodic box control picker lists the Cauchy and
   nominal presets.
+- **Relaxation at a nonzero shear strain** (`--relax-strain=<F12>`) for plain periodic cells with a shear
+  stress preset (`shear`, `cauchy_shear`). The relaxation step holds the box at F₁₂ under strain control
+  with the initial noise and a remesh cascade, so dislocations nucleate on the unstable homogeneous branch
+  (e.g. 0.14 in a large box). Stress control then starts from the relaxed state, with targets σ₀ + k·|dα|
+  up to α_end (σ₀ is the relaxed stress). The conjugate strain is the absolute F₁₂. In the GUI, the
+  "1. Relaxation Step" panel has a "Relax at shear strain F₁₂" field.
 - `--legacy-stress-servo` runs the old `example_3_stress_controlled_final_clean` Cauchy servo as a baseline.
   It starts from a hard-coded F₁₂ = 0.14 pre-strain on the softening branch, so it can't be compared
   point by point with the minimizer.
@@ -73,6 +79,17 @@
   without any fixed or roller node, since the specimen then only rotates rigidly.
 
 ### Fixed
+- **Limit load keeps the last equilibrium.** Past the limit load a dead load or stress target has no
+  equilibrium, and the run used to log and save the runaway configuration as its final point. In a sheared
+  periodic cell that was a box collapsed to a line in ParaView, and a vertical drop on the chart. Now the
+  run restores the state at the start of the step and saves it as the final `configuration_*.vtk` and
+  `checkpoints/latest.chk` (labelled with its own α). Nothing is logged for the load without equilibrium.
+- **GUI chart under force / stress control** plots against the conjugate strain ε by default, so strain
+  bursts at fixed load show as jumps along x. An `x: ε | x: α` toggle appears for such runs, the readout
+  shows both, and the series is renamed "Conjugate Strain ε (force / stress control)".
+- **GUI avalanche count under force / stress control.** The count was based on drops of the logged energy.
+  Under force or stress control that energy is the enthalpy, which falls at every load step, so every step
+  counted. Such runs now count the solver's own flags (`fractional_drops.csv`).
 - **Element reference areas on pre-displaced meshes.** Every triangle now carries the reference element's
   area h²/2, the area its F is measured against (`ElementTriangle2D::referenceElementArea(dndx)`).
   - Before, the mesher used each triangle's current area at meshing time, so dislocation-dipole and
@@ -80,7 +97,8 @@
   - Each remesh trial then stamped all elements with `elements[0]`'s area, so remesh acceptance compared
     energies weighted differently.
 
-  Single-crystal outputs are byte-identical. Polycrystal runs change: on the dogbone the earlier "plastic
+  Single-crystal outputs are byte-identical, apart from a 1e-5 change in a triangular Lennard-Jones
+  dead-load case. Polycrystal runs change: on the dogbone the earlier "plastic
   relaxation" remeshes at α = 0 and 0.01 are now rejected. Periodic dipoles now log σ = α under stress
   control, with no spurious σ_xx or σ_yy.
 - **PBC stress control A0** is the periodic cell's reference area, not the summed element areas. These

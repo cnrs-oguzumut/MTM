@@ -25,6 +25,10 @@ struct PBCStressControl {
     // (sigma_xx = alpha); the other in-plane stress components are zero in every stress preset
     std::string preset;
     bool relax_stage1 = false; // zero-stress relaxation of all three components at alpha = 0
+    // Shear presets: the relaxation step (step 0) is held at F12 = relax_strain under strain control (affine
+    // + noise, remesh cascade), so dislocations nucleate on the unstable branch; the stress schedule then
+    // rises from the relaxed stress
+    double relax_strain = 0.0;
 
     // ---- per-step state, set by the loading loop ----
     bool active = false;                  // F_bar components are unknowns in this step
@@ -89,5 +93,5 @@ struct PBCStressControl {
 };
 
 // Options from the command line, read by the PBC loading loop
-void set_pbc_stress_control_options(const std::string& preset, bool relax_stage1);
+void set_pbc_stress_control_options(const std::string& preset, bool relax_stage1, double relax_strain = 0.0);
 const PBCStressControl& pbc_stress_control_options();

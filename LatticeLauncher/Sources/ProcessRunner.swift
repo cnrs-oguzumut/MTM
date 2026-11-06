@@ -697,6 +697,19 @@ public class ProcessRunner: ObservableObject {
                 return
             }
             
+            // Force / stress control logs the enthalpy, which falls at every load step: count the
+            // solver's own avalanche flags (fractional_drops.csv) instead of energy drops
+            var solverAvalanches: Int? = nil
+            if content.contains("StrainBurstFraction"),
+               let drops = try? String(contentsOfFile: "\(self.outputDirectory)/fractional_drops.csv", encoding: .utf8) {
+                var count = 0
+                for row in drops.components(separatedBy: .newlines).dropFirst() {
+                    let last = row.trimmingCharacters(in: .whitespaces).components(separatedBy: ",").last
+                    if last == "1" { count += 1 }
+                }
+                solverAvalanches = count
+            }
+
             let lines = content.components(separatedBy: .newlines)
             var allPoints: [StressStrainPoint] = []
             allPoints.reserveCapacity(lines.count)
@@ -768,7 +781,7 @@ public class ProcessRunner: ObservableObject {
                             self.yieldStrain = last.alpha
                         }
                     }
-                    self.updateAvalancheStats()
+                    self.updateAvalancheStats(solverCount: solverAvalanches)
                 }
                 self.pollEigenCSV()
                 if !self.isSweepRunning {
@@ -986,7 +999,11 @@ public class ProcessRunner: ObservableObject {
     }
     
     /// Computes true physical energy drops (E_{i} < E_{i-1}) across the entire relaxed curve
-    private func updateAvalancheStats() {
+    private func updateAvalancheStats(solverCount: Int? = nil) {
+        if let n = solverCount {
+            self.avalancheCount = n
+            return
+        }
         guard curvePoints.count >= 2 else {
             self.avalancheCount = 0
             return

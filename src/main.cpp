@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
   bool export_full_mesh = true;
   bool relax_macro_stress = false;
   std::string stress_control_preset;  // PBC nominal-stress control: shear | uniaxial_y | uniaxial_x | relax_normal
+  double stress_relax_strain = 0.0;   // --relax-strain=<F12>: relaxation step at F12 before stress loading
   bool legacy_stress_servo = false;   // run the legacy PBC Cauchy-stress servo (validation baseline)
   double stress_tol = 1e-5;
   int max_macro_iters = 30;
@@ -269,7 +270,7 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--symmetry=", 0) == 0) {
       lattice_type = arg.substr(11);
     } else if (arg.rfind("--lattice-symmetry=", 0) == 0) {
-      lattice_type = arg.substr(19);
+      lattice_type = arg.substr(15);
     } else if (arg == "--triangular") {
       lattice_type = "triangular";
     } else if (arg == "--square") {
@@ -287,7 +288,7 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--eig-every=", 0) == 0) {
       stability_options.every = std::stoi(arg.substr(12));
     } else if (arg.rfind("--eig-at-avalanche=", 0) == 0) {
-      stability_options.at_avalanche = std::stoi(arg.substr(19)) != 0;
+      stability_options.at_avalanche = std::stoi(arg.substr(15)) != 0;
     } else if (arg.rfind("--eig-modes=", 0) == 0) {
       stability_options.modes = std::stoi(arg.substr(12));
     } else if (arg.rfind("--eig-vectors=", 0) == 0) {
@@ -295,7 +296,7 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--eig-refine=", 0) == 0) {
       stability_options.refine = std::stod(arg.substr(13));
     } else if (arg.rfind("--eig-refine-ahead=", 0) == 0) {
-      stability_options.refine_ahead = std::stod(arg.substr(19));
+      stability_options.refine_ahead = std::stod(arg.substr(15));
     } else if (arg.rfind("--eig-retro=", 0) == 0) {
       stability_options.retro = std::stoi(arg.substr(12));
     } else if (arg == "--shift" || arg == "--staircase") {
@@ -325,6 +326,8 @@ int main(int argc, char **argv) {
                      " | relax_normal | none)" << std::endl;
         return 1;
       }
+    } else if (arg.rfind("--relax-strain=", 0) == 0) {
+      stress_relax_strain = std::stod(arg.substr(15));
     } else if (arg == "--legacy-stress-servo" || arg == "--legacy-stress-servo=1") {
       legacy_stress_servo = true;
     } else if (arg.rfind("--stress-tol=", 0) == 0) {
@@ -332,7 +335,7 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--max-macro-iters=", 0) == 0) {
       max_macro_iters = std::stoi(arg.substr(18));
     } else if (arg.rfind("--max-stress-iters=", 0) == 0) {
-      max_macro_iters = std::stoi(arg.substr(19));
+      max_macro_iters = std::stoi(arg.substr(15));
     } else if (arg == "--trace-avalanche" || arg == "--trace-avalanche=1" || arg == "--trace=1") {
       AvalancheRecorder::instance().setEnabled(true);
     } else if (arg == "--trace-avalanche=0" || arg == "--trace=0") {
@@ -403,7 +406,7 @@ int main(int argc, char **argv) {
   configure_stability_monitor(stability_options);
   // In the loading pipeline --relax-stress=1 relaxes the periodic box to zero stress at alpha = 0
   // (Volterra mode keeps its own outer loop)
-  set_pbc_stress_control_options(stress_control_preset, relax_macro_stress && mode != "volterra");
+  set_pbc_stress_control_options(stress_control_preset, relax_macro_stress && mode != "volterra", stress_relax_strain);
 
   if (!restart_checkpoint.empty()) {
     restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, potential_mode,

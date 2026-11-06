@@ -1796,7 +1796,9 @@ struct SidebarControlsView: View {
                                 VStack(alignment: .leading, spacing: 7) {
                                     HStack(spacing: 5) {
                                         Circle().fill(Color.green).frame(width: 7, height: 7)
-                                        Text("1. Relaxation Step (α = 0, Noise OFF)")
+                                        Text(config.pbcRelaxStrainApplies && config.pbcRelaxStrain != 0
+                                             ? "1. Relaxation Step (F₁₂ = \(String(format: "%g", config.pbcRelaxStrain)), strain control, Noise ON)"
+                                             : "1. Relaxation Step (α = 0, Noise OFF)")
                                             .font(.caption.bold())
                                         Spacer()
                                         Button("Relaxation BCs →") {
@@ -1809,6 +1811,18 @@ struct SidebarControlsView: View {
                                     }
                                     Toggle("Equilibrate crystal / GB before loading", isOn: $config.geometryConfig.microstructure.pre_relax_gb)
                                         .font(.caption)
+                                    if config.pbcRelaxStrainApplies {
+                                        HStack {
+                                            Text("Relax at shear strain F₁₂ (0 = off):")
+                                                .font(.caption)
+                                            Spacer()
+                                            DoubleField(title: "0.0", value: $config.pbcRelaxStrain, width: 70)
+                                        }
+                                        Text("Holds the periodic box at F₁₂ under strain control with the initial noise, so dislocations nucleate on the unstable branch (e.g. 0.14 in a large box). Stress loading then rises from the relaxed stress; α_start is not used.")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
                                     if config.geometryConfig.microstructure.pre_relax_gb {
                                         stage1RelaxationBCSummaryRow
                                         Toggle("Re-anchor reference frame (X₀ ← x_eq)", isOn: $config.geometryConfig.microstructure.reanchor_ref_after_relax)
@@ -1896,21 +1910,35 @@ struct SidebarControlsView: View {
                                         .background(BlueHour.midnight.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
                                     }
 
+                                    let stressNoun = (config.pbcForceControlPreset?.hasPrefix("cauchy_") ?? false) ? "Cauchy stress" : "nominal stress"
+                                    let relaxStrainOn = config.pbcRelaxStrainApplies && config.pbcRelaxStrain != 0
                                     VStack(alignment: .leading, spacing: 6) {
-                                        HStack {
-                                            Text(indenterActive ? "Start depth ratio α_start:" : (isForceControl ? "Start nominal stress α_start:" : "Start strain |α_start|:"))
-                                                .font(.subheadline)
-                                            Spacer()
-                                            DoubleField(title: "0.0", value: $config.alphaStart, width: 80)
+                                        if relaxStrainOn {
+                                            HStack {
+                                                Text("Start \(stressNoun):")
+                                                    .font(.subheadline)
+                                                Spacer()
+                                                Text("relaxed σ₀ at F₁₂ = \(String(format: "%g", config.pbcRelaxStrain))")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            .help("After the relaxation step the stress targets are σ₀ + dα, σ₀ + 2dα, … up to α_end; α_start is not used.")
+                                        } else {
+                                            HStack {
+                                                Text(indenterActive ? "Start depth ratio α_start:" : (isForceControl ? "Start \(stressNoun) α_start:" : "Start strain |α_start|:"))
+                                                    .font(.subheadline)
+                                                Spacer()
+                                                DoubleField(title: "0.0", value: $config.alphaStart, width: 80)
+                                            }
                                         }
                                         HStack {
-                                            Text(indenterActive ? "End depth ratio α_end:" : (isForceControl ? "End nominal stress α_end:" : "End strain |α_end|:"))
+                                            Text(indenterActive ? "End depth ratio α_end:" : (isForceControl ? "End \(stressNoun) α_end:" : "End strain |α_end|:"))
                                                 .font(.subheadline)
                                             Spacer()
                                             DoubleField(title: "0.25", value: $config.alphaEnd, width: 80)
                                         }
                                         HStack {
-                                            Text("Step size |dα|:")
+                                            Text(isForceControl ? "Stress step |dα|:" : "Step size |dα|:")
                                                 .font(.subheadline)
                                             Spacer()
                                             DoubleField(title: "0.0005", value: $config.stepSize, width: 90)

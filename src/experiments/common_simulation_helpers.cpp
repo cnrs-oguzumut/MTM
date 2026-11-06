@@ -702,9 +702,10 @@ void relax_with_cauchy_stress_control(alglib::real_1d_array &x, UserData *userDa
 PBCStressControl g_pbc_stress_options;
 } // namespace
 
-void set_pbc_stress_control_options(const std::string &preset, bool relax_stage1) {
+void set_pbc_stress_control_options(const std::string &preset, bool relax_stage1, double relax_strain) {
   g_pbc_stress_options.preset = preset;
   g_pbc_stress_options.relax_stage1 = relax_stage1;
+  g_pbc_stress_options.relax_strain = relax_strain;
 }
 
 const PBCStressControl &pbc_stress_control_options() { return g_pbc_stress_options; }

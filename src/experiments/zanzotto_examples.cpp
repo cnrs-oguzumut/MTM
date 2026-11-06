@@ -891,6 +891,16 @@ void example_1_conti_zanzotto_loading(
   }
   const bool stress_preset_is_force = PBCStressControl::isForcePreset(stress_ctrl.preset);
   const bool stress_preset_is_cauchy = PBCStressControl::isCauchyPreset(stress_ctrl.preset);
+  // Relaxation step at a nonzero shear strain (shear stress presets): step 0 holds F12 = relax_strain under
+  // strain control with noise, then the stress schedule rises from the relaxed stress sigma_0
+  const bool stress_relax_strain = stress_ctrl_enabled && stress_ctrl.relax_strain != 0.0 && restart_chk == nullptr &&
+                                   !is_periodic_dislocs &&
+                                PBCStressControl::basePreset(stress_ctrl.preset) == "shear";
+  if (stress_ctrl_enabled && stress_ctrl.relax_strain != 0.0 && !stress_relax_strain) {
+    std::cerr << "[Stress Control] WARNING: --relax-strain applies to fresh plain periodic runs with a shear stress "
+                 "preset (shear, cauchy_shear); ignored." << std::endl;
+  }
+  double relax_strain_sigma0 = 0.0; // stress after the relaxation step (start of the stress schedule)
   Eigen::Matrix2d F_bar_state = (restart_chk != nullptr) ? restart_chk->F_ext : Eigen::Matrix2d::Identity();
   Eigen::Matrix2d F_stage1 = Eigen::Matrix2d::Identity(); // box after the alpha = 0 relaxation (schedule origin)
   Eigen::Matrix2d F_bar_n = F_bar_state, F_bar_nm1 = F_bar_state;
@@ -1016,6 +1026,13 @@ void example_1_conti_zanzotto_loading(
       alpha_values.push_back(alpha_min + i * step_size);
     }
   }
+  if (stress_relax_strain) {
+    alpha_values.assign(1, stress_ctrl.relax_strain); // the stress targets are appended after step 0
+    std::cout << "[Stress Control] Relaxation step at F12 = " << stress_ctrl.relax_strain
+              << " under strain control (noise " << noise_level << "), then " << stress_ctrl.preset
+              << " stress loading from the relaxed stress up to " << alpha_max << " (step " << std::abs(step_size)
+              << "); alpha_start is not used." << std::endl;
+  }
 
   int file_counter = (restart_chk != nullptr ? restart_chk->iteration + 1 : 0);
   double post_energy_previous = 0.0;
@@ -1061,7 +1078,7 @@ void example_1_conti_zanzotto_loading(
   int avalanche_counter = 0;
 
   // Process each alpha value
-  const int total_steps = static_cast<int>(alpha_values.size()) - 1;
+  int total_steps = static_cast<int>(alpha_values.size()) - 1; // grows after a nonzero-strain relaxation step
   const bool verbose_log = (std::getenv("MTM_VERBOSE_LOG") != nullptr);
   for (size_t i = 0; i < alpha_values.size(); i++) {
     double alpha = alpha_values[i];
@@ -1085,11 +1102,14 @@ void example_1_conti_zanzotto_loading(
         !is_stage1_relax_step && (i == first_loading_idx) && (restart_chk == nullptr);
     const double actual_dalpha =
         is_first_loading_step ? alpha
-        : (i == 0 ? (restart_chk != nullptr ? step_size : alpha) : (alpha - alpha_values[i - 1]));
+        : (i == 0 ? (restart_chk != nullptr ? step_size : alpha)
+                  : (alpha - ((stress_relax_strain && i == 1) ? relax_strain_sigma0 : alpha_values[i - 1])));
     const double effective_noise_level = is_stage1_relax_step ? 0.0 : noise_level;
     // PBC stress control: the alpha = 0 step is a zero-stress box relaxation; stress presets then drive
     const bool stress_relax_step = stress_ctrl_enabled && (i == 0) && std::abs(alpha) < 1e-15;
-    const bool stress_force_step = stress_ctrl_enabled && !stress_relax_step && stress_preset_is_force;
+    const bool stress_relax_strain_step = stress_relax_strain && (i == 0);
+    const bool stress_force_step = stress_ctrl_enabled && !stress_relax_step && !stress_relax_strain_step &&
+                                   stress_preset_is_force;
     // Force control: dead-load tractions or a nominal-stress target drive this step (never Stage 1)
     const bool force_control_step = stress_force_step || (has_custom_geom && !is_periodic_dislocs &&
                                     !is_stage1_relax_step && macro_geom.hasForceControl());
@@ -1097,6 +1117,17 @@ void example_1_conti_zanzotto_loading(
     if (has_custom_geom && !is_periodic_dislocs) {
       macro_geom.setRunawayReference(square_points, force_control_step
           ? 0.35 * std::max(macro_geom.Lx, macro_geom.Ly) : 0.0);
+    }
+    // Last equilibrium state (start of a force-control step): past the limit load this step has no
+    // equilibrium, and the run keeps this state as its result instead of the runaway configuration
+    std::vector<Point2D> step_start_points;
+    std::vector<ElementTriangle2D> step_start_elements;
+    std::vector<size_t> step_start_active_elements;
+    const Eigen::Matrix2d step_start_F_bar = F_bar_state;
+    if (force_control_step) {
+      step_start_points = square_points;
+      step_start_elements = elements;
+      step_start_active_elements = active_elements;
     }
 
     Eigen::Matrix2d F_ext;
@@ -1114,6 +1145,8 @@ void example_1_conti_zanzotto_loading(
       const std::string &preset = stress_ctrl.preset;
       if (stress_relax_step && stress_ctrl.relax_stage1) {
         for (bool &f : stress_ctrl.comp_free) f = true; // sigma_xx = sigma_yy = sigma_xy = 0
+      } else if (stress_relax_strain_step) {
+        // relaxation step: box held at F12 = relax_strain (strain control), nucleation on the unstable branch
       } else if (stress_preset_is_force) {
         for (bool &f : stress_ctrl.comp_free) f = true;
         const int r = PBCStressControl::targetRow(preset), c = PBCStressControl::targetCol(preset);
@@ -1512,7 +1545,7 @@ void example_1_conti_zanzotto_loading(
       const bool box_runaway = stress_force_step && stress_ctrl.exceedsLimit(F_ext);
       if (runaway_before_cascade || max_jump > runaway_limit || box_runaway) {
         runaway_detected = true;
-        stress_drop_detected = true; // write the pre/post snapshot and checkpoint
+        stress_drop_detected = true; // not an elastic increment
         std::cout << std::defaultfloat << std::setprecision(6) << "  [LIMIT LOAD / YIELD RUNAWAY] alpha = " << alpha;
         if (stress_force_step) {
           std::cout << ": a stress-driven F_bar component changed by " << stress_ctrl.maxStressDrivenJump(F_ext)
@@ -1521,7 +1554,7 @@ void example_1_conti_zanzotto_loading(
           std::cout << ": max nodal displacement " << max_jump << " in one step exceeds " << runaway_limit
                     << " (0.35 max(Lx, Ly)).";
         }
-        std::cout << " Saving the state and stopping the schedule." << std::endl;
+        std::cout << " No equilibrium at this load: keeping the last equilibrium state." << std::endl;
       }
       if (!stress_drop_detected && actual_dalpha != 0.0) {
         elastic_dstrain_ref = traction_dstrain;
@@ -1534,6 +1567,61 @@ void example_1_conti_zanzotto_loading(
       traction_dalpha_n = actual_dalpha;
       traction_prev_step_smooth = (hasChanges == 0) && !stress_drop_detected;
     }
+    if (runaway_detected) {
+      // Limit load: no equilibrium at alpha. Restore the last equilibrium (start of this step), write it
+      // as the final configuration and checkpoint, and log nothing for alpha (the runaway state is not
+      // a point of the curve).
+      const double alpha_eq = (i > 0) ? alpha_values[i - 1] : 0.0;
+      square_points = std::move(step_start_points);
+      elements = std::move(step_start_elements);
+      active_elements = std::move(step_start_active_elements);
+      F_ext = stress_ctrl_enabled ? step_start_F_bar
+          : (has_custom_geom && !is_periodic_dislocs ? macro_geom.computeMacroscopicF(alpha_eq) : F_ext);
+      for (auto &element : elements) {
+        element.set_reference_mesh(square_points);
+        element.set_dof_mapping(full_mapping);
+        element.setExternalDeformation(F_ext);
+      }
+      UserData eqUserData(square_points, elements, calculator, potential_func, potential_func_der, zero,
+                          optimal_lattice_parameter, F_ext, interior_mapping, full_mapping, active_elements,
+                          plasticity);
+      eqUserData.second_derivative_function = &potential_func_sder;
+      if (has_custom_geom && !is_periodic_dislocs) {
+        eqUserData.macro_geom_ptr = &macro_geom;
+        eqUserData.current_alpha = alpha_eq;
+      }
+      const int eq_file_id = caller_id + file_counter;
+      file_counter++;
+      double eq_energy = post_energy_previous, eq_stress = post_stress_previous;
+      ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(&eqUserData, eq_file_id, eq_energy, eq_stress,
+                                                                 true);
+      auto [eq_dislocations, eq_coordination] = DefectAnalysis::analyzeDefectsInReferenceConfig(
+          &eqUserData, eq_file_id, dndx, offsets, original_domain_map, translation_map, domain_dims_point,
+          element_area, pbc, true);
+      ConfigurationSaver::writeToVTK(square_points, elements, &eqUserData, eq_file_id, true, eq_coordination,
+                                     alpha_eq);
+      ConfigurationSaver::CheckpointData chk_eq;
+      chk_eq.nx = nx; chk_eq.ny = ny; chk_eq.iteration = eq_file_id;
+      chk_eq.current_alpha = alpha_eq; chk_eq.step_size = step_size; chk_eq.alpha_end = alpha_max;
+      chk_eq.mode = (step_size > 0 ? "positive" : "negative");
+      chk_eq.seed = seed; chk_eq.enable_remeshing = enable_remeshing;
+      chk_eq.F_ext = F_ext; chk_eq.points = square_points;
+      if (has_custom_geom && !is_periodic_dislocs) {
+        for (const auto &p : square_points_ref) chk_eq.ref_points.push_back(p.coord);
+      }
+      chk_eq.elements = elements; chk_eq.active_elements = active_elements;
+      std::stringstream chk_eq_ss;
+      chk_eq_ss << "checkpoints/checkpoint_" << std::setw(5) << std::setfill('0') << eq_file_id << ".chk";
+      ConfigurationSaver::saveCheckpoint(chk_eq_ss.str(), chk_eq);
+      ConfigurationSaver::saveCheckpoint("checkpoints/latest.chk", chk_eq);
+      std::cout << std::defaultfloat << std::setprecision(6)
+                << "[Force Control] Limit load between alpha = " << alpha_eq << " and " << alpha
+                << ". Last equilibrium state (alpha = " << alpha_eq << ") saved -> configuration_"
+                << std::setw(5) << std::setfill('0') << eq_file_id << std::setfill(' ')
+                << ".vtk (dislocations: " << eq_dislocations << "), checkpoints/latest.chk. Schedule stopped cleanly." << std::endl;
+      break;
+    }
+
     if (stress_ctrl_enabled) {
       F_bar_state = F_ext;
       if (stress_relax_step) F_stage1 = F_ext;
@@ -1907,6 +1995,7 @@ void example_1_conti_zanzotto_loading(
                                   pre_active_elements, caller_id + file_counter - 1);
 
     // ==================== LOG DATA ====================
+    if (stress_relax_strain_step) traction_strain = F_ext(0, 1) - F_stage1(0, 1);
     std::vector<std::pair<std::string, double>> traction_columns;
     if (run_has_tractions) {
       const double external_potential = stress_ctrl_enabled ? stress_ctrl.workTerm(F_ext)
@@ -1928,12 +2017,21 @@ void example_1_conti_zanzotto_loading(
     post_energy_previous = post_energy;
     post_stress_previous = post_stress;
 
-    if (runaway_detected) {
-      std::cout << std::defaultfloat << std::setprecision(6)
-                << "[Force Control] Limit load reached at alpha = " << alpha
-                << ". Schedule stopped cleanly." << std::endl;
-      break;
+    if (stress_relax_strain_step) {
+      // Stress schedule from the relaxed state: sigma_0 + k |dalpha| up to alpha_end
+      relax_strain_sigma0 = post_stress;
+      traction_strain_previous = traction_strain;
+      const double d = std::abs(step_size);
+      for (int k = 1; relax_strain_sigma0 + k * d <= alpha_max + 1e-9 * d; ++k) {
+        alpha_values.push_back(relax_strain_sigma0 + k * d);
+      }
+      total_steps = static_cast<int>(alpha_values.size()) - 1;
+      std::cout << std::defaultfloat << std::setprecision(6) << "[Stress Control] Relaxation step at F12 = " << alpha
+                << " relaxed: sigma = " << relax_strain_sigma0 << ". Switching to " << stress_ctrl.preset
+                << " stress control: " << (alpha_values.size() - 1) << " steps up to " << alpha_max << "."
+                << std::endl;
     }
+
 
     // ==================== STAGE 1 -> STAGE 2 PROTOCOL HANDOVER ====================
     if (has_custom_geom && i == 0 && restart_chk == nullptr) {

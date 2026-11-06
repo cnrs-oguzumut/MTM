@@ -39,6 +39,20 @@ struct StressStrainChartView: View {
     @State private var showYieldLine: Bool = true
     @State private var useInteriorGBGauge: Bool = true
     @State private var showGBSigmaLabels: Bool = true
+    /// Force / stress control: plot against the conjugate strain (bursts show as jumps along x)
+    @State private var plotAgainstConjugateStrain: Bool = true
+
+    /// The run logged a conjugate strain (dead load, force grip or PBC stress control)
+    private var hasConjugateStrain: Bool {
+        runner.curvePoints.contains { $0.effectiveStrain != 0 }
+    }
+    private var conjugateStrainAxis: Bool {
+        hasConjugateStrain && plotAgainstConjugateStrain && chartMode != .eigenvalue && chartMode != .gbEnergy
+    }
+    /// x coordinate of a curve point: the load parameter α, or the conjugate strain ε under force control
+    private func xValue(_ pt: StressStrainPoint) -> Double {
+        conjugateStrainAxis ? pt.effectiveStrain : pt.alpha
+    }
     
     /// Torsion runs report the rim torque T = Σ r × f as their primary quantity.
     private var primaryIsTorque: Bool {
@@ -85,7 +99,7 @@ struct StressStrainChartView: View {
         if chartMode == .eigenvalue && !runner.eigenPoints.isEmpty {
             return runner.eigenPoints.map(\.alpha)
         }
-        return runner.curvePoints.map(\.alpha)
+        return runner.curvePoints.map { xValue($0) }
     }
     
     private var xDomain: ClosedRange<Double> {
@@ -121,6 +135,13 @@ struct StressStrainChartView: View {
         let minA = alphas.min() ?? firstAlpha
         let maxA = alphas.max() ?? (minA + 0.001)
         let span = maxA - minA
+
+        // Conjugate-strain axis: the schedule (α_start → α_end) is a load range, not a strain range
+        if conjugateStrainAxis {
+            let effectiveSpan = max(0.0008, span)
+            let lo = scaleMode == .autoFit ? minA - effectiveSpan * 0.025 : min(0.0, minA)
+            return lo...(maxA + effectiveSpan * 0.065)
+        }
         
         switch scaleMode {
         case .autoFit:
@@ -310,7 +331,7 @@ struct StressStrainChartView: View {
                             Text(StressComponentType.meanContactPressure.rawValue).tag(StressComponentType.meanContactPressure)
                             Text(StressComponentType.contactAtoms.rawValue).tag(StressComponentType.contactAtoms)
                         }
-                        Section(header: Text("Force Control (Dead Load)")) {
+                        Section(header: Text("Force / Stress Control")) {
                             Text(StressComponentType.effectiveStrain.rawValue).tag(StressComponentType.effectiveStrain)
                         }
                     }
@@ -446,6 +467,18 @@ struct StressStrainChartView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 
+                // Force / stress control: x-axis = load α or conjugate strain ε
+                if hasConjugateStrain && chartMode != .gbEnergy && chartMode != .eigenvalue {
+                    Picker("", selection: $plotAgainstConjugateStrain) {
+                        Text("x: ε").tag(true)
+                        Text("x: α").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 96)
+                    .help("Under force or stress control α is the applied load; plot against the conjugate strain ε to see strain bursts as jumps along x.")
+                }
                 // Active Strain Range Badge
                 if chartMode != .gbEnergy, let firstA = runner.curvePoints.first?.alpha, let lastA = runner.curvePoints.last?.alpha {
                     Text("α: [\(String(format: "%.3f", firstA)) → \(String(format: "%.3f", lastA))]")
@@ -665,7 +698,7 @@ struct StressStrainChartView: View {
                             let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
                             let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : "Internal Energy (E)"
                             LineMark(
-                                x: .value("Shear Strain (α)", pt.alpha),
+                                x: .value(conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)", xValue(pt)),
                                 y: .value(yLabel, yVal)
                             )
                             .foregroundStyle(chartMode == .stress ? Color.blue : Color.purple)
@@ -673,7 +706,7 @@ struct StressStrainChartView: View {
                             
                             if runner.curvePoints.count <= 50 {
                                 PointMark(
-                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    x: .value(conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)", xValue(pt)),
                                     y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle())
@@ -688,7 +721,7 @@ struct StressStrainChartView: View {
                                 let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
                                 let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : "Internal Energy (E)"
                                 PointMark(
-                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    x: .value(conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)", xValue(pt)),
                                     y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle())
@@ -696,7 +729,7 @@ struct StressStrainChartView: View {
                                 .foregroundStyle(Color.red)
                                 
                                 PointMark(
-                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    x: .value(conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)", xValue(pt)),
                                     y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle().strokeBorder(lineWidth: 1.5))
@@ -726,12 +759,12 @@ struct StressStrainChartView: View {
                         
                         // 4. Hover Cursor / Selection Indicator
                         if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
-                            RuleMark(x: .value("Selected α", pt.alpha))
+                            RuleMark(x: .value("Selected α", xValue(pt)))
                                 .foregroundStyle(Color.secondary.opacity(0.4))
                                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
                             
                             PointMark(
-                                x: .value("Selected α", pt.alpha),
+                                x: .value("Selected α", xValue(pt)),
                                 y: .value("Value", chartMode == .stress ? stressValue(for: pt) : pt.postEnergy)
                             )
                             .symbolSize(80)
@@ -873,7 +906,7 @@ struct StressStrainChartView: View {
                     HStack(spacing: 18) {
                         Text("Step: \(pt.iteration)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text(isIndentation ? "Depth δ: \(String(format: "%.4f", pt.alpha))" : "Strain α: \(String(format: "%.6f", pt.alpha))")
+                        Text(isIndentation ? "Depth δ: \(String(format: "%.4f", pt.alpha))" : (hasConjugateStrain ? "Load α: \(String(format: "%.6f", pt.alpha))  Strain ε: \(String(format: "%.6f", pt.effectiveStrain))" : "Strain α: \(String(format: "%.6f", pt.alpha))"))
                             .font(.system(size: 11, design: .monospaced))
                         Text("\(stressTitle): \(String(format: "%.6f", curStress))")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -954,7 +987,7 @@ struct StressStrainChartView: View {
     
     private func findClosestPoint(to alpha: Double) -> StressStrainPoint? {
         guard !runner.curvePoints.isEmpty else { return nil }
-        return runner.curvePoints.min(by: { abs($0.alpha - alpha) < abs($1.alpha - alpha) })
+        return runner.curvePoints.min(by: { abs(xValue($0) - alpha) < abs(xValue($1) - alpha) })
     }
     
     private func findClosestEigenPoint(to alpha: Double) -> EigenPoint? {

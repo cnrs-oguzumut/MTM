@@ -14,7 +14,7 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
     case indenterLoad = "Indenter Load F_y(δ)"
     case meanContactPressure = "Mean Contact Pressure p_m"
     case contactAtoms = "Contact Atoms N_c"
-    case effectiveStrain = "Dead-Load Strain ε (conjugate)"
+    case effectiveStrain = "Conjugate Strain ε (force / stress control)"
 
     public var id: String { rawValue }
 
