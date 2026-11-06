@@ -109,8 +109,9 @@ public class SimulationConfig: ObservableObject {
     
     // Dislocation Stress Relaxation (Full Cauchy Tensor)
     @Published public var relaxMacroStress: Bool = false
-    /// PBC nominal-stress control preset: "none", "shear" (P12 = α), "uniaxial_y" (P22 = α),
-    /// "uniaxial_x" (P11 = α), "relax_normal" (F12 = α strain-driven, P11 = P22 = 0)
+    /// PBC stress control preset: "none", nominal "shear" (P12 = α), "uniaxial_y" (P22 = α),
+    /// "uniaxial_x" (P11 = α), their Cauchy versions "cauchy_shear" (σ_xy = α), "cauchy_uniaxial_y"
+    /// (σ_yy = α), "cauchy_uniaxial_x" (σ_xx = α), and "relax_normal" (F12 = α strain-driven, P11 = P22 = 0)
     @Published public var pbcStressControl: String = "none"
     /// PBC Stage 1: relax all three box stresses to zero at α = 0 before loading
     @Published public var pbcRelaxBoxStress: Bool = false
@@ -952,16 +953,19 @@ public extension SimulationConfig {
 
     /// PBC stress preset that makes α a nominal stress (force control), if any.
     var pbcForceControlPreset: String? {
-        guard isPeriodicLoadingRun, ["shear", "uniaxial_y", "uniaxial_x"].contains(pbcStressControl) else { return nil }
+        guard isPeriodicLoadingRun, ["shear", "uniaxial_y", "uniaxial_x",
+                                     "cauchy_shear", "cauchy_uniaxial_y", "cauchy_uniaxial_x"].contains(pbcStressControl)
+        else { return nil }
         return pbcStressControl
     }
 
     var activeStressComponentLabel: String {
         if let p = pbcForceControlPreset {
+            let measure = p.hasPrefix("cauchy_") ? "Cauchy" : "nominal"
             switch p {
-            case "uniaxial_y": return "Tensile Stress σ_yy (box stress control)"
-            case "uniaxial_x": return "Axial Stress σ_xx (box stress control)"
-            default: return "Shear Stress σ_xy (box stress control)"
+            case "uniaxial_y", "cauchy_uniaxial_y": return "Tensile Stress σ_yy (\(measure) box stress control)"
+            case "uniaxial_x", "cauchy_uniaxial_x": return "Axial Stress σ_xx (\(measure) box stress control)"
+            default: return "Shear Stress σ_xy (\(measure) box stress control)"
             }
         }
         if let t = activeTractionRule {
@@ -1003,7 +1007,10 @@ public extension SimulationConfig {
     }
     
     var activeStrainParameterNoun: String {
-        if pbcForceControlPreset != nil { return "applied nominal box stress α (stress control)" }
+        if let p = pbcForceControlPreset {
+            return p.hasPrefix("cauchy_") ? "applied Cauchy box stress α (stress control)"
+                                          : "applied nominal box stress α (stress control)"
+        }
         if activeTractionRule != nil { return "applied nominal traction α (force control)" }
         if activeMechanicalLoading == .affineShearBox, let m = outerPerimeterAffineMode {
             if m == "circumferential_shear" || m == "torsion" { return "rim rotation θ = α (rad)" }

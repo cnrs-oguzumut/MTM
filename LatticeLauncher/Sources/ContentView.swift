@@ -1874,9 +1874,12 @@ struct SidebarControlsView: View {
                                                 Spacer()
                                                 Picker("", selection: $config.pbcStressControl) {
                                                     Text("Strain (F₁₂ = α)").tag("none")
-                                                    Text("Shear stress P₁₂ = α").tag("shear")
-                                                    Text("Uniaxial stress P₂₂ = α").tag("uniaxial_y")
-                                                    Text("Uniaxial stress P₁₁ = α").tag("uniaxial_x")
+                                                    Text("Cauchy shear σ_xy = α").tag("cauchy_shear")
+                                                    Text("Cauchy uniaxial σ_yy = α").tag("cauchy_uniaxial_y")
+                                                    Text("Cauchy uniaxial σ_xx = α").tag("cauchy_uniaxial_x")
+                                                    Text("Nominal shear P₁₂ = α").tag("shear")
+                                                    Text("Nominal uniaxial P₂₂ = α").tag("uniaxial_y")
+                                                    Text("Nominal uniaxial P₁₁ = α").tag("uniaxial_x")
                                                     Text("Shear strain, free normals").tag("relax_normal")
                                                 }
                                                 .labelsHidden()
@@ -1884,7 +1887,7 @@ struct SidebarControlsView: View {
                                             }
                                             Toggle("Relax box stress to zero at α = 0 (σ_xx = σ_yy = σ_xy = 0)", isOn: $config.pbcRelaxBoxStress)
                                                 .font(.caption)
-                                            Text("Stress control solves the box F̄ (upper triangular) with the atoms on H = E − A₀ Pᵗ : (F̄ − I). Past the limit load the run stops cleanly.")
+                                            Text("Stress control solves the box F̄ (upper triangular) with the atoms on H = E − A₀ Pᵗ : (F̄ − I). Nominal presets fix P (force per reference length); Cauchy presets fix the true stress σ by updating Pᵗ = J σ F̄⁻ᵀ until σ settles. The other in-plane stresses are zero. Past the limit load the run stops cleanly.")
                                                 .font(.caption2)
                                                 .foregroundColor(.secondary)
                                                 .fixedSize(horizontal: false, vertical: true)

@@ -652,6 +652,53 @@ void relax_with_stress_control(alglib::real_1d_array &x, UserData *userData, int
   }
 }
 
+// Cauchy (true-stress) target: the nominal target conjugate to the free box components depends on the
+// box, Pt = J sigma_t F_bar^{-T}. Relax at fixed Pt, re-evaluate it at the relaxed box, repeat (each
+// pass warm-starts from the last). The map contracts with ratio ~ sigma / modulus and stops converging
+// only at the limit load, where the limit guard takes over.
+void relax_with_cauchy_stress_control(alglib::real_1d_array &x, UserData *userData, int corrections, int maxits) {
+  PBCStressControl *sc = userData->stress_ctrl;
+  const double sigma_scale = sc->sigma_target.cwiseAbs().maxCoeff();
+  const double tol = 1e-11 + 1e-9 * sigma_scale;
+  constexpr int kMaxPasses = 60;
+  const bool trace = std::getenv("MTM_STRESS_TRACE") != nullptr;
+  double change = 0.0;
+  int pass = 0;
+  for (; pass < kMaxPasses; ++pass) {
+    sc->setNominalFromCauchy(*sc->F_bar);
+    const Eigen::Matrix2d P_used = sc->P_target;
+    relax_with_stress_control(x, userData, corrections, maxits);
+    sc->setNominalFromCauchy(*sc->F_bar);
+    change = (sc->P_target - P_used).cwiseAbs().maxCoeff();
+    if (trace) {
+      std::cout << "[Cauchy Control] alpha = " << userData->current_alpha << " pass " << pass + 1
+                << " |dPt| = " << std::scientific << change << std::defaultfloat << std::endl;
+    }
+    if (change <= tol) break;
+    if (sc->exceedsLimit(*sc->F_bar)) return; // past the limit load: the loading loop stops the run
+    sc->P_target = P_used; // keep the target the configuration is in equilibrium with
+  }
+  if (trace) {
+    // Box Cauchy stress from the solver's own virial: sigma = (sum_e A_e P_e F_e^T) / (A0 det F_bar)
+    alglib::real_1d_array g;
+    g.setlength(x.length());
+    double e = 0.0;
+    Eigen::Matrix2d virial = Eigen::Matrix2d::Zero();
+    userData->virial_out = &virial;
+    minimize_energy_with_triangles(x, e, g, userData);
+    userData->virial_out = nullptr;
+    const Eigen::Matrix2d sig = virial / (sc->A0 * sc->F_bar->determinant());
+    std::cout << "[Cauchy Control] alpha = " << userData->current_alpha << " box sigma (virial) xx = "
+              << std::scientific << sig(0, 0) << " xy = " << sig(0, 1) << " yx = " << sig(1, 0)
+              << " yy = " << sig(1, 1) << std::defaultfloat << std::endl;
+  }
+  if (pass == kMaxPasses) {
+    std::cout << "[Cauchy Control] WARNING: alpha = " << userData->current_alpha << ": the nominal target did not "
+              << "settle in " << kMaxPasses << " passes (|dPt| = " << std::scientific << change
+              << std::defaultfloat << "); near the limit load." << std::endl;
+  }
+}
+
 PBCStressControl g_pbc_stress_options;
 } // namespace
 
@@ -669,7 +716,11 @@ void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corre
   }
   if (userData->stress_ctrl != nullptr && userData->stress_ctrl->active &&
       userData->stress_ctrl->F_bar != nullptr) {
-    relax_with_stress_control(x, userData, corrections, g_relaxation_maxits);
+    if (userData->stress_ctrl->cauchy) {
+      relax_with_cauchy_stress_control(x, userData, corrections, g_relaxation_maxits);
+    } else {
+      relax_with_stress_control(x, userData, corrections, g_relaxation_maxits);
+    }
     return;
   }
   if (g_relaxation_solver && g_relaxation_step >= g_relaxation_first_step) {

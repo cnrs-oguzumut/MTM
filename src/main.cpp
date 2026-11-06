@@ -319,11 +319,10 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--stress-control=", 0) == 0) {
       stress_control_preset = arg.substr(17);
       if (stress_control_preset == "none" || stress_control_preset == "off") stress_control_preset.clear();
-      if (!stress_control_preset.empty() && stress_control_preset != "shear" &&
-          stress_control_preset != "uniaxial_y" && stress_control_preset != "uniaxial_x" &&
-          stress_control_preset != "relax_normal") {
+      if (!stress_control_preset.empty() && !PBCStressControl::isKnownPreset(stress_control_preset)) {
         std::cerr << "Unknown --stress-control preset '" << stress_control_preset
-                  << "' (shear | uniaxial_y | uniaxial_x | relax_normal | none)" << std::endl;
+                  << "' (shear | uniaxial_y | uniaxial_x | cauchy_shear | cauchy_uniaxial_y | cauchy_uniaxial_x"
+                     " | relax_normal | none)" << std::endl;
         return 1;
       }
     } else if (arg == "--legacy-stress-servo" || arg == "--legacy-stress-servo=1") {

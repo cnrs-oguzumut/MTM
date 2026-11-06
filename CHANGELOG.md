@@ -32,6 +32,13 @@
   than 0.5 in one step) and the CSV columns. Adds `Fbar11`, `Fbar12` and `Fbar22` columns. Prints the bulk
   Voigt stiffness and the uniaxial Poisson ratio it predicts. Set `MTM_STRESS_GRADCHECK=1` /
   `MTM_STRESS_TRACE=1` for finite-difference and convergence diagnostics.
+- **Cauchy (true-stress) presets** `--stress-control=cauchy_shear|cauchy_uniaxial_y|cauchy_uniaxial_x` set
+  σ_xy, σ_yy or σ_xx = α, with the other in-plane Cauchy stresses at zero. The nominal presets are kept;
+  under nominal shear, σ_xx = P₁₂F₁₂/J is not zero. A fixed Cauchy stress is a follower load, so each
+  relaxation is a fixed-point loop on the nominal target Pᵗ = J σᵗ F̄⁻ᵀ, re-evaluated at the relaxed box
+  (about 6 passes). The controlled σ holds to about 1e-8. `MTM_STRESS_TRACE=1` prints the passes and the
+  box stress from the solver's virial. In the GUI, the periodic box control picker lists the Cauchy and
+  nominal presets.
 - `--legacy-stress-servo` runs the old `example_3_stress_controlled_final_clean` Cauchy servo as a baseline.
   It starts from a hard-coded F₁₂ = 0.14 pre-strain on the softening branch, so it can't be compared
   point by point with the minimizer.
@@ -66,6 +73,18 @@
   without any fixed or roller node, since the specimen then only rotates rigidly.
 
 ### Fixed
+- **Element reference areas on pre-displaced meshes.** Every triangle now carries the reference element's
+  area h²/2, the area its F is measured against (`ElementTriangle2D::referenceElementArea(dndx)`).
+  - Before, the mesher used each triangle's current area at meshing time, so dislocation-dipole and
+    grain-boundary meshes weighted the energy with distorted areas (0.39–0.63 instead of 0.5).
+  - Each remesh trial then stamped all elements with `elements[0]`'s area, so remesh acceptance compared
+    energies weighted differently.
+
+  Single-crystal outputs are byte-identical. Polycrystal runs change: on the dogbone the earlier "plastic
+  relaxation" remeshes at α = 0 and 0.01 are now rejected. Periodic dipoles now log σ = α under stress
+  control, with no spurious σ_xx or σ_yy.
+- **PBC stress control A0** is the periodic cell's reference area, not the summed element areas. These
+  differ when a dipole inserts extra half-planes (dipole: 576 vs 586).
 - **Checkpoint restart of custom-geometry / fixed-BC runs.** `--restart` hard-coded a periodic cell, so
   any other run restarted as a different problem. Now it takes the original run's `--geometry-json`, `--bc`,
   `--lattice` and rotation flags. It refuses a checkpoint whose node count or geometry doesn't match.

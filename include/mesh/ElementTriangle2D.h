@@ -51,6 +51,11 @@ public:
     
     // Reference configuration methods
     void setReferenceArea(double ref_area) { reference_area = ref_area; }
+    // Area of the reference element behind shape derivatives dN/dX (rows = nodes): 0.5 / |det(dN2, dN3)|.
+    // Every lattice triangle is half a reference unit cell, so this is its material (reference) area.
+    static double referenceElementArea(const Eigen::Matrix<double, 3, 2>& dndx) {
+        return 0.5 / std::abs(dndx(1, 0) * dndx(2, 1) - dndx(1, 1) * dndx(2, 0));
+    }
     double getReferenceArea() const { return reference_area > 0.0 ? reference_area : area; }
     
     // New area calculation methods

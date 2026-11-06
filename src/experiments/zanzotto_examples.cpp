@@ -848,6 +848,8 @@ void example_1_conti_zanzotto_loading(
     }
     for (auto &element : elements) {
       element.set_shape_derivatives(dndx);
+      // Older checkpoints carry the distorted current areas of the initial mesh
+      element.setReferenceArea(ElementTriangle2D::referenceElementArea(dndx));
       element.set_reference_mesh(square_points); // fixed / driven nodes are read from here
       element.set_dof_mapping(full_mapping);
       element.setExternalDeformation(restart_chk->F_ext);
@@ -887,25 +889,34 @@ void example_1_conti_zanzotto_loading(
     std::cerr << "[Stress Control] WARNING: --stress-control / --relax-stress apply to periodic cells only; ignored."
               << std::endl;
   }
-  const bool stress_preset_is_force = (stress_ctrl.preset == "shear" || stress_ctrl.preset == "uniaxial_y" ||
-                                       stress_ctrl.preset == "uniaxial_x");
+  const bool stress_preset_is_force = PBCStressControl::isForcePreset(stress_ctrl.preset);
+  const bool stress_preset_is_cauchy = PBCStressControl::isCauchyPreset(stress_ctrl.preset);
   Eigen::Matrix2d F_bar_state = (restart_chk != nullptr) ? restart_chk->F_ext : Eigen::Matrix2d::Identity();
   Eigen::Matrix2d F_stage1 = Eigen::Matrix2d::Identity(); // box after the alpha = 0 relaxation (schedule origin)
   Eigen::Matrix2d F_bar_n = F_bar_state, F_bar_nm1 = F_bar_state;
   double F_bar_dalpha_n = 0.0;
   bool F_bar_hist_smooth = false;
   if (stress_ctrl_enabled) {
+    // Reference area of the periodic cell (the work A0 Pt : dF_bar is per cell): the triangles tile the
+    // current cell, area A0 det F_bar. Not the summed material areas, which exceed it when a dislocation
+    // dipole inserts extra half-planes.
     stress_ctrl.A0 = 0.0;
-    for (size_t e : active_elements) stress_ctrl.A0 += elements[e].getReferenceArea();
-    std::cout << "[Stress Control] PBC nominal-stress control: preset = '"
+    for (size_t e : active_elements) {
+      elements[e].setExternalDeformation(F_bar_state);
+      stress_ctrl.A0 += elements[e].calculateCurrentArea(square_points);
+    }
+    stress_ctrl.A0 /= F_bar_state.determinant();
+    std::cout << "[Stress Control] PBC " << (stress_preset_is_cauchy ? "Cauchy (true)" : "nominal (Piola)")
+              << "-stress control: preset = '"
               << (stress_ctrl.preset.empty() ? "none" : stress_ctrl.preset) << "', zero-stress Stage 1 = "
               << (stress_ctrl.relax_stage1 ? "yes" : "no") << ", A0 = " << stress_ctrl.A0
               << " | F_bar is upper triangular (F21 = 0)" << std::endl;
   }
   // Primary stress for periodic cells: sigma_xy, or the controlled normal component for uniaxial presets
   const auto pbc_primary_stress = [&](const Eigen::Matrix2d &st) {
-    if (stress_ctrl_enabled && stress_ctrl.preset == "uniaxial_y") return st(1, 1);
-    if (stress_ctrl_enabled && stress_ctrl.preset == "uniaxial_x") return st(0, 0);
+    if (stress_ctrl_enabled && stress_preset_is_force) {
+      return st(PBCStressControl::targetRow(stress_ctrl.preset), PBCStressControl::targetCol(stress_ctrl.preset));
+    }
     return st(0, 1);
   };
   const bool run_has_tractions = stress_ctrl_enabled || (has_custom_geom && !is_periodic_dislocs &&
@@ -1097,15 +1108,22 @@ void example_1_conti_zanzotto_loading(
     if (stress_ctrl_enabled) {
       // Which F_bar components are unknowns, and their nominal targets
       stress_ctrl.P_target.setZero();
+      stress_ctrl.sigma_target.setZero();
+      stress_ctrl.cauchy = false;
       for (bool &f : stress_ctrl.comp_free) f = false;
       const std::string &preset = stress_ctrl.preset;
       if (stress_relax_step && stress_ctrl.relax_stage1) {
         for (bool &f : stress_ctrl.comp_free) f = true; // sigma_xx = sigma_yy = sigma_xy = 0
-      } else if (preset == "shear" || preset == "uniaxial_y" || preset == "uniaxial_x") {
+      } else if (stress_preset_is_force) {
         for (bool &f : stress_ctrl.comp_free) f = true;
-        if (preset == "shear") stress_ctrl.P_target(0, 1) = alpha;
-        if (preset == "uniaxial_y") stress_ctrl.P_target(1, 1) = alpha;
-        if (preset == "uniaxial_x") stress_ctrl.P_target(0, 0) = alpha;
+        const int r = PBCStressControl::targetRow(preset), c = PBCStressControl::targetCol(preset);
+        if (stress_preset_is_cauchy) {
+          stress_ctrl.cauchy = true; // P_target is re-evaluated from sigma_target in relax_configuration
+          stress_ctrl.sigma_target(r, c) = alpha;
+          stress_ctrl.sigma_target(c, r) = alpha;
+        } else {
+          stress_ctrl.P_target(r, c) = alpha;
+        }
       } else if (preset == "relax_normal") {
         stress_ctrl.comp_free[0] = true; // F12 = alpha strain-driven, P11 = P22 = 0
         stress_ctrl.comp_free[2] = true;
@@ -1469,8 +1487,8 @@ void example_1_conti_zanzotto_loading(
     if (force_control_step) {
       if (stress_force_step) {
         // Conjugate strain of the controlled component, measured from the Stage-1 box
-        const int r = (stress_ctrl.preset == "uniaxial_y") ? 1 : 0;
-        const int c = (stress_ctrl.preset == "uniaxial_x") ? 0 : 1;
+        const int r = PBCStressControl::targetRow(stress_ctrl.preset);
+        const int c = PBCStressControl::targetCol(stress_ctrl.preset);
         traction_strain = F_ext(r, c) - F_stage1(r, c);
       } else {
         traction_strain = macro_geom.computeTractionConjugateStrain(square_points);
