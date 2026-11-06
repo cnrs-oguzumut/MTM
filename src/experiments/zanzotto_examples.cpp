@@ -921,7 +921,8 @@ void example_1_conti_zanzotto_loading(
     const bool is_first_loading_step =
         !is_stage1_relax_step && (i == first_loading_idx) && (restart_chk == nullptr);
     const double actual_dalpha =
-        (i == 0 || is_first_loading_step) ? alpha : (alpha - alpha_values[i - 1]);
+        is_first_loading_step ? alpha
+        : (i == 0 ? (restart_chk != nullptr ? step_size : alpha) : (alpha - alpha_values[i - 1]));
     const double effective_noise_level = is_stage1_relax_step ? 0.0 : noise_level;
 
     Eigen::Matrix2d F_ext;
@@ -1554,7 +1555,18 @@ void example_1_conti_zanzotto_loading(
         macro_geom.indenter.enabled = original_indenter_enabled;
         if (macro_geom.microstructure.reanchor_ref_after_relax) {
           square_points_ref = square_points;
+          // Keep the original specimen frame (x_min, y_min, Lx, Ly): disk radius, polygon vertices
+          // and cutouts are normalized to it. Only refresh carved bounds / indenter from x_eq.
+          const double frame_x_min = macro_geom.x_min, frame_y_min = macro_geom.y_min;
+          const double frame_Lx = macro_geom.Lx, frame_Ly = macro_geom.Ly;
           macro_geom.setPhysicalBoundsFromPoints(square_points_ref, optimal_lattice_parameter);
+          if (macro_geom.outer_shape != OuterDomainShapeType::Rectangle) {
+            macro_geom.x_min = frame_x_min; macro_geom.y_min = frame_y_min;
+            macro_geom.Lx = frame_Lx; macro_geom.Ly = frame_Ly;
+            if (macro_geom.isIndenterActive()) {
+              macro_geom.setupIndenterBounds(optimal_lattice_parameter, &square_points_ref);
+            }
+          }
         } else if (macro_geom.isIndenterActive()) {
           macro_geom.setupIndenterBounds(optimal_lattice_parameter, &square_points);
         }

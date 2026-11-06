@@ -302,6 +302,13 @@ struct MacroscopicGeometryConfig {
     //   4 = Y-Constrained / X-Free (RollerX or partial Y lock: ux free, uy(alpha) prescribed/0)
     mutable std::vector<int> cached_node_bc_role;
     mutable bool has_partial_dof_constraints = false;
+    // Nodes driven by a torsion (circumferential_shear) rule follow an exact rigid rotation
+    // x = X_c + R(alpha) (X - X_c) about their pivot instead of the linearized X + alpha * v.
+    mutable std::vector<char> cached_node_rotation_driven;
+    mutable std::vector<Eigen::Vector2d> cached_node_rotation_pivot;
+    bool hasTorsionDrivenNodes() const;
+    // Torque exerted on the torsion-driven rim nodes, T = sum (x - X_c) x f (z-component)
+    double computeRimTorque(const UserData* userData, const std::vector<Point2D>& current_points) const;
 
     bool hasPartialDOFConstraints() const { return enabled && has_partial_dof_constraints; }
     bool isNodeXConstrained(int node_idx) const {

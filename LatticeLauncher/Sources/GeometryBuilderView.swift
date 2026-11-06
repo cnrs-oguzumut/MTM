@@ -24,6 +24,8 @@ public struct GeometryBuilderView: View {
     @State private var inspectorSection: InspectorSection = .microstructure
     @State private var autoUpdateGBSeamParams: Bool = true
     @State private var approvedLatticeSiteCount: Int? = nil
+    /// Rules/stress saved before the user-picked Disk auto-swapped plain grips to a radial rim load (for Undo).
+    @State private var diskSwapUndo: (rules: [BoundaryZoneRuleModel], stress: String)? = nil
     
     /// Rough number of lattice sites the blueprint would draw.
     private var estimatedLatticeSiteCount: Int { max(0, config.nx * config.ny) }
@@ -218,11 +220,7 @@ public struct GeometryBuilderView: View {
     private var canvasSurfaceBadgeTitle: String {
         if isViewingStage1RelaxBCs {
             let s1 = config.geometryConfig.stage1_boundary_rules.filter(\.enabled)
-            let s2 = config.geometryConfig.boundary_rules.filter(\.enabled)
-            let sameAsLoading = !s1.isEmpty && s1.count == s2.count && zip(s1, s2).allSatisfy { a, b in
-                a.region == b.region && a.kind == b.kind && a.affine_mode == b.affine_mode
-            }
-            if sameAsLoading {
+            if config.geometryConfig.isStage1LinkedToLoading {
                 return "STAGE 1 RELAXATION (α = 0, Noise OFF • Same Grips as Loading Step)"
             }
             return "STAGE 1 RELAXATION (α = 0, Noise OFF • \(s1.count) Active Rules)"
@@ -1310,7 +1308,7 @@ public struct GeometryBuilderView: View {
             case .affine:
                 let mode = rule.affine_mode
                 let samples = pick(pts, 28)
-                let vecs = samples.map { geo.affineDisplacement(mode: mode, xHat: $0.x, yHat: $0.y) }
+                let vecs = samples.map { geo.affineDisplacement(mode: mode, region: rule.region, xHat: $0.x, yHat: $0.y) }
                 let maxMag = max(1e-9, vecs.map { hypot($0.ux, $0.uy) }.max() ?? 1.0)
                 for (s, v) in zip(samples, vecs) {
                     let m = hypot(v.ux, v.uy)
@@ -3182,14 +3180,19 @@ public struct GeometryBuilderView: View {
     private var outerDomainCard: some View {
         GroupBox(label: Label("Outer Macroscopic Shape", systemImage: "square.on.circle")) {
             VStack(alignment: .leading, spacing: 8) {
-                Picker("Shape", selection: $config.geometryConfig.outer_shape) {
+                Picker("Shape", selection: Binding(
+                    get: { config.geometryConfig.outer_shape },
+                    set: { newShape in userPickedOuterShape(newShape) }
+                )) {
                     ForEach(OuterDomainShape.allCases) { shape in
                         Label(shape.displayName, systemImage: shape.icon).tag(shape)
                     }
                 }
                 .controlSize(.small)
-                .onChange(of: config.geometryConfig.outer_shape) { newShape in
-                    handleOuterShapeChanged(newShape)
+                .onChange(of: config.geometryConfig.outer_shape) { _ in
+                    // Any shape change (picker, preset, loaded config) keeps Voronoi seeds inside the solid;
+                    // boundary rules are only touched when the user picks the shape (userPickedOuterShape).
+                    config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
                 }
                 
                 if config.geometryConfig.outer_shape == .dogbone {
@@ -3224,6 +3227,32 @@ public struct GeometryBuilderView: View {
                             .frame(width: 110)
                         Text(String(format: "%.2f", config.geometryConfig.disk_radius))
                             .font(.caption2.monospacedDigit())
+                    }
+                    if let undo = diskSwapUndo {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "info.circle.fill")
+                                .font(.caption2)
+                                .foregroundColor(BlueHour.mist)
+                            Text("Top/bottom grips only grab the polar caps of a disk, so the rim load was switched to Radial Outward Pull.")
+                                .font(.system(size: 9.5))
+                                .foregroundColor(BlueHour.mist)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Button("Undo") {
+                                config.geometryConfig.boundary_rules = undo.rules
+                                config.geometryConfig.primary_stress_component = undo.stress
+                                diskSwapUndo = nil
+                            }
+                            .controlSize(.mini)
+                            Button {
+                                diskSwapUndo = nil
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Dismiss")
+                        }
                     }
                     diskLoadingChips
                 } else if config.geometryConfig.outer_shape == .polygon {
@@ -3994,19 +4023,39 @@ public struct GeometryBuilderView: View {
     }
     
     // MARK: - Disk / Shape Loading Helpers
-    private func setOuterAffine(_ mode: String, stress: String) {
+    private func setOuterAffine(_ mode: String, stress: String, holeKind: BoundaryConditionKindModel = .free) {
         config.mode = .positive
         config.boundaryCondition = .fixed
         config.geometryConfig.enabled = true
         config.geometryConfig.indenter.enabled = false
         config.geometryConfig.boundary_rules = [
             BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: mode),
-            BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            BoundaryZoneRuleModel(region: .holeSurfaces, kind: holeKind, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
         ]
         config.geometryConfig.primary_stress_component = stress
-        if config.geometryConfig.microstructure.mode != .bicrystal {
-            config.geometryConfig.stage1_boundary_rules = config.geometryConfig.boundary_rules
+    }
+
+    /// Torsion needs a clamped inner boundary: an enabled area cutout plus a fixed hole_surfaces rule.
+    private var torsionHasClampedHole: Bool {
+        let g = config.geometryConfig
+        let hasAreaHole = g.cutouts.contains { $0.enabled && [.circle, .ellipse, .polygon].contains($0.type) }
+        let holeFixed = g.boundary_rules.contains { $0.enabled && $0.region == .holeSurfaces && $0.kind == .fixed }
+        return hasAreaHole && holeFixed
+    }
+
+    private var hasEnabledAreaCutout: Bool {
+        config.geometryConfig.cutouts.contains { $0.enabled && [.circle, .ellipse, .polygon].contains($0.type) }
+    }
+
+    /// One-click annulus: centred circular hole (r = 0.35 R) clamped, outer rim rotated rigidly.
+    private func makeAnnulusTorsion() {
+        if !hasEnabledAreaCutout {
+            let r = 0.35 * config.geometryConfig.disk_radius
+            config.geometryConfig.cutouts.append(
+                GeometryCutoutItem(type: .circle, cx: 0.50, cy: 0.50, rx: r, ry: r)
+            )
         }
+        setOuterAffine("circumferential_shear", stress: "torque", holeKind: .fixed)
     }
     
     private var currentOuterAffineMode: String? {
@@ -4031,10 +4080,21 @@ public struct GeometryBuilderView: View {
                         setOuterAffine("radial_inward", stress: "hydrostatic")
                     }
                     selectableChipButton(title: "Pure Shear", isSelected: m == "pure_shear") {
-                        setOuterAffine("pure_shear", stress: "pure_shear")
+                        setOuterAffine("pure_shear", stress: "auto")
                     }
                     selectableChipButton(title: "Circumferential Torsion", isSelected: m == "circumferential_shear" || m == "torsion") {
-                        setOuterAffine("circumferential_shear", stress: "sigma_xy")
+                        setOuterAffine("circumferential_shear", stress: "torque", holeKind: .fixed)
+                    }
+                    .disabled(!torsionHasClampedHole)
+                    .opacity(torsionHasClampedHole ? 1.0 : 0.45)
+                    .help(torsionHasClampedHole
+                          ? "Rotate the outer rim rigidly about the disk centre (θ = α rad) with the hole clamped; reports the rim torque."
+                          : "Torsion needs a clamped inner boundary; a free disk only rotates rigidly. Add a hole with a fixed hole_surfaces rule, or use \"Make annulus + torsion\".")
+                    if !torsionHasClampedHole {
+                        selectableChipButton(title: "Make Annulus + Torsion", isSelected: false) {
+                            makeAnnulusTorsion()
+                        }
+                        .help("Adds a centred circular hole (r = 0.35 R) clamped on its rim, and rotates the outer rim (circumferential_shear). Reports torque.")
                     }
                     selectableChipButton(title: "Diametral Compression (Caps)", isSelected: isDiametral) {
                         config.applyMechanicalLoading(.uniaxialCompY)
@@ -4045,16 +4105,26 @@ public struct GeometryBuilderView: View {
         .padding(.top, 2)
     }
     
-    private func handleOuterShapeChanged(_ newShape: OuterDomainShape) {
-        config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
-        guard newShape == .disk else { return }
-        // Rectangular top/bottom grips on a disk only grab the polar caps; default to a true rim load instead.
+    /// Called only from the shape picker's setter (a user choice), never for presets or loaded configs.
+    private func userPickedOuterShape(_ newShape: OuterDomainShape) {
+        let previous = config.geometryConfig.outer_shape
+        config.geometryConfig.outer_shape = newShape
+        guard newShape != previous else { return }
+        diskSwapUndo = nil
+        guard newShape == .disk, !config.geometryConfig.indenter.enabled else { return }
+        // Plain tension/shear grips (top driven +y or ±x, bottom fixed) only grab the polar caps of a disk,
+        // so switch them to a true rim load. Compression grips (top uy = -1) are a valid diametral
+        // (Brazilian) test and are never swapped.
         let rules = config.geometryConfig.boundary_rules.filter(\.enabled)
-        let hasRectGrips = rules.contains { $0.region == .top && $0.kind == .prescribed } &&
-            rules.contains { $0.region == .bottom && $0.kind == .fixed }
-        if hasRectGrips && !config.geometryConfig.indenter.enabled {
-            setOuterAffine("radial_outward", stress: "hydrostatic")
+        let hasPlainTopGrip = rules.contains { r in
+            r.region == .top && r.kind == .prescribed &&
+            ((r.uy > 0.5 && abs(r.ux) < 0.5) || (abs(r.ux) > 0.5 && abs(r.uy) < 0.5))
         }
+        let hasBottomFixed = rules.contains { $0.region == .bottom && $0.kind == .fixed }
+        let hasCompressionGrip = rules.contains { $0.region == .top && $0.kind == .prescribed && $0.uy < -0.5 }
+        guard hasPlainTopGrip && hasBottomFixed && !hasCompressionGrip else { return }
+        diskSwapUndo = (config.geometryConfig.boundary_rules, config.geometryConfig.primary_stress_component)
+        setOuterAffine("radial_outward", stress: "hydrostatic")
     }
     
     // MARK: - Helpers

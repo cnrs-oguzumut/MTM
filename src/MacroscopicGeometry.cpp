@@ -16,6 +16,19 @@
 
 namespace {
 
+// Centre-symmetric affine modes (biaxial, radial, pure shear, torsion) pivot about the specimen
+// centre only when applied on a closed contour (outer rim or hole rims). Edge and custom-box
+// rules keep the bottom-left corner origin, so their strain matches a one-sided grip.
+bool affineRuleUsesCenterOrigin(const BoundaryZoneRule& rule) {
+    if (rule.kind != BoundaryConditionKind::AffineDeformation) return false;
+    if (rule.region != BoundaryRegionType::OuterPerimeter &&
+        rule.region != BoundaryRegionType::HoleSurfaces) return false;
+    const std::string& m = rule.affine_mode;
+    return m == "biaxial" || m == "radial_outward" || m == "radial_inward" ||
+           m == "biaxial_compression" || m == "pure_shear" ||
+           m == "circumferential_shear" || m == "torsion";
+}
+
 // Minimal, dependency-free JSON token/object parser helpers for geometry_config.json
 std::string trim(const std::string& s) {
     size_t a = 0;
@@ -676,9 +689,31 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                             }
                             s.cx = cand_x;
                             s.cy = cand_y;
+                            relocated = true;
                             break;
                         }
                     }
+                }
+                // Last resort (e.g. seed inside a central hole): nearest solid point on growing rings
+                for (int ring = 1; !relocated && ring <= 40; ++ring) {
+                    const double rad = 0.0125 * ring;
+                    for (int k = 0; k < 32; ++k) {
+                        const double ang = 2.0 * M_PI * k / 32.0;
+                        const double tx = s.cx + rad * std::cos(ang);
+                        const double ty = s.cy + rad * std::sin(ang);
+                        if (isPointInsideSolid(tx * size_x, ty * size_y) &&
+                            !isPointNearCutout(tx * size_x, ty * size_y, 1.5 * a)) {
+                            s.cx = tx;
+                            s.cy = ty;
+                            relocated = true;
+                            break;
+                        }
+                    }
+                }
+                if (!relocated) {
+                    --num_relocated_seeds;
+                    std::cerr << "[Microstructure] WARNING: Voronoi seed " << s.id
+                              << " lies outside the carved solid and could not be relocated\n";
                 }
             }
         }
@@ -1814,6 +1849,8 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
     full_mapping.clear();
     node_bc_role.assign(n_pts, 0);
     node_bc_velocity.assign(n_pts, Eigen::Vector2d::Zero());
+    cached_node_rotation_driven.assign(n_pts, 0);
+    cached_node_rotation_pivot.assign(n_pts, Eigen::Vector2d::Zero());
 
     if (n_pts == 0) return;
 
@@ -1843,6 +1880,8 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
         bool locked_y = false;
         bool driven_x = false;
         bool driven_y = false;
+        bool rotation_driven = false;
+        Eigen::Vector2d rotation_pivot = Eigen::Vector2d::Zero();
         Eigen::Vector2d vel = Eigen::Vector2d::Zero();
 
         for (const auto& rule : boundary_rules) {
@@ -1911,6 +1950,9 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
 
             if (!matches) continue;
 
+            // Any later constraining rule replaces an earlier torsion trajectory on this node
+            if (rule.kind != BoundaryConditionKind::FreeSurface) rotation_driven = false;
+
             if (rule.kind == BoundaryConditionKind::FreeSurface) {
                 // FreeSurface (Neumann natural BC) marks a traction-free boundary.
                 // It MUST NEVER overwrite an already-constrained Dirichlet condition!
@@ -1953,7 +1995,11 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
                 driven_x = true;
                 driven_y = true;
                 Eigen::Vector2d rel_corner(x - x_min, y - y_min);
-                Eigen::Vector2d rel_center(x - center.x(), y - center.y());
+                // Symmetric modes are centred only on closed contours around the specimen
+                // (outer rim, hole rims); edge / custom-box rules keep the bottom-left corner origin.
+                const Eigen::Vector2d pivot = affineRuleUsesCenterOrigin(rule)
+                    ? center : Eigen::Vector2d(x_min, y_min);
+                Eigen::Vector2d rel_pivot(x - pivot.x(), y - pivot.y());
                 if (rule.affine_mode == "simple_shear_y") {
                     vel = Eigen::Vector2d(0.0, rel_corner.x());
                 } else if (rule.affine_mode == "uniaxial_y") {
@@ -1961,13 +2007,15 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
                 } else if (rule.affine_mode == "uniaxial_x") {
                     vel = Eigen::Vector2d(rel_corner.x(), 0.0);
                 } else if (rule.affine_mode == "pure_shear") {
-                    vel = Eigen::Vector2d(rel_center.x(), -rel_center.y());
+                    vel = Eigen::Vector2d(rel_pivot.x(), -rel_pivot.y());
                 } else if (rule.affine_mode == "biaxial" || rule.affine_mode == "radial_outward") {
-                    vel = Eigen::Vector2d(rel_center.x(), rel_center.y());
+                    vel = Eigen::Vector2d(rel_pivot.x(), rel_pivot.y());
                 } else if (rule.affine_mode == "radial_inward" || rule.affine_mode == "biaxial_compression") {
-                    vel = Eigen::Vector2d(-rel_center.x(), -rel_center.y());
+                    vel = Eigen::Vector2d(-rel_pivot.x(), -rel_pivot.y());
                 } else if (rule.affine_mode == "circumferential_shear" || rule.affine_mode == "torsion") {
-                    vel = Eigen::Vector2d(-rel_center.y(), rel_center.x());
+                    vel = Eigen::Vector2d(-rel_pivot.y(), rel_pivot.x());
+                    rotation_driven = true;
+                    rotation_pivot = pivot;
                 } else {
                     // default: simple_shear_x -> u_x = alpha * (y - y_min)
                     vel = Eigen::Vector2d(rel_corner.y(), 0.0);
@@ -1976,6 +2024,10 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
         }
 
         node_bc_velocity[i] = vel;
+        if (rotation_driven) {
+            cached_node_rotation_driven[i] = 1;
+            cached_node_rotation_pivot[i] = rotation_pivot;
+        }
         if (locked_x && locked_y) {
             node_bc_role[i] = (driven_x || driven_y) ? 2 : 1;
         } else if (locked_x && !locked_y) {
@@ -2023,6 +2075,58 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
               << count_driven << " Driven (ux, uy), "
               << count_roller_x << " Roller-X (Free ux, Constrained uy), "
               << count_roller_y << " Roller-Y (Constrained ux, Free uy)\n";
+
+    if (hasTorsionDrivenNodes() && count_fixed + count_roller_x + count_roller_y == 0) {
+        std::cerr << "[MacroscopicGeometry] WARNING: torsion (circumferential_shear) is active but no node is "
+                     "Fixed or on a Roller. A free specimen only rotates rigidly, so the torque stays ~0. "
+                     "Clamp an inner boundary (e.g. hole_surfaces fixed).\n";
+    }
+}
+
+bool MacroscopicGeometryConfig::hasTorsionDrivenNodes() const {
+    for (char flag : cached_node_rotation_driven) {
+        if (flag) return true;
+    }
+    return false;
+}
+
+double MacroscopicGeometryConfig::computeRimTorque(
+    const UserData* userData,
+    const std::vector<Point2D>& current_points) const {
+    if (!userData || !hasTorsionDrivenNodes()) return 0.0;
+    const double normalisation = userData->calculator.getUnitCellArea();
+    const size_t n_flags = cached_node_rotation_driven.size();
+    double torque = 0.0;
+
+    for (size_t elem_idx : userData->active_elements) {
+        const auto& elem = userData->elements[elem_idx];
+        int idx[3] = {elem.getNodeIndex(0), elem.getNodeIndex(1), elem.getNodeIndex(2)};
+        bool touches_rim = false;
+        for (int k = 0; k < 3; ++k) {
+            if (idx[k] >= 0 && static_cast<size_t>(idx[k]) < n_flags && cached_node_rotation_driven[idx[k]]) {
+                touches_rim = true;
+            }
+        }
+        if (!touches_rim) continue;
+
+        const Eigen::Matrix2d& F = elem.getDeformationGradient();
+        Eigen::Matrix2d C = elem.getMetricTensor();
+        auto result = lagrange::reduce(C);
+        Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
+            result.C_reduced, userData->derivative_function) / normalisation;
+        Eigen::Matrix2d P_stress = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
+        auto nodal_forces = elem.calculate_nodal_forces(P_stress);
+
+        for (int k = 0; k < 3; ++k) {
+            const int n = idx[k];
+            if (n < 0 || static_cast<size_t>(n) >= n_flags || !cached_node_rotation_driven[n] ||
+                static_cast<size_t>(n) >= current_points.size()) continue;
+            // nodal_forces = dE/dx: the load the grips must apply to hold the rim at R(alpha)
+            const Eigen::Vector2d r = current_points[n].coord - cached_node_rotation_pivot[n];
+            torque += r.x() * nodal_forces[k].y() - r.y() * nodal_forces[k].x();
+        }
+    }
+    return torque;
 }
 
 std::vector<BoundaryZoneRule> MacroscopicGeometryConfig::buildStage1RelaxationRules() const {
@@ -2283,8 +2387,11 @@ Eigen::Matrix2d MacroscopicGeometryConfig::computeMacroscopicF(double alpha) con
                 F(0, 0) = 1.0 - alpha;
                 F(1, 1) = 1.0 - alpha;
             } else if (rule.affine_mode == "circumferential_shear" || rule.affine_mode == "torsion") {
-                F(0, 1) = -alpha;
-                F(1, 0) = alpha;
+                // Exact rotation R(alpha), alpha in radians (no spurious sqrt(1 + alpha^2) stretch)
+                F(0, 0) = std::cos(alpha);
+                F(0, 1) = -std::sin(alpha);
+                F(1, 0) = std::sin(alpha);
+                F(1, 1) = std::cos(alpha);
             } else if (rule.affine_mode == "simple_shear_y") {
                 F(1, 0) = alpha;
             } else {
@@ -2322,15 +2429,15 @@ void MacroscopicGeometryConfig::applyLoadStep(
     if (n_pts == 0 || points_ref.size() != n_pts) return;
 
     Eigen::Matrix2d F_macro_alpha = computeMacroscopicF(alpha);
-    Eigen::Matrix2d dF_macro = computeMacroscopicF(dalpha) - Eigen::Matrix2d::Identity();
+    // Linear modes: dF = F(dalpha) - I. Torsion's R(alpha) is non-linear, so use the exact
+    // increment R(alpha) - R(alpha - dalpha) there.
+    Eigen::Matrix2d dF_macro = hasTorsionDrivenNodes()
+        ? Eigen::Matrix2d(F_macro_alpha - computeMacroscopicF(alpha - dalpha))
+        : Eigen::Matrix2d(computeMacroscopicF(dalpha) - Eigen::Matrix2d::Identity());
     bool use_center_origin = false;
     for (const auto& rule : boundary_rules) {
         if (!rule.enabled) continue;
-        if (rule.kind == BoundaryConditionKind::AffineDeformation &&
-            (rule.affine_mode == "biaxial" || rule.affine_mode == "radial_outward" ||
-             rule.affine_mode == "radial_inward" || rule.affine_mode == "biaxial_compression" ||
-             rule.affine_mode == "pure_shear" || rule.affine_mode == "circumferential_shear" ||
-             rule.affine_mode == "torsion")) {
+        if (rule.kind == BoundaryConditionKind::AffineDeformation && affineRuleUsesCenterOrigin(rule)) {
             use_center_origin = true;
             break;
         }
@@ -2380,7 +2487,15 @@ void MacroscopicGeometryConfig::applyLoadStep(
             }
         } else if (node_bc_role[j] == 2) {
             // Driven / Prescribed node: exact boundary trajectory X_0 + alpha * v_j
-            current_points[j].coord = points_ref[j].coord + alpha * node_bc_velocity[j];
+            // (torsion rims: exact rotation X_c + R(alpha) (X_0 - X_c) about their pivot)
+            if (j < cached_node_rotation_driven.size() && cached_node_rotation_driven[j]) {
+                const Eigen::Vector2d& pc = cached_node_rotation_pivot[j];
+                const double c = std::cos(alpha), s = std::sin(alpha);
+                const Eigen::Vector2d d = points_ref[j].coord - pc;
+                current_points[j].coord = pc + Eigen::Vector2d(c * d.x() - s * d.y(), s * d.x() + c * d.y());
+            } else {
+                current_points[j].coord = points_ref[j].coord + alpha * node_bc_velocity[j];
+            }
         } else if (node_bc_role[j] == 3) {
             // Roller-Y / X-Constrained, Y-Free: lock x(alpha) = X_0.x + alpha * vx, free predictor on y
             Eigen::Vector2d rel = base_coord - origin;
@@ -2430,6 +2545,10 @@ double MacroscopicGeometryConfig::extractPrimaryStress(
         }
     }
 
+    const bool torque_available = (userData != nullptr && current_points != nullptr && hasTorsionDrivenNodes());
+    if (primary_stress_component == "torque") {
+        return torque_available ? computeRimTorque(userData, *current_points) : stress_tensor(0, 1);
+    }
     if (primary_stress_component == "sigma_yy") return stress_tensor(1, 1);
     if (primary_stress_component == "sigma_xx") return stress_tensor(0, 0);
     if (primary_stress_component == "sigma_xy") return stress_tensor(0, 1);
@@ -2461,6 +2580,9 @@ double MacroscopicGeometryConfig::extractPrimaryStress(
             }
             if (rule.affine_mode == "pure_shear") {
                 return 0.5 * (stress_tensor(0, 0) - stress_tensor(1, 1));
+            }
+            if ((rule.affine_mode == "circumferential_shear" || rule.affine_mode == "torsion") && torque_available) {
+                return computeRimTorque(userData, *current_points);
             }
             return stress_tensor(0, 1);
         }

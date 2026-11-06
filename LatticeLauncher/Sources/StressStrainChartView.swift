@@ -40,6 +40,15 @@ struct StressStrainChartView: View {
     @State private var useInteriorGBGauge: Bool = true
     @State private var showGBSigmaLabels: Bool = true
     
+    /// Torsion runs report the rim torque T = Σ r × f as their primary quantity.
+    private var primaryIsTorque: Bool {
+        guard let g = runner.activeConfig?.geometryConfig else { return false }
+        if g.primary_stress_component == "torque" { return true }
+        return g.primary_stress_component == "auto" && g.boundary_rules.contains {
+            $0.enabled && $0.kind == .affine && ($0.affine_mode == "circumferential_shear" || $0.affine_mode == "torsion")
+        }
+    }
+
     private func stressValue(for pt: StressStrainPoint) -> Double {
         pt.value(for: stressComponent)
     }
@@ -651,7 +660,7 @@ struct StressStrainChartView: View {
                         // 1. Primary Stress / Energy Line Mark (+ PointMark when sparse)
                         ForEach(displayCurvePoints) { pt in
                             let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
-                            let yLabel = chartMode == .stress ? stressComponent.rawValue : "Internal Energy (E)"
+                            let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : "Internal Energy (E)"
                             LineMark(
                                 x: .value("Shear Strain (α)", pt.alpha),
                                 y: .value(yLabel, yVal)
@@ -674,7 +683,7 @@ struct StressStrainChartView: View {
                         if showRemeshEvents {
                             ForEach(displayRemeshEvents) { pt in
                                 let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
-                                let yLabel = chartMode == .stress ? stressComponent.rawValue : "Internal Energy (E)"
+                                let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : "Internal Energy (E)"
                                 PointMark(
                                     x: .value("Shear Strain (α)", pt.alpha),
                                     y: .value(yLabel, yVal)
@@ -854,7 +863,7 @@ struct StressStrainChartView: View {
                     let curStress = stressValue(for: pt)
                     let stressTitle: String = {
                         if stressComponent == .primary {
-                            return isIndentation ? "Load P" : "Stress σ"
+                            return isIndentation ? "Load P" : (primaryIsTorque ? "Torque T" : "Stress σ")
                         }
                         return stressComponent.shortLabel
                     }()

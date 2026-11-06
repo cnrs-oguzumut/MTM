@@ -869,7 +869,18 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
-    ]
+    ] {
+        didSet {
+            // Keep Stage 1 linked to the loading rules only while the user hasn't customised it:
+            // it must be empty or still equal (ignoring ids) to the previous loading rules.
+            // Bicrystal runs keep their GB-frame rollers and are never auto-synced to the grips.
+            guard microstructure.mode != .bicrystal else { return }
+            if stage1_boundary_rules.isEmpty ||
+                Self.rulesEquivalent(stage1_boundary_rules, oldValue) {
+                stage1_boundary_rules = boundary_rules
+            }
+        }
+    }
     public var stage1_boundary_rules: [BoundaryZoneRuleModel] = [
         BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
         BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
@@ -1312,6 +1323,30 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         return 1.0
     }
     
+    /// Rule lists are equivalent when every rule matches on its physics (region, kind, enabled,
+    /// affine mode, ux/uy, locks, thickness, box bounds); the UUID `id` is ignored.
+    public static func rulesEquivalent(_ a: [BoundaryZoneRuleModel], _ b: [BoundaryZoneRuleModel]) -> Bool {
+        guard a.count == b.count else { return false }
+        return zip(a, b).allSatisfy { r, q in
+            r.region == q.region && r.kind == q.kind && r.enabled == q.enabled &&
+            r.affine_mode == q.affine_mode && r.ux == q.ux && r.uy == q.uy &&
+            r.lock_x == q.lock_x && r.lock_y == q.lock_y && r.thickness_a0 == q.thickness_a0 &&
+            r.box_x_min == q.box_x_min && r.box_x_max == q.box_x_max &&
+            r.box_y_min == q.box_y_min && r.box_y_max == q.box_y_max
+        }
+    }
+
+    /// True when Stage 1 follows the loading rules (empty, or equal to them ignoring ids).
+    public var isStage1LinkedToLoading: Bool {
+        if stage1_boundary_rules.isEmpty { return microstructure.mode != .bicrystal }
+        return Self.rulesEquivalent(stage1_boundary_rules, boundary_rules)
+    }
+
+    /// Re-link Stage 1 to the loading rules (the "Same as Loading" action).
+    public mutating func relinkStage1ToLoading() {
+        stage1_boundary_rules = boundary_rules
+    }
+
     /// Returns the Stage 1 (α = 0) relaxation boundary rules (user-editable stage1_boundary_rules)
     public func stage1RelaxationRules() -> [BoundaryZoneRuleModel] {
         if !stage1_boundary_rules.isEmpty {
@@ -1459,21 +1494,22 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     }
     
     /// Unit-α displacement direction prescribed by an affine perimeter rule at (xHat, yHat).
-    /// Mirrors the C++ kinematics: center-symmetric modes are measured from the specimen centroid,
-    /// shear/uniaxial modes from the bottom-left of the domain bounds.
-    public func affineDisplacement(mode: String, xHat: Double, yHat: Double) -> (ux: Double, uy: Double) {
-        let b = outerDomainBounds()
-        let cx = 0.5 * (b.minX + b.maxX), cy = 0.5 * (b.minY + b.maxY)
-        let rx = xHat - cx, ry = yHat - cy
+    /// Mirrors the C++ kinematics in the raw specimen frame [0, 1]²: center-symmetric modes pivot
+    /// about the box centre only on closed contours (outer rim, hole rims); edge / custom-box rules
+    /// and the shear/uniaxial modes use the bottom-left corner.
+    public func affineDisplacement(mode: String, region: BoundaryRegionSelector, xHat: Double, yHat: Double) -> (ux: Double, uy: Double) {
+        let centred = (region == .outerPerimeter || region == .holeSurfaces)
+        let px = centred ? 0.5 : 0.0, py = centred ? 0.5 : 0.0
+        let rx = xHat - px, ry = yHat - py
         switch mode {
         case "biaxial", "radial_outward": return (rx, ry)
         case "radial_inward", "biaxial_compression": return (-rx, -ry)
         case "pure_shear": return (rx, -ry)
         case "circumferential_shear", "torsion": return (-ry, rx)
-        case "uniaxial_y": return (0.0, yHat - b.minY)
-        case "uniaxial_x": return (xHat - b.minX, 0.0)
-        case "simple_shear_y": return (0.0, xHat - b.minX)
-        default: return (yHat - b.minY, 0.0) // simple_shear_x
+        case "uniaxial_y": return (0.0, yHat)
+        case "uniaxial_x": return (xHat, 0.0)
+        case "simple_shear_y": return (0.0, xHat)
+        default: return (yHat, 0.0) // simple_shear_x
         }
     }
 

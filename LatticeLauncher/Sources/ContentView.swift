@@ -1572,20 +1572,16 @@ struct SidebarControlsView: View {
             return ("Standard Fixed Box (α = 0)", "rectangle.inset.filled")
         }
         let s1 = config.geometryConfig.stage1_boundary_rules.filter(\.enabled)
-        let s2 = config.geometryConfig.boundary_rules.filter(\.enabled)
         func kindOf(_ reg: BoundaryRegionSelector) -> BoundaryConditionKindModel? {
             s1.first(where: { $0.region == reg })?.kind
         }
-        let sameAsLoading = !s1.isEmpty && s1.count == s2.count && zip(s1, s2).allSatisfy { a, b in
-            a.region == b.region && a.kind == b.kind && a.affine_mode == b.affine_mode
-        }
-        if sameAsLoading {
+        if config.geometryConfig.isStage1LinkedToLoading {
             return ("Same as Loading Step BCs (α = 0, \(s1.count) active)", "link.circle.fill")
         }
         let isGBRoller = (kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerY && kindOf(.right) == .free)
             || (kindOf(.left) == .rollerY && kindOf(.right) == .rollerY && kindOf(.bottom) == .rollerX && kindOf(.top) == .free)
         if isGBRoller {
-            return ("GB Roller BCs (Top/Bot Roller, Left Roller, Right Free)", "arrow.left.and.right.Righttriangle.left.righttriangle.right.fill")
+            return ("GB Roller BCs (Top/Bot Roller, Left Roller, Right Free)", "arrow.left.and.right")
         }
         let is4Roller = (kindOf(.top) == .rollerX && kindOf(.bottom) == .rollerX && kindOf(.left) == .rollerX && kindOf(.right) == .rollerX)
             || (kindOf(.top) == .rollerY && kindOf(.bottom) == .rollerY && kindOf(.left) == .rollerY && kindOf(.right) == .rollerY)
@@ -1620,7 +1616,7 @@ struct SidebarControlsView: View {
                                 Label("GB Roller (Default — Top/Bot Roller, Left Roller, Right Free)", systemImage: "checkmark.seal.fill")
                             }
                             Button {
-                                config.geometryConfig.stage1_boundary_rules = config.geometryConfig.boundary_rules
+                                config.geometryConfig.relinkStage1ToLoading()
                             } label: {
                                 Label("Same as Loading Step BCs (evaluated at α = 0)", systemImage: "link.circle.fill")
                             }
@@ -1682,6 +1678,25 @@ struct SidebarControlsView: View {
                     Text(info.title)
                         .font(.caption2)
                         .foregroundColor(Color(red: 0.45, green: 0.92, blue: 0.62))
+                }
+            }
+            if config.geometryConfig.enabled && !config.isEffectivePeriodicPBC {
+                HStack(spacing: 6) {
+                    let linked = config.geometryConfig.isStage1LinkedToLoading
+                    Label(linked ? "Linked to Loading BCs" : "Custom",
+                          systemImage: linked ? "link" : "slider.horizontal.3")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(linked ? Color(red: 0.45, green: 0.92, blue: 0.62) : .orange)
+                        .help(linked
+                              ? "Stage 1 follows every change to the Loading BCs."
+                              : "Stage 1 has its own rules; edits to the Loading BCs don't change them.")
+                    if !linked {
+                        Button("Re-link") {
+                            config.geometryConfig.relinkStage1ToLoading()
+                        }
+                        .controlSize(.mini)
+                        .help("Copy the Loading BCs into Stage 1 and keep them in sync from now on.")
+                    }
                 }
             }
             Text("Indenter OFF • Thermal noise OFF during relaxation")

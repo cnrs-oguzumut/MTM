@@ -918,13 +918,20 @@ public extension SimulationConfig {
             boundaryCondition = .fixed
             geometryConfig.enabled = true
         }
-        
-        if geometryConfig.enabled && geometryConfig.microstructure.mode != .bicrystal && load != .customRegional {
-            geometryConfig.stage1_boundary_rules = geometryConfig.boundary_rules
-        }
+        // Stage 1 follows these rules automatically while it is still linked to them
+        // (see MacroscopicGeometryConfigModel.boundary_rules didSet); custom Stage 1 rules are kept.
     }
     
+    /// Affine mode of the enabled outer-perimeter rule, if any.
+    private var outerPerimeterAffineMode: String? {
+        geometryConfig.boundary_rules.first { $0.enabled && $0.region == .outerPerimeter && $0.kind == .affine }?.affine_mode
+    }
+
     var activeStressComponentLabel: String {
+        if activeMechanicalLoading == .affineShearBox, let m = outerPerimeterAffineMode {
+            if m == "circumferential_shear" || m == "torsion" { return "Rim Torque T = Σ r × f" }
+            if m == "pure_shear" { return "Pure-Shear Stress ½(σ_xx−σ_yy)" }
+        }
         switch activeMechanicalLoading {
         case .simpleShearPos, .simpleShearNeg, .shearParallelGB, .affineShearBox:
             return "Shear Stress σ_xy"
@@ -948,6 +955,10 @@ public extension SimulationConfig {
     }
     
     var activeStrainParameterNoun: String {
+        if activeMechanicalLoading == .affineShearBox, let m = outerPerimeterAffineMode {
+            if m == "circumferential_shear" || m == "torsion" { return "rim rotation θ = α (rad)" }
+            if m == "pure_shear" { return "pure-shear strain ε" }
+        }
         switch activeMechanicalLoading {
         case .simpleShearPos, .simpleShearNeg, .shearParallelGB, .affineShearBox:
             return "shear strain γ_xy"
