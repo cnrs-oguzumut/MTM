@@ -66,6 +66,20 @@
   without any fixed or roller node, since the specimen then only rotates rigidly.
 
 ### Fixed
+- **Checkpoint restart of custom-geometry / fixed-BC runs.** `--restart` hard-coded a periodic cell, so
+  any other run restarted as a different problem. Now it takes the original run's `--geometry-json`, `--bc`,
+  `--lattice` and rotation flags. It refuses a checkpoint whose node count or geometry doesn't match.
+  Several further restart faults are fixed:
+  - Driven and fixed atoms were read at their α = 0 positions inside the solver. The specimen unloaded
+    completely.
+  - Checkpoints now save the re-anchored Stage-1 reference positions in an optional `REF_NODES` section,
+    which older builds ignore. Before, the reference was rebuilt from the bare lattice.
+  - The loader's placeholders for inactive elements made remeshed elements inherit a zero reference area.
+  - The last load step could be dropped through floating-point truncation.
+  - The Stage-1 → Stage-2 handover no longer runs again on restart.
+
+  Restarts now reproduce the uninterrupted run bit for bit on the tension, polycrystal, disk,
+  dead-load and remeshing-avalanche tests. A force grip matches to the solver tolerance.
 - Checkpoint restart re-applied the full α as the first increment (curve restarted from zero).
 - Stage-2 re-anchoring replaced the specimen frame with the carved bounding box, shrinking disk radius,
   polygon and cutouts for non-rectangular shapes.

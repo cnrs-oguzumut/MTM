@@ -679,6 +679,53 @@ void example_1_conti_zanzotto_loading(
     square_points_ref = square_points;
   }
 
+  // Stage 2 re-anchoring: X_0 becomes the relaxed Stage-1 state. The specimen frame (x_min, y_min,
+  // Lx, Ly) is kept for non-rectangular shapes, whose radius / polygon / cutouts are normalized to it.
+  const auto reanchor_frame_bounds = [&](const std::vector<Point2D> &ref) {
+    const double frame_x_min = macro_geom.x_min, frame_y_min = macro_geom.y_min;
+    const double frame_Lx = macro_geom.Lx, frame_Ly = macro_geom.Ly;
+    macro_geom.setPhysicalBoundsFromPoints(ref, optimal_lattice_parameter);
+    if (macro_geom.outer_shape != OuterDomainShapeType::Rectangle) {
+      macro_geom.x_min = frame_x_min; macro_geom.y_min = frame_y_min;
+      macro_geom.Lx = frame_Lx; macro_geom.Ly = frame_Ly;
+      if (macro_geom.isIndenterActive()) {
+        macro_geom.setupIndenterBounds(optimal_lattice_parameter, &ref);
+      }
+    }
+  };
+  // Restart: the lattice is regenerated from the command line, so it must describe the same specimen
+  if (restart_chk != nullptr) {
+    if (!restart_chk->ref_points.empty() && !(has_custom_geom && !is_periodic_dislocs)) {
+      std::cerr << "[RESTART] Fatal: the checkpoint was written by a custom-geometry run. Restart with the "
+                   "original run's --geometry-json, --bc, --lattice and rotation flags." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (restart_chk->points.size() != square_points.size()) {
+      std::cerr << "[RESTART] Fatal: the checkpoint has " << restart_chk->points.size()
+                << " nodes but the regenerated specimen has " << square_points.size()
+                << ". Restart with the original run's nx ny, --lattice, --bc, --geometry-json and rotation flags."
+                << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
+  // Restart: the checkpoint carries X_0 (re-anchored after Stage 1); a regenerated lattice does not
+  if (restart_chk != nullptr && has_custom_geom && !is_periodic_dislocs) {
+    if (restart_chk->ref_points.size() == square_points_ref.size()) {
+      for (size_t j = 0; j < square_points_ref.size(); ++j) {
+        square_points_ref[j].coord = restart_chk->ref_points[j];
+      }
+      square_points = square_points_ref;
+      if ((macro_geom.microstructure.relax_only || macro_geom.microstructure.pre_relax_gb) &&
+          macro_geom.microstructure.reanchor_ref_after_relax) {
+        reanchor_frame_bounds(square_points_ref);
+      }
+    } else if (macro_geom.microstructure.pre_relax_gb && macro_geom.microstructure.reanchor_ref_after_relax) {
+      std::cerr << "[RESTART] WARNING: checkpoint has no reference positions (written by an older build); "
+                   "X_0 is the unrelaxed lattice, not the Stage-1 state, so driven boundaries may jump."
+                << std::endl;
+    }
+  }
+
   int original_domain_size = square_points.size();
 
   // Setup triangulation variables and domain maps
@@ -791,11 +838,17 @@ void example_1_conti_zanzotto_loading(
 
   if (restart_chk != nullptr) {
     square_points = restart_chk->points;
-    elements = restart_chk->elements;
-    active_elements = restart_chk->active_elements;
+    // A checkpoint stores the active elements only; drop the placeholders the loader leaves in the
+    // gaps (zero reference area, nodes {0,0,0}) so elements[0] is a real element
+    elements.clear();
+    active_elements.clear();
+    for (size_t e : restart_chk->active_elements) {
+      active_elements.push_back(elements.size());
+      elements.push_back(restart_chk->elements[e]);
+    }
     for (auto &element : elements) {
       element.set_shape_derivatives(dndx);
-      element.set_reference_mesh(square_points_ref);
+      element.set_reference_mesh(square_points); // fixed / driven nodes are read from here
       element.set_dof_mapping(full_mapping);
       element.setExternalDeformation(restart_chk->F_ext);
       element.calculate_deformation_gradient(square_points);
@@ -929,8 +982,11 @@ void example_1_conti_zanzotto_loading(
   }
 
   // ==================== SETUP LOADING SCHEDULE ====================
+  // A restart starts at current_alpha + step_size, so the ratio can land just below an integer and
+  // drop the last step; fresh runs keep their historical truncation
+  const double schedule_tol = (restart_chk != nullptr) ? 1e-9 : 0.0;
   int num_alpha_points =
-      static_cast<int>(std::abs(alpha_max - alpha_min) / std::abs(step_size)) + 1;
+      static_cast<int>(std::abs(alpha_max - alpha_min) / std::abs(step_size) + schedule_tol) + 1;
   std::cout << "Loading schedule: " << num_alpha_points << " steps from "
             << alpha_min << " to " << alpha_max << " (step size: " << step_size
             << ")" << std::endl;
@@ -961,16 +1017,27 @@ void example_1_conti_zanzotto_loading(
                            restart_chk->F_ext, interior_mapping, full_mapping,
                            active_elements, plasticity);
     checkUserData.second_derivative_function = &potential_func_sder;
+    const bool custom_bcs = has_custom_geom && !is_periodic_dislocs;
+    if (custom_bcs) {
+      checkUserData.macro_geom_ptr = &macro_geom;
+      checkUserData.current_alpha = restart_chk->current_alpha;
+    }
     Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
     ConfigurationSaver::calculateEnergyAndStress(&checkUserData, post_energy_previous,
                                                  stress_tensor, true);
-    post_stress_previous = stress_tensor(0, 1);
+    std::vector<int> no_contacts;
+    post_stress_previous = custom_bcs
+        ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, restart_chk->current_alpha,
+                                          &checkUserData, &no_contacts)
+        : pbc_primary_stress(stress_tensor);
     std::cout << "[RESTART] Resumed state verified: Energy = " << post_energy_previous
               << ", Stress = " << post_stress_previous << std::endl;
   }
 
   // Force-control (dead-load) bookkeeping: conjugate strain, elastic secant, predictor, runaway
-  double traction_strain_previous = 0.0;
+  double traction_strain_previous =
+      (restart_chk != nullptr && has_custom_geom && !is_periodic_dislocs)
+          ? macro_geom.computeTractionConjugateStrain(square_points) : 0.0;
   double elastic_dstrain_ref = 0.0, elastic_dalpha_ref = 0.0;
   bool have_elastic_ref = false;
   std::vector<Point2D> traction_points_n, traction_points_nm1;
@@ -1654,6 +1721,9 @@ void example_1_conti_zanzotto_loading(
           chk_pre.mode = (step_size > 0 ? "positive" : "negative");
           chk_pre.seed = seed; chk_pre.enable_remeshing = enable_remeshing;
           chk_pre.F_ext = pre_F_ext; chk_pre.points = pre_points;
+          if (has_custom_geom && !is_periodic_dislocs) {
+            for (const auto &p : square_points_ref) chk_pre.ref_points.push_back(p.coord);
+          }
           chk_pre.elements = pre_elements; chk_pre.active_elements = pre_active_elements;
 
           std::stringstream chk_ss;
@@ -1693,6 +1763,9 @@ void example_1_conti_zanzotto_loading(
         chk_post.mode = (step_size > 0 ? "positive" : "negative");
         chk_post.seed = seed; chk_post.enable_remeshing = enable_remeshing;
         chk_post.F_ext = F_ext; chk_post.points = square_points;
+        if (has_custom_geom && !is_periodic_dislocs) {
+          for (const auto &p : square_points_ref) chk_post.ref_points.push_back(p.coord);
+        }
         chk_post.elements = elements; chk_post.active_elements = active_elements;
 
         std::stringstream chk_ss;
@@ -1798,6 +1871,9 @@ void example_1_conti_zanzotto_loading(
         chk_periodic.mode = (step_size > 0 ? "positive" : "negative");
         chk_periodic.seed = seed; chk_periodic.enable_remeshing = enable_remeshing;
         chk_periodic.F_ext = F_ext; chk_periodic.points = square_points;
+        if (has_custom_geom && !is_periodic_dislocs) {
+          for (const auto &p : square_points_ref) chk_periodic.ref_points.push_back(p.coord);
+        }
         chk_periodic.elements = elements; chk_periodic.active_elements = active_elements;
 
         std::stringstream chk_ss;
@@ -1842,7 +1918,7 @@ void example_1_conti_zanzotto_loading(
     }
 
     // ==================== STAGE 1 -> STAGE 2 PROTOCOL HANDOVER ====================
-    if (has_custom_geom && i == 0) {
+    if (has_custom_geom && i == 0 && restart_chk == nullptr) {
       if (macro_geom.microstructure.relax_only || alpha_values.size() <= 1) {
         std::cout << "[Stage 1/1] Equilibration complete at alpha = 0 (Relax Only mode). Stopping cleanly." << std::endl;
         break;
@@ -1856,18 +1932,7 @@ void example_1_conti_zanzotto_loading(
         macro_geom.indenter.enabled = original_indenter_enabled;
         if (macro_geom.microstructure.reanchor_ref_after_relax) {
           square_points_ref = square_points;
-          // Keep the original specimen frame (x_min, y_min, Lx, Ly): disk radius, polygon vertices
-          // and cutouts are normalized to it. Only refresh carved bounds / indenter from x_eq.
-          const double frame_x_min = macro_geom.x_min, frame_y_min = macro_geom.y_min;
-          const double frame_Lx = macro_geom.Lx, frame_Ly = macro_geom.Ly;
-          macro_geom.setPhysicalBoundsFromPoints(square_points_ref, optimal_lattice_parameter);
-          if (macro_geom.outer_shape != OuterDomainShapeType::Rectangle) {
-            macro_geom.x_min = frame_x_min; macro_geom.y_min = frame_y_min;
-            macro_geom.Lx = frame_Lx; macro_geom.Ly = frame_Ly;
-            if (macro_geom.isIndenterActive()) {
-              macro_geom.setupIndenterBounds(optimal_lattice_parameter, &square_points_ref);
-            }
-          }
+          reanchor_frame_bounds(square_points_ref);
         } else if (macro_geom.isIndenterActive()) {
           macro_geom.setupIndenterBounds(optimal_lattice_parameter, &square_points);
         }
@@ -1976,7 +2041,17 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
                                  bool save_triangle_data,
                                  int max_avalanches,
                                  const std::string& lattice_type,
-                                 int potential_mode) {
+                                 int potential_mode,
+                                 double noise_level,
+                                 bool use_rotation,
+                                 int csl_m,
+                                 int csl_n,
+                                 int csl_kx,
+                                 int csl_ky,
+                                 double rotation_angle,
+                                 const std::string& bc,
+                                 const std::string& geometry_json,
+                                 int save_vtk_every) {
   std::string path = checkpoint_path;
   if (path == "latest" || path == "checkpoints/latest") {
     path = "checkpoints/latest.chk";
@@ -2027,8 +2102,8 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
         checkpoint_interval, stress_drop_threshold, save_triangle_data,
         max_avalanches,
         lattice_type,
-        0.04, false, 1, 0, 1, 1, 0.0, "periodic",
-        potential_mode);
+        noise_level, use_rotation, csl_m, csl_n, csl_kx, csl_ky, rotation_angle, bc,
+        potential_mode, geometry_json, save_vtk_every);
   } else {
     example_1_conti_zanzotto_negative_loading(
         0, chk.nx, chk.ny,
@@ -2037,7 +2112,7 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
         checkpoint_interval, stress_drop_threshold, save_triangle_data,
         max_avalanches,
         lattice_type,
-        0.04, false, 1, 0, 1, 1, 0.0, "periodic",
-        potential_mode);
+        noise_level, use_rotation, csl_m, csl_n, csl_kx, csl_ky, rotation_angle, bc,
+        potential_mode, geometry_json, save_vtk_every);
   }
 }

@@ -407,7 +407,9 @@ int main(int argc, char **argv) {
   set_pbc_stress_control_options(stress_control_preset, relax_macro_stress && mode != "volterra");
 
   if (!restart_checkpoint.empty()) {
-    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, potential_mode);
+    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, potential_mode,
+                                noise_level, stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky,
+                                stiffness_rotation_angle, stiffness_bc, geometry_json, save_vtk_every);
     return 0;
   }
 

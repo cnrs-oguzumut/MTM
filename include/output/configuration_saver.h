@@ -55,6 +55,9 @@ public:
         std::vector<Point2D> points;
         std::vector<ElementTriangle2D> elements;
         std::vector<size_t> active_elements;
+        // Reference positions X_0 (custom geometry: the Stage-1 re-anchored state). Optional
+        // REF_NODES section; empty when absent (older checkpoints, periodic cells).
+        std::vector<Eigen::Vector2d> ref_points;
     };
 
     static void saveCheckpoint(const std::string& filename, const CheckpointData& data);

@@ -2286,6 +2286,13 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
              << elem.getReferenceArea() << "\n";
     }
 
+    if (!data.ref_points.empty()) {
+        file << "REF_NODES " << data.ref_points.size() << "\n";
+        for (size_t i = 0; i < data.ref_points.size(); ++i) {
+            file << i << " " << data.ref_points[i].x() << " " << data.ref_points[i].y() << "\n";
+        }
+    }
+
     file.close();
     if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
         std::cout << "[CHECKPOINT] Saved checkpoint to " << filename
@@ -2305,18 +2312,20 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
     std::string line;
     bool reading_nodes = false;
     bool reading_elements = false;
+    bool reading_ref_nodes = false;
     size_t expected_nodes = 0;
     size_t expected_elements = 0;
 
     data.points.clear();
     data.elements.clear();
     data.active_elements.clear();
+    data.ref_points.clear();
 
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') continue;
 
         std::istringstream iss(line);
-        if (!reading_nodes && !reading_elements) {
+        if (!reading_nodes && !reading_elements && !reading_ref_nodes) {
             std::string key;
             if (!(iss >> key)) continue;
 
@@ -2364,7 +2373,16 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
                 }
                 data.points.emplace_back(x, y, gid, gtheta);
             }
+        } else if (reading_ref_nodes) {
+            size_t idx;
+            double x, y;
+            if (iss >> idx >> x >> y) data.ref_points.emplace_back(x, y);
         } else if (reading_elements) {
+            if (line.rfind("REF_NODES", 0) == 0) {
+                reading_elements = false;
+                reading_ref_nodes = true;
+                continue;
+            }
             size_t elem_idx;
             int n0, n1, n2;
             double tx0, ty0, tx1, ty1, tx2, ty2, ref_area;
