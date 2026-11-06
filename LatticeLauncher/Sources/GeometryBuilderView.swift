@@ -24,8 +24,16 @@ public struct GeometryBuilderView: View {
     @State private var inspectorSection: InspectorSection = .microstructure
     @State private var autoUpdateGBSeamParams: Bool = true
     @State private var approvedLatticeSiteCount: Int? = nil
-    /// Rules/stress saved before the user-picked Disk auto-swapped plain grips to a radial rim load (for Undo).
-    @State private var diskSwapUndo: (rules: [BoundaryZoneRuleModel], stress: String)? = nil
+    /// Everything the Disk auto-swap changes, saved so Undo restores it exactly.
+    private struct DiskSwapSnapshot {
+        var boundaryRules: [BoundaryZoneRuleModel]
+        var stage1Rules: [BoundaryZoneRuleModel]
+        var stress: String
+        var mode: LoadingMode
+        var boundaryCondition: BoundaryConditionMode
+        var indenterEnabled: Bool
+    }
+    @State private var diskSwapUndo: DiskSwapSnapshot? = nil
     
     /// Rough number of lattice sites the blueprint would draw.
     private var estimatedLatticeSiteCount: Int { max(0, config.nx * config.ny) }
@@ -3239,8 +3247,13 @@ public struct GeometryBuilderView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 4)
                             Button("Undo") {
-                                config.geometryConfig.boundary_rules = undo.rules
+                                config.geometryConfig.boundary_rules = undo.boundaryRules
+                                // Restore Stage 1 after the loading rules so the link sync can't overwrite it
+                                config.geometryConfig.stage1_boundary_rules = undo.stage1Rules
                                 config.geometryConfig.primary_stress_component = undo.stress
+                                config.mode = undo.mode
+                                config.boundaryCondition = undo.boundaryCondition
+                                config.geometryConfig.indenter.enabled = undo.indenterEnabled
                                 diskSwapUndo = nil
                             }
                             .controlSize(.mini)
@@ -4123,7 +4136,14 @@ public struct GeometryBuilderView: View {
         let hasBottomFixed = rules.contains { $0.region == .bottom && $0.kind == .fixed }
         let hasCompressionGrip = rules.contains { $0.region == .top && $0.kind == .prescribed && $0.uy < -0.5 }
         guard hasPlainTopGrip && hasBottomFixed && !hasCompressionGrip else { return }
-        diskSwapUndo = (config.geometryConfig.boundary_rules, config.geometryConfig.primary_stress_component)
+        diskSwapUndo = DiskSwapSnapshot(
+            boundaryRules: config.geometryConfig.boundary_rules,
+            stage1Rules: config.geometryConfig.stage1_boundary_rules,
+            stress: config.geometryConfig.primary_stress_component,
+            mode: config.mode,
+            boundaryCondition: config.boundaryCondition,
+            indenterEnabled: config.geometryConfig.indenter.enabled
+        )
         setOuterAffine("radial_outward", stress: "hydrostatic")
     }
     

@@ -1207,13 +1207,18 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     
     // MARK: - Live Client-Side Discrete Lattice Masking (Matches C++ MacroscopicGeometry)
     public func isPointInsideCutout(xHat: Double, yHat: Double, margin: Double = 0.0) -> Bool {
-        for c in cutouts where c.enabled {
+        return cutoutIndex(xHat: xHat, yHat: yHat, margin: margin) != nil
+    }
+
+    /// Index of the first enabled cutout containing (xHat, yHat) within `margin` (mirrors C++ findCutoutNear).
+    public func cutoutIndex(xHat: Double, yHat: Double, margin: Double = 0.0) -> Int? {
+        for (ci, c) in cutouts.enumerated() where c.enabled {
             let dx = xHat - c.cx
             let dy = yHat - c.cy
             switch c.type {
             case .circle:
                 let r = c.rx + margin
-                if dx * dx + dy * dy < r * r { return true }
+                if dx * dx + dy * dy < r * r { return ci }
             case .ellipse:
                 let phi = c.rotation_deg * .pi / 180.0
                 let cosP = cos(-phi), sinP = sin(-phi)
@@ -1221,13 +1226,13 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 let ly = sinP * dx + cosP * dy
                 let rx = max(1e-5, c.rx + margin)
                 let ry = max(1e-5, c.ry + margin)
-                if (lx * lx) / (rx * rx) + (ly * ly) / (ry * ry) < 1.0 { return true }
+                if (lx * lx) / (rx * rx) + (ly * ly) / (ry * ry) < 1.0 { return ci }
             case .rectangle:
                 let phi = c.rotation_deg * .pi / 180.0
                 let cosP = cos(-phi), sinP = sin(-phi)
                 let lx = cosP * dx - sinP * dy
                 let ly = sinP * dx + cosP * dy
-                if abs(lx) < c.rx + margin && abs(ly) < c.ry + margin { return true }
+                if abs(lx) < c.rx + margin && abs(ly) < c.ry + margin { return ci }
             case .edgeNotch:
                 let dEff = max(1e-5, c.rx + margin)
                 let wEff = max(1e-5, c.ry + margin)
@@ -1238,9 +1243,9 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 else { u = 1.0 - yHat; v = abs(xHat - c.cx) }
                 if u <= dEff {
                     if c.notch_profile == "u_notch" {
-                        if v < wEff { return true }
+                        if v < wEff { return ci }
                     } else {
-                        if v < wEff * (1.0 - u / dEff) { return true }
+                        if v < wEff * (1.0 - u / dEff) { return ci }
                     }
                 }
             case .preCrack:
@@ -1250,15 +1255,15 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 let t = len2 > 1e-12 ? min(1.0, max(0.0, ((xHat - ax) * abx + (yHat - ay) * aby) / len2)) : 0.0
                 let px = ax + t * abx, py = ay + t * aby
                 let dist = hypot(xHat - px, yHat - py)
-                if dist < 0.5 * c.thickness + margin { return true }
+                if dist < 0.5 * c.thickness + margin { return ci }
             case .polygon:
-                if Self.pointInPolygon(x: xHat, y: yHat, poly: c.vertices) { return true }
+                if Self.pointInPolygon(x: xHat, y: yHat, poly: c.vertices) { return ci }
                 if margin > 0 && Self.distanceToPolygonEdges(x: xHat, y: yHat, poly: c.vertices) <= margin {
-                    return true
+                    return ci
                 }
             }
         }
-        return false
+        return nil
     }
     
     public func isPointInsideSolid(xHat: Double, yHat: Double) -> Bool {
@@ -1498,8 +1503,17 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     /// about the box centre only on closed contours (outer rim, hole rims); edge / custom-box rules
     /// and the shear/uniaxial modes use the bottom-left corner.
     public func affineDisplacement(mode: String, region: BoundaryRegionSelector, xHat: Double, yHat: Double) -> (ux: Double, uy: Double) {
-        let centred = (region == .outerPerimeter || region == .holeSurfaces)
-        let px = centred ? 0.5 : 0.0, py = centred ? 0.5 : 0.0
+        let centredModes: Set<String> = ["biaxial", "radial_outward", "radial_inward", "biaxial_compression",
+                                         "pure_shear", "circumferential_shear", "torsion"]
+        var px = 0.0, py = 0.0
+        if centredModes.contains(mode) {
+            if region == .outerPerimeter {
+                (px, py) = (0.5, 0.5)
+            } else if region == .holeSurfaces {
+                // Each hole rim pivots about its own hole (C++ cutoutPivot)
+                (px, py) = holeRimPivot(xHat: xHat, yHat: yHat)
+            }
+        }
         let rx = xHat - px, ry = yHat - py
         switch mode {
         case "biaxial", "radial_outward": return (rx, ry)
@@ -1510,6 +1524,28 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         case "uniaxial_x": return (xHat, 0.0)
         case "simple_shear_y": return (0.0, xHat)
         default: return (yHat, 0.0) // simple_shear_x
+        }
+    }
+
+    /// Pivot of the hole whose rim contains (xHat, yHat): centre for circle/ellipse/rectangle,
+    /// vertex average for polygons, segment midpoint for pre-cracks; specimen centre otherwise.
+    public func holeRimPivot(xHat: Double, yHat: Double) -> (Double, Double) {
+        let idx = cutoutIndex(xHat: xHat, yHat: yHat, margin: 0.03)
+            ?? cutouts.indices.filter { cutouts[$0].enabled && cutouts[$0].type != .edgeNotch }
+                .min { hypot(cutouts[$0].cx - xHat, cutouts[$0].cy - yHat) < hypot(cutouts[$1].cx - xHat, cutouts[$1].cy - yHat) }
+        guard let i = idx else { return (0.5, 0.5) }
+        let c = cutouts[i]
+        switch c.type {
+        case .circle, .ellipse, .rectangle:
+            return (c.cx, c.cy)
+        case .polygon:
+            guard !c.vertices.isEmpty else { return (c.cx, c.cy) }
+            let n = Double(c.vertices.count)
+            return (c.vertices.map(\.x).reduce(0, +) / n, c.vertices.map(\.y).reduce(0, +) / n)
+        case .preCrack:
+            return (0.5 * (c.x1 + c.x2), 0.5 * (c.y1 + c.y2))
+        case .edgeNotch:
+            return (0.5, 0.5)
         }
     }
 

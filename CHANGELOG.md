@@ -4,9 +4,10 @@
 
 ### Changed — physics
 - **Affine origin.** Centre-symmetric affine modes (biaxial, radial in/out, pure shear, torsion) pivot
-  about the specimen centre only when the rule covers a closed contour (`outer_perimeter` or
-  `hole_surfaces`). Edge and custom-box affine rules use the bottom-left corner again, so a one-sided
-  grip (e.g. top `biaxial` + bottom fixed) gives the same strain as before this branch.
+  about the specimen centre for `outer_perimeter` rules, and about each hole's own centre for
+  `hole_surfaces` rules (circle/ellipse/rectangle centre, polygon vertex average, pre-crack midpoint).
+  Edge and custom-box affine rules use the bottom-left corner again, so a one-sided grip (e.g. top
+  `biaxial` + bottom fixed) is bit-identical to `ec7d83c`.
 - **Pure shear reports ½(σxx − σyy).** This is the stress conjugate to F = diag(1+α, 1−α); σxy is ≈ 0
   under pure shear. Earlier builds reported σxy, so pure-shear curves from older runs are not comparable.
 - **Torsion is an exact rotation.** Rim nodes driven by `circumferential_shear` / `torsion` follow

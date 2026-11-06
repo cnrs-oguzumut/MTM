@@ -1558,12 +1558,13 @@ void MacroscopicGeometryConfig::setPhysicalBoundsFromPoints(
     setupIndenterBounds(lattice_a0, &raw_points);
 }
 
-bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double margin_phys) const {
+int MacroscopicGeometryConfig::findCutoutNear(double x, double y, double margin_phys) const {
     const double min_dim = std::min(Lx, Ly);
     const double x_hat = (x - x_min) / Lx;
     const double y_hat = (y - y_min) / Ly;
 
-    for (const auto& c : cutouts) {
+    for (size_t ci = 0; ci < cutouts.size(); ++ci) {
+        const auto& c = cutouts[ci];
         if (!c.enabled) continue;
         const double cx_phys = x_min + c.cx * Lx;
         const double cy_phys = y_min + c.cy * Ly;
@@ -1573,7 +1574,7 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
         switch (c.type) {
         case CutoutShapeType::Circle: {
             double r_phys = c.rx * min_dim + margin_phys;
-            if (dx * dx + dy * dy < r_phys * r_phys) return true;
+            if (dx * dx + dy * dy < r_phys * r_phys) return static_cast<int>(ci);
             break;
         }
         case CutoutShapeType::Ellipse: {
@@ -1584,7 +1585,7 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
             double ly = sin_p * dx + cos_p * dy;
             double rx_phys = std::max(1e-8, c.rx * Lx + margin_phys);
             double ry_phys = std::max(1e-8, c.ry * Ly + margin_phys);
-            if ((lx * lx) / (rx_phys * rx_phys) + (ly * ly) / (ry_phys * ry_phys) < 1.0) return true;
+            if ((lx * lx) / (rx_phys * rx_phys) + (ly * ly) / (ry_phys * ry_phys) < 1.0) return static_cast<int>(ci);
             break;
         }
         case CutoutShapeType::Rectangle: {
@@ -1595,7 +1596,7 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
             double ly = sin_p * dx + cos_p * dy;
             double hw_phys = c.rx * Lx + margin_phys;
             double hh_phys = c.ry * Ly + margin_phys;
-            if (std::abs(lx) < hw_phys && std::abs(ly) < hh_phys) return true;
+            if (std::abs(lx) < hw_phys && std::abs(ly) < hh_phys) return static_cast<int>(ci);
             break;
         }
         case CutoutShapeType::EdgeNotch: {
@@ -1611,10 +1612,10 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
                 double w_eff = std::max(1e-6, half_w_norm + margin_y);
                 if (u <= d_eff) {
                     if (c.notch_profile == "u_notch") {
-                        if (v < w_eff) return true;
+                        if (v < w_eff) return static_cast<int>(ci);
                     } else {
                         // V-notch tapering linearly from half-width w_eff at u=0 to 0 at u=d_eff
-                        if (v < w_eff * (1.0 - u / std::max(1e-6, d_eff))) return true;
+                        if (v < w_eff * (1.0 - u / std::max(1e-6, d_eff))) return static_cast<int>(ci);
                     }
                 }
             } else if (c.notch_edge == "right") {
@@ -1624,9 +1625,9 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
                 double w_eff = std::max(1e-6, half_w_norm + margin_y);
                 if (u <= d_eff) {
                     if (c.notch_profile == "u_notch") {
-                        if (v < w_eff) return true;
+                        if (v < w_eff) return static_cast<int>(ci);
                     } else {
-                        if (v < w_eff * (1.0 - u / std::max(1e-6, d_eff))) return true;
+                        if (v < w_eff * (1.0 - u / std::max(1e-6, d_eff))) return static_cast<int>(ci);
                     }
                 }
             } else if (c.notch_edge == "bottom") {
@@ -1636,9 +1637,9 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
                 double w_eff = std::max(1e-6, half_w_norm + margin_x);
                 if (u <= d_eff) {
                     if (c.notch_profile == "u_notch") {
-                        if (v < w_eff) return true;
+                        if (v < w_eff) return static_cast<int>(ci);
                     } else {
-                        if (v < w_eff * (1.0 - u / std::max(1e-6, d_eff))) return true;
+                        if (v < w_eff * (1.0 - u / std::max(1e-6, d_eff))) return static_cast<int>(ci);
                     }
                 }
             } else if (c.notch_edge == "top") {
@@ -1648,9 +1649,9 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
                 double w_eff = std::max(1e-6, half_w_norm + margin_x);
                 if (u <= d_eff) {
                     if (c.notch_profile == "u_notch") {
-                        if (v < w_eff) return true;
+                        if (v < w_eff) return static_cast<int>(ci);
                     } else {
-                        if (v < w_eff * (1.0 - u / std::max(1e-6, d_eff))) return true;
+                        if (v < w_eff * (1.0 - u / std::max(1e-6, d_eff))) return static_cast<int>(ci);
                     }
                 }
             }
@@ -1660,20 +1661,48 @@ bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double mar
             Eigen::Vector2d a(x_min + c.x1 * Lx, y_min + c.y1 * Ly);
             Eigen::Vector2d b(x_min + c.x2 * Lx, y_min + c.y2 * Ly);
             double half_t = 0.5 * c.thickness * min_dim + margin_phys;
-            if (pointToSegmentDistance(Eigen::Vector2d(x, y), a, b) < half_t) return true;
+            if (pointToSegmentDistance(Eigen::Vector2d(x, y), a, b) < half_t) return static_cast<int>(ci);
             break;
         }
         case CutoutShapeType::Polygon: {
-            if (isPointInPolygon(x_hat, y_hat, c.vertices)) return true;
+            if (isPointInPolygon(x_hat, y_hat, c.vertices)) return static_cast<int>(ci);
             if (margin_phys > 0.0 && c.vertices.size() >= 3) {
                 double dist = distanceToPolygonEdges(x, y, x_min, y_min, Lx, Ly, c.vertices);
-                if (dist <= margin_phys) return true;
+                if (dist <= margin_phys) return static_cast<int>(ci);
             }
             break;
         }
         }
     }
-    return false;
+    return -1;
+}
+
+bool MacroscopicGeometryConfig::isPointNearCutout(double x, double y, double margin_phys) const {
+    return findCutoutNear(x, y, margin_phys) >= 0;
+}
+
+Eigen::Vector2d MacroscopicGeometryConfig::cutoutPivot(int idx) const {
+    const Eigen::Vector2d specimen_center(x_min + 0.5 * Lx, y_min + 0.5 * Ly);
+    if (idx < 0 || idx >= static_cast<int>(cutouts.size())) return specimen_center;
+    const auto& c = cutouts[idx];
+    switch (c.type) {
+    case CutoutShapeType::Circle:
+    case CutoutShapeType::Ellipse:
+    case CutoutShapeType::Rectangle:
+        return Eigen::Vector2d(x_min + c.cx * Lx, y_min + c.cy * Ly);
+    case CutoutShapeType::Polygon: {
+        if (c.vertices.empty()) return Eigen::Vector2d(x_min + c.cx * Lx, y_min + c.cy * Ly);
+        double sx = 0.0, sy = 0.0;
+        for (const auto& v : c.vertices) { sx += v.first; sy += v.second; }
+        const double n = static_cast<double>(c.vertices.size());
+        return Eigen::Vector2d(x_min + (sx / n) * Lx, y_min + (sy / n) * Ly);
+    }
+    case CutoutShapeType::PreCrack:
+        return Eigen::Vector2d(x_min + 0.5 * (c.x1 + c.x2) * Lx, y_min + 0.5 * (c.y1 + c.y2) * Ly);
+    case CutoutShapeType::EdgeNotch:
+        break;
+    }
+    return specimen_center;
 }
 
 bool MacroscopicGeometryConfig::isPointInsideSolid(double x, double y) const {
@@ -1997,8 +2026,13 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
                 Eigen::Vector2d rel_corner(x - x_min, y - y_min);
                 // Symmetric modes are centred only on closed contours around the specimen
                 // (outer rim, hole rims); edge / custom-box rules keep the bottom-left corner origin.
-                const Eigen::Vector2d pivot = affineRuleUsesCenterOrigin(rule)
-                    ? center : Eigen::Vector2d(x_min, y_min);
+                // Hole rims pivot about their own hole's centre; the outer rim about the specimen centre.
+                Eigen::Vector2d pivot(x_min, y_min);
+                if (affineRuleUsesCenterOrigin(rule)) {
+                    pivot = (rule.region == BoundaryRegionType::HoleSurfaces)
+                        ? cutoutPivot(findCutoutNear(x, y, strip))
+                        : center;
+                }
                 Eigen::Vector2d rel_pivot(x - pivot.x(), y - pivot.y());
                 if (rule.affine_mode == "simple_shear_y") {
                     vel = Eigen::Vector2d(0.0, rel_corner.x());

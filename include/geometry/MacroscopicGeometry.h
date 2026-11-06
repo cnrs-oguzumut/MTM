@@ -283,6 +283,11 @@ struct MacroscopicGeometryConfig {
 
     // Test if a physical point (x, y) is inside any active cutout (expanded by optional margin)
     bool isPointNearCutout(double x, double y, double margin_phys) const;
+    // Index of the first enabled cutout within margin_phys of (x, y), or -1
+    int findCutoutNear(double x, double y, double margin_phys) const;
+    // Physical pivot of a cutout: centre (circle/ellipse/rectangle), vertex average (polygon),
+    // segment midpoint (pre-crack); the specimen centre for edge notches or idx = -1
+    Eigen::Vector2d cutoutPivot(int idx) const;
 
     // Test if a triangle (p0, p1, p2) in reference/initial space should be rejected
     // (centroid or edge midpoint outside solid, or edge crosses a pre-crack slit)
