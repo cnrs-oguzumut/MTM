@@ -10,6 +10,7 @@
 #include "DomainDimensions.h"
 
 struct UserData;
+class ElementTriangle2D;
 
 enum class OuterDomainShapeType {
     Rectangle = 0,
@@ -118,7 +119,8 @@ enum class BoundaryConditionKind {
     PrescribedDisplacement = 2, // Driven u(alpha) = alpha * (ux * L_ref, uy * L_ref)
     AffineDeformation = 3,      // Driven x(alpha) = F(alpha) * X_0
     RollerX = 4,                // Free ux, Fixed uy = 0 (horizontal slide / normal volume relaxation)
-    RollerY = 5                 // Fixed ux = 0, Free uy (vertical slide)
+    RollerY = 5,                // Fixed ux = 0, Free uy (vertical slide)
+    PrescribedTraction = 6      // Dead-load nominal traction t(alpha) = alpha * t0 on the outer contour atoms (DOFs stay free)
 };
 
 struct BoundaryZoneRule {
@@ -146,6 +148,12 @@ struct BoundaryZoneRule {
 
     // Affine mode: "simple_shear_x", "simple_shear_y", "uniaxial_y", "uniaxial_x", "pure_shear", "biaxial"
     std::string affine_mode = "simple_shear_x";
+
+    // PrescribedTraction: "cartesian" (t0 = (tx, ty)), "radial_outward" / "radial_inward" (unit normal
+    // traction away from / toward the contour's pivot), "circumferential_shear" (unit tangential traction)
+    std::string traction_mode = "cartesian";
+    double tx = 0.0;
+    double ty = 1.0;
 };
 
 enum class MicrostructureMode {
@@ -314,6 +322,38 @@ struct MacroscopicGeometryConfig {
     bool hasTorsionDrivenNodes() const;
     // Torque exerted on the torsion-driven rim nodes, T = sum (x - X_c) x f (z-component)
     double computeRimTorque(const UserData* userData, const std::vector<Point2D>& current_points) const;
+
+    // Dead-load tractions (PrescribedTraction rules). Membership is set by buildBoundaryDOFs; nodal
+    // reference forces f0 are assembled from boundary-edge shares by finalizeBoundaryTractions once
+    // the reference mesh exists. External work potential: -alpha * sum_i f0_i . (x_i - X_i).
+    mutable std::vector<std::vector<char>> cached_traction_membership; // [rule][node]
+    mutable std::vector<int> cached_traction_rule_index;               // rule index into boundary_rules
+    mutable std::vector<Eigen::Vector2d> cached_node_ext_force_unit;   // f0_i (zero when not loaded)
+    mutable std::vector<Eigen::Vector2d> cached_node_ext_force_ref;    // X_i used by the work term
+    mutable bool has_external_tractions = false;
+    mutable bool traction_anchor_active = false;
+    mutable double cached_reference_solid_area = 0.0;
+    bool hasTractionRules() const;
+    bool hasExternalTractionForces() const { return enabled && has_external_tractions; }
+    // Assemble f0 from the reference mesh; checks force/torque balance. Returns false when the load
+    // is unbalanced and nothing but the isostatic anchor holds the specimen (run must be refused).
+    bool finalizeBoundaryTractions(const std::vector<Point2D>& reference_points,
+                                   const std::vector<ElementTriangle2D>& elements) const;
+    double computeExternalForcePotential(const std::vector<Point2D>& points, double alpha) const;
+    double accumulateExternalForcePotential(const alglib::real_1d_array& x,
+                                            const std::vector<std::pair<int, int>>& interior_mapping,
+                                            alglib::real_1d_array& grad,
+                                            double alpha) const;
+    // Work-conjugate strain of the dead load: sum_i f0_i . (x_i - X_i) / A_solid
+    double computeTractionConjugateStrain(const std::vector<Point2D>& points) const;
+    // Limit-load guard for force control: largest nodal displacement since the start of the load step
+    mutable std::vector<Eigen::Vector2d> runaway_reference_points;
+    mutable double runaway_limit = 0.0; // <= 0: guard off (strain control)
+    void setRunawayReference(const std::vector<Point2D>& points, double limit) const;
+    double maxDisplacementSinceStepStart(const std::vector<Point2D>& points) const;
+    bool exceedsRunawayLimit(const std::vector<Point2D>& points) const {
+        return runaway_limit > 0.0 && maxDisplacementSinceStepStart(points) > runaway_limit;
+    }
 
     bool hasPartialDOFConstraints() const { return enabled && has_partial_dof_constraints; }
     bool isNodeXConstrained(int node_idx) const {

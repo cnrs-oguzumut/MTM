@@ -589,6 +589,12 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
             total_energy += userData->macro_geom_ptr->computeIndenterPenaltyEnergy(
                 points, userData->current_alpha);
         }
+        if (userData != nullptr && userData->macro_geom_ptr != nullptr &&
+            userData->macro_geom_ptr->hasExternalTractionForces()) {
+            // Total enthalpy Pi = E_el - W_ext, so remesh acceptance compares the dead-load potential
+            total_energy += userData->macro_geom_ptr->computeExternalForcePotential(
+                points, userData->current_alpha);
+        }
     }
 
 void ConfigurationSaver::logEnergyAndStress(
@@ -629,7 +635,8 @@ void ConfigurationSaver::logEnergyAndStress_v2(
     double post_area,  
     bool shouldRemesh,
     UserData* postUserData,
-    const std::vector<int>* contact_atoms)
+    const std::vector<int>* contact_atoms,
+    const std::vector<std::pair<std::string, double>>* extra_columns)
 {
     static std::ofstream log_file;
     static std::filesystem::path log_directory;
@@ -649,7 +656,11 @@ void ConfigurationSaver::logEnergyAndStress_v2(
                      << "EnergyChange,StressChange,PreArea,PostArea,shouldRemesh,"
                      << "CauchyXX,CauchyXY,CauchyYY,HydrostaticPressure,"
                      << "Piola11,Piola12,Piola22,VonMisesAvg,VonMisesMax,"
-                     << "IndenterLoad,MeanContactPressure,ContactAtoms\n";
+                     << "IndenterLoad,MeanContactPressure,ContactAtoms";
+            if (extra_columns != nullptr) {
+                for (const auto& col : *extra_columns) log_file << "," << col.first;
+            }
+            log_file << "\n";
         }
         
         // Set maximum precision for all subsequent writes
@@ -810,8 +821,11 @@ void ConfigurationSaver::logEnergyAndStress_v2(
              << vm_max << ","
              << indenter_load << ","
              << mean_contact_pressure << ","
-             << num_contact_atoms
-             << "\n";
+             << num_contact_atoms;
+    if (extra_columns != nullptr) {
+        for (const auto& col : *extra_columns) log_file << "," << col.second;
+    }
+    log_file << "\n";
     
     log_file.flush();
 }

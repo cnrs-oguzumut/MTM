@@ -138,6 +138,9 @@ public:
   // Forget the cached factorization (call after the energy or the mesh changes by hand).
   void invalidate();
 
+  // Iteration cap per optimize() call (0 = solver default). Used to bound runaway under dead loads.
+  void setMaxIterations(alglib::ae_int_t maxits) { options_.maxits = maxits; }
+
   struct Factor; // implementation detail (sparse Cholesky + change of variables)
 
 private:

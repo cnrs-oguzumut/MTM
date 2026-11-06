@@ -618,6 +618,11 @@ void minimize_energy_with_triangles(
             x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
     }
+    // Dead-load work term -alpha * f0 . (x - X); must precede the roller gradient masking below
+    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasExternalTractionForces()) {
+        func += userData->macro_geom_ptr->accumulateExternalForcePotential(
+            x, userData->interior_mapping, grad, userData->current_alpha);
+    }
     if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasPartialDOFConstraints()) {
         userData->macro_geom_ptr->zeroConstrainedComponentGradients(userData->interior_mapping, grad);
     }
@@ -824,6 +829,11 @@ void minimize_energy_with_triangles_noreduction(
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(
             x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
+    }
+    // Dead-load work term -alpha * f0 . (x - X); must precede the roller gradient masking below
+    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasExternalTractionForces()) {
+        func += userData->macro_geom_ptr->accumulateExternalForcePotential(
+            x, userData->interior_mapping, grad, userData->current_alpha);
     }
     if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasPartialDOFConstraints()) {
         userData->macro_geom_ptr->zeroConstrainedComponentGradients(userData->interior_mapping, grad);

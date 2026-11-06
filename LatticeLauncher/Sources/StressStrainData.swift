@@ -14,6 +14,7 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
     case indenterLoad = "Indenter Load F_y(δ)"
     case meanContactPressure = "Mean Contact Pressure p_m"
     case contactAtoms = "Contact Atoms N_c"
+    case effectiveStrain = "Dead-Load Strain ε (conjugate)"
 
     public var id: String { rawValue }
 
@@ -32,6 +33,7 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
         case .indenterLoad: return "Load F_y(δ)"
         case .meanContactPressure: return "Contact p_m"
         case .contactAtoms: return "Contact N_c"
+        case .effectiveStrain: return "Strain ε"
         }
     }
 }
@@ -57,6 +59,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
     public let indenterLoad: Double
     public let meanContactPressure: Double
     public let contactAtoms: Double
+    /// Work-conjugate strain of a dead load, sum f0 . u / A (0 when the run has no traction rules)
+    public let effectiveStrain: Double
     
     public init(
         iteration: Int,
@@ -77,7 +81,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
         vonMisesMax: Double = 0.0,
         indenterLoad: Double = 0.0,
         meanContactPressure: Double = 0.0,
-        contactAtoms: Double = 0.0
+        contactAtoms: Double = 0.0,
+        effectiveStrain: Double = 0.0
     ) {
         self.iteration = iteration
         self.alpha = alpha
@@ -98,6 +103,7 @@ public struct StressStrainPoint: Identifiable, Equatable {
         self.indenterLoad = indenterLoad
         self.meanContactPressure = meanContactPressure
         self.contactAtoms = contactAtoms
+        self.effectiveStrain = effectiveStrain
     }
 
     public func value(for component: StressComponentType) -> Double {
@@ -115,6 +121,7 @@ public struct StressStrainPoint: Identifiable, Equatable {
         case .indenterLoad: return indenterLoad
         case .meanContactPressure: return meanContactPressure
         case .contactAtoms: return contactAtoms
+        case .effectiveStrain: return effectiveStrain
         }
     }
 }

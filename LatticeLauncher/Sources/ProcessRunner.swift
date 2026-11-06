@@ -748,7 +748,8 @@ public class ProcessRunner: ObservableObject {
                     vonMisesMax: parseCol(19),
                     indenterLoad: parseCol(20),
                     meanContactPressure: parseCol(21),
-                    contactAtoms: parseCol(22)
+                    contactAtoms: parseCol(22),
+                    effectiveStrain: parseCol(23) // traction runs only (EffectiveStrain column)
                 ))
             }
             

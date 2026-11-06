@@ -812,6 +812,22 @@ void example_1_conti_zanzotto_loading(
   }
   double element_area = elements.empty() ? 0.5 : elements[0].getReferenceArea();
 
+  // Dead-load tractions need the reference boundary edges, so they are assembled once the mesh exists
+  if (has_custom_geom && !is_periodic_dislocs &&
+      !macro_geom.finalizeBoundaryTractions(square_points_ref, elements)) {
+    std::cerr << "[Traction] Run refused: unbalanced dead load on an unsupported specimen." << std::endl;
+    AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
+    std::exit(EXIT_FAILURE);
+  }
+  const auto rules_have_traction = [](const std::vector<BoundaryZoneRule> &rules) {
+    for (const auto &r : rules) {
+      if (r.enabled && r.kind == BoundaryConditionKind::PrescribedTraction) return true;
+    }
+    return false;
+  };
+  const bool run_has_tractions = has_custom_geom && !is_periodic_dislocs &&
+      (rules_have_traction(macro_geom.boundary_rules) || rules_have_traction(original_studio_rules));
+
   std::cout << "[Triangulation] Initial Delaunay mesh: " << original_domain_size
             << " atoms (" << std::fixed << std::setprecision(1) << domain_dims.size_x
             << " x " << domain_dims.size_y << std::defaultfloat << std::setprecision(6)
@@ -893,6 +909,15 @@ void example_1_conti_zanzotto_loading(
               << ", Stress = " << post_stress_previous << std::endl;
   }
 
+  // Force-control (dead-load) bookkeeping: conjugate strain, elastic secant, predictor, runaway
+  double traction_strain_previous = 0.0;
+  double elastic_dstrain_ref = 0.0, elastic_dalpha_ref = 0.0;
+  bool have_elastic_ref = false;
+  std::vector<Point2D> traction_points_n, traction_points_nm1;
+  double traction_dalpha_n = 0.0;
+  bool traction_prev_step_smooth = false;
+  constexpr int kForceControlMaxIterations = 20000;
+
   // Lowest stiffness eigenvalues during the run (off unless --eig-every / --eig-at-avalanche)
   StabilityMonitor stability_monitor;
   int avalanche_counter = 0;
@@ -924,6 +949,14 @@ void example_1_conti_zanzotto_loading(
         is_first_loading_step ? alpha
         : (i == 0 ? (restart_chk != nullptr ? step_size : alpha) : (alpha - alpha_values[i - 1]));
     const double effective_noise_level = is_stage1_relax_step ? 0.0 : noise_level;
+    // Force control: dead-load tractions drive this step (never Stage 1, where alpha = 0)
+    const bool force_control_step = has_custom_geom && !is_periodic_dislocs &&
+                                    !is_stage1_relax_step && macro_geom.hasExternalTractionForces();
+    set_relaxation_max_iterations(force_control_step ? kForceControlMaxIterations : 0);
+    if (has_custom_geom && !is_periodic_dislocs) {
+      macro_geom.setRunawayReference(square_points, force_control_step
+          ? 0.35 * std::max(macro_geom.Lx, macro_geom.Ly) : 0.0);
+    }
 
     Eigen::Matrix2d F_ext;
     F_ext << 1.0, alpha, 0.0, 1.0;
@@ -940,6 +973,21 @@ void example_1_conti_zanzotto_loading(
       macro_geom.applyLoadStep(
           square_points, square_points_ref, baseline_node_bc_role, node_bc_velocity,
           alpha, actual_dalpha, is_first_loading_step, seed, effective_noise_level);
+      // Pure force control has no affine predictor (F_macro = I): extrapolate the last smooth
+      // (no topology change) increment instead, x0 = x_n + (dalpha / dalpha_n) (x_n - x_{n-1})
+      if (force_control_step && traction_prev_step_smooth && traction_dalpha_n != 0.0 &&
+          traction_points_n.size() == square_points.size() &&
+          traction_points_nm1.size() == square_points.size() &&
+          macro_geom.computeMacroscopicF(alpha).isIdentity(0.0)) {
+        const double ratio = actual_dalpha / traction_dalpha_n;
+        for (size_t j = 0; j < square_points.size(); ++j) {
+          const int role = baseline_node_bc_role[j];
+          const Eigen::Vector2d d = traction_points_n[j].coord - traction_points_nm1[j].coord;
+          if (role == 0) square_points[j].coord += ratio * d;
+          else if (role == 3) square_points[j].coord.y() += ratio * d.y();
+          else if (role == 4) square_points[j].coord.x() += ratio * d.x();
+        }
+      }
       if (macro_geom.isIndenterActive() &&
           macro_geom.indenter.contact_mode == IndenterContactMode::KinematicProjection) {
         macro_geom.updateIndenterContactKinematics(
@@ -1038,6 +1086,45 @@ void example_1_conti_zanzotto_loading(
     auto wall_start = std::chrono::high_resolution_clock::now();
 
     userData.third_condition_flag = false;
+    // Optional finite-difference check of the enthalpy gradient (MTM_TRACTION_GRADCHECK=1)
+    if (force_control_step && std::getenv("MTM_TRACTION_GRADCHECK") != nullptr && n_vars > 0) {
+      alglib::real_1d_array g0, gp, gm, xp;
+      g0.setlength(x.length()); gp.setlength(x.length()); gm.setlength(x.length());
+      xp.setlength(x.length());
+      double f0 = 0.0, fp = 0.0, fm = 0.0;
+      minimize_energy_with_triangles(x, f0, g0, &userData);
+      std::vector<int> probe;
+      for (int k = 0; k < n_vars && probe.size() < 5; ++k) { // loaded contour atoms first
+        const int p_idx = interior_mapping[k].first;
+        if (baseline_node_bc_role[p_idx] == 0 &&
+            macro_geom.cached_node_ext_force_unit[p_idx].squaredNorm() > 0.0) probe.push_back(k);
+      }
+      for (int k = n_vars / 2; k < n_vars && probe.size() < 10; k += std::max(1, n_vars / 17)) {
+        if (baseline_node_bc_role[interior_mapping[k].first] == 0) probe.push_back(k);
+      }
+      double worst = 0.0;
+      const double h = 1e-6;
+      double g_scale = 0.0; // relative-error floor: FD round-off is ~1e-10 where the gradient vanishes
+      for (int q = 0; q < x.length(); ++q) g_scale = std::max(g_scale, std::abs(g0[q]));
+      for (int k : probe) {
+        for (int comp = 0; comp < 2; ++comp) {
+          const int idx = comp * n_vars + interior_mapping[k].second;
+          for (int q = 0; q < x.length(); ++q) xp[q] = x[q];
+          xp[idx] = x[idx] + h; minimize_energy_with_triangles(xp, fp, gp, &userData);
+          xp[idx] = x[idx] - h; minimize_energy_with_triangles(xp, fm, gm, &userData);
+          const double fd = (fp - fm) / (2.0 * h);
+          const double rel = std::abs(fd - g0[idx]) / std::max(1e-4 * g_scale, std::abs(g0[idx]) + std::abs(fd));
+          if (std::getenv("MTM_TRACTION_GRADCHECK_VERBOSE") != nullptr) {
+            std::cout << "    dof " << idx << " (node " << interior_mapping[k].first << ", comp " << comp
+                      << ") grad = " << std::scientific << g0[idx] << " fd = " << fd << " rel = " << rel
+                      << std::defaultfloat << std::endl;
+          }
+          worst = std::max(worst, rel);
+        }
+      }
+      std::cout << "[Traction GradCheck] alpha = " << alpha << " | " << 2 * probe.size()
+                << " DOFs | max relative error = " << std::scientific << worst << std::defaultfloat << std::endl;
+    }
     relax_configuration(x, &userData, 13);
 
     auto wall_end = std::chrono::high_resolution_clock::now();
@@ -1061,8 +1148,15 @@ void example_1_conti_zanzotto_loading(
         AvalancheEventType::LBFGS_CONVERGED, -1, post_energy, post_stress, 0.0,
         elements.size(), 0, "initial continuous relaxation converged");
 
+    // Enthalpy after the continuous relaxation, before any reconnection: the fixed-alpha reference
+    // for the force-controlled avalanche test (Pi drops on every step under a dead load otherwise)
+    const double enthalpy_before_cascade = post_energy;
+
+    // Past the limit load the continuous relaxation itself runs away: skip the remesh cascade
+    const bool runaway_before_cascade = force_control_step && macro_geom.exceedsRunawayLimit(square_points);
+
     // ==================== REMESHING DECISION ====================
-    bool shouldRemesh = enable_remeshing;
+    bool shouldRemesh = enable_remeshing && !runaway_before_cascade;
     if (const char *gate = std::getenv("MTM_REMESH_GATE")) {
       if (std::string(gate) == "energy") // legacy gate, for A/B comparison only
         shouldRemesh = enable_remeshing && (post_energy < post_energy_previous || i == 0);
@@ -1189,6 +1283,48 @@ void example_1_conti_zanzotto_loading(
     bool stress_drop_detected = enable_remeshing
         ? (can_detect_avalanche && remesh_accepted && energy_dropped && stress_drop_criterion)
         : (can_detect_avalanche && energy_dropped && stress_drop_criterion);
+
+    // Force control: an avalanche is a strain burst at fixed load, i.e. a reconnection that lowers the
+    // enthalpy at this alpha plus a conjugate-strain increment beyond the elastic (secant) estimate.
+    double traction_strain = 0.0, traction_dstrain = 0.0, fractional_strain_burst = 0.0;
+    bool runaway_detected = false;
+    if (force_control_step) {
+      traction_strain = macro_geom.computeTractionConjugateStrain(square_points);
+      traction_dstrain = traction_strain - traction_strain_previous;
+      const double expected_dstrain = (have_elastic_ref && elastic_dalpha_ref != 0.0)
+          ? elastic_dstrain_ref * (actual_dalpha / elastic_dalpha_ref) : 0.0;
+      const double excess = std::abs(traction_dstrain) - std::abs(expected_dstrain);
+      if (have_elastic_ref && std::abs(expected_dstrain) > 1e-15) {
+        fractional_strain_burst = excess / std::abs(expected_dstrain);
+      }
+      const bool strain_burst = have_elastic_ref && excess > 1e-12 &&
+                                fractional_strain_burst >= stress_drop_threshold;
+      const bool enthalpy_dropped = post_energy < enthalpy_before_cascade;
+      stress_drop_detected = can_detect_avalanche && strain_burst &&
+                             (enable_remeshing ? (remesh_accepted && enthalpy_dropped) : true);
+
+      // Limit load: past the yield / Peierls stress the dead load has no equilibrium
+      const double max_jump = macro_geom.maxDisplacementSinceStepStart(square_points);
+      const double runaway_limit = macro_geom.runaway_limit;
+      if (runaway_before_cascade || max_jump > runaway_limit) {
+        runaway_detected = true;
+        stress_drop_detected = true; // write the pre/post snapshot and checkpoint
+        std::cout << std::defaultfloat << std::setprecision(6)
+                  << "  [LIMIT LOAD / YIELD RUNAWAY] alpha = " << alpha << ": max nodal displacement "
+                  << max_jump << " in one step exceeds " << runaway_limit
+                  << " (0.35 max(Lx, Ly)). Saving the state and stopping the schedule." << std::endl;
+      }
+      if (!stress_drop_detected && actual_dalpha != 0.0) {
+        elastic_dstrain_ref = traction_dstrain;
+        elastic_dalpha_ref = actual_dalpha;
+        have_elastic_ref = true;
+      }
+      traction_strain_previous = traction_strain;
+      traction_points_nm1 = std::move(traction_points_n);
+      traction_points_n = square_points;
+      traction_dalpha_n = actual_dalpha;
+      traction_prev_step_smooth = (hasChanges == 0) && !stress_drop_detected;
+    }
 
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
@@ -1448,6 +1584,16 @@ void example_1_conti_zanzotto_loading(
                   << " saved -> configuration_"
                   << std::setw(5) << std::setfill('0') << post_file_id << ".vtk" << std::setfill(' ')
                   << " (dislocations: " << num_dislocations_post << ")" << std::endl;
+      } else if (force_control_step) {
+        std::cout << "  ⚡ [AVALANCHE #" << avalanche_counter << "] Strain burst at fixed load: Δε = "
+                  << std::scientific << std::setprecision(3) << traction_dstrain << " ("
+                  << std::fixed << std::setprecision(1) << (fractional_strain_burst * 100.0)
+                  << "% above elastic), ΔΠ(cascade) = " << std::scientific << std::showpos
+                  << (post_energy - enthalpy_before_cascade) << std::noshowpos
+                  << " | Dislocations: " << num_dislocations_pre << " -> " << num_dislocations_post
+                  << " | Saved pre_avalanche_" << std::setw(5) << std::setfill('0') << pre_file_id
+                  << ".vtk & configuration_" << std::setw(5) << std::setfill('0') << post_file_id
+                  << ".vtk" << std::setfill(' ') << std::endl;
       } else {
         std::cout << "  ⚡ [AVALANCHE #" << avalanche_counter << "] Stress dropped "
                   << std::fixed << std::setprecision(1) << (fractional_stress_drop * 100.0) << "% ("
@@ -1533,12 +1679,28 @@ void example_1_conti_zanzotto_loading(
                                   pre_active_elements, caller_id + file_counter - 1);
 
     // ==================== LOG DATA ====================
+    std::vector<std::pair<std::string, double>> traction_columns;
+    if (run_has_tractions) {
+      const double external_potential =
+          force_control_step ? macro_geom.computeExternalForcePotential(square_points, alpha) : 0.0;
+      traction_columns = {{"EffectiveStrain", traction_strain},
+                          {"ElasticEnergy", post_energy - external_potential},
+                          {"StrainBurstFraction", fractional_strain_burst}};
+    }
     ConfigurationSaver::logEnergyAndStress_v2(
         i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area,
-        post_area, (hasChanges > 0), &postOptUserData, &indenter_contacts);
+        post_area, (hasChanges > 0), &postOptUserData, &indenter_contacts,
+        run_has_tractions ? &traction_columns : nullptr);
 
     post_energy_previous = post_energy;
     post_stress_previous = post_stress;
+
+    if (runaway_detected) {
+      std::cout << std::defaultfloat << std::setprecision(6)
+                << "[Force Control] Limit load reached at alpha = " << alpha
+                << ". Schedule stopped cleanly." << std::endl;
+      break;
+    }
 
     // ==================== STAGE 1 -> STAGE 2 PROTOCOL HANDOVER ====================
     if (has_custom_geom && i == 0) {
@@ -1581,6 +1743,17 @@ void example_1_conti_zanzotto_loading(
           elem.set_dof_mapping(full_mapping);
         }
         active_elements = initialize_active_elements(elements, full_mapping, square_points.size());
+        if (!macro_geom.finalizeBoundaryTractions(square_points_ref, elements)) {
+          std::cerr << "[Traction] Run refused at the Stage 2 handover: unbalanced dead load on an "
+                       "unsupported specimen." << std::endl;
+          AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
+          std::exit(EXIT_FAILURE);
+        }
+        traction_strain_previous = macro_geom.computeTractionConjugateStrain(square_points);
+        traction_points_n.clear();
+        traction_points_nm1.clear();
+        traction_prev_step_smooth = false;
+        have_elastic_ref = false;
         std::cout << "[Stage 2/2] Handover complete: X_0 re-anchored to relaxed equilibrium state, switched to Stage 2 BCs & Indenter ("
                   << macro_geom.boundary_rules.size() << " boundary rules"
                   << (macro_geom.isIndenterActive()
@@ -1602,6 +1775,7 @@ void example_1_conti_zanzotto_loading(
     }
   }
   ConfigurationSaver::setReferenceRotationDeg(theta_rot);
+  set_relaxation_max_iterations(0);
 
   if (has_custom_geom) {
     AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);

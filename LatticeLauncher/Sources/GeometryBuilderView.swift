@@ -1136,6 +1136,7 @@ public struct GeometryBuilderView: View {
         let drivenColor = Color(red: 0.31, green: 0.85, blue: 0.78)
         let fixedColor = Color(red: 1.0, green: 0.42, blue: 0.42)
         let rollerColor = Color(red: 0.98, green: 0.72, blue: 0.24)
+        let tractionColor = Color(red: 0.95, green: 0.38, blue: 0.82) // dead-load force arrows (f), distinct from driven u
         let geo = config.geometryConfig
         let nxL = max(2, config.nx)
         let nyL = max(2, config.ny)
@@ -1241,6 +1242,7 @@ public struct GeometryBuilderView: View {
                 case .rollerX, .rollerY: col = rollerColor
                 case .free: col = Color.gray
                 case .prescribed, .affine: col = drivenColor
+                case .traction: col = tractionColor
                 }
                 ctx.fill(Path(rect), with: .color(col.opacity(0.12)))
                 ctx.stroke(Path(rect), with: .color(col.opacity(0.85)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
@@ -1260,10 +1262,21 @@ public struct GeometryBuilderView: View {
             // ---------------- Hole surfaces: highlight every enabled cutout rim ----------------
             if rule.region == .holeSurfaces {
                 guard rule.kind != .free else { continue }
-                let col: Color = rule.kind == .fixed ? fixedColor : ((rule.kind == .rollerX || rule.kind == .rollerY) ? rollerColor : drivenColor)
+                let col: Color = rule.kind == .traction ? tractionColor
+                    : (rule.kind == .fixed ? fixedColor : ((rule.kind == .rollerX || rule.kind == .rollerY) ? rollerColor : drivenColor))
                 for cutout in geo.cutouts where cutout.enabled {
                     let cPath = buildCutoutPath(cutout: cutout, originX: originX, originY: originY, boxW: boxW, boxH: boxH)
                     ctx.stroke(cPath, with: .color(col.opacity(0.9)), style: StrokeStyle(lineWidth: 3.0, dash: [5, 3]))
+                    if rule.kind == .traction {
+                        let noun: String
+                        switch rule.traction_mode {
+                        case "radial_outward": noun = "f: p = +α"
+                        case "radial_inward": noun = "f: p = −α"
+                        case "circumferential_shear": noun = "f: τ_θ = α"
+                        default: noun = String(format: "f: α·(%.1f, %.1f)", rule.tx, rule.ty)
+                        }
+                        drawLabel(noun, at: scr(cutout.cx, cutout.cy), color: tractionColor)
+                    }
                 }
                 continue
             }
@@ -1353,6 +1366,36 @@ public struct GeometryBuilderView: View {
                     let (lp, an) = labelPoint(for: pts, region: rule.region)
                     drawLabel("Free Surface", at: lp, color: BlueHour.mist.opacity(0.9), anchor: an)
                 }
+
+            case .traction:
+                // Dead-load force arrows f on the contour (the atoms stay free)
+                let cartMag = hypot(rule.tx, rule.ty)
+                if rule.traction_mode == "cartesian" && cartMag < 1e-9 { continue }
+                for s in pick(pts, rule.region == .outerPerimeter ? 18 : 7) {
+                    let p = scr(s.x, s.y)
+                    let n = scrDir(s.nx, s.ny)
+                    let d: CGPoint
+                    switch rule.traction_mode {
+                    case "radial_outward": d = n
+                    case "radial_inward": d = CGPoint(x: -n.x, y: -n.y)
+                    case "circumferential_shear": d = scrDir(-s.ny, s.nx)
+                    default: d = scrDir(rule.tx / cartMag, rule.ty / cartMag)
+                    }
+                    let pushing = (d.x * n.x + d.y * n.y) < -0.3
+                    // Pushing forces end ON the surface; pulling / tangential forces start on it.
+                    let start = pushing ? CGPoint(x: p.x - d.x * 18, y: p.y - d.y * 18) : CGPoint(x: p.x + n.x * 3, y: p.y + n.y * 3)
+                    let end = pushing ? p : CGPoint(x: start.x + d.x * 18, y: start.y + d.y * 18)
+                    drawVectorArrow(ctx: &ctx, start: start, end: end, color: tractionColor, lineWidth: 2.0, headLength: 6.0)
+                }
+                let noun: String
+                switch rule.traction_mode {
+                case "radial_outward": noun = "Pressure Pull t = +α·n"
+                case "radial_inward": noun = "Pressure Push t = −α·n"
+                case "circumferential_shear": noun = "Rim Shear t = α·θ̂"
+                default: noun = String(format: "t = α·(%.2g, %.2g)", rule.tx, rule.ty)
+                }
+                let (lp, an) = labelPoint(for: pts, region: rule.region)
+                drawLabel("\(rName) Dead Load f: \(noun)", at: lp, color: tractionColor, anchor: an)
             }
         }
     }
@@ -3994,6 +4037,33 @@ public struct GeometryBuilderView: View {
                                 Spacer()
                                 DoubleField(title: "2.0", value: $rule.thickness_a0, width: 52)
                             }
+                        } else if rule.kind == .traction {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 8) {
+                                    Picker("Dead Load", selection: $rule.traction_mode) {
+                                        Text("Cartesian t = α·(tx, ty)").tag("cartesian")
+                                        Text("Pressure Pull (+α·n)").tag("radial_outward")
+                                        Text("Pressure Push (−α·n)").tag("radial_inward")
+                                        Text("Rim Shear (α·θ̂)").tag("circumferential_shear")
+                                    }
+                                    .controlSize(.mini)
+                                    Text("Strip:").font(.caption2)
+                                    DoubleField(title: "2.0", value: $rule.thickness_a0, width: 42)
+                                }
+                                if rule.traction_mode == "cartesian" {
+                                    HStack(spacing: 6) {
+                                        Text("t₀ per unit α:").font(.caption2).foregroundColor(.secondary)
+                                        Text("tx:").font(.caption2.bold())
+                                        DoubleField(title: "0.0", value: $rule.tx, width: 48)
+                                        Text("ty:").font(.caption2.bold())
+                                        DoubleField(title: "1.0", value: $rule.ty, width: 48)
+                                    }
+                                }
+                                Text("Force control: α is the nominal traction (stress units) on the outermost atoms; the loaded atoms stay free and may slip.")
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         } else if rule.kind == .affine {
                             HStack(spacing: 8) {
                                 Picker("Affine Mode", selection: $rule.affine_mode) {
@@ -4017,6 +4087,10 @@ public struct GeometryBuilderView: View {
                     .background(BlueHour.midnight.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
                 }
                 
+                if !isViewingStage1RelaxBCs {
+                    deadLoadPresetRow
+                }
+
                 Button("+ Add Boundary Zone Rule") {
                     if isViewingStage1RelaxBCs {
                         config.geometryConfig.stage1_boundary_rules.append(
@@ -4035,6 +4109,62 @@ public struct GeometryBuilderView: View {
         }
     }
     
+    // MARK: - Dead-Load (Force Control) Presets
+    private var deadLoadPresetRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Force Control (Dead Load, α = nominal stress):")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundColor(BlueHour.mist)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    selectableChipButton(title: "Dead-Load Tension σ_yy = α", isSelected: false) {
+                        setDeadLoad([
+                            BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                            BoundaryZoneRuleModel(region: .top, kind: .traction, thickness_a0: 2.0, ux: 0.0, uy: 0.0,
+                                                  traction_mode: "cartesian", tx: 0.0, ty: 1.0)
+                        ])
+                    }
+                    .help("Bottom clamped, uniform dead-load tension on the top surface. The top atoms stay free.")
+                    selectableChipButton(title: "Dead-Load Shear τ = α", isSelected: false) {
+                        setDeadLoad([
+                            BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                            BoundaryZoneRuleModel(region: .top, kind: .traction, thickness_a0: 2.0, ux: 0.0, uy: 0.0,
+                                                  traction_mode: "cartesian", tx: 1.0, ty: 0.0)
+                        ])
+                    }
+                    .help("Bottom clamped, uniform dead-load shear traction on the top surface.")
+                    selectableChipButton(title: "Pressurized Hole p = α", isSelected: false) {
+                        setDeadLoad([
+                            BoundaryZoneRuleModel(region: .outerPerimeter, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                            BoundaryZoneRuleModel(region: .holeSurfaces, kind: .traction, thickness_a0: 1.5, ux: 0.0, uy: 0.0,
+                                                  traction_mode: "radial_outward", tx: 0.0, ty: 0.0)
+                        ])
+                    }
+                    .disabled(!hasEnabledAreaCutout)
+                    .opacity(hasEnabledAreaCutout ? 1.0 : 0.45)
+                    .help(hasEnabledAreaCutout
+                          ? "Outer boundary clamped, internal pressure p = α on every hole rim (cavity expansion)."
+                          : "Add a hole (circle, ellipse or polygon cutout) first.")
+                }
+            }
+            if let issue = config.geometryConfig.tractionBalanceIssue {
+                Label(issue, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func setDeadLoad(_ rules: [BoundaryZoneRuleModel]) {
+        config.mode = .positive
+        config.boundaryCondition = .fixed
+        config.geometryConfig.enabled = true
+        config.geometryConfig.indenter.enabled = false
+        config.geometryConfig.boundary_rules = rules
+        config.geometryConfig.primary_stress_component = "auto"
+    }
+
     // MARK: - Disk / Shape Loading Helpers
     private func setOuterAffine(_ mode: String, stress: String, holeKind: BoundaryConditionKindModel = .free) {
         config.mode = .positive

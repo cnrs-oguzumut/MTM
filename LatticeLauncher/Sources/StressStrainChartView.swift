@@ -310,6 +310,9 @@ struct StressStrainChartView: View {
                             Text(StressComponentType.meanContactPressure.rawValue).tag(StressComponentType.meanContactPressure)
                             Text(StressComponentType.contactAtoms.rawValue).tag(StressComponentType.contactAtoms)
                         }
+                        Section(header: Text("Force Control (Dead Load)")) {
+                            Text(StressComponentType.effectiveStrain.rawValue).tag(StressComponentType.effectiveStrain)
+                        }
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()

@@ -4,6 +4,8 @@
 #include "../include/mesh/ElementTriangle2D.h"
 #include "../include/utils/dislocation_utils.h"
 #include <unordered_set>
+#include <unordered_map>
+#include <limits>
 
 #include <fstream>
 #include <sstream>
@@ -331,6 +333,7 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
             else if (kind_str == "affine" || kind_str == "affineDeformation" || kind_str == "affine_deformation" || kind_str == "affine_detachment") r.kind = BoundaryConditionKind::AffineDeformation;
             else if (kind_str == "roller_x" || kind_str == "rollerX") r.kind = BoundaryConditionKind::RollerX;
             else if (kind_str == "roller_y" || kind_str == "rollerY") r.kind = BoundaryConditionKind::RollerY;
+            else if (kind_str == "traction" || kind_str == "prescribedTraction" || kind_str == "prescribed_traction") r.kind = BoundaryConditionKind::PrescribedTraction;
             else r.kind = BoundaryConditionKind::FreeSurface;
 
             r.thickness_a0 = extractDouble(item_json, "thickness_a0", 2.0);
@@ -350,6 +353,9 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
                 r.lock_y = false;
             }
             r.affine_mode = extractString(item_json, "affine_mode", "simple_shear_x");
+            r.traction_mode = extractString(item_json, "traction_mode", "cartesian");
+            r.tx = extractDouble(item_json, "tx", 0.0);
+            r.ty = extractDouble(item_json, "ty", 0.0);
             parsed.push_back(r);
         }
         return parsed;
@@ -1880,6 +1886,18 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
     node_bc_velocity.assign(n_pts, Eigen::Vector2d::Zero());
     cached_node_rotation_driven.assign(n_pts, 0);
     cached_node_rotation_pivot.assign(n_pts, Eigen::Vector2d::Zero());
+    cached_traction_rule_index.clear();
+    cached_traction_membership.clear();
+    cached_node_ext_force_unit.assign(n_pts, Eigen::Vector2d::Zero());
+    cached_node_ext_force_ref.clear();
+    has_external_tractions = false;
+    traction_anchor_active = false;
+    for (size_t k = 0; k < boundary_rules.size(); ++k) {
+        if (boundary_rules[k].enabled && boundary_rules[k].kind == BoundaryConditionKind::PrescribedTraction) {
+            cached_traction_rule_index.push_back(static_cast<int>(k));
+            cached_traction_membership.emplace_back(n_pts, 0);
+        }
+    }
 
     if (n_pts == 0) return;
 
@@ -1979,10 +1997,18 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
 
             if (!matches) continue;
 
-            // Any later constraining rule replaces an earlier torsion trajectory on this node
-            if (rule.kind != BoundaryConditionKind::FreeSurface) rotation_driven = false;
+            // Any later constraining rule replaces an earlier torsion trajectory on this node.
+            // Tractions are loads, not kinematic constraints, so they leave it untouched.
+            if (rule.kind != BoundaryConditionKind::FreeSurface &&
+                rule.kind != BoundaryConditionKind::PrescribedTraction) rotation_driven = false;
 
-            if (rule.kind == BoundaryConditionKind::FreeSurface) {
+            if (rule.kind == BoundaryConditionKind::PrescribedTraction) {
+                // Dead load: the node stays a free DOF; finalizeBoundaryTractions assigns its force
+                const int rule_k = static_cast<int>(&rule - boundary_rules.data());
+                for (size_t m = 0; m < cached_traction_rule_index.size(); ++m) {
+                    if (cached_traction_rule_index[m] == rule_k) cached_traction_membership[m][i] = 1;
+                }
+            } else if (rule.kind == BoundaryConditionKind::FreeSurface) {
                 // FreeSurface (Neumann natural BC) marks a traction-free boundary.
                 // It MUST NEVER overwrite an already-constrained Dirichlet condition!
             } else if (rule.kind == BoundaryConditionKind::RollerX) {
@@ -2073,6 +2099,34 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
         }
     }
 
+    // Dead loads with no kinematic constraint at all: pin a minimal isostatic anchor (3 DOFs) so the
+    // rigid-body modes are removed. Decided here, before the mesh exists, so the DOF mappings are final.
+    if (!cached_traction_rule_index.empty() &&
+        std::all_of(node_bc_role.begin(), node_bc_role.end(), [](int r) { return r == 0; })) {
+        Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
+        for (const auto& pt : carved_points) centroid += pt.coord;
+        centroid /= static_cast<double>(n_pts);
+        size_t anchor_a = 0;
+        double best = std::numeric_limits<double>::max();
+        for (size_t i = 0; i < n_pts; ++i) {
+            const double d = (carved_points[i].coord - centroid).squaredNorm();
+            if (d < best) { best = d; anchor_a = i; }
+        }
+        // Second atom on the same row, as far as possible horizontally: locking its u_y removes rotation
+        size_t anchor_b = anchor_a;
+        double best_dx = 0.0;
+        const Eigen::Vector2d pa = carved_points[anchor_a].coord;
+        for (size_t i = 0; i < n_pts; ++i) {
+            const Eigen::Vector2d d = carved_points[i].coord - pa;
+            if (std::abs(d.y()) < 0.5 * a0 && std::abs(d.x()) > best_dx) { best_dx = std::abs(d.x()); anchor_b = i; }
+        }
+        node_bc_role[anchor_a] = 1;
+        if (anchor_b != anchor_a) node_bc_role[anchor_b] = 4;
+        traction_anchor_active = true;
+        std::cout << "[MacroscopicGeometry] Traction-only loading: isostatic anchor at node " << anchor_a
+                  << " (ux = uy = 0) and node " << anchor_b << " (uy = 0, dx = " << best_dx << ")\n";
+    }
+
     // Build interior_mapping and full_mapping (nodes with at least 1 free DOF are included)
     cached_node_bc_role = node_bc_role;
     has_partial_dof_constraints = false;
@@ -2115,6 +2169,212 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
                      "Fixed or on a Roller. A free specimen only rotates rigidly, so the torque stays ~0. "
                      "Clamp an inner boundary (e.g. hole_surfaces fixed).\n";
     }
+}
+
+bool MacroscopicGeometryConfig::hasTractionRules() const {
+    if (!enabled) return false;
+    for (const auto& rule : boundary_rules) {
+        if (rule.enabled && rule.kind == BoundaryConditionKind::PrescribedTraction) return true;
+    }
+    return false;
+}
+
+bool MacroscopicGeometryConfig::finalizeBoundaryTractions(
+    const std::vector<Point2D>& reference_points,
+    const std::vector<ElementTriangle2D>& elements) const {
+    has_external_tractions = false;
+    const size_t n_pts = reference_points.size();
+    cached_node_ext_force_unit.assign(n_pts, Eigen::Vector2d::Zero());
+    cached_node_ext_force_ref.resize(n_pts);
+    for (size_t i = 0; i < n_pts; ++i) cached_node_ext_force_ref[i] = reference_points[i].coord;
+    if (!enabled || cached_traction_rule_index.empty()) return true;
+    for (const auto& mem : cached_traction_membership) {
+        if (mem.size() != n_pts) {
+            std::cerr << "[Traction] ERROR: boundary DOFs were built for a different point set\n";
+            return false;
+        }
+    }
+
+    // Boundary edges of the reference mesh: edges used by exactly one triangle (keep the third vertex
+    // to orient the outward normal). The solid area normalizes the conjugate strain.
+    struct EdgeInfo { int count = 0; int a = -1; int b = -1; int third = -1; };
+    std::unordered_map<uint64_t, EdgeInfo> edges;
+    edges.reserve(elements.size() * 2);
+    double solid_area = 0.0;
+    for (const auto& el : elements) {
+        int nn[3] = {el.getNodeIndex(0), el.getNodeIndex(1), el.getNodeIndex(2)};
+        bool valid = true;
+        for (int k = 0; k < 3; ++k) valid = valid && nn[k] >= 0 && static_cast<size_t>(nn[k]) < n_pts;
+        if (!valid) continue;
+        const Eigen::Vector2d e1 = reference_points[nn[1]].coord - reference_points[nn[0]].coord;
+        const Eigen::Vector2d e2 = reference_points[nn[2]].coord - reference_points[nn[0]].coord;
+        solid_area += 0.5 * std::abs(e1.x() * e2.y() - e1.y() * e2.x());
+        for (int k = 0; k < 3; ++k) {
+            const int a = nn[k], b = nn[(k + 1) % 3], c = nn[(k + 2) % 3];
+            const uint64_t key = static_cast<uint64_t>(std::min(a, b)) * static_cast<uint64_t>(n_pts) +
+                                 static_cast<uint64_t>(std::max(a, b));
+            EdgeInfo& info = edges[key];
+            info.count++;
+            info.a = a; info.b = b; info.third = c;
+        }
+    }
+    cached_reference_solid_area = solid_area;
+
+    const Eigen::Vector2d center(x_min + 0.5 * Lx, y_min + 0.5 * Ly);
+    int loaded_edges = 0;
+    for (const auto& [key, info] : edges) {
+        if (info.count != 1) continue;
+        const Eigen::Vector2d pa = reference_points[info.a].coord;
+        const Eigen::Vector2d pb = reference_points[info.b].coord;
+        const Eigen::Vector2d mid = 0.5 * (pa + pb);
+        const double len = (pb - pa).norm();
+        if (len < 1e-12) continue;
+        Eigen::Vector2d n_hat((pb - pa).y() / len, -(pb - pa).x() / len);
+        if (n_hat.dot(reference_points[info.third].coord - mid) > 0.0) n_hat = -n_hat; // outward of the solid
+
+        for (size_t m = 0; m < cached_traction_rule_index.size(); ++m) {
+            const auto& mem = cached_traction_membership[m];
+            if (!mem[info.a] || !mem[info.b]) continue;
+            const BoundaryZoneRule& rule = boundary_rules[cached_traction_rule_index[m]];
+            // Edge rules load only the faces that look that way: a thick strip also captures the
+            // short side edges next to the corners, which must stay traction-free.
+            Eigen::Vector2d face_dir = Eigen::Vector2d::Zero();
+            switch (rule.region) {
+            case BoundaryRegionType::TopEdge: face_dir = Eigen::Vector2d(0.0, 1.0); break;
+            case BoundaryRegionType::BottomEdge: face_dir = Eigen::Vector2d(0.0, -1.0); break;
+            case BoundaryRegionType::LeftEdge: face_dir = Eigen::Vector2d(-1.0, 0.0); break;
+            case BoundaryRegionType::RightEdge: face_dir = Eigen::Vector2d(1.0, 0.0); break;
+            default: break;
+            }
+            if (face_dir.squaredNorm() > 0.0 && n_hat.dot(face_dir) < 0.5) continue;
+            const bool on_hole = (rule.region == BoundaryRegionType::HoleSurfaces);
+            Eigen::Vector2d t0 = Eigen::Vector2d::Zero();
+            if (rule.traction_mode == "radial_outward" || rule.traction_mode == "radial_inward") {
+                // Radially away from the contour's pivot: +n on outer contours, -n on hole faces
+                const double s = on_hole ? -1.0 : 1.0;
+                t0 = (rule.traction_mode == "radial_outward" ? s : -s) * n_hat;
+            } else if (rule.traction_mode == "circumferential_shear" || rule.traction_mode == "torsion") {
+                const double strip = std::max(0.35, rule.thickness_a0) * a0;
+                const Eigen::Vector2d pivot = on_hole ? cutoutPivot(findCutoutNear(mid.x(), mid.y(), strip)) : center;
+                const Eigen::Vector2d r = mid - pivot;
+                if (r.norm() > 1e-12) t0 = Eigen::Vector2d(-r.y(), r.x()) / r.norm();
+            } else {
+                t0 = Eigen::Vector2d(rule.tx, rule.ty);
+            }
+            const Eigen::Vector2d share = 0.5 * len * t0;
+            cached_node_ext_force_unit[info.a] += share;
+            cached_node_ext_force_unit[info.b] += share;
+            ++loaded_edges;
+        }
+    }
+
+    double force_scale = 0.0;
+    Eigen::Vector2d resultant = Eigen::Vector2d::Zero();
+    Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
+    for (const auto& pt : reference_points) centroid += pt.coord;
+    if (n_pts > 0) centroid /= static_cast<double>(n_pts);
+    double moment = 0.0;
+    int loaded_nodes = 0;
+    for (size_t i = 0; i < n_pts; ++i) {
+        const Eigen::Vector2d& f = cached_node_ext_force_unit[i];
+        if (f.squaredNorm() == 0.0) continue;
+        ++loaded_nodes;
+        force_scale += f.norm();
+        resultant += f;
+        const Eigen::Vector2d r = reference_points[i].coord - centroid;
+        moment += r.x() * f.y() - r.y() * f.x();
+    }
+    has_external_tractions = (force_scale > 0.0);
+
+    std::cout << "[Traction] " << cached_traction_rule_index.size() << " traction rule(s): " << loaded_edges
+              << " boundary edge share(s) on " << loaded_nodes << " contour atoms | sum|f0| = " << force_scale
+              << " | R = (" << resultant.x() << ", " << resultant.y() << "), M = " << moment
+              << " (per unit alpha) | A_solid = " << solid_area << "\n";
+    if (!has_external_tractions) {
+        std::cerr << "[Traction] WARNING: traction rule(s) matched no boundary edge; no load is applied.\n";
+        return true;
+    }
+    if (traction_anchor_active) {
+        const double l_char = std::max(Lx, Ly);
+        const bool unbalanced = resultant.norm() > 1e-10 * force_scale ||
+                                std::abs(moment) > 1e-10 * force_scale * l_char;
+        if (unbalanced) {
+            std::cerr << "[Traction] ERROR: the dead load is not self-equilibrated (R = (" << resultant.x() << ", "
+                      << resultant.y() << "), M = " << moment << " per unit alpha) and no Fixed, Prescribed, "
+                      << "Affine or Roller boundary holds the specimen. Add a support or balance the load.\n";
+            return false;
+        }
+    }
+    return true;
+}
+
+double MacroscopicGeometryConfig::computeExternalForcePotential(
+    const std::vector<Point2D>& points, double alpha) const {
+    if (!hasExternalTractionForces() || alpha == 0.0) return 0.0;
+    const size_t n = std::min({points.size(), cached_node_ext_force_unit.size(),
+                               cached_node_ext_force_ref.size(), cached_node_bc_role.size()});
+    double energy = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const int role = cached_node_bc_role[i];
+        if (role != 0 && role != 3 && role != 4) continue; // same node set as the optimizer's DOFs
+        const Eigen::Vector2d& f0 = cached_node_ext_force_unit[i];
+        if (f0.squaredNorm() == 0.0) continue;
+        energy -= alpha * f0.dot(points[i].coord - cached_node_ext_force_ref[i]);
+    }
+    return energy;
+}
+
+double MacroscopicGeometryConfig::accumulateExternalForcePotential(
+    const alglib::real_1d_array& x,
+    const std::vector<std::pair<int, int>>& interior_mapping,
+    alglib::real_1d_array& grad,
+    double alpha) const {
+    if (!hasExternalTractionForces() || alpha == 0.0) return 0.0;
+    const int n_vars = static_cast<int>(interior_mapping.size());
+    const int n_forces = static_cast<int>(std::min(cached_node_ext_force_unit.size(), cached_node_ext_force_ref.size()));
+    double energy = 0.0;
+    for (int i = 0; i < n_vars; ++i) {
+        const auto& [point_idx, dof_idx] = interior_mapping[i];
+        if (point_idx < 0 || point_idx >= n_forces || dof_idx < 0 || dof_idx >= n_vars) continue;
+        const Eigen::Vector2d& f0 = cached_node_ext_force_unit[point_idx];
+        if (f0.squaredNorm() == 0.0) continue;
+        const Eigen::Vector2d f = alpha * f0;
+        const Eigen::Vector2d& X = cached_node_ext_force_ref[point_idx];
+        energy -= f.x() * (x[dof_idx] - X.x()) + f.y() * (x[n_vars + dof_idx] - X.y());
+        grad[dof_idx] -= f.x();
+        grad[n_vars + dof_idx] -= f.y();
+    }
+    return energy;
+}
+
+double MacroscopicGeometryConfig::computeTractionConjugateStrain(const std::vector<Point2D>& points) const {
+    if (!hasExternalTractionForces() || cached_reference_solid_area <= 0.0) return 0.0;
+    const size_t n = std::min({points.size(), cached_node_ext_force_unit.size(),
+                               cached_node_ext_force_ref.size(), cached_node_bc_role.size()});
+    double work = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const int role = cached_node_bc_role[i];
+        if (role != 0 && role != 3 && role != 4) continue;
+        work += cached_node_ext_force_unit[i].dot(points[i].coord - cached_node_ext_force_ref[i]);
+    }
+    return work / cached_reference_solid_area;
+}
+
+void MacroscopicGeometryConfig::setRunawayReference(const std::vector<Point2D>& points, double limit) const {
+    runaway_limit = limit;
+    runaway_reference_points.clear();
+    if (limit <= 0.0) return;
+    runaway_reference_points.reserve(points.size());
+    for (const auto& pt : points) runaway_reference_points.push_back(pt.coord);
+}
+
+double MacroscopicGeometryConfig::maxDisplacementSinceStepStart(const std::vector<Point2D>& points) const {
+    double max_jump = 0.0;
+    const size_t n = std::min(points.size(), runaway_reference_points.size());
+    for (size_t i = 0; i < n; ++i) {
+        max_jump = std::max(max_jump, (points[i].coord - runaway_reference_points[i]).norm());
+    }
+    return max_jump;
 }
 
 bool MacroscopicGeometryConfig::hasTorsionDrivenNodes() const {
@@ -2595,6 +2855,20 @@ double MacroscopicGeometryConfig::extractPrimaryStress(
     // "auto": inspect active driven rules to pick the conjugate stress component
     for (const auto& rule : boundary_rules) {
         if (!rule.enabled) continue;
+        if (rule.kind == BoundaryConditionKind::PrescribedTraction) {
+            if (rule.traction_mode == "radial_outward" || rule.traction_mode == "radial_inward") {
+                return 0.5 * (stress_tensor(0, 0) + stress_tensor(1, 1));
+            }
+            if (rule.traction_mode == "cartesian") {
+                const bool horizontal_face = (rule.region == BoundaryRegionType::TopEdge ||
+                                              rule.region == BoundaryRegionType::BottomEdge);
+                const bool vertical_face = (rule.region == BoundaryRegionType::LeftEdge ||
+                                            rule.region == BoundaryRegionType::RightEdge);
+                if (horizontal_face && std::abs(rule.ty) > std::abs(rule.tx)) return stress_tensor(1, 1);
+                if (vertical_face && std::abs(rule.tx) > std::abs(rule.ty)) return stress_tensor(0, 0);
+            }
+            return stress_tensor(0, 1);
+        }
         if (rule.kind == BoundaryConditionKind::PrescribedDisplacement) {
             if ((rule.region == BoundaryRegionType::TopEdge || rule.region == BoundaryRegionType::BottomEdge) &&
                 std::abs(rule.uy) > std::abs(rule.ux)) {

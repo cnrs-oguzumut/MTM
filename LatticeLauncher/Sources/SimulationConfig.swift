@@ -927,7 +927,24 @@ public extension SimulationConfig {
         geometryConfig.boundary_rules.first { $0.enabled && $0.region == .outerPerimeter && $0.kind == .affine }?.affine_mode
     }
 
+    /// Enabled dead-load traction rule, if any (force-controlled loading).
+    private var activeTractionRule: BoundaryZoneRuleModel? {
+        geometryConfig.enabled ? geometryConfig.boundary_rules.first { $0.enabled && $0.kind == .traction } : nil
+    }
+
     var activeStressComponentLabel: String {
+        if let t = activeTractionRule {
+            switch t.traction_mode {
+            case "radial_outward", "radial_inward": return "Mean Radial Stress ½(σ_xx+σ_yy) (dead load)"
+            case "circumferential_shear": return "Shear Stress σ_xy (dead load)"
+            default:
+                let horizontalFace = t.region == .top || t.region == .bottom
+                let verticalFace = t.region == .left || t.region == .right
+                if horizontalFace && abs(t.ty) > abs(t.tx) { return "Tensile Stress σ_yy (dead load)" }
+                if verticalFace && abs(t.tx) > abs(t.ty) { return "Axial Stress σ_xx (dead load)" }
+                return "Shear Stress σ_xy (dead load)"
+            }
+        }
         if activeMechanicalLoading == .affineShearBox, let m = outerPerimeterAffineMode {
             if m == "circumferential_shear" || m == "torsion" { return "Rim Torque T = Σ r × f" }
             if m == "pure_shear" { return "Pure-Shear Stress ½(σ_xx−σ_yy)" }
@@ -955,6 +972,7 @@ public extension SimulationConfig {
     }
     
     var activeStrainParameterNoun: String {
+        if activeTractionRule != nil { return "applied nominal traction α (force control)" }
         if activeMechanicalLoading == .affineShearBox, let m = outerPerimeterAffineMode {
             if m == "circumferential_shear" || m == "torsion" { return "rim rotation θ = α (rad)" }
             if m == "pure_shear" { return "pure-shear strain ε" }

@@ -54,6 +54,9 @@ void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
 // Tells relax_configuration() which load step is being solved.
 void relaxation_begin_step(int step);
 
+// Caps L-BFGS iterations per relax_configuration() call (0 = unlimited, the default).
+void set_relaxation_max_iterations(int maxits);
+
 // Minimizes the energy starting from x (in place) with the configured solver.
 // `corrections` is the L-BFGS memory used by the plain (unpreconditioned) solver.
 void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corrections);

@@ -181,6 +181,7 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
     case rollerY = "roller_y"
     case prescribed = "prescribed"
     case affine = "affine"
+    case traction = "traction"
     
     public var id: String { rawValue }
     public var displayName: String {
@@ -191,6 +192,7 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
         case .rollerY: return "Roller Y (Fix ux = 0, Free uy)"
         case .prescribed: return "Prescribed Grip Δu(α)"
         case .affine: return "Affine Macro-Gradient F(α)"
+        case .traction: return "Dead-Load Traction t = α·t₀ (atoms stay free)"
         }
     }
     public var shortBadge: String {
@@ -201,6 +203,7 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
         case .rollerY: return "ROLLER-Y (ux=0)"
         case .prescribed: return "DRIVEN Δu"
         case .affine: return "AFFINE F(α)"
+        case .traction: return "TRACTION t(α)"
         }
     }
 }
@@ -220,11 +223,17 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
     public var lock_x: Bool = true
     public var lock_y: Bool = true
     public var affine_mode: String = "simple_shear_x"
+    // Dead-load traction (kind == .traction): "cartesian" uses (tx, ty); "radial_outward" /
+    // "radial_inward" / "circumferential_shear" are unit normal / tangential tractions. α is the nominal stress.
+    public var traction_mode: String = "cartesian"
+    public var tx: Double = 0.0
+    public var ty: Double = 1.0
     
     enum CodingKeys: String, CodingKey {
         case id, region, kind, enabled, thickness_a0
         case box_x_min, box_y_min, box_x_max, box_y_max
         case ux, uy, lock_x, lock_y, affine_mode
+        case traction_mode, tx, ty
     }
 
     public static func snapUnitDirection(_ val: Double) -> Double {
@@ -247,7 +256,10 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
         uy: Double = 1.0,
         lock_x: Bool = true,
         lock_y: Bool = true,
-        affine_mode: String = "simple_shear_x"
+        affine_mode: String = "simple_shear_x",
+        traction_mode: String = "cartesian",
+        tx: Double = 0.0,
+        ty: Double = 1.0
     ) {
         self.id = id
         self.region = region
@@ -271,6 +283,9 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
             self.lock_y = lock_y
         }
         self.affine_mode = affine_mode
+        self.traction_mode = traction_mode
+        self.tx = tx
+        self.ty = ty
     }
 
     public init(from decoder: Decoder) throws {
@@ -289,6 +304,9 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
         self.lock_x = try c.decodeIfPresent(Bool.self, forKey: .lock_x) ?? (self.kind != .rollerX)
         self.lock_y = try c.decodeIfPresent(Bool.self, forKey: .lock_y) ?? (self.kind != .rollerY)
         self.affine_mode = try c.decodeIfPresent(String.self, forKey: .affine_mode) ?? "simple_shear_x"
+        self.traction_mode = try c.decodeIfPresent(String.self, forKey: .traction_mode) ?? "cartesian"
+        self.tx = try c.decodeIfPresent(Double.self, forKey: .tx) ?? 0.0
+        self.ty = try c.decodeIfPresent(Double.self, forKey: .ty) ?? 1.0
     }
 }
 
@@ -1337,8 +1355,36 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             r.affine_mode == q.affine_mode && r.ux == q.ux && r.uy == q.uy &&
             r.lock_x == q.lock_x && r.lock_y == q.lock_y && r.thickness_a0 == q.thickness_a0 &&
             r.box_x_min == q.box_x_min && r.box_x_max == q.box_x_max &&
-            r.box_y_min == q.box_y_min && r.box_y_max == q.box_y_max
+            r.box_y_min == q.box_y_min && r.box_y_max == q.box_y_max &&
+            r.traction_mode == q.traction_mode && r.tx == q.tx && r.ty == q.ty
         }
+    }
+
+    /// Mirrors the solver's refusal rule for dead loads: with no kinematic support at all, the tractions
+    /// must be self-equilibrated (zero net force and torque). Returns the reason when they are not.
+    /// Approximate (unit edge lengths); the solver's check on the real contour is authoritative.
+    public var tractionBalanceIssue: String? {
+        let rules = boundary_rules.filter { $0.enabled }
+        let tractions = rules.filter { $0.kind == .traction }
+        guard !tractions.isEmpty else { return nil }
+        let supported = rules.contains { [.fixed, .prescribed, .affine, .rollerX, .rollerY].contains($0.kind) }
+        if supported { return nil }
+        var fx = 0.0, fy = 0.0
+        for r in tractions {
+            switch r.traction_mode {
+            case "radial_outward", "radial_inward":
+                continue // normal traction on a closed contour is self-equilibrated
+            case "circumferential_shear", "torsion":
+                return "A rim-shear dead load has a net torque and nothing holds the specimen. Clamp a hole or another boundary."
+            default:
+                fx += r.tx
+                fy += r.ty
+            }
+        }
+        if hypot(fx, fy) > 1e-9 {
+            return String(format: "Unbalanced dead load (net force ≈ (%.2f, %.2f) per unit α) with no support. Add a fixed or roller boundary, or balance the tractions.", fx, fy)
+        }
+        return nil
     }
 
     /// True when Stage 1 follows the loading rules (empty, or equal to them ignoring ids).
@@ -1588,6 +1634,8 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 case .affine:
                     lockedX = true; lockedY = true
                     drivenX = true; drivenY = true
+                case .traction:
+                    break // a load, not a constraint: the atoms stay free
                 }
             }
         }

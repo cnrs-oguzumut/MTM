@@ -138,7 +138,10 @@ public:
     double post_area,
     bool shouldRemesh,
     UserData* postUserData = nullptr,
-    const std::vector<int>* contact_atoms = nullptr);  // Added plasticity flag & extended stress metrics
+    const std::vector<int>* contact_atoms = nullptr,  // Added plasticity flag & extended stress metrics
+    // Optional extra columns appended after ContactAtoms (force-controlled runs only). The header
+    // is written when the file is created, so pass the same names on every call of a run.
+    const std::vector<std::pair<std::string, double>>* extra_columns = nullptr);
 
     /**
      * Write configuration data to VTK format for visualization

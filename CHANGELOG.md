@@ -2,6 +2,22 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — force control (dead-load tractions, plan Phase A)
+- New boundary kind `traction` (`traction_mode`: `cartesian` with `tx`/`ty`, `radial_outward`, `radial_inward`,
+  `circumferential_shear`). α is the nominal traction. Loaded atoms stay free, and the solver minimizes
+  Π = E_el − α Σ f0·(x − X). The force on each outermost contour atom is half the traction times the
+  reference length of each boundary edge it touches. Edge rules load only faces that look that way.
+- The run is refused (exit code 1) when a dead load is unbalanced and nothing supports the specimen. A balanced
+  load with no support gets a 3-DOF isostatic anchor.
+- Remesh acceptance uses Π. Under force control an avalanche is a strain burst at fixed α: an enthalpy drop in
+  the cascade plus a conjugate-strain jump beyond the elastic secant. A displacement guard stops the run
+  cleanly at the limit load, and L-BFGS is capped at 20 000 iterations per relaxation.
+- `energy_stress_log.csv` gains `EffectiveStrain`, `ElasticEnergy` and `StrainBurstFraction` columns on runs
+  with traction rules only. Strain-controlled outputs are byte-identical to `90d9727`.
+- GUI: Traction kind in the rule editor, magenta force arrows on the canvas, Dead-Load Tension/Shear and
+  Pressurized Hole presets, a balance warning that disables Run, and a "Dead-Load Strain ε" chart series.
+  Set `MTM_TRACTION_GRADCHECK=1` to print a finite-difference check of the enthalpy gradient.
+
 ### Changed — physics
 - **Affine origin.** Centre-symmetric affine modes (biaxial, radial in/out, pure shear, torsion) pivot
   about the specimen centre for `outer_perimeter` rules, and about each hole's own centre for

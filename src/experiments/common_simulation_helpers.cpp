@@ -1,3 +1,4 @@
+#include "../../include/geometry/MacroscopicGeometry.h"
 #include "../../include/experiments/experiment_includes.h"
 
 bool hasConnectivityChanged(const std::vector<ElementTriangle2D> &old_elements,
@@ -325,6 +326,14 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
 
       // Continue cascade loop to see if further plastic relaxation occurs
       should_remesh = true;
+
+      // Force control past the limit load: the dead load has no equilibrium, stop the cascade
+      if (userData->macro_geom_ptr != nullptr &&
+          userData->macro_geom_ptr->exceedsRunawayLimit(square_points)) {
+        std::cout << "  ↻ [Remesh Cascade] Stopped: nodal displacement since the step start exceeds the "
+                     "limit-load guard (dead-load runaway)" << std::endl;
+        should_remesh = false;
+      }
     }
 
     mesh_iteration++;
@@ -348,6 +357,12 @@ namespace {
 std::unique_ptr<PreconditionedLBFGS> g_relaxation_solver;
 int g_relaxation_first_step = 0;
 int g_relaxation_step = 0;
+int g_relaxation_maxits = 0; // 0 = unlimited (default); set only for force-controlled runs
+}
+
+void set_relaxation_max_iterations(int maxits) {
+  g_relaxation_maxits = std::max(0, maxits);
+  if (g_relaxation_solver) g_relaxation_solver->setMaxIterations(g_relaxation_maxits);
 }
 
 void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
@@ -367,6 +382,7 @@ void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
       }
     };
   }
+  if (g_relaxation_maxits > 0) opts.maxits = g_relaxation_maxits;
   g_relaxation_solver = std::make_unique<PreconditionedLBFGS>(opts);
 }
 
@@ -377,7 +393,7 @@ void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corre
     g_relaxation_solver->optimize(x, userData);
     return;
   }
-  LBFGSOptimizer optimizer(corrections, 0.0, 0.0, 0.0, 0);
+  LBFGSOptimizer optimizer(corrections, 0.0, 0.0, 0.0, g_relaxation_maxits);
   optimizer.optimize(x, minimize_energy_with_triangles, userData);
 }
 
