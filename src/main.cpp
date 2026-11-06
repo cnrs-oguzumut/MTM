@@ -8,6 +8,7 @@
 #include "../include/experiments/shifted_crystal_study.h"
 #include "../include/experiments/zanzotto_examples.h"
 #include "../include/experiments/stress_controlled_examples.h"
+#include "../include/experiments/pbc_stress_control.h"
 #include "../include/experiments/data_analysis.h"
 #include "../include/experiments/stability_monitor.h"
 #include "../include/experiments/shifted_dislocation_study.h"
@@ -27,6 +28,8 @@ int main(int argc, char **argv) {
   bool use_cylinder = false;
   bool export_full_mesh = true;
   bool relax_macro_stress = false;
+  std::string stress_control_preset;  // PBC nominal-stress control: shear | uniaxial_y | uniaxial_x | relax_normal
+  bool legacy_stress_servo = false;   // run the legacy PBC Cauchy-stress servo (validation baseline)
   double stress_tol = 1e-5;
   int max_macro_iters = 30;
   double alpha_start = 0.14;
@@ -313,6 +316,18 @@ int main(int argc, char **argv) {
       relax_macro_stress = true;
     } else if (arg == "--relax-stress=0" || arg == "--relax-macro-stress=0") {
       relax_macro_stress = false;
+    } else if (arg.rfind("--stress-control=", 0) == 0) {
+      stress_control_preset = arg.substr(17);
+      if (stress_control_preset == "none" || stress_control_preset == "off") stress_control_preset.clear();
+      if (!stress_control_preset.empty() && stress_control_preset != "shear" &&
+          stress_control_preset != "uniaxial_y" && stress_control_preset != "uniaxial_x" &&
+          stress_control_preset != "relax_normal") {
+        std::cerr << "Unknown --stress-control preset '" << stress_control_preset
+                  << "' (shear | uniaxial_y | uniaxial_x | relax_normal | none)" << std::endl;
+        return 1;
+      }
+    } else if (arg == "--legacy-stress-servo" || arg == "--legacy-stress-servo=1") {
+      legacy_stress_servo = true;
     } else if (arg.rfind("--stress-tol=", 0) == 0) {
       stress_tol = std::stod(arg.substr(13));
     } else if (arg.rfind("--max-macro-iters=", 0) == 0) {
@@ -387,6 +402,9 @@ int main(int argc, char **argv) {
 
   configure_relaxation_solver(relax_options, precond_from_step);
   configure_stability_monitor(stability_options);
+  // In the loading pipeline --relax-stress=1 relaxes the periodic box to zero stress at alpha = 0
+  // (Volterra mode keeps its own outer loop)
+  set_pbc_stress_control_options(stress_control_preset, relax_macro_stress && mode != "volterra");
 
   if (!restart_checkpoint.empty()) {
     restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, potential_mode);
@@ -577,7 +595,11 @@ int main(int argc, char **argv) {
 
   // 6. Stress-Controlled Loading:
   //    Applies stress-controlled shear/axial loading with adaptive remeshing.
-  // example_3_stress_controlled_final_clean(0, nx, ny);
+  //    Legacy PBC Cauchy-stress servo, kept as the validation baseline for --stress-control.
+  if (legacy_stress_servo) {
+    example_3_stress_controlled_final_clean(0, nx, ny);
+    return 0;
+  }
 
   // 7. Continuous Shear Loading:
   //    Configure loading schedule once; automatically negated for negative loading

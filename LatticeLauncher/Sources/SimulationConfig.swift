@@ -109,6 +109,11 @@ public class SimulationConfig: ObservableObject {
     
     // Dislocation Stress Relaxation (Full Cauchy Tensor)
     @Published public var relaxMacroStress: Bool = false
+    /// PBC nominal-stress control preset: "none", "shear" (P12 = α), "uniaxial_y" (P22 = α),
+    /// "uniaxial_x" (P11 = α), "relax_normal" (F12 = α strain-driven, P11 = P22 = 0)
+    @Published public var pbcStressControl: String = "none"
+    /// PBC Stage 1: relax all three box stresses to zero at α = 0 before loading
+    @Published public var pbcRelaxBoxStress: Bool = false
     @Published public var stressTol: Double = 1e-5
     @Published public var maxMacroIters: Int = 30
     
@@ -440,6 +445,10 @@ public class SimulationConfig: ObservableObject {
                 }
             } else {
                 args.append("--bc=\(boundaryCondition.rawValue)")
+            }
+            if isPeriodicLoadingRun(geometry: activeGeometry) {
+                if pbcStressControl != "none" { args.append("--stress-control=\(pbcStressControl)") }
+                if pbcRelaxBoxStress { args.append("--relax-stress=1") }
             }
         }
         
@@ -932,7 +941,29 @@ public extension SimulationConfig {
         geometryConfig.enabled ? geometryConfig.boundary_rules.first { $0.enabled && $0.kind.isForceControl } : nil
     }
 
+    /// Loading run on a periodic cell (plain PBC or periodic dislocations): box stress control applies.
+    var isPeriodicLoadingRun: Bool { isPeriodicLoadingRun(geometry: geometryConfig) }
+
+    func isPeriodicLoadingRun(geometry: MacroscopicGeometryConfigModel) -> Bool {
+        guard mode != .shift && mode != .volterra else { return false }
+        let isPeriodicDislocs = geometry.enabled && geometry.microstructure.mode == .periodicDislocations
+        return isPeriodicDislocs || boundaryCondition == .periodic
+    }
+
+    /// PBC stress preset that makes α a nominal stress (force control), if any.
+    var pbcForceControlPreset: String? {
+        guard isPeriodicLoadingRun, ["shear", "uniaxial_y", "uniaxial_x"].contains(pbcStressControl) else { return nil }
+        return pbcStressControl
+    }
+
     var activeStressComponentLabel: String {
+        if let p = pbcForceControlPreset {
+            switch p {
+            case "uniaxial_y": return "Tensile Stress σ_yy (box stress control)"
+            case "uniaxial_x": return "Axial Stress σ_xx (box stress control)"
+            default: return "Shear Stress σ_xy (box stress control)"
+            }
+        }
         if let t = activeTractionRule {
             switch t.kind == .forceGrip ? "cartesian" : t.traction_mode {
             case "radial_outward", "radial_inward": return "Mean Radial Stress ½(σ_xx+σ_yy) (dead load)"
@@ -972,6 +1003,7 @@ public extension SimulationConfig {
     }
     
     var activeStrainParameterNoun: String {
+        if pbcForceControlPreset != nil { return "applied nominal box stress α (stress control)" }
         if activeTractionRule != nil { return "applied nominal traction α (force control)" }
         if activeMechanicalLoading == .affineShearBox, let m = outerPerimeterAffineMode {
             if m == "circumferential_shear" || m == "torsion" { return "rim rotation θ = α (rad)" }

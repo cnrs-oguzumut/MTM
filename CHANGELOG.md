@@ -18,6 +18,26 @@
   Pressurized Hole presets, a balance warning that disables Run, and a "Dead-Load Strain ε" chart series.
   Set `MTM_TRACTION_GRADCHECK=1` to print a finite-difference check of the enthalpy gradient.
 
+### Added — PBC nominal-stress control (plan Phase C)
+- `--stress-control=shear|uniaxial_y|uniaxial_x|relax_normal` on periodic cells (plain PBC and periodic
+  dislocations). The box F̄ is upper triangular (F₂₁ = 0). Its stress-driven components are solved for with the
+  atoms on H = E − A₀ Pᵗ : (F̄ − I), using internal coordinates w (x = F̄w). The gradients are exact:
+  ∂E/∂w = F̄ᵀ∂E/∂x and ∂E/∂F̄ = (Σ A_e P_e F_eᵀ) F̄⁻ᵀ, from a virial accumulated in the energy loop.
+  The variables are scaled to lengths, and the L-BFGS step is capped at 0.5 a₀: the homogeneous energy is
+  periodic in shear, so H has no lower bound along the box components. The extra variables live only
+  inside `relax_configuration`, and remesh rejection restores F̄.
+- `--relax-stress=1` on a periodic loading run relaxes σ_xx = σ_yy = σ_xy = 0 at α = 0 before loading.
+  Volterra mode keeps its own outer loop.
+- Shares the force-control avalanche test, the limit-load stop (a stress-driven F̄ component changing by more
+  than 0.5 in one step) and the CSV columns. Adds `Fbar11`, `Fbar12` and `Fbar22` columns. Prints the bulk
+  Voigt stiffness and the uniaxial Poisson ratio it predicts. Set `MTM_STRESS_GRADCHECK=1` /
+  `MTM_STRESS_TRACE=1` for finite-difference and convergence diagnostics.
+- `--legacy-stress-servo` runs the old `example_3_stress_controlled_final_clean` Cauchy servo as a baseline.
+  It starts from a hard-coded F₁₂ = 0.14 pre-strain on the softening branch, so it can't be compared
+  point by point with the minimizer.
+- GUI: periodic box control picker (strain / shear stress / uniaxial stress / free normals), a "Relax box
+  stress to zero at α = 0" toggle, and nominal-stress labels.
+
 ### Added — rigid force grip (plan Phase B)
 - New boundary kind `force_grip`. The gripped atoms move together, x = X + U, and U is solved for together
   with the atoms: Π = E_el − α F0·U, with F0 = (tx, ty)·L_face. U lives only inside `relax_configuration`

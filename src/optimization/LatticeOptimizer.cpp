@@ -515,6 +515,8 @@ void minimize_energy_with_triangles(
 
     // FLAT storage: [thread0: point0,point1,...] [thread1: point0,point1,...] ...
     static std::vector<Eigen::Vector2d> all_forces_flat;
+    static std::vector<Eigen::Matrix2d> virial_per_thread;
+    const bool want_virial = (userData->virial_out != nullptr);
     static std::vector<int> min_node;
     static std::vector<int> max_node;
     
@@ -528,6 +530,9 @@ void minimize_energy_with_triangles(
     if (static_cast<int>(min_node.size()) < max_threads) {
         min_node.resize(max_threads, n_points);
         max_node.resize(max_threads, -1);
+    }
+    if (want_virial && static_cast<int>(virial_per_thread.size()) < max_threads) {
+        virial_per_thread.resize(max_threads);
     }
 
     double total_energy = 0.0;
@@ -566,6 +571,7 @@ void minimize_energy_with_triangles(
         }
 
         // 3. Element energy & force assembly
+        Eigen::Matrix2d virial_acc = Eigen::Matrix2d::Zero();
         for (size_t idx = e_begin; idx < e_end; ++idx) {
             ElementTriangle2D& element = elements[userData->active_elements[idx]];
             
@@ -591,7 +597,9 @@ void minimize_energy_with_triangles(
 
             // Pass pointer to this thread's section of flat array
             element.assemble_forces_flat(P, all_forces_flat.data() + my_offset);
+            if (want_virial) virial_acc += area * P * F.transpose();
         }
+        if (want_virial) virial_per_thread[tid] = virial_acc;
 
         // Synchronize so all threads have assembled forces and published min_node/max_node
         #pragma omp barrier
@@ -614,6 +622,12 @@ void minimize_energy_with_triangles(
     }
 
     func = total_energy;
+
+    if (want_virial) {
+        Eigen::Matrix2d virial = Eigen::Matrix2d::Zero();
+        for (int t = 0; t < threads_used; ++t) virial += virial_per_thread[t];
+        *userData->virial_out = virial;
+    }
 
     // Element forces on requested non-DOF nodes (rigid force grips)
     if (userData->force_probe_nodes != nullptr && userData->force_probe_out != nullptr) {

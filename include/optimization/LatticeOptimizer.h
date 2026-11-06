@@ -23,6 +23,7 @@
 
 #include "src/optimization.h" // This path is relative to ALGLIB_DIR
 struct MacroscopicGeometryConfig;
+struct PBCStressControl;
 
 // UserData structure for optimization
 struct UserData {
@@ -48,6 +49,10 @@ struct UserData {
     // (non-DOF) nodes into force_probe_out. Used for the rigid force grips.
     const std::vector<int>* force_probe_nodes = nullptr;
     std::vector<Eigen::Vector2d>* force_probe_out = nullptr;
+    // PBC nominal-stress control (null: strain control). When virial_out is set, the energy function
+    // also returns sum_e A_e P_e F_e^T, from which dE/dF_bar follows.
+    PBCStressControl* stress_ctrl = nullptr;
+    Eigen::Matrix2d* virial_out = nullptr;
 
     
     UserData(std::vector<Point2D>& pts,

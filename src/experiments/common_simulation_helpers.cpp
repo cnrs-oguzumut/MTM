@@ -1,4 +1,5 @@
 #include "../../include/geometry/MacroscopicGeometry.h"
+#include "../../include/experiments/pbc_stress_control.h"
 #include "../../include/experiments/experiment_includes.h"
 
 bool hasConnectivityChanged(const std::vector<ElementTriangle2D> &old_elements,
@@ -110,6 +111,9 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     std::vector<Point2D> old_points = square_points;
     alglib::real_1d_array old_x;
     old_x.setcontent(x.length(), x.getcontent());
+    // PBC stress control: the relaxation also moves F_bar, which a rejected pass must restore
+    const Eigen::Matrix2d old_F_bar = (userData->stress_ctrl != nullptr && userData->stress_ctrl->F_bar != nullptr)
+        ? *userData->stress_ctrl->F_bar : Eigen::Matrix2d::Identity();
 
     // ============================================
     // ENERGY OF OLD STATE (before any remeshing)
@@ -121,6 +125,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
                          userData->second_derivative_function);
     oldUserData.macro_geom_ptr = userData->macro_geom_ptr;
     oldUserData.current_alpha = userData->current_alpha;
+    oldUserData.stress_ctrl = userData->stress_ctrl;
 
     double energy_old = 0.0;
     Eigen::Matrix2d stress_old;
@@ -203,6 +208,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
                          userData->second_derivative_function);
     newUserData.macro_geom_ptr = userData->macro_geom_ptr;
     newUserData.current_alpha = userData->current_alpha;
+    newUserData.stress_ctrl = userData->stress_ctrl;
 
     // Evaluate immediate post-reconnection energy (coordinates x frozen)
     double energy_reconnected = 0.0;
@@ -242,6 +248,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
                                userData->second_derivative_function);
     newUserData_after.macro_geom_ptr = userData->macro_geom_ptr;
     newUserData_after.current_alpha = userData->current_alpha;
+    newUserData_after.stress_ctrl = userData->stress_ctrl;
 
     double energy_new = 0.0;
     Eigen::Matrix2d stress_new;
@@ -286,6 +293,9 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
 
       // RESTORE OLD STATE
       x = old_x;
+      if (userData->stress_ctrl != nullptr && userData->stress_ctrl->F_bar != nullptr) {
+        *userData->stress_ctrl->F_bar = old_F_bar;
+      }
       square_points = old_points;
       elements = old_elements;
       active_elements = old_active_elements;
@@ -328,8 +338,10 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       should_remesh = true;
 
       // Force control past the limit load: the dead load has no equilibrium, stop the cascade
-      if (userData->macro_geom_ptr != nullptr &&
-          userData->macro_geom_ptr->exceedsRunawayLimit(square_points)) {
+      if ((userData->macro_geom_ptr != nullptr &&
+           userData->macro_geom_ptr->exceedsRunawayLimit(square_points)) ||
+          (userData->stress_ctrl != nullptr && userData->stress_ctrl->F_bar != nullptr &&
+           userData->stress_ctrl->exceedsLimit(*userData->stress_ctrl->F_bar))) {
         std::cout << "  ↻ [Remesh Cascade] Stopped: nodal displacement since the step start exceeds the "
                      "limit-load guard (dead-load runaway)" << std::endl;
         should_remesh = false;
@@ -491,11 +503,173 @@ void relax_with_force_grips(alglib::real_1d_array &x, UserData *userData, int co
     ctx.mg->setGripPositions(static_cast<int>(g), gripUFromVector(ctx, g, z), userData->points);
   }
 }
+// PBC nominal-stress control: z = [w (2 n_vars), free components of F_bar], x = F_bar w.
+// dE/dw = F_bar^T dE/dx;  dE/dF_bar = (sum_e A_e P_e F_e^T) F_bar^{-T};  H = E - A0 Pt : (F_bar - I).
+struct StressRelaxContext {
+  UserData *ud = nullptr;
+  PBCStressControl *sc = nullptr;
+  int n = 0; // n_vars
+  Eigen::Matrix2d F_base = Eigen::Matrix2d::Identity();
+  std::vector<int> comp_index; // per component k (11, 12, 22): index in z, or -1
+  double f_scale = 1.0;         // z_F = f_scale * F (f_scale = sqrt(A0)): every unknown is a length in a0
+  alglib::real_1d_array x_nodes, g_nodes;
+};
+
+Eigen::Matrix2d stressFbarFromVector(const StressRelaxContext &ctx, const alglib::real_1d_array &z) {
+  Eigen::Matrix2d F = ctx.F_base;
+  for (int k = 0; k < 3; ++k) {
+    if (ctx.comp_index[k] >= 0)
+      F(PBCStressControl::compRow(k), PBCStressControl::compCol(k)) = z[ctx.comp_index[k]] / ctx.f_scale;
+  }
+  F(1, 0) = 0.0; // gauge: upper triangular
+  return F;
+}
+
+void applyFbar(StressRelaxContext &ctx, const Eigen::Matrix2d &F) {
+  *ctx.sc->F_bar = F;
+  for (auto &el : ctx.ud->elements) el.setExternalDeformation(F);
+}
+
+void stress_enthalpy(const alglib::real_1d_array &z, double &func, alglib::real_1d_array &grad, void *ptr) {
+  auto *ctx = static_cast<StressRelaxContext *>(ptr);
+  const int n = ctx->n;
+  const Eigen::Matrix2d F = stressFbarFromVector(*ctx, z);
+  applyFbar(*ctx, F);
+  for (int i = 0; i < n; ++i) {
+    const Eigen::Vector2d xi = F * Eigen::Vector2d(z[i], z[n + i]);
+    ctx->x_nodes[i] = xi.x();
+    ctx->x_nodes[n + i] = xi.y();
+  }
+  Eigen::Matrix2d virial = Eigen::Matrix2d::Zero();
+  ctx->ud->virial_out = &virial;
+  minimize_energy_with_triangles(ctx->x_nodes, func, ctx->g_nodes, ctx->ud);
+  ctx->ud->virial_out = nullptr;
+  for (int i = 0; i < n; ++i) {
+    const Eigen::Vector2d gw = F.transpose() * Eigen::Vector2d(ctx->g_nodes[i], ctx->g_nodes[n + i]);
+    grad[i] = gw.x();
+    grad[n + i] = gw.y();
+  }
+  const Eigen::Matrix2d dEdF = virial * F.inverse().transpose();
+  for (int k = 0; k < 3; ++k) {
+    if (ctx->comp_index[k] < 0) continue;
+    const int r = PBCStressControl::compRow(k), c = PBCStressControl::compCol(k);
+    grad[ctx->comp_index[k]] = (dEdF(r, c) - ctx->sc->A0 * ctx->sc->P_target(r, c)) / ctx->f_scale;
+  }
+  func += ctx->sc->workTerm(F);
+  if (std::getenv("MTM_STRESS_TRACE") != nullptr) {
+    static long n_eval = 0;
+    if (++n_eval % 200 == 0) {
+      double gmax = 0.0;
+      for (int q = 0; q < grad.length(); ++q) gmax = std::max(gmax, std::abs(grad[q]));
+      std::cout << "[Stress Trace] eval " << n_eval << " H = " << std::scientific << func << " F = (" << F(0, 0)
+                << ", " << F(0, 1) << ", " << F(1, 1) << ") |g|max = " << gmax << std::defaultfloat << std::endl;
+    }
+  }
+}
+
+void relax_with_stress_control(alglib::real_1d_array &x, UserData *userData, int corrections, int maxits) {
+  StressRelaxContext ctx;
+  ctx.ud = userData;
+  ctx.sc = userData->stress_ctrl;
+  ctx.n = static_cast<int>(x.length() / 2);
+  ctx.F_base = *ctx.sc->F_bar;
+  ctx.F_base(1, 0) = 0.0;
+  ctx.f_scale = std::sqrt(std::max(1e-12, ctx.sc->A0));
+  const Eigen::Matrix2d F_inv = ctx.F_base.inverse();
+  int n_extra = 0;
+  ctx.comp_index.assign(3, -1);
+  for (int k = 0; k < 3; ++k) {
+    if (ctx.sc->comp_free[k]) ctx.comp_index[k] = 2 * ctx.n + n_extra++;
+  }
+  alglib::real_1d_array z;
+  z.setlength(2 * ctx.n + n_extra);
+  for (int i = 0; i < ctx.n; ++i) {
+    const Eigen::Vector2d w = F_inv * Eigen::Vector2d(x[i], x[ctx.n + i]);
+    z[i] = w.x();
+    z[ctx.n + i] = w.y();
+  }
+  for (int k = 0; k < 3; ++k) {
+    if (ctx.comp_index[k] >= 0)
+      z[ctx.comp_index[k]] = ctx.f_scale * ctx.F_base(PBCStressControl::compRow(k), PBCStressControl::compCol(k));
+  }
+  ctx.x_nodes.setlength(2 * ctx.n);
+  ctx.g_nodes.setlength(2 * ctx.n);
+
+  // Optional finite-difference check of dH/dF_bar and a few dH/dw (MTM_STRESS_GRADCHECK=1)
+  if (std::getenv("MTM_STRESS_GRADCHECK") != nullptr) {
+    alglib::real_1d_array g0, gt, zt;
+    g0.setlength(z.length()); gt.setlength(z.length()); zt.setlength(z.length());
+    double f0 = 0.0, fp = 0.0, fm = 0.0;
+    stress_enthalpy(z, f0, g0, &ctx);
+    std::vector<int> probe;
+    for (int k = 0; k < 3; ++k) if (ctx.comp_index[k] >= 0) probe.push_back(ctx.comp_index[k]);
+    for (int i = 0; i < ctx.n && probe.size() < static_cast<size_t>(n_extra) + 6; i += std::max(1, ctx.n / 5)) {
+      probe.push_back(i);
+      probe.push_back(ctx.n + i);
+    }
+    const double h = 1e-6;
+    for (int q : probe) {
+      for (int r = 0; r < z.length(); ++r) zt[r] = z[r];
+      zt[q] = z[q] + h; stress_enthalpy(zt, fp, gt, &ctx);
+      zt[q] = z[q] - h; stress_enthalpy(zt, fm, gt, &ctx);
+      const double fd = (fp - fm) / (2.0 * h);
+      std::cout << "[Stress GradCheck] alpha = " << userData->current_alpha << " | "
+                << (q >= 2 * ctx.n ? "dH/dF" : "dH/dw") << "[" << q << "] = " << std::scientific << g0[q]
+                << " fd = " << fd << " rel = " << std::abs(fd - g0[q]) / std::max(1e-12, std::abs(fd) + std::abs(g0[q]))
+                << std::defaultfloat << std::endl;
+    }
+    applyFbar(ctx, ctx.F_base);
+  }
+
+  // Plain L-BFGS (the stiffness preconditioner assembles node DOFs only). The homogeneous energy is
+  // periodic in shear under Lagrange reduction, so H = E - A0 Pt : F is unbounded along the box
+  // components: cap the step (0.5 a0) so the line search cannot extrapolate past the shear barrier.
+  alglib::minlbfgsstate state;
+  alglib::minlbfgsreport rep;
+  alglib::minlbfgscreate(corrections, z, state);
+  alglib::minlbfgssetcond(state, 0.0, 0.0, 0.0, maxits);
+  alglib::minlbfgssetstpmax(state, 0.5);
+  alglib::minlbfgsoptimize(state, stress_enthalpy, nullptr, &ctx);
+  alglib::minlbfgsresults(state, z, rep);
+  if (std::getenv("MTM_STRESS_TRACE") != nullptr) {
+    alglib::real_1d_array gz;
+    gz.setlength(z.length());
+    double hz = 0.0;
+    stress_enthalpy(z, hz, gz, &ctx);
+    double gF = 0.0, gW = 0.0;
+    for (int q = 0; q < z.length(); ++q) (q >= 2 * ctx.n ? gF : gW) = std::max(q >= 2 * ctx.n ? gF : gW, std::abs(gz[q]));
+    std::cout << "[Stress Relax] alpha = " << userData->current_alpha << " iterations = " << rep.iterationscount
+              << " termination = " << rep.terminationtype << " H = " << std::scientific << hz
+              << " max|dH/dzF| = " << gF << " max|dH/dw| = " << gW << std::defaultfloat << std::endl;
+  }
+
+  const Eigen::Matrix2d F = stressFbarFromVector(ctx, z);
+  applyFbar(ctx, F);
+  for (int i = 0; i < ctx.n; ++i) {
+    const Eigen::Vector2d xi = F * Eigen::Vector2d(z[i], z[ctx.n + i]);
+    x[i] = xi.x();
+    x[ctx.n + i] = xi.y();
+  }
+}
+
+PBCStressControl g_pbc_stress_options;
 } // namespace
+
+void set_pbc_stress_control_options(const std::string &preset, bool relax_stage1) {
+  g_pbc_stress_options.preset = preset;
+  g_pbc_stress_options.relax_stage1 = relax_stage1;
+}
+
+const PBCStressControl &pbc_stress_control_options() { return g_pbc_stress_options; }
 
 void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corrections) {
   if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasForceGrips()) {
     relax_with_force_grips(x, userData, corrections, g_relaxation_maxits);
+    return;
+  }
+  if (userData->stress_ctrl != nullptr && userData->stress_ctrl->active &&
+      userData->stress_ctrl->F_bar != nullptr) {
+    relax_with_stress_control(x, userData, corrections, g_relaxation_maxits);
     return;
   }
   if (g_relaxation_solver && g_relaxation_step >= g_relaxation_first_step) {

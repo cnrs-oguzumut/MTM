@@ -1,6 +1,7 @@
 #include "../../include/experiments/experiment_includes.h"
 #include "../../include/experiments/stability_monitor.h"
 #include "../../include/geometry/MacroscopicGeometry.h"
+#include "../../include/experiments/pbc_stress_control.h"
 
 void memory(int caller_id, int nx, int ny, int restart_iteration) {
   // Restart simulation from a saved iteration
@@ -826,8 +827,36 @@ void example_1_conti_zanzotto_loading(
     }
     return false;
   };
-  const bool run_has_tractions = has_custom_geom && !is_periodic_dislocs &&
-      (rules_have_traction(macro_geom.boundary_rules) || rules_have_traction(original_studio_rules));
+  // PBC nominal-stress control (--stress-control=<preset>, --relax-stress=1 on a periodic cell)
+  PBCStressControl stress_ctrl = pbc_stress_control_options();
+  const bool stress_ctrl_enabled = pbc && stress_ctrl.enabled();
+  if (stress_ctrl.enabled() && !pbc) {
+    std::cerr << "[Stress Control] WARNING: --stress-control / --relax-stress apply to periodic cells only; ignored."
+              << std::endl;
+  }
+  const bool stress_preset_is_force = (stress_ctrl.preset == "shear" || stress_ctrl.preset == "uniaxial_y" ||
+                                       stress_ctrl.preset == "uniaxial_x");
+  Eigen::Matrix2d F_bar_state = (restart_chk != nullptr) ? restart_chk->F_ext : Eigen::Matrix2d::Identity();
+  Eigen::Matrix2d F_stage1 = Eigen::Matrix2d::Identity(); // box after the alpha = 0 relaxation (schedule origin)
+  Eigen::Matrix2d F_bar_n = F_bar_state, F_bar_nm1 = F_bar_state;
+  double F_bar_dalpha_n = 0.0;
+  bool F_bar_hist_smooth = false;
+  if (stress_ctrl_enabled) {
+    stress_ctrl.A0 = 0.0;
+    for (size_t e : active_elements) stress_ctrl.A0 += elements[e].getReferenceArea();
+    std::cout << "[Stress Control] PBC nominal-stress control: preset = '"
+              << (stress_ctrl.preset.empty() ? "none" : stress_ctrl.preset) << "', zero-stress Stage 1 = "
+              << (stress_ctrl.relax_stage1 ? "yes" : "no") << ", A0 = " << stress_ctrl.A0
+              << " | F_bar is upper triangular (F21 = 0)" << std::endl;
+  }
+  // Primary stress for periodic cells: sigma_xy, or the controlled normal component for uniaxial presets
+  const auto pbc_primary_stress = [&](const Eigen::Matrix2d &st) {
+    if (stress_ctrl_enabled && stress_ctrl.preset == "uniaxial_y") return st(1, 1);
+    if (stress_ctrl_enabled && stress_ctrl.preset == "uniaxial_x") return st(0, 0);
+    return st(0, 1);
+  };
+  const bool run_has_tractions = stress_ctrl_enabled || (has_custom_geom && !is_periodic_dislocs &&
+      (rules_have_traction(macro_geom.boundary_rules) || rules_have_traction(original_studio_rules)));
 
   std::cout << "[Triangulation] Initial Delaunay mesh: " << original_domain_size
             << " atoms (" << std::fixed << std::setprecision(1) << domain_dims.size_x
@@ -868,6 +897,36 @@ void example_1_conti_zanzotto_loading(
   double zero = calculator.calculate_energy(C_ref, potential_func, 0);
 
   std::cout << "Reference state energy (zero): " << zero << std::endl;
+
+  if (stress_ctrl_enabled) {
+    // Bulk (Cauchy-Born) Voigt stiffness at the reference state, and the uniaxial-stress Poisson ratio
+    // it predicts (small-alpha check for --stress-control=uniaxial_x/_y). F0 maps Z^2 to the lattice.
+    Eigen::Matrix2d F0 = Eigen::Matrix2d::Identity();
+    if (lattice_type == "triangular") {
+      const double s0 = std::pow(4.0 / 3.0, 0.25);
+      F0 << s0, 0.5 * s0, 0.0, s0 * std::sqrt(3.0) / 2.0;
+    }
+    const Eigen::Matrix2d F_tot = F_bar_state * F0;
+    const lagrange::Result red_res = lagrange::reduce(Eigen::Matrix2d(F_tot.transpose() * F_tot));
+    AcousticTensor acoustic_tensor(F_tot, red_res.C_reduced, red_res.m_matrix);
+    acoustic_tensor.computeEnergyDerivatives(calculator, potential_func_der, potential_func_sder,
+                                             calculator.getUnitCellArea());
+    itensor::ITensor C_spatial = acoustic_tensor.getSpatialTangent();
+    Eigen::Matrix3d C_voigt = Eigen::Matrix3d::Identity();
+    auto inds = itensor::inds(C_spatial);
+    if (inds.size() == 4) {
+      itensor::Index ii = inds[0], jj = inds[1], kk = inds[2], ll = inds[3];
+      const int vi[3][2] = {{1, 1}, {2, 2}, {1, 2}};
+      for (int a = 0; a < 3; ++a)
+        for (int b = 0; b < 3; ++b)
+          C_voigt(a, b) = itensor::elt(C_spatial, ii = vi[a][0], jj = vi[a][1], kk = vi[b][0], ll = vi[b][1]);
+    }
+    const Eigen::Matrix3d S_voigt = C_voigt.inverse();
+    std::cout << "[Stress Control] Bulk Voigt stiffness (xx, yy, xy): C11 = " << C_voigt(0, 0) << ", C22 = "
+              << C_voigt(1, 1) << ", C12 = " << C_voigt(0, 1) << ", C66 = " << C_voigt(2, 2)
+              << " | predicted Poisson ratio under sigma_yy: " << -S_voigt(0, 1) / S_voigt(1, 1)
+              << ", under sigma_xx: " << -S_voigt(1, 0) / S_voigt(0, 0) << std::endl;
+  }
 
   // ==================== SETUP LOADING SCHEDULE ====================
   int num_alpha_points =
@@ -950,9 +1009,12 @@ void example_1_conti_zanzotto_loading(
         is_first_loading_step ? alpha
         : (i == 0 ? (restart_chk != nullptr ? step_size : alpha) : (alpha - alpha_values[i - 1]));
     const double effective_noise_level = is_stage1_relax_step ? 0.0 : noise_level;
-    // Force control: dead-load tractions drive this step (never Stage 1, where alpha = 0)
-    const bool force_control_step = has_custom_geom && !is_periodic_dislocs &&
-                                    !is_stage1_relax_step && macro_geom.hasForceControl();
+    // PBC stress control: the alpha = 0 step is a zero-stress box relaxation; stress presets then drive
+    const bool stress_relax_step = stress_ctrl_enabled && (i == 0) && std::abs(alpha) < 1e-15;
+    const bool stress_force_step = stress_ctrl_enabled && !stress_relax_step && stress_preset_is_force;
+    // Force control: dead-load tractions or a nominal-stress target drive this step (never Stage 1)
+    const bool force_control_step = stress_force_step || (has_custom_geom && !is_periodic_dislocs &&
+                                    !is_stage1_relax_step && macro_geom.hasForceControl());
     set_relaxation_max_iterations(force_control_step ? kForceControlMaxIterations : 0);
     if (has_custom_geom && !is_periodic_dislocs) {
       macro_geom.setRunawayReference(square_points, force_control_step
@@ -964,6 +1026,49 @@ void example_1_conti_zanzotto_loading(
 
     Eigen::Matrix2d dF_ext;
     dF_ext << 1.0, actual_dalpha, 0.0, 1.0;
+
+    if (stress_ctrl_enabled) {
+      // Which F_bar components are unknowns, and their nominal targets
+      stress_ctrl.P_target.setZero();
+      for (bool &f : stress_ctrl.comp_free) f = false;
+      const std::string &preset = stress_ctrl.preset;
+      if (stress_relax_step && stress_ctrl.relax_stage1) {
+        for (bool &f : stress_ctrl.comp_free) f = true; // sigma_xx = sigma_yy = sigma_xy = 0
+      } else if (preset == "shear" || preset == "uniaxial_y" || preset == "uniaxial_x") {
+        for (bool &f : stress_ctrl.comp_free) f = true;
+        if (preset == "shear") stress_ctrl.P_target(0, 1) = alpha;
+        if (preset == "uniaxial_y") stress_ctrl.P_target(1, 1) = alpha;
+        if (preset == "uniaxial_x") stress_ctrl.P_target(0, 0) = alpha;
+      } else if (preset == "relax_normal") {
+        stress_ctrl.comp_free[0] = true; // F12 = alpha strain-driven, P11 = P22 = 0
+        stress_ctrl.comp_free[2] = true;
+      }
+      stress_ctrl.active = stress_ctrl.comp_free[0] || stress_ctrl.comp_free[1] || stress_ctrl.comp_free[2];
+
+      // Predictor: strain-driven components follow the schedule from the Stage-1 box, stress-driven ones
+      // extrapolate the last smooth increment
+      Eigen::Matrix2d F_pred = F_bar_state;
+      if (!stress_ctrl.active) {
+        F_pred = F_stage1;
+        F_pred(0, 1) += alpha;
+      } else {
+        if (!stress_ctrl.comp_free[1]) F_pred(0, 1) = F_stage1(0, 1) + alpha;
+        if (!stress_relax_step && F_bar_hist_smooth && F_bar_dalpha_n != 0.0) {
+          const double ratio = actual_dalpha / F_bar_dalpha_n;
+          for (int k = 0; k < 3; ++k) {
+            if (!stress_ctrl.comp_free[k]) continue;
+            const int r = PBCStressControl::compRow(k), c = PBCStressControl::compCol(k);
+            F_pred(r, c) += ratio * (F_bar_n(r, c) - F_bar_nm1(r, c));
+          }
+        }
+      }
+      F_pred(1, 0) = 0.0;
+      F_ext = F_pred;
+      dF_ext = F_pred * F_bar_state.inverse();
+      stress_ctrl.F_bar = &F_ext;
+      stress_ctrl.F_step_start = F_bar_state;
+      stress_ctrl.F_jump_limit = stress_force_step ? 0.5 : 0.0;
+    }
 
     std::vector<int> indenter_contacts;
     if (has_custom_geom && !is_periodic_dislocs) {
@@ -1039,6 +1144,10 @@ void example_1_conti_zanzotto_loading(
       userData.macro_geom_ptr = &macro_geom;
       userData.current_alpha = alpha;
     }
+    if (stress_ctrl_enabled) {
+      userData.stress_ctrl = &stress_ctrl;
+      userData.current_alpha = alpha;
+    }
 
     // ==================== PREPARE OPTIMIZATION ====================
     alglib::real_1d_array x;
@@ -1053,7 +1162,7 @@ void example_1_conti_zanzotto_loading(
 
     ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
                                                  stress_tensor, true);
-    pre_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
+    pre_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor);
     pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     if (verbose_log) {
@@ -1142,7 +1251,7 @@ void example_1_conti_zanzotto_loading(
     stress_tensor.setZero();
     ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy,
                                                  stress_tensor, true);
-    post_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor(0, 1);
+    post_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor);
     post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     AvalancheRecorder::instance().recordStep(
@@ -1154,7 +1263,8 @@ void example_1_conti_zanzotto_loading(
     const double enthalpy_before_cascade = post_energy;
 
     // Past the limit load the continuous relaxation itself runs away: skip the remesh cascade
-    const bool runaway_before_cascade = force_control_step && macro_geom.exceedsRunawayLimit(square_points);
+    const bool runaway_before_cascade = force_control_step &&
+        (macro_geom.exceedsRunawayLimit(square_points) || (stress_force_step && stress_ctrl.exceedsLimit(F_ext)));
 
     // ==================== REMESHING DECISION ====================
     bool shouldRemesh = enable_remeshing && !runaway_before_cascade;
@@ -1223,7 +1333,7 @@ void example_1_conti_zanzotto_loading(
 
       remesh_iterations = std::abs(iterations);
       post_energy = post_energy_re;
-      post_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : stress_tensor_re(0, 1);
+      post_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor_re);
 
       // Update DOF mapping
       for (auto &element : elements) {
@@ -1290,7 +1400,14 @@ void example_1_conti_zanzotto_loading(
     double traction_strain = 0.0, traction_dstrain = 0.0, fractional_strain_burst = 0.0;
     bool runaway_detected = false;
     if (force_control_step) {
-      traction_strain = macro_geom.computeTractionConjugateStrain(square_points);
+      if (stress_force_step) {
+        // Conjugate strain of the controlled component, measured from the Stage-1 box
+        const int r = (stress_ctrl.preset == "uniaxial_y") ? 1 : 0;
+        const int c = (stress_ctrl.preset == "uniaxial_x") ? 0 : 1;
+        traction_strain = F_ext(r, c) - F_stage1(r, c);
+      } else {
+        traction_strain = macro_geom.computeTractionConjugateStrain(square_points);
+      }
       traction_dstrain = traction_strain - traction_strain_previous;
       const double expected_dstrain = (have_elastic_ref && elastic_dalpha_ref != 0.0)
           ? elastic_dstrain_ref * (actual_dalpha / elastic_dalpha_ref) : 0.0;
@@ -1307,13 +1424,19 @@ void example_1_conti_zanzotto_loading(
       // Limit load: past the yield / Peierls stress the dead load has no equilibrium
       const double max_jump = macro_geom.maxDisplacementSinceStepStart(square_points);
       const double runaway_limit = macro_geom.runaway_limit;
-      if (runaway_before_cascade || max_jump > runaway_limit) {
+      const bool box_runaway = stress_force_step && stress_ctrl.exceedsLimit(F_ext);
+      if (runaway_before_cascade || max_jump > runaway_limit || box_runaway) {
         runaway_detected = true;
         stress_drop_detected = true; // write the pre/post snapshot and checkpoint
-        std::cout << std::defaultfloat << std::setprecision(6)
-                  << "  [LIMIT LOAD / YIELD RUNAWAY] alpha = " << alpha << ": max nodal displacement "
-                  << max_jump << " in one step exceeds " << runaway_limit
-                  << " (0.35 max(Lx, Ly)). Saving the state and stopping the schedule." << std::endl;
+        std::cout << std::defaultfloat << std::setprecision(6) << "  [LIMIT LOAD / YIELD RUNAWAY] alpha = " << alpha;
+        if (stress_force_step) {
+          std::cout << ": a stress-driven F_bar component changed by " << stress_ctrl.maxStressDrivenJump(F_ext)
+                    << " in one step (limit " << stress_ctrl.F_jump_limit << ").";
+        } else {
+          std::cout << ": max nodal displacement " << max_jump << " in one step exceeds " << runaway_limit
+                    << " (0.35 max(Lx, Ly)).";
+        }
+        std::cout << " Saving the state and stopping the schedule." << std::endl;
       }
       if (!stress_drop_detected && actual_dalpha != 0.0) {
         elastic_dstrain_ref = traction_dstrain;
@@ -1326,6 +1449,14 @@ void example_1_conti_zanzotto_loading(
       traction_dalpha_n = actual_dalpha;
       traction_prev_step_smooth = (hasChanges == 0) && !stress_drop_detected;
     }
+    if (stress_ctrl_enabled) {
+      F_bar_state = F_ext;
+      if (stress_relax_step) F_stage1 = F_ext;
+      F_bar_nm1 = F_bar_n;
+      F_bar_n = F_ext;
+      F_bar_dalpha_n = actual_dalpha;
+      F_bar_hist_smooth = !stress_relax_step && (hasChanges == 0) && !stress_drop_detected;
+    }
 
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
@@ -1336,6 +1467,7 @@ void example_1_conti_zanzotto_loading(
       postOptUserData.macro_geom_ptr = &macro_geom;
       postOptUserData.current_alpha = alpha;
     }
+    if (stress_ctrl_enabled) postOptUserData.stress_ctrl = &stress_ctrl;
     post_area = ConfigurationSaver::calculateTotalArea2D(&postOptUserData);
 
     // ==================== GRAIN BOUNDARY ENERGY SUMMARY (alpha = 0) ====================
@@ -1508,6 +1640,7 @@ void example_1_conti_zanzotto_loading(
           preOptUserData.macro_geom_ptr = &macro_geom;
           preOptUserData.current_alpha = pre_saving_value;
         }
+        if (stress_ctrl_enabled) preOptUserData.stress_ctrl = &stress_ctrl;
 
         double dummy_pre_e = pre_energy_val, dummy_pre_s = pre_stress_val;
         ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
@@ -1682,11 +1815,16 @@ void example_1_conti_zanzotto_loading(
     // ==================== LOG DATA ====================
     std::vector<std::pair<std::string, double>> traction_columns;
     if (run_has_tractions) {
-      const double external_potential =
-          force_control_step ? macro_geom.computeExternalForcePotential(square_points, alpha) : 0.0;
+      const double external_potential = stress_ctrl_enabled ? stress_ctrl.workTerm(F_ext)
+          : (force_control_step ? macro_geom.computeExternalForcePotential(square_points, alpha) : 0.0);
       traction_columns = {{"EffectiveStrain", traction_strain},
                           {"ElasticEnergy", post_energy - external_potential},
                           {"StrainBurstFraction", fractional_strain_burst}};
+      if (stress_ctrl_enabled) {
+        traction_columns.push_back({"Fbar11", F_ext(0, 0)});
+        traction_columns.push_back({"Fbar12", F_ext(0, 1)});
+        traction_columns.push_back({"Fbar22", F_ext(1, 1)});
+      }
     }
     ConfigurationSaver::logEnergyAndStress_v2(
         i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area,

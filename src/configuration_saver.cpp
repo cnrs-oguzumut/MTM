@@ -3,6 +3,7 @@
 #include "../include/reductions/LagrangeReduction.h"
 #include "../include/geometry/DomainDimensions.h"
 #include "../include/geometry/MacroscopicGeometry.h"
+#include "../include/experiments/pbc_stress_control.h"
 #include <cstring>
 #include <cstdint>
 
@@ -594,6 +595,10 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
             // Total enthalpy Pi = E_el - W_ext, so remesh acceptance compares the dead-load potential
             total_energy += userData->macro_geom_ptr->computeExternalForcePotential(
                 points, userData->current_alpha);
+        }
+        if (userData != nullptr && userData->stress_ctrl != nullptr) {
+            // PBC nominal-stress control: H = E_el - A0 Pt : (F_bar - I)
+            total_energy += userData->stress_ctrl->workTerm(F_ext);
         }
     }
 

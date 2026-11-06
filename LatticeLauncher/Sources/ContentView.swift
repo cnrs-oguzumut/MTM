@@ -1836,8 +1836,8 @@ struct SidebarControlsView: View {
                                     let hasDrivenBC = config.geometryConfig.boundary_rules.contains {
                                         $0.enabled && ($0.kind == .prescribed || $0.kind == .affine || $0.kind.isForceControl)
                                     }
-                                    let isForceControl = config.geometryConfig.enabled &&
-                                        config.geometryConfig.boundary_rules.contains { $0.enabled && $0.kind.isForceControl }
+                                    let isForceControl = config.pbcForceControlPreset != nil || (config.geometryConfig.enabled &&
+                                        config.geometryConfig.boundary_rules.contains { $0.enabled && $0.kind.isForceControl })
                                     if indenterActive {
                                         HStack(spacing: 5) {
                                             Image(systemName: "arrow.down.to.line.compact")
@@ -1867,6 +1867,32 @@ struct SidebarControlsView: View {
                                         }
                                     }
                                     
+                                    if config.isPeriodicLoadingRun {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            HStack {
+                                                Text("Periodic box control:").font(.subheadline)
+                                                Spacer()
+                                                Picker("", selection: $config.pbcStressControl) {
+                                                    Text("Strain (F₁₂ = α)").tag("none")
+                                                    Text("Shear stress P₁₂ = α").tag("shear")
+                                                    Text("Uniaxial stress P₂₂ = α").tag("uniaxial_y")
+                                                    Text("Uniaxial stress P₁₁ = α").tag("uniaxial_x")
+                                                    Text("Shear strain, free normals").tag("relax_normal")
+                                                }
+                                                .labelsHidden()
+                                                .frame(width: 210)
+                                            }
+                                            Toggle("Relax box stress to zero at α = 0 (σ_xx = σ_yy = σ_xy = 0)", isOn: $config.pbcRelaxBoxStress)
+                                                .font(.caption)
+                                            Text("Stress control solves the box F̄ (upper triangular) with the atoms on H = E − A₀ Pᵗ : (F̄ − I). Past the limit load the run stops cleanly.")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                        .padding(6)
+                                        .background(BlueHour.midnight.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                                    }
+
                                     VStack(alignment: .leading, spacing: 6) {
                                         HStack {
                                             Text(indenterActive ? "Start depth ratio α_start:" : (isForceControl ? "Start nominal stress α_start:" : "Start strain |α_start|:"))
