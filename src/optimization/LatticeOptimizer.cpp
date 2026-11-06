@@ -532,12 +532,14 @@ void minimize_energy_with_triangles(
 
     double total_energy = 0.0;
     const size_t n_elem = userData->active_elements.size();
+    int threads_used = 1;
 
     // Single parallel region: parallel element assembly + bounded zeroing + parallel reduction
     #pragma omp parallel reduction(+:total_energy)
     {
         const int tid = omp_get_thread_num();
         const int num_threads = omp_get_num_threads();
+        if (tid == 0) threads_used = num_threads;
         const size_t my_offset = static_cast<size_t>(tid) * n_points;
 
         const size_t e_begin = (static_cast<size_t>(tid) * n_elem) / num_threads;
@@ -612,6 +614,20 @@ void minimize_energy_with_triangles(
     }
 
     func = total_energy;
+
+    // Element forces on requested non-DOF nodes (rigid force grips)
+    if (userData->force_probe_nodes != nullptr && userData->force_probe_out != nullptr) {
+        const auto& probe = *userData->force_probe_nodes;
+        auto& out = *userData->force_probe_out;
+        out.assign(probe.size(), Eigen::Vector2d::Zero());
+        for (size_t k = 0; k < probe.size(); ++k) {
+            const int p = probe[k];
+            if (p < 0 || p >= n_points) continue;
+            for (int t = 0; t < threads_used; t++) {
+                if (p >= min_node[t] && p <= max_node[t]) out[k] += all_forces_flat[t * n_points + p];
+            }
+        }
+    }
 
     if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->isIndenterActive()) {
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(

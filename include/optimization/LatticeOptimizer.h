@@ -44,6 +44,10 @@ struct UserData {
     const std::function<double(double)>* second_derivative_function = nullptr;
     const MacroscopicGeometryConfig* macro_geom_ptr = nullptr;
     double current_alpha = 0.0;
+    // Optional force probe: when set, minimize_energy_with_triangles also writes dE/dx of these
+    // (non-DOF) nodes into force_probe_out. Used for the rigid force grips.
+    const std::vector<int>* force_probe_nodes = nullptr;
+    std::vector<Eigen::Vector2d>* force_probe_out = nullptr;
 
     
     UserData(std::vector<Point2D>& pts,

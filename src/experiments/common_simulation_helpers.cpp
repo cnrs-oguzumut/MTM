@@ -388,7 +388,116 @@ void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
 
 void relaxation_begin_step(int step) { g_relaxation_step = step; }
 
+namespace {
+// Rigid force grips: the solver vector is z = [x (2 n_vars), U components]. Gripped atoms sit at X + U;
+// Pi = E_el(x, U) - alpha * F0 . U, so dPi/dU = sum of the element forces on the grip atoms - alpha * F0.
+struct GripRelaxContext {
+  UserData *ud = nullptr;
+  const MacroscopicGeometryConfig *mg = nullptr;
+  int n2 = 0;
+  alglib::real_1d_array x_nodes, g_nodes;
+  std::vector<int> probe_nodes;
+  std::vector<Eigen::Vector2d> probe_out;
+  std::vector<std::pair<size_t, size_t>> probe_range; // per grip [begin, end) in probe_nodes
+  std::vector<std::array<int, 2>> var_index;           // per grip index of U_x / U_y in z, or -1 (held)
+  std::vector<Eigen::Vector2d> U_held;
+};
+
+Eigen::Vector2d gripUFromVector(const GripRelaxContext &ctx, size_t g, const alglib::real_1d_array &z) {
+  Eigen::Vector2d U = ctx.U_held[g];
+  if (ctx.var_index[g][0] >= 0) U.x() = z[ctx.var_index[g][0]];
+  if (ctx.var_index[g][1] >= 0) U.y() = z[ctx.var_index[g][1]];
+  return U;
+}
+
+void grip_enthalpy(const alglib::real_1d_array &z, double &func, alglib::real_1d_array &grad, void *ptr) {
+  auto *ctx = static_cast<GripRelaxContext *>(ptr);
+  const size_t n_grips = ctx->mg->cached_force_grips.size();
+  for (size_t g = 0; g < n_grips; ++g) {
+    ctx->mg->setGripPositions(static_cast<int>(g), gripUFromVector(*ctx, g, z), ctx->ud->points);
+  }
+  for (int q = 0; q < ctx->n2; ++q) ctx->x_nodes[q] = z[q];
+  ctx->ud->force_probe_nodes = &ctx->probe_nodes;
+  ctx->ud->force_probe_out = &ctx->probe_out;
+  minimize_energy_with_triangles(ctx->x_nodes, func, ctx->g_nodes, ctx->ud);
+  ctx->ud->force_probe_nodes = nullptr;
+  ctx->ud->force_probe_out = nullptr;
+  for (int q = 0; q < ctx->n2; ++q) grad[q] = ctx->g_nodes[q];
+  const double alpha = ctx->ud->current_alpha;
+  for (size_t g = 0; g < n_grips; ++g) {
+    const Eigen::Vector2d F = alpha * ctx->mg->cached_force_grips[g].F0;
+    const Eigen::Vector2d U = gripUFromVector(*ctx, g, z);
+    func -= F.dot(U);
+    Eigen::Vector2d f_sum = Eigen::Vector2d::Zero();
+    for (size_t k = ctx->probe_range[g].first; k < ctx->probe_range[g].second; ++k) f_sum += ctx->probe_out[k];
+    if (ctx->var_index[g][0] >= 0) grad[ctx->var_index[g][0]] = f_sum.x() - F.x();
+    if (ctx->var_index[g][1] >= 0) grad[ctx->var_index[g][1]] = f_sum.y() - F.y();
+  }
+}
+
+void relax_with_force_grips(alglib::real_1d_array &x, UserData *userData, int corrections, int maxits) {
+  GripRelaxContext ctx;
+  ctx.ud = userData;
+  ctx.mg = userData->macro_geom_ptr;
+  ctx.n2 = static_cast<int>(x.length());
+  const auto &grips = ctx.mg->cached_force_grips;
+  int n_extra = 0;
+  for (const auto &grip : grips) {
+    const size_t begin = ctx.probe_nodes.size();
+    ctx.probe_nodes.insert(ctx.probe_nodes.end(), grip.nodes.begin(), grip.nodes.end());
+    ctx.probe_range.emplace_back(begin, ctx.probe_nodes.size());
+    std::array<int, 2> idx = {-1, -1};
+    if (grip.free_x) idx[0] = ctx.n2 + n_extra++;
+    if (grip.free_y) idx[1] = ctx.n2 + n_extra++;
+    ctx.var_index.push_back(idx);
+  }
+  alglib::real_1d_array z;
+  z.setlength(ctx.n2 + n_extra);
+  for (int q = 0; q < ctx.n2; ++q) z[q] = x[q];
+  for (size_t g = 0; g < grips.size(); ++g) {
+    const Eigen::Vector2d U0 = ctx.mg->gripDisplacement(static_cast<int>(g), userData->points);
+    ctx.U_held.push_back(U0);
+    if (ctx.var_index[g][0] >= 0) z[ctx.var_index[g][0]] = U0.x();
+    if (ctx.var_index[g][1] >= 0) z[ctx.var_index[g][1]] = U0.y();
+  }
+  ctx.x_nodes.setlength(ctx.n2);
+  ctx.g_nodes.setlength(ctx.n2);
+
+  // Optional finite-difference check of dPi/dU (MTM_GRIP_GRADCHECK=1)
+  if (std::getenv("MTM_GRIP_GRADCHECK") != nullptr && n_extra > 0) {
+    alglib::real_1d_array g0, gt, zt;
+    g0.setlength(z.length()); gt.setlength(z.length()); zt.setlength(z.length());
+    double f0 = 0.0, fp = 0.0, fm = 0.0;
+    grip_enthalpy(z, f0, g0, &ctx);
+    const double h = 1e-6;
+    for (int q = ctx.n2; q < z.length(); ++q) {
+      for (int r = 0; r < z.length(); ++r) zt[r] = z[r];
+      zt[q] = z[q] + h; grip_enthalpy(zt, fp, gt, &ctx);
+      zt[q] = z[q] - h; grip_enthalpy(zt, fm, gt, &ctx);
+      const double fd = (fp - fm) / (2.0 * h);
+      std::cout << "[Grip GradCheck] alpha = " << userData->current_alpha << " | dPi/dU[" << (q - ctx.n2)
+                << "] = " << std::scientific << g0[q] << " fd = " << fd << " rel = "
+                << std::abs(fd - g0[q]) / std::max(1e-12, std::abs(fd) + std::abs(g0[q]))
+                << std::defaultfloat << std::endl;
+    }
+  }
+
+  // The stiffness preconditioner assembles node DOFs only, so grips use the plain L-BFGS
+  LBFGSOptimizer optimizer(corrections, 0.0, 0.0, 0.0, maxits);
+  optimizer.optimize(z, grip_enthalpy, &ctx);
+
+  for (int q = 0; q < ctx.n2; ++q) x[q] = z[q];
+  for (size_t g = 0; g < grips.size(); ++g) {
+    ctx.mg->setGripPositions(static_cast<int>(g), gripUFromVector(ctx, g, z), userData->points);
+  }
+}
+} // namespace
+
 void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corrections) {
+  if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasForceGrips()) {
+    relax_with_force_grips(x, userData, corrections, g_relaxation_maxits);
+    return;
+  }
   if (g_relaxation_solver && g_relaxation_step >= g_relaxation_first_step) {
     g_relaxation_solver->optimize(x, userData);
     return;

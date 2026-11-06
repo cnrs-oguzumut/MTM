@@ -182,8 +182,12 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
     case prescribed = "prescribed"
     case affine = "affine"
     case traction = "traction"
+    case forceGrip = "force_grip"
     
     public var id: String { rawValue }
+
+    /// Force-controlled kinds: the load parameter α is a nominal stress, not a strain.
+    public var isForceControl: Bool { self == .traction || self == .forceGrip }
     public var displayName: String {
         switch self {
         case .free: return "Free Surface (Traction-Free)"
@@ -193,6 +197,7 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
         case .prescribed: return "Prescribed Grip Δu(α)"
         case .affine: return "Affine Macro-Gradient F(α)"
         case .traction: return "Dead-Load Traction t = α·t₀ (atoms stay free)"
+        case .forceGrip: return "Rigid Force Grip (flat grip, total force α·t₀·L)"
         }
     }
     public var shortBadge: String {
@@ -204,6 +209,7 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
         case .prescribed: return "DRIVEN Δu"
         case .affine: return "AFFINE F(α)"
         case .traction: return "TRACTION t(α)"
+        case .forceGrip: return "FORCE GRIP F(α)"
         }
     }
 }
@@ -1366,9 +1372,13 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     public var tractionBalanceIssue: String? {
         let rules = boundary_rules.filter { $0.enabled }
         let tractions = rules.filter { $0.kind == .traction }
-        guard !tractions.isEmpty else { return nil }
+        let grips = rules.filter { $0.kind == .forceGrip }
+        guard !tractions.isEmpty || !grips.isEmpty else { return nil }
         let supported = rules.contains { [.fixed, .prescribed, .affine, .rollerX, .rollerY].contains($0.kind) }
         if supported { return nil }
+        if !grips.isEmpty {
+            return "A rigid force grip only transmits the load: add a fixed, prescribed or roller boundary to react it (e.g. clamp the opposite edge)."
+        }
         var fx = 0.0, fy = 0.0
         for r in tractions {
             switch r.traction_mode {
@@ -1636,6 +1646,9 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                     drivenX = true; drivenY = true
                 case .traction:
                     break // a load, not a constraint: the atoms stay free
+                case .forceGrip:
+                    lockedX = true; lockedY = true // rigid grip: atoms follow the solved grip displacement
+                    drivenX = true; drivenY = true
                 }
             }
         }

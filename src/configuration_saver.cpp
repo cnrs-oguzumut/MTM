@@ -590,7 +590,7 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
                 points, userData->current_alpha);
         }
         if (userData != nullptr && userData->macro_geom_ptr != nullptr &&
-            userData->macro_geom_ptr->hasExternalTractionForces()) {
+            userData->macro_geom_ptr->hasForceControl()) {
             // Total enthalpy Pi = E_el - W_ext, so remesh acceptance compares the dead-load potential
             total_energy += userData->macro_geom_ptr->computeExternalForcePotential(
                 points, userData->current_alpha);

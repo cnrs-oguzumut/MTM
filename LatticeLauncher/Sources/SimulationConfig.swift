@@ -929,12 +929,12 @@ public extension SimulationConfig {
 
     /// Enabled dead-load traction rule, if any (force-controlled loading).
     private var activeTractionRule: BoundaryZoneRuleModel? {
-        geometryConfig.enabled ? geometryConfig.boundary_rules.first { $0.enabled && $0.kind == .traction } : nil
+        geometryConfig.enabled ? geometryConfig.boundary_rules.first { $0.enabled && $0.kind.isForceControl } : nil
     }
 
     var activeStressComponentLabel: String {
         if let t = activeTractionRule {
-            switch t.traction_mode {
+            switch t.kind == .forceGrip ? "cartesian" : t.traction_mode {
             case "radial_outward", "radial_inward": return "Mean Radial Stress ½(σ_xx+σ_yy) (dead load)"
             case "circumferential_shear": return "Shear Stress σ_xy (dead load)"
             default:

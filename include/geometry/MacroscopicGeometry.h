@@ -120,7 +120,8 @@ enum class BoundaryConditionKind {
     AffineDeformation = 3,      // Driven x(alpha) = F(alpha) * X_0
     RollerX = 4,                // Free ux, Fixed uy = 0 (horizontal slide / normal volume relaxation)
     RollerY = 5,                // Fixed ux = 0, Free uy (vertical slide)
-    PrescribedTraction = 6      // Dead-load nominal traction t(alpha) = alpha * t0 on the outer contour atoms (DOFs stay free)
+    PrescribedTraction = 6,     // Dead-load nominal traction t(alpha) = alpha * t0 on the outer contour atoms (DOFs stay free)
+    RigidForceGrip = 7          // Rigid grip x = X + U with total force alpha * (tx, ty) * L_face; U is solved for
 };
 
 struct BoundaryZoneRule {
@@ -335,6 +336,28 @@ struct MacroscopicGeometryConfig {
     mutable double cached_reference_solid_area = 0.0;
     bool hasTractionRules() const;
     bool hasExternalTractionForces() const { return enabled && has_external_tractions; }
+
+    // Rigid force grips (RigidForceGrip rules): all gripped atoms share one displacement U, solved for
+    // inside relax_configuration with Pi = E_el - alpha * F0 . U. A loaded component of U is always free;
+    // an unloaded one is held at its current value when lock_x / lock_y is set, else it slides freely.
+    struct ForceGrip {
+        int rule_index = -1;
+        std::vector<int> nodes;
+        Eigen::Vector2d F0 = Eigen::Vector2d::Zero(); // total force per unit alpha, (tx, ty) * L_face
+        bool free_x = true;
+        bool free_y = true;
+        double face_length = 0.0;
+    };
+    mutable std::vector<ForceGrip> cached_force_grips;
+    mutable std::vector<int> cached_node_grip; // grip index per node, or -1
+    bool hasForceGrips() const { return enabled && !cached_force_grips.empty(); }
+    bool hasForceControl() const { return hasExternalTractionForces() || hasForceGrips(); }
+    bool isGripNode(size_t node) const {
+        return node < cached_node_grip.size() && cached_node_grip[node] >= 0;
+    }
+    // U of grip g, read from its first atom: x - X (X = reference used by the work terms)
+    Eigen::Vector2d gripDisplacement(int g, const std::vector<Point2D>& points) const;
+    void setGripPositions(int g, const Eigen::Vector2d& U, std::vector<Point2D>& points) const;
     // Assemble f0 from the reference mesh; checks force/torque balance. Returns false when the load
     // is unbalanced and nothing but the isostatic anchor holds the specimen (run must be refused).
     bool finalizeBoundaryTractions(const std::vector<Point2D>& reference_points,

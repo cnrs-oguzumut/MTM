@@ -1834,8 +1834,10 @@ struct SidebarControlsView: View {
                                     
                                     let indenterActive = config.geometryConfig.indenter.enabled
                                     let hasDrivenBC = config.geometryConfig.boundary_rules.contains {
-                                        $0.enabled && ($0.kind == .prescribed || $0.kind == .affine)
+                                        $0.enabled && ($0.kind == .prescribed || $0.kind == .affine || $0.kind.isForceControl)
                                     }
+                                    let isForceControl = config.geometryConfig.enabled &&
+                                        config.geometryConfig.boundary_rules.contains { $0.enabled && $0.kind.isForceControl }
                                     if indenterActive {
                                         HStack(spacing: 5) {
                                             Image(systemName: "arrow.down.to.line.compact")
@@ -1867,13 +1869,13 @@ struct SidebarControlsView: View {
                                     
                                     VStack(alignment: .leading, spacing: 6) {
                                         HStack {
-                                            Text(indenterActive ? "Start depth ratio α_start:" : "Start strain |α_start|:")
+                                            Text(indenterActive ? "Start depth ratio α_start:" : (isForceControl ? "Start nominal stress α_start:" : "Start strain |α_start|:"))
                                                 .font(.subheadline)
                                             Spacer()
                                             DoubleField(title: "0.0", value: $config.alphaStart, width: 80)
                                         }
                                         HStack {
-                                            Text(indenterActive ? "End depth ratio α_end:" : "End strain |α_end|:")
+                                            Text(indenterActive ? "End depth ratio α_end:" : (isForceControl ? "End nominal stress α_end:" : "End strain |α_end|:"))
                                                 .font(.subheadline)
                                             Spacer()
                                             DoubleField(title: "0.25", value: $config.alphaEnd, width: 80)

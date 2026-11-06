@@ -1242,7 +1242,7 @@ public struct GeometryBuilderView: View {
                 case .rollerX, .rollerY: col = rollerColor
                 case .free: col = Color.gray
                 case .prescribed, .affine: col = drivenColor
-                case .traction: col = tractionColor
+                case .traction, .forceGrip: col = tractionColor
                 }
                 ctx.fill(Path(rect), with: .color(col.opacity(0.12)))
                 ctx.stroke(Path(rect), with: .color(col.opacity(0.85)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
@@ -1262,7 +1262,7 @@ public struct GeometryBuilderView: View {
             // ---------------- Hole surfaces: highlight every enabled cutout rim ----------------
             if rule.region == .holeSurfaces {
                 guard rule.kind != .free else { continue }
-                let col: Color = rule.kind == .traction ? tractionColor
+                let col: Color = rule.kind.isForceControl ? tractionColor
                     : (rule.kind == .fixed ? fixedColor : ((rule.kind == .rollerX || rule.kind == .rollerY) ? rollerColor : drivenColor))
                 for cutout in geo.cutouts where cutout.enabled {
                     let cPath = buildCutoutPath(cutout: cutout, originX: originX, originY: originY, boxW: boxW, boxH: boxH)
@@ -1396,6 +1396,27 @@ public struct GeometryBuilderView: View {
                 }
                 let (lp, an) = labelPoint(for: pts, region: rule.region)
                 drawLabel("\(rName) Dead Load f: \(noun)", at: lp, color: tractionColor, anchor: an)
+
+            case .forceGrip:
+                // Rigid grip bar along the contour plus the total-force arrow at its middle
+                let mag = hypot(rule.tx, rule.ty)
+                let ordered = pts.sorted { ($0.x + $0.y) < ($1.x + $1.y) }
+                if let first = ordered.first, let last = ordered.last {
+                    var bar = Path()
+                    bar.move(to: scr(first.x, first.y))
+                    bar.addLine(to: scr(last.x, last.y))
+                    ctx.stroke(bar, with: .color(tractionColor.opacity(0.9)), style: StrokeStyle(lineWidth: 4.0, lineCap: .round))
+                }
+                if mag > 1e-9, let mid = ordered.dropFirst(ordered.count / 2).first {
+                    let p = scr(mid.x, mid.y)
+                    let n = scrDir(mid.nx, mid.ny)
+                    let d = scrDir(rule.tx / mag, rule.ty / mag)
+                    let start = CGPoint(x: p.x + n.x * 5, y: p.y + n.y * 5)
+                    drawVectorArrow(ctx: &ctx, start: start, end: CGPoint(x: start.x + d.x * 30, y: start.y + d.y * 30),
+                                    color: tractionColor, lineWidth: 3.0, headLength: 8.0)
+                }
+                let (lp, an) = labelPoint(for: pts, region: rule.region)
+                drawLabel(String(format: "\(rName) Force Grip: F = α·(%.2g, %.2g)·L", rule.tx, rule.ty), at: lp, color: tractionColor, anchor: an)
             }
         }
     }
@@ -4037,6 +4058,33 @@ public struct GeometryBuilderView: View {
                                 Spacer()
                                 DoubleField(title: "2.0", value: $rule.thickness_a0, width: 52)
                             }
+                        } else if rule.kind == .forceGrip {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text("Grip stress per unit α:").font(.caption2).foregroundColor(.secondary)
+                                    Text("tx:").font(.caption2.bold())
+                                    DoubleField(title: "0.0", value: $rule.tx, width: 48)
+                                    Text("ty:").font(.caption2.bold())
+                                    DoubleField(title: "1.0", value: $rule.ty, width: 48)
+                                    Text("Strip:").font(.caption2)
+                                    DoubleField(title: "2.0", value: $rule.thickness_a0, width: 42)
+                                }
+                                HStack(spacing: 12) {
+                                    Text("Unloaded axis:").font(.caption2).foregroundColor(.secondary)
+                                    Toggle("Hold ux", isOn: $rule.lock_x)
+                                        .font(.caption2)
+                                        .controlSize(.mini)
+                                        .disabled(abs(rule.tx) > 0)
+                                    Toggle("Hold uy", isOn: $rule.lock_y)
+                                        .font(.caption2)
+                                        .controlSize(.mini)
+                                        .disabled(abs(rule.ty) > 0)
+                                }
+                                Text("Load-controlled testing machine: the gripped atoms move together (flat grip), and the grip displacement is solved so the total force is α·t₀·L_face. Needs another boundary (e.g. the opposite edge clamped).")
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         } else if rule.kind == .traction {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 8) {
@@ -4133,6 +4181,14 @@ public struct GeometryBuilderView: View {
                         ])
                     }
                     .help("Bottom clamped, uniform dead-load shear traction on the top surface.")
+                    selectableChipButton(title: "Force-Grip Tension σ = α", isSelected: false) {
+                        setDeadLoad([
+                            BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                            BoundaryZoneRuleModel(region: .top, kind: .forceGrip, thickness_a0: 2.0, ux: 0.0, uy: 0.0,
+                                                  lock_x: true, lock_y: false, tx: 0.0, ty: 1.0)
+                        ])
+                    }
+                    .help("Bottom clamped; a rigid flat top grip pulled with total force α·L (load-controlled tensile test).")
                     selectableChipButton(title: "Pressurized Hole p = α", isSelected: false) {
                         setDeadLoad([
                             BoundaryZoneRuleModel(region: .outerPerimeter, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),

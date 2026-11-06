@@ -334,6 +334,7 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
             else if (kind_str == "roller_x" || kind_str == "rollerX") r.kind = BoundaryConditionKind::RollerX;
             else if (kind_str == "roller_y" || kind_str == "rollerY") r.kind = BoundaryConditionKind::RollerY;
             else if (kind_str == "traction" || kind_str == "prescribedTraction" || kind_str == "prescribed_traction") r.kind = BoundaryConditionKind::PrescribedTraction;
+            else if (kind_str == "force_grip" || kind_str == "forceGrip" || kind_str == "rigid_force_grip" || kind_str == "rigidForceGrip") r.kind = BoundaryConditionKind::RigidForceGrip;
             else r.kind = BoundaryConditionKind::FreeSurface;
 
             r.thickness_a0 = extractDouble(item_json, "thickness_a0", 2.0);
@@ -1892,6 +1893,20 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
     cached_node_ext_force_ref.clear();
     has_external_tractions = false;
     traction_anchor_active = false;
+    cached_force_grips.clear();
+    cached_node_grip.assign(n_pts, -1);
+    for (size_t k = 0; k < boundary_rules.size(); ++k) {
+        const auto& rk = boundary_rules[k];
+        if (rk.enabled && rk.kind == BoundaryConditionKind::RigidForceGrip) {
+            ForceGrip g;
+            g.rule_index = static_cast<int>(k);
+            // A loaded component (t != 0) is always solved for; an unloaded one is held by its lock
+            // (no lateral slip) or slides freely at zero force when unlocked
+            g.free_x = !rk.lock_x || std::abs(rk.tx) > 0.0;
+            g.free_y = !rk.lock_y || std::abs(rk.ty) > 0.0;
+            cached_force_grips.push_back(g);
+        }
+    }
     for (size_t k = 0; k < boundary_rules.size(); ++k) {
         if (boundary_rules[k].enabled && boundary_rules[k].kind == BoundaryConditionKind::PrescribedTraction) {
             cached_traction_rule_index.push_back(static_cast<int>(k));
@@ -1930,6 +1945,7 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
         bool rotation_driven = false;
         Eigen::Vector2d rotation_pivot = Eigen::Vector2d::Zero();
         Eigen::Vector2d vel = Eigen::Vector2d::Zero();
+        int grip_of_node = -1;
 
         for (const auto& rule : boundary_rules) {
             if (!rule.enabled) continue;
@@ -2001,8 +2017,21 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
             // Tractions are loads, not kinematic constraints, so they leave it untouched.
             if (rule.kind != BoundaryConditionKind::FreeSurface &&
                 rule.kind != BoundaryConditionKind::PrescribedTraction) rotation_driven = false;
+            // Likewise a later kinematic rule takes the node out of a force grip
+            if (rule.kind != BoundaryConditionKind::FreeSurface &&
+                rule.kind != BoundaryConditionKind::PrescribedTraction &&
+                rule.kind != BoundaryConditionKind::RigidForceGrip) grip_of_node = -1;
 
-            if (rule.kind == BoundaryConditionKind::PrescribedTraction) {
+            if (rule.kind == BoundaryConditionKind::RigidForceGrip) {
+                // Rigid grip: both DOFs follow the shared grip displacement U (not solver DOFs)
+                const int rule_k = static_cast<int>(&rule - boundary_rules.data());
+                for (size_t g = 0; g < cached_force_grips.size(); ++g) {
+                    if (cached_force_grips[g].rule_index == rule_k) grip_of_node = static_cast<int>(g);
+                }
+                locked_x = true; locked_y = true;
+                driven_x = true; driven_y = true;
+                vel = Eigen::Vector2d::Zero();
+            } else if (rule.kind == BoundaryConditionKind::PrescribedTraction) {
                 // Dead load: the node stays a free DOF; finalizeBoundaryTractions assigns its force
                 const int rule_k = static_cast<int>(&rule - boundary_rules.data());
                 for (size_t m = 0; m < cached_traction_rule_index.size(); ++m) {
@@ -2084,6 +2113,10 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
         }
 
         node_bc_velocity[i] = vel;
+        if (grip_of_node >= 0) {
+            cached_node_grip[i] = grip_of_node;
+            cached_force_grips[grip_of_node].nodes.push_back(static_cast<int>(i));
+        }
         if (rotation_driven) {
             cached_node_rotation_driven[i] = 1;
             cached_node_rotation_pivot[i] = rotation_pivot;
@@ -2101,7 +2134,7 @@ void MacroscopicGeometryConfig::buildBoundaryDOFs(
 
     // Dead loads with no kinematic constraint at all: pin a minimal isostatic anchor (3 DOFs) so the
     // rigid-body modes are removed. Decided here, before the mesh exists, so the DOF mappings are final.
-    if (!cached_traction_rule_index.empty() &&
+    if (!cached_traction_rule_index.empty() && cached_force_grips.empty() &&
         std::all_of(node_bc_role.begin(), node_bc_role.end(), [](int r) { return r == 0; })) {
         Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
         for (const auto& pt : carved_points) centroid += pt.coord;
@@ -2187,7 +2220,7 @@ bool MacroscopicGeometryConfig::finalizeBoundaryTractions(
     cached_node_ext_force_unit.assign(n_pts, Eigen::Vector2d::Zero());
     cached_node_ext_force_ref.resize(n_pts);
     for (size_t i = 0; i < n_pts; ++i) cached_node_ext_force_ref[i] = reference_points[i].coord;
-    if (!enabled || cached_traction_rule_index.empty()) return true;
+    if (!enabled || (cached_traction_rule_index.empty() && cached_force_grips.empty())) return true;
     for (const auto& mem : cached_traction_membership) {
         if (mem.size() != n_pts) {
             std::cerr << "[Traction] ERROR: boundary DOFs were built for a different point set\n";
@@ -2268,6 +2301,56 @@ bool MacroscopicGeometryConfig::finalizeBoundaryTractions(
         }
     }
 
+    // Rigid force grips: F0 = (tx, ty) * L_face, with L_face the reference length of the grip's
+    // boundary edges that face the region's direction (all boundary edges for non-edge regions)
+    for (auto& grip : cached_force_grips) {
+        const BoundaryZoneRule& rule = boundary_rules[grip.rule_index];
+        Eigen::Vector2d face_dir = Eigen::Vector2d::Zero();
+        switch (rule.region) {
+        case BoundaryRegionType::TopEdge: face_dir = Eigen::Vector2d(0.0, 1.0); break;
+        case BoundaryRegionType::BottomEdge: face_dir = Eigen::Vector2d(0.0, -1.0); break;
+        case BoundaryRegionType::LeftEdge: face_dir = Eigen::Vector2d(-1.0, 0.0); break;
+        case BoundaryRegionType::RightEdge: face_dir = Eigen::Vector2d(1.0, 0.0); break;
+        default: break;
+        }
+        double face_length = 0.0;
+        for (const auto& [key, info] : edges) {
+            if (info.count != 1 || !isGripNode(info.a) || !isGripNode(info.b)) continue;
+            if (cached_node_grip[info.a] != cached_node_grip[info.b]) continue;
+            if (&cached_force_grips[cached_node_grip[info.a]] != &grip) continue;
+            const Eigen::Vector2d pa = reference_points[info.a].coord, pb = reference_points[info.b].coord;
+            const double len = (pb - pa).norm();
+            if (len < 1e-12) continue;
+            Eigen::Vector2d n_hat((pb - pa).y() / len, -(pb - pa).x() / len);
+            if (n_hat.dot(reference_points[info.third].coord - 0.5 * (pa + pb)) > 0.0) n_hat = -n_hat;
+            if (face_dir.squaredNorm() > 0.0 && n_hat.dot(face_dir) < 0.5) continue;
+            face_length += len;
+        }
+        grip.face_length = face_length;
+        grip.F0 = face_length * Eigen::Vector2d(rule.tx, rule.ty);
+        if (!grip.free_x) grip.F0.x() = 0.0;
+        if (!grip.free_y) grip.F0.y() = 0.0;
+        std::cout << "[Force Grip] rule '" << rule.id << "': " << grip.nodes.size() << " gripped atoms, face length "
+                  << face_length << ", F0 = (" << grip.F0.x() << ", " << grip.F0.y() << ") per unit alpha, U free in "
+                  << (grip.free_x ? "x" : "") << (grip.free_y ? "y" : "")
+                  << ((grip.free_x || grip.free_y) ? "" : "none") << "\n";
+        if (grip.nodes.empty()) {
+            std::cerr << "[Force Grip] WARNING: grip rule '" << rule.id << "' matched no atom.\n";
+        }
+    }
+    if (!cached_force_grips.empty()) {
+        // A force grip only transmits the load: some other kinematic boundary must hold the specimen
+        bool other_support = false;
+        for (size_t i = 0; i < n_pts && i < cached_node_bc_role.size(); ++i) {
+            if (cached_node_bc_role[i] != 0 && !isGripNode(i)) { other_support = true; break; }
+        }
+        if (!other_support) {
+            std::cerr << "[Force Grip] ERROR: a rigid force grip needs another Fixed, Prescribed, Affine or "
+                         "Roller boundary to react the load (e.g. clamp the opposite edge).\n";
+            return false;
+        }
+    }
+
     double force_scale = 0.0;
     Eigen::Vector2d resultant = Eigen::Vector2d::Zero();
     Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
@@ -2285,6 +2368,7 @@ bool MacroscopicGeometryConfig::finalizeBoundaryTractions(
         moment += r.x() * f.y() - r.y() * f.x();
     }
     has_external_tractions = (force_scale > 0.0);
+    if (cached_traction_rule_index.empty()) return true; // grips only
 
     std::cout << "[Traction] " << cached_traction_rule_index.size() << " traction rule(s): " << loaded_edges
               << " boundary edge share(s) on " << loaded_nodes << " contour atoms | sum|f0| = " << force_scale
@@ -2308,12 +2392,34 @@ bool MacroscopicGeometryConfig::finalizeBoundaryTractions(
     return true;
 }
 
+Eigen::Vector2d MacroscopicGeometryConfig::gripDisplacement(int g, const std::vector<Point2D>& points) const {
+    if (g < 0 || g >= static_cast<int>(cached_force_grips.size()) || cached_force_grips[g].nodes.empty()) {
+        return Eigen::Vector2d::Zero();
+    }
+    const size_t n0 = static_cast<size_t>(cached_force_grips[g].nodes.front());
+    if (n0 >= points.size() || n0 >= cached_node_ext_force_ref.size()) return Eigen::Vector2d::Zero();
+    return points[n0].coord - cached_node_ext_force_ref[n0];
+}
+
+void MacroscopicGeometryConfig::setGripPositions(int g, const Eigen::Vector2d& U, std::vector<Point2D>& points) const {
+    if (g < 0 || g >= static_cast<int>(cached_force_grips.size())) return;
+    for (int n : cached_force_grips[g].nodes) {
+        if (n >= 0 && static_cast<size_t>(n) < points.size() && static_cast<size_t>(n) < cached_node_ext_force_ref.size()) {
+            points[n].coord = cached_node_ext_force_ref[n] + U;
+        }
+    }
+}
+
 double MacroscopicGeometryConfig::computeExternalForcePotential(
     const std::vector<Point2D>& points, double alpha) const {
-    if (!hasExternalTractionForces() || alpha == 0.0) return 0.0;
+    if (!hasForceControl() || alpha == 0.0) return 0.0;
+    double energy = 0.0;
+    for (int g = 0; g < static_cast<int>(cached_force_grips.size()); ++g) {
+        energy -= alpha * cached_force_grips[g].F0.dot(gripDisplacement(g, points));
+    }
+    if (!hasExternalTractionForces()) return energy;
     const size_t n = std::min({points.size(), cached_node_ext_force_unit.size(),
                                cached_node_ext_force_ref.size(), cached_node_bc_role.size()});
-    double energy = 0.0;
     for (size_t i = 0; i < n; ++i) {
         const int role = cached_node_bc_role[i];
         if (role != 0 && role != 3 && role != 4) continue; // same node set as the optimizer's DOFs
@@ -2348,10 +2454,13 @@ double MacroscopicGeometryConfig::accumulateExternalForcePotential(
 }
 
 double MacroscopicGeometryConfig::computeTractionConjugateStrain(const std::vector<Point2D>& points) const {
-    if (!hasExternalTractionForces() || cached_reference_solid_area <= 0.0) return 0.0;
+    if (!hasForceControl() || cached_reference_solid_area <= 0.0) return 0.0;
     const size_t n = std::min({points.size(), cached_node_ext_force_unit.size(),
                                cached_node_ext_force_ref.size(), cached_node_bc_role.size()});
     double work = 0.0;
+    for (int g = 0; g < static_cast<int>(cached_force_grips.size()); ++g) {
+        work += cached_force_grips[g].F0.dot(gripDisplacement(g, points));
+    }
     for (size_t i = 0; i < n; ++i) {
         const int role = cached_node_bc_role[i];
         if (role != 0 && role != 3 && role != 4) continue;
@@ -2779,6 +2888,8 @@ void MacroscopicGeometryConfig::applyLoadStep(
             } else {
                 current_points[j].coord = points_ref[j].coord;
             }
+        } else if (node_bc_role[j] == 2 && isGripNode(j)) {
+            // Rigid force grip: position X + U is a solver unknown; keep the current one as the guess
         } else if (node_bc_role[j] == 2) {
             // Driven / Prescribed node: exact boundary trajectory X_0 + alpha * v_j
             // (torsion rims: exact rotation X_c + R(alpha) (X_0 - X_c) about their pivot)
@@ -2855,6 +2966,15 @@ double MacroscopicGeometryConfig::extractPrimaryStress(
     // "auto": inspect active driven rules to pick the conjugate stress component
     for (const auto& rule : boundary_rules) {
         if (!rule.enabled) continue;
+        if (rule.kind == BoundaryConditionKind::RigidForceGrip) {
+            const bool horizontal_face = (rule.region == BoundaryRegionType::TopEdge ||
+                                          rule.region == BoundaryRegionType::BottomEdge);
+            const bool vertical_face = (rule.region == BoundaryRegionType::LeftEdge ||
+                                        rule.region == BoundaryRegionType::RightEdge);
+            if (horizontal_face && std::abs(rule.ty) > std::abs(rule.tx)) return stress_tensor(1, 1);
+            if (vertical_face && std::abs(rule.tx) > std::abs(rule.ty)) return stress_tensor(0, 0);
+            return stress_tensor(0, 1);
+        }
         if (rule.kind == BoundaryConditionKind::PrescribedTraction) {
             if (rule.traction_mode == "radial_outward" || rule.traction_mode == "radial_inward") {
                 return 0.5 * (stress_tensor(0, 0) + stress_tensor(1, 1));

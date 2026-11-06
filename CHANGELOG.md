@@ -18,6 +18,18 @@
   Pressurized Hole presets, a balance warning that disables Run, and a "Dead-Load Strain ε" chart series.
   Set `MTM_TRACTION_GRADCHECK=1` to print a finite-difference check of the enthalpy gradient.
 
+### Added — rigid force grip (plan Phase B)
+- New boundary kind `force_grip`. The gripped atoms move together, x = X + U, and U is solved for together
+  with the atoms: Π = E_el − α F0·U, with F0 = (tx, ty)·L_face. U lives only inside `relax_configuration`
+  (plain L-BFGS; the stiffness preconditioner covers node DOFs only), so the rest of the pipeline is
+  unchanged. A loaded component of U is always free. An unloaded one is held (`lock_x` / `lock_y`) or slides
+  at zero force.
+- A grip needs another kinematic support (the run is refused otherwise). It shares the force-control
+  avalanche, limit-load and CSV machinery with dead-load tractions. Set `MTM_GRIP_GRADCHECK=1` for a
+  finite-difference check of ∂Π/∂U.
+- GUI: Force Grip kind (tx/ty, hold toggles for the unloaded axis), grip bar and force arrow on the canvas, a
+  Force-Grip Tension preset, and the schedule reads "nominal stress α" under force control.
+
 ### Changed — physics
 - **Affine origin.** Centre-symmetric affine modes (biaxial, radial in/out, pure shear, torsion) pivot
   about the specimen centre for `outer_perimeter` rules, and about each hole's own centre for

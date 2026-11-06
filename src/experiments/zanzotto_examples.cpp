@@ -821,7 +821,8 @@ void example_1_conti_zanzotto_loading(
   }
   const auto rules_have_traction = [](const std::vector<BoundaryZoneRule> &rules) {
     for (const auto &r : rules) {
-      if (r.enabled && r.kind == BoundaryConditionKind::PrescribedTraction) return true;
+      if (r.enabled && (r.kind == BoundaryConditionKind::PrescribedTraction ||
+                        r.kind == BoundaryConditionKind::RigidForceGrip)) return true;
     }
     return false;
   };
@@ -951,7 +952,7 @@ void example_1_conti_zanzotto_loading(
     const double effective_noise_level = is_stage1_relax_step ? 0.0 : noise_level;
     // Force control: dead-load tractions drive this step (never Stage 1, where alpha = 0)
     const bool force_control_step = has_custom_geom && !is_periodic_dislocs &&
-                                    !is_stage1_relax_step && macro_geom.hasExternalTractionForces();
+                                    !is_stage1_relax_step && macro_geom.hasForceControl();
     set_relaxation_max_iterations(force_control_step ? kForceControlMaxIterations : 0);
     if (has_custom_geom && !is_periodic_dislocs) {
       macro_geom.setRunawayReference(square_points, force_control_step
@@ -983,7 +984,7 @@ void example_1_conti_zanzotto_loading(
         for (size_t j = 0; j < square_points.size(); ++j) {
           const int role = baseline_node_bc_role[j];
           const Eigen::Vector2d d = traction_points_n[j].coord - traction_points_nm1[j].coord;
-          if (role == 0) square_points[j].coord += ratio * d;
+          if (role == 0 || (role == 2 && macro_geom.isGripNode(j))) square_points[j].coord += ratio * d;
           else if (role == 3) square_points[j].coord.y() += ratio * d.y();
           else if (role == 4) square_points[j].coord.x() += ratio * d.x();
         }
