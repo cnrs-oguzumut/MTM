@@ -635,7 +635,6 @@ struct SidebarControlsView: View {
                     case .crystal:
                         quickStartExperimentBanner
                         systemGeometryCard
-                        boundaryAndLoadingSelectorCard
                         latticePotentialCard
                         if config.mode != .volterra && config.mode != .shift {
                             GeometryBuilderView(
@@ -666,7 +665,6 @@ struct SidebarControlsView: View {
                             }
                         }
                     case .protocolAndSchedule:
-                        boundaryAndLoadingSelectorCard
                         loadingModeCard
                         protocolScheduleCard
                     case .solver:
@@ -1146,21 +1144,15 @@ struct SidebarControlsView: View {
                         )
                     }) {
                         VStack(alignment: .leading, spacing: 10) {
-                            Toggle(isOn: Binding(
-                                get: { config.geometryConfig.enabled },
-                                set: { enabled in
-                                    config.geometryConfig.enabled = enabled
-                                    if enabled {
-                                        config.boundaryCondition = .fixed
-                                    }
-                                }
-                            )) {
-                                Text("Carve Macroscopic Shape & Custom BCs")
-                                    .font(.caption.bold())
+                            // The boundary regime above decides whether there is a specimen to carve
+                            if config.isEffectivePeriodicPBC {
+                                Text("Periodic cell: the specimen is the periodic box, with no surfaces to carve. Choose 'Surface Grips / Custom BCs' above to carve a shape and set boundary rules.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
-                            .toggleStyle(.switch)
                             
-                            if config.geometryConfig.enabled {
+                            if config.geometryConfig.enabled && !config.isEffectivePeriodicPBC {
                                 // Preset quick-selector
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Engineering Specimen Presets:")
@@ -1203,10 +1195,6 @@ struct SidebarControlsView: View {
                             
                             HStack(spacing: 8) {
                                 Button(action: {
-                                    if !config.geometryConfig.enabled {
-                                        config.geometryConfig.enabled = true
-                                        config.boundaryCondition = .fixed
-                                    }
                                     displayTab = .geometryStudio
                                 }) {
                                     Label("Show Specimen on Canvas", systemImage: "slider.horizontal.below.square.and.square.filled")
@@ -1215,7 +1203,7 @@ struct SidebarControlsView: View {
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.small)
                                 
-                                if config.geometryConfig.enabled {
+                                if config.geometryConfig.enabled && !config.isEffectivePeriodicPBC {
                                     Button(action: {
                                         let root = SimulationConfig.detectProjectRoot()
                                         let scratchDir = "\(root)/scratch"

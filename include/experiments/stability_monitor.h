@@ -59,11 +59,13 @@ struct StabilityMonitorOptions {
   bool enabled() const { return every > 0 || at_avalanche; }
 };
 
-// PBC stress control: the free-cell stability of a relaxed state (see pbc_box_stability)
+// PBC stress control: the free-cell stability of a relaxed state (see pbc_box_stability). Each value is
+// written only when its flag is set (no NaN sentinels: the build uses -ffast-math).
 struct BoxStabilityPoint {
-  double strain = std::numeric_limits<double>::quiet_NaN();     // as EffectiveStrain in the stress log
-  double lambda_min = std::numeric_limits<double>::quiet_NaN(); // lowest eigenvalue of the cell Jacobian
-  double tangent = std::numeric_limits<double>::quiet_NaN();    // d alpha / d strain along the load path
+  double strain = 0.0;     // as EffectiveStrain in the stress log
+  double lambda_min = 0.0; // lowest eigenvalue of the cell Jacobian
+  double tangent = 0.0;    // d alpha / d strain along the load path
+  bool has_strain = false, has_lambda = false, has_tangent = false;
 };
 using BoxStabilityFunction = std::function<BoxStabilityPoint(UserData &state, int step, double alpha)>;
 

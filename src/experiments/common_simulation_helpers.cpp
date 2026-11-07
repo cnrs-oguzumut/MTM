@@ -1121,10 +1121,16 @@ PBCBoxStability pbc_box_stability(UserData &state, const PBCStressControl &sc, d
 
   if (cauchy) {
     Eigen::EigenSolver<Eigen::MatrixXd> eig(J, false);
-    if (eig.info() == Eigen::Success) out.lambda_min = eig.eigenvalues().real().minCoeff();
+    if (eig.info() == Eigen::Success) {
+      out.lambda_min = eig.eigenvalues().real().minCoeff();
+      out.has_lambda = true;
+    }
   } else {
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(J, Eigen::EigenvaluesOnly);
-    if (eig.info() == Eigen::Success) out.lambda_min = eig.eigenvalues().minCoeff();
+    if (eig.info() == Eigen::Success) {
+      out.lambda_min = eig.eigenvalues().minCoeff();
+      out.has_lambda = true;
+    }
   }
   if (force) {
     int t = -1;
@@ -1132,7 +1138,10 @@ PBCBoxStability pbc_box_stability(UserData &state, const PBCStressControl &sc, d
       if (comps[a].first == tr && comps[a].second == tc) t = a;
     if (t >= 0) {
       const Eigen::VectorXd dF_dalpha = J.fullPivLu().solve(b);
-      if (std::abs(dF_dalpha(t)) > 0.0) out.tangent = 1.0 / dF_dalpha(t);
+      if (std::abs(dF_dalpha(t)) > 0.0) {
+        out.tangent = 1.0 / dF_dalpha(t);
+        out.has_tangent = true;
+      }
     }
   }
   return out;

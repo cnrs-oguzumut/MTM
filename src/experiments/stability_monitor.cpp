@@ -99,24 +99,26 @@ void StabilityMonitor::log(int step, double alpha, const char *trigger,
     if (k < s.num_computed) csv_ << s.eigenvalues(k);
   }
   if (box_fn_) {
-    for (double v : {box.strain, box.lambda_min, box.tangent}) {
-      csv_ << ",";
-      if (std::isfinite(v)) csv_ << v;
-    }
+    csv_ << ",";
+    if (box.has_strain) csv_ << box.strain;
+    csv_ << ",";
+    if (box.has_lambda) csv_ << box.lambda_min;
+    csv_ << ",";
+    if (box.has_tangent) csv_ << box.tangent;
   }
   csv_ << "\n";
   csv_.flush();
   std::cout << "Stability monitor [" << trigger << "] step " << step << ": lambda_min = "
             << (s.num_computed ? s.eigenvalues(0) : std::numeric_limits<double>::quiet_NaN())
             << (s.failed_shifts ? " (UNSTABLE: eigenvalue below the first trial shift)" : "");
-  if (std::isfinite(box.lambda_min))
+  if (box.has_lambda)
     std::cout << ", lambda_box = " << box.lambda_min << (box.lambda_min <= 0.0 ? " (UNSTABLE cell)" : "");
   std::cout << ", " << seconds << " s" << std::endl;
 }
 
 void StabilityMonitor::update_refinement(int step, const StiffnessSpectrum &s,
                                          const BoxStabilityPoint &box) {
-  const bool have_box = std::isfinite(box.lambda_min);
+  const bool have_box = box.has_lambda;
   if (s.num_computed == 0 && !have_box) return;
   bool refine = false;
   if (s.num_computed > 0)

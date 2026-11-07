@@ -2,6 +2,26 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Changed — α is a stress throughout a relaxation-at-strain stress run
+- With `--relax-strain`, step 0 holds the cell at F₁₂ = relax_strain, and the loading after it is a stress
+  schedule. The logs wrote the strain (e.g. 0.14) as α at step 0 and the target stress (e.g. 0.0069) from
+  step 1 on. Step 0 now logs its relaxed stress σ₀, the start of the schedule. This applies to
+  energy_stress_log.csv, eigen_log.csv, fractional_drops.csv, the dislocation log and configuration_00000.vtk.
+  The strain is in EffectiveStrain / Fbar12 as before.
+
+### Fixed — eigen_log.csv cell-stability columns at the relaxation step
+- The Strain / lambda_box / box_tangent cells of the fixed-strain relaxation step held garbage instead of
+  being empty. The values used NaN as "not computed", which `-ffast-math` (assumes no NaNs) does not keep.
+  They now carry explicit flags. Refinement could also have been triggered by that garbage.
+
+### Changed — GUI: one place for the boundary regime and loading
+- The "Boundary Regime & Mechanical Loading" card is shown only in step 2 (Shape & BCs); it was repeated in
+  steps 1 and 3. The canvas toolbar's "Surface Grips / Custom BCs" switch is removed, and the canvas
+  regime/loading pill is a status label (hover: edit in step 2).
+- The "Carve Macroscopic Shape & Custom BCs" switch is removed: the PBC / Surface choice decides it. In PBC,
+  step 2 says there is no specimen to carve. "Show Specimen on Canvas" no longer switches the regime to
+  surface BCs as a side effect.
+
 ### Docs — derivations in stress_and_traction_control.tex
 - Step-by-step derivations, each in index and matrix form, of:
   - the cell derivatives (7)–(8) and the rotational balance;

@@ -1109,10 +1109,13 @@ void example_1_conti_zanzotto_loading(
       const int r = PBCStressControl::targetRow(stress_ctrl.preset);
       const int c = PBCStressControl::targetCol(stress_ctrl.preset);
       p.strain = state.F_external(r, c) - F_stage1(r, c);
+      p.has_strain = true;
       const bool loaded = step > 0 && stress_preset_is_force;
       const PBCBoxStability b = pbc_box_stability(state, stress_ctrl, loaded ? alpha : 0.0, loaded);
       p.lambda_min = b.lambda_min;
       p.tangent = b.tangent;
+      p.has_lambda = b.has_lambda;
+      p.has_tangent = b.has_tangent;
       return p;
     });
   }
@@ -1826,6 +1829,11 @@ void example_1_conti_zanzotto_loading(
       }
     }
 
+    // Load parameter written to the logs. The relaxation step at a prescribed shear strain runs at
+    // alpha = F12, but the loading that follows is a stress schedule: log its relaxed stress sigma_0 there,
+    // so alpha is a stress throughout (the strain is in EffectiveStrain / Fbar12)
+    const double alpha_log = stress_relax_strain_step ? post_stress : alpha;
+
     // Log fractional drops to separate CSV for investigation
     static std::ofstream frac_file;
     static std::filesystem::path frac_dir;
@@ -1841,7 +1849,7 @@ void example_1_conti_zanzotto_loading(
                 << std::setprecision(std::numeric_limits<double>::max_digits10);
       frac_dir = std::filesystem::current_path();
     }
-    frac_file << i << "," << alpha << "," << post_energy << ","
+    frac_file << i << "," << alpha_log << "," << post_energy << ","
               << (post_energy_previous - post_energy) << ","
               << fractional_energy_drop << "," << post_stress << ","
               << (std::abs(post_stress_previous) - std::abs(post_stress)) << ","
@@ -1948,8 +1956,8 @@ void example_1_conti_zanzotto_loading(
 
       ConfigurationSaver::writeToVTK(
           postOptUserData.points, postOptUserData.elements, &postOptUserData,
-          post_file_id, true, coordination_post, alpha);
-      ConfigurationSaver::logDislocationData(alpha, num_dislocations_post);
+          post_file_id, true, coordination_post, alpha_log);
+      ConfigurationSaver::logDislocationData(alpha_log, num_dislocations_post);
 
       if ((i == 0 || is_initial_loaded_snapshot) && !stress_drop_detected) {
         std::cout << "  💾 [VTK Snapshot] "
@@ -2052,7 +2060,7 @@ void example_1_conti_zanzotto_loading(
     }
 
     // ==================== STABILITY MONITOR (optional) ====================
-    stability_monitor.end_of_step(static_cast<int>(i), alpha, post_stress, postOptUserData,
+    stability_monitor.end_of_step(static_cast<int>(i), alpha_log, post_stress, postOptUserData,
                                   stress_drop_detected, pre_elements,
                                   pre_active_elements, caller_id + file_counter - 1);
 
@@ -2072,7 +2080,7 @@ void example_1_conti_zanzotto_loading(
       }
     }
     ConfigurationSaver::logEnergyAndStress_v2(
-        i, alpha, pre_energy, pre_stress, post_energy, post_stress, pre_area,
+        i, alpha_log, pre_energy, pre_stress, post_energy, post_stress, pre_area,
         post_area, (hasChanges > 0), &postOptUserData, &indenter_contacts,
         run_has_tractions ? &traction_columns : nullptr);
 

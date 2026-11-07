@@ -71,10 +71,13 @@ void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corre
 //   lambda_min  smallest eigenvalue of J (real part; J is nonsymmetric under Cauchy control)
 //   tangent     d alpha / d F_t along the load path (F_t: controlled component), = slope of the
 //               load-strain curve; only when `loaded` (alpha is the stress target of a force preset)
-// NaN when the cell has no free component or the factorization fails.
+// The has_* flags are false when the cell has no free component or the factorization fails (not NaN
+// sentinels: the build uses -ffast-math, which assumes there are no NaNs).
 struct PBCBoxStability {
-  double lambda_min = std::numeric_limits<double>::quiet_NaN();
-  double tangent = std::numeric_limits<double>::quiet_NaN();
+  double lambda_min = 0.0;
+  double tangent = 0.0;
+  bool has_lambda = false;
+  bool has_tangent = false;
 };
 PBCBoxStability pbc_box_stability(UserData &state, const PBCStressControl &sc, double alpha, bool loaded);
 
