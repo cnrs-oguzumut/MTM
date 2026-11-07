@@ -1036,8 +1036,10 @@ void example_1_conti_zanzotto_loading(
   if (stress_relax_strain) {
     alpha_values.assign(1, stress_ctrl.relax_strain); // the stress targets are appended after step 0
     std::cout << "[Stress Control] Relaxation step at F12 = " << stress_ctrl.relax_strain
-              << " under strain control (noise " << noise_level << "), then " << stress_ctrl.preset
-              << " stress loading from the relaxed stress up to " << alpha_max << " (step " << std::abs(step_size)
+              << " under strain control (noise " << noise_level << "), then "
+              << (stress_ctrl.relax_stage1 ? "a zero-stress relaxation and " : "") << stress_ctrl.preset
+              << " stress loading from " << (stress_ctrl.relax_stage1 ? "zero" : "the relaxed stress") << " up to "
+              << alpha_max << " (step " << std::abs(step_size)
               << "); alpha_start is not used." << std::endl;
   }
   // PBC stress control with --relax-stress: the zero-stress relaxation runs at alpha = 0 also when the
@@ -1153,8 +1155,11 @@ void example_1_conti_zanzotto_loading(
     // PBC stress control: the alpha = 0 step is a zero-stress box relaxation; stress presets then drive
     const bool stress_relax_step = stress_ctrl_enabled && (i == 0) && std::abs(alpha) < 1e-15;
     const bool stress_relax_strain_step = stress_relax_strain && (i == 0);
+    // --relax-stress with --relax-strain: step 1 relaxes the cell to sigma = 0 (all three components) after the
+    // relaxation at the prescribed strain, and the stress schedule then rises from 0
+    const bool stress_zero_after_strain_step = stress_relax_strain && stress_ctrl.relax_stage1 && (i == 1);
     const bool stress_force_step = stress_ctrl_enabled && !stress_relax_step && !stress_relax_strain_step &&
-                                   stress_preset_is_force;
+                                   !stress_zero_after_strain_step && stress_preset_is_force;
     // Force control: dead-load tractions or a nominal-stress target drive this step (never Stage 1)
     const bool force_control_step = stress_force_step || (has_custom_geom && !is_periodic_dislocs &&
                                     !is_stage1_relax_step && macro_geom.hasForceControl());
@@ -1188,7 +1193,7 @@ void example_1_conti_zanzotto_loading(
       stress_ctrl.cauchy = false;
       for (bool &f : stress_ctrl.comp_free) f = false;
       const std::string &preset = stress_ctrl.preset;
-      if (stress_relax_step && stress_ctrl.relax_stage1) {
+      if ((stress_relax_step && stress_ctrl.relax_stage1) || stress_zero_after_strain_step) {
         for (bool &f : stress_ctrl.comp_free) f = true; // sigma_xx = sigma_yy = sigma_xy = 0
       } else if (stress_relax_strain_step) {
         // relaxation step: box held at F12 = relax_strain (strain control), nucleation on the unstable branch
@@ -1216,7 +1221,7 @@ void example_1_conti_zanzotto_loading(
         F_pred(0, 1) += alpha;
       } else {
         if (!stress_ctrl.comp_free[1]) F_pred(0, 1) = F_stage1(0, 1) + alpha;
-        if (!stress_relax_step && F_bar_hist_smooth && F_bar_dalpha_n != 0.0) {
+        if (!stress_relax_step && !stress_zero_after_strain_step && F_bar_hist_smooth && F_bar_dalpha_n != 0.0) {
           const double ratio = actual_dalpha / F_bar_dalpha_n;
           for (int k = 0; k < 3; ++k) {
             if (!stress_ctrl.comp_free[k]) continue;
@@ -1563,7 +1568,8 @@ void example_1_conti_zanzotto_loading(
     // 1) Remeshing accepted topological changes (hasChanges > 0) [if remeshing enabled]
     // 2) Energy decreased (post_energy < post_energy_previous)
     // 3) Stress magnitude dropped by at least threshold (fractional_stress_drop >= stress_drop_threshold)
-    const bool can_detect_avalanche = (i > 0) && !is_first_loading_step;
+    // (not at the zero-stress relaxation after a relaxation at prescribed strain: unloading, not an avalanche)
+    const bool can_detect_avalanche = (i > 0) && !is_first_loading_step && !stress_zero_after_strain_step;
     bool remesh_accepted = (hasChanges > 0);
     bool stress_drop_criterion = (fractional_stress_drop >= stress_drop_threshold);
     bool stress_drop_detected = enable_remeshing
@@ -1628,7 +1634,8 @@ void example_1_conti_zanzotto_loading(
       // Limit load: no equilibrium at alpha. Restore the last equilibrium (start of this step), write it
       // as the final configuration and checkpoint, and log nothing for alpha (the runaway state is not
       // a point of the curve).
-      const double alpha_eq = (i > 0) ? alpha_values[i - 1] : 0.0;
+      const double alpha_eq = (i > 0) ? ((stress_relax_strain && i == 1) ? relax_strain_sigma0 : alpha_values[i - 1])
+                                      : 0.0;
       square_points = std::move(step_start_points);
       elements = std::move(step_start_elements);
       active_elements = std::move(step_start_active_elements);
@@ -1687,7 +1694,8 @@ void example_1_conti_zanzotto_loading(
       F_bar_nm1 = F_bar_n;
       F_bar_n = F_ext;
       F_bar_dalpha_n = actual_dalpha;
-      F_bar_hist_smooth = !stress_relax_step && (hasChanges == 0) && !stress_drop_detected;
+      F_bar_hist_smooth = !stress_relax_step && !stress_zero_after_strain_step && (hasChanges == 0) &&
+                          !stress_drop_detected;
     }
 
     UserData postOptUserData(square_points, elements, calculator,
@@ -2065,7 +2073,7 @@ void example_1_conti_zanzotto_loading(
                                   pre_active_elements, caller_id + file_counter - 1);
 
     // ==================== LOG DATA ====================
-    if (stress_relax_strain_step) traction_strain = F_ext(0, 1) - F_stage1(0, 1);
+    if (stress_relax_strain_step || stress_zero_after_strain_step) traction_strain = F_ext(0, 1) - F_stage1(0, 1);
     std::vector<std::pair<std::string, double>> traction_columns;
     if (run_has_tractions) {
       const double external_potential = stress_ctrl_enabled ? stress_ctrl.workTerm(F_ext)
@@ -2093,19 +2101,25 @@ void example_1_conti_zanzotto_loading(
     post_stress_previous = post_stress;
 
     if (stress_relax_strain_step) {
-      // Stress schedule from the relaxed state: sigma_0 + k |dalpha| up to alpha_end
+      // Stress schedule from the relaxed state: sigma_0 + k |dalpha| up to alpha_end. With --relax-stress, a
+      // zero-stress relaxation comes first and the schedule rises from 0 instead.
       relax_strain_sigma0 = post_stress;
       traction_strain_previous = traction_strain;
       const double d = std::abs(step_size);
-      for (int k = 1; relax_strain_sigma0 + k * d <= alpha_max + 1e-9 * d; ++k) {
-        alpha_values.push_back(relax_strain_sigma0 + k * d);
+      const double sigma_start = stress_ctrl.relax_stage1 ? 0.0 : relax_strain_sigma0;
+      if (stress_ctrl.relax_stage1) alpha_values.push_back(0.0);
+      for (int k = 1; sigma_start + k * d <= alpha_max + 1e-9 * d; ++k) {
+        alpha_values.push_back(sigma_start + k * d);
       }
       total_steps = static_cast<int>(alpha_values.size()) - 1;
       std::cout << std::defaultfloat << std::setprecision(6) << "[Stress Control] Relaxation step at F12 = " << alpha
-                << " relaxed: sigma = " << relax_strain_sigma0 << ". Switching to " << stress_ctrl.preset
-                << " stress control: " << (alpha_values.size() - 1) << " steps up to " << alpha_max << "."
-                << std::endl;
+                << " relaxed: sigma = " << relax_strain_sigma0 << "."
+                << (stress_ctrl.relax_stage1 ? " Relaxing the cell to zero stress, then switching to "
+                                             : " Switching to ")
+                << stress_ctrl.preset << " stress control from sigma = " << sigma_start << ": "
+                << (alpha_values.size() - 1) << " steps up to " << alpha_max << "." << std::endl;
     }
+    if (stress_zero_after_strain_step) traction_strain_previous = traction_strain; // strain origin of the loading
 
 
     // ==================== STAGE 1 -> STAGE 2 PROTOCOL HANDOVER ====================

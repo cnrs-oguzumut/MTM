@@ -1806,7 +1806,9 @@ struct SidebarControlsView: View {
                                             Spacer()
                                             DoubleField(title: "0.0", value: $config.pbcRelaxStrain, width: 70)
                                         }
-                                        Text("Holds the periodic box at F₁₂ under strain control with the initial noise, so dislocations nucleate on the unstable branch (e.g. 0.14 in a large box). Stress loading then rises from the relaxed stress; α_start is not used.")
+                                        Text(config.pbcRelaxBoxStress
+     ? "Holds the periodic box at F₁₂ under strain control with the initial noise, so dislocations nucleate on the unstable branch (e.g. 0.14 in a large box). The cell is then relaxed to σ = 0, and stress loading rises from 0; α_start is not used."
+     : "Holds the periodic box at F₁₂ under strain control with the initial noise, so dislocations nucleate on the unstable branch (e.g. 0.14 in a large box). Stress loading then rises from the relaxed stress; α_start is not used.")
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
@@ -1887,7 +1889,9 @@ struct SidebarControlsView: View {
                                                 .labelsHidden()
                                                 .frame(width: 210)
                                             }
-                                            Toggle("Relax box stress to zero at α = 0 (σ_xx = σ_yy = σ_xy = 0)", isOn: $config.pbcRelaxBoxStress)
+                                            Toggle(config.pbcRelaxStrainApplies && config.pbcRelaxStrain != 0
+       ? "Relax box stress to zero after the relaxation step (σ_xx = σ_yy = σ_xy = 0)"
+       : "Relax box stress to zero at α = 0 (σ_xx = σ_yy = σ_xy = 0)", isOn: $config.pbcRelaxBoxStress)
                                                 .font(.caption)
                                             Text("Stress control solves the box F̄ (upper triangular) with the atoms on H = E − A₀ Pᵗ : (F̄ − I). Nominal presets fix P (force per reference length); Cauchy presets fix the true stress σ by updating Pᵗ = J σ F̄⁻ᵀ until σ settles. The other in-plane stresses are zero. Past the limit load the run stops cleanly.")
                                                 .font(.caption2)
@@ -1906,11 +1910,15 @@ struct SidebarControlsView: View {
                                                 Text("Start \(stressNoun):")
                                                     .font(.subheadline)
                                                 Spacer()
-                                                Text("relaxed σ₀ at F₁₂ = \(String(format: "%g", config.pbcRelaxStrain))")
+                                                Text(config.pbcRelaxBoxStress
+                                                     ? "0, after relaxing the cell to σ = 0"
+                                                     : "relaxed σ₀ at F₁₂ = \(String(format: "%g", config.pbcRelaxStrain))")
                                                     .font(.caption)
                                                     .foregroundColor(.secondary)
                                             }
-                                            .help("After the relaxation step the stress targets are σ₀ + dα, σ₀ + 2dα, … up to α_end; α_start is not used.")
+                                            .help(config.pbcRelaxBoxStress
+                                                  ? "After the relaxation step the cell is relaxed to σ = 0; the stress targets are then dα, 2dα, … up to α_end; α_start is not used."
+                                                  : "After the relaxation step the stress targets are σ₀ + dα, σ₀ + 2dα, … up to α_end; α_start is not used.")
                                         } else {
                                             HStack {
                                                 Text(indenterActive ? "Start depth ratio α_start:" : (isForceControl ? "Start \(stressNoun) α_start:" : "Start strain |α_start|:"))

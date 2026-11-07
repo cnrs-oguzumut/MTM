@@ -593,6 +593,16 @@ dislocations. The relaxed shear stress \(\sigma_0\) of that state is then measur
 schedule is \(\alpha_k=\sigma_0+k\,\Delta\alpha\), \(k\geq1\), so that the first stress step
 continues from the stress the defected crystal already carries, with no jump in load.
 
+The sign of \(\sigma_0\) is not controlled. Each dislocation that sweeps the cell shears it by about
+\(b/L\), so the plastic strain left by the relaxation comes in coarse increments, and \(\sigma_0\) may
+come out negative. In a \(150\times150\) cell at \(\gamma_0=0.14\) we found \(\sigma_0=-0.0048\), with
+126 dislocations. The loading then starts with reverse loading, during which reverse avalanches
+(\(\Delta\varepsilon<0\)) occur. Alternatively, the defected state is first relaxed to zero stress,
+\(\sigb=\mathbf 0\) in all three components (a stress-controlled relaxation with
+\(\Pt=\mathbf 0\)), and the schedule is \(\alpha_k=k\,\Delta\alpha\). Both choices are available. The
+second gives every run the same starting load, independently of \(\sigma_0\); the zero-stress step is
+not counted as a load step and cannot be flagged as an avalanche.
+
 \subsection{Strain bursts}
 
 Under strain control an avalanche appears as a drop of stress at fixed strain. Under force control

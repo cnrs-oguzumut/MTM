@@ -2,6 +2,20 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Fixed — "Relax box stress to zero" now works together with a relaxation at prescribed strain
+- With `--relax-strain` set, `--relax-stress=1` had no effect: there was no α = 0 step, so the stress
+  schedule started at the relaxed stress σ₀. σ₀ can be negative, e.g. −0.0048 in a 150×150 cell at
+  F₁₂ = 0.14, and the run then began with reverse loading and reverse avalanches.
+- Now step 0 stays the relaxation at F₁₂, step 1 relaxes the cell to σ = 0 in all three components, and the
+  schedule rises from 0 (dα, 2dα, …). The zero-stress step is not a load step: it cannot be flagged as an
+  avalanche, it gives no stress predictor history, and it sets the strain origin of the first strain jump.
+  Unchecked, the schedule still starts from σ₀ as before.
+- The GUI labels the option "Relax box stress to zero after the relaxation step" and shows "Start stress: 0"
+  in that case. The limit-load message after the first stress step reports σ₀ instead of the strain as
+  the last equilibrium load.
+- Checked on 40×40 cells, seeds 42 and 7 (σ₀ = +0.012, +0.040): step 1 has σ ≈ 1e-9 in all components, and
+  loading rises from 0.
+
 ### Added — GUI: x-axis zoom on the results chart
 - Drag across the stress / energy / λ_min chart to zoom the x axis to that range. The y axis refits to the
   points inside it. A selection that reaches the newest point keeps following the live data. Double-click
