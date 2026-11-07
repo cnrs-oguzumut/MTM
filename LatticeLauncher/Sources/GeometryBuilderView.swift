@@ -4203,7 +4203,7 @@ public struct GeometryBuilderView: View {
                           : "Add a hole (circle, ellipse or polygon cutout) first.")
                 }
             }
-            if let issue = config.geometryConfig.tractionBalanceIssue {
+            if let issue = config.tractionBalanceIssue {
                 Label(issue, systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 9.5))
                     .foregroundColor(.orange)

@@ -288,7 +288,7 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--eig-every=", 0) == 0) {
       stability_options.every = std::stoi(arg.substr(12));
     } else if (arg.rfind("--eig-at-avalanche=", 0) == 0) {
-      stability_options.at_avalanche = std::stoi(arg.substr(15)) != 0;
+      stability_options.at_avalanche = std::stoi(arg.substr(19)) != 0;
     } else if (arg.rfind("--eig-modes=", 0) == 0) {
       stability_options.modes = std::stoi(arg.substr(12));
     } else if (arg.rfind("--eig-vectors=", 0) == 0) {
@@ -296,7 +296,7 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--eig-refine=", 0) == 0) {
       stability_options.refine = std::stod(arg.substr(13));
     } else if (arg.rfind("--eig-refine-ahead=", 0) == 0) {
-      stability_options.refine_ahead = std::stod(arg.substr(15));
+      stability_options.refine_ahead = std::stod(arg.substr(19));
     } else if (arg.rfind("--eig-retro=", 0) == 0) {
       stability_options.retro = std::stoi(arg.substr(12));
     } else if (arg == "--shift" || arg == "--staircase") {

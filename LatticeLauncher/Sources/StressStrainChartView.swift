@@ -43,6 +43,8 @@ struct StressStrainChartView: View {
     @State private var plotAgainstConjugateStrain: Bool = true
     /// Force / stress control: the logged energy is the enthalpy H = E_el - W_ext; plot E_el unless asked
     @State private var plotEnthalpy: Bool = false
+    /// PBC stress control: λ_min chart shows the free-cell eigenvalue λ_box (true) or the fixed-cell λ_min(K)
+    @State private var eigenShowsCell: Bool = true
 
     private var hasElasticEnergy: Bool {
         runner.curvePoints.contains { $0.elasticEnergy != nil }
@@ -64,6 +66,30 @@ struct StressStrainChartView: View {
     /// x coordinate of a curve point: the load parameter α, or the conjugate strain ε under force control
     private func xValue(_ pt: StressStrainPoint) -> Double {
         conjugateStrainAxis ? pt.effectiveStrain : pt.alpha
+    }
+
+    /// PBC stress control: the eigen log carries the free-cell stability λ_box and the strain
+    private var hasCellEigen: Bool {
+        runner.eigenPoints.contains { $0.lambdaBox != nil }
+    }
+    private var showCellEigen: Bool { hasCellEigen && eigenShowsCell }
+    private var eigenStrainAxis: Bool {
+        runner.eigenPoints.contains { $0.strain != nil } && plotAgainstConjugateStrain
+    }
+    private func eigenX(_ pt: EigenPoint) -> Double {
+        eigenStrainAxis ? (pt.strain ?? pt.alpha) : pt.alpha
+    }
+    private func eigenY(_ pt: EigenPoint) -> Double? {
+        showCellEigen ? pt.lambdaBox : pt.lambdaMin
+    }
+    private func eigenUnstable(_ pt: EigenPoint) -> Bool {
+        showCellEigen ? pt.isCellUnstable : pt.isUnstable
+    }
+    private var eigenXLabel: String {
+        eigenStrainAxis ? "Conjugate Strain (ε)" : (hasConjugateStrain ? "Load (α)" : "Shear Strain (α)")
+    }
+    private var eigenYLabel: String {
+        showCellEigen ? "Cell Eigenvalue (λ_box)" : "Smallest Eigenvalue (λ_min)"
     }
     
     /// Torsion runs report the rim torque T = Σ r × f as their primary quantity.
@@ -109,7 +135,7 @@ struct StressStrainChartView: View {
             return displayGBPoints.map(\.misorientationDeg)
         }
         if chartMode == .eigenvalue && !runner.eigenPoints.isEmpty {
-            return runner.eigenPoints.map(\.alpha)
+            return displayEigenPoints.map { eigenX($0) }
         }
         return runner.curvePoints.map { xValue($0) }
     }
@@ -243,8 +269,8 @@ struct StressStrainChartView: View {
             return yMin <= yMax ? yMin...yMax : (minY - 0.1)...(maxY + 0.1)
             
         case .eigenvalue:
-            guard !runner.eigenPoints.isEmpty else { return -0.05...0.5 }
-            let vals = runner.eigenPoints.map(\.lambdaMin)
+            let vals = runner.eigenPoints.compactMap { eigenY($0) }
+            guard !vals.isEmpty else { return -0.05...0.5 }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.1
             let span = max(maxY - minY, 1e-5)
@@ -442,14 +468,15 @@ struct StressStrainChartView: View {
                             .cornerRadius(4)
                             .lineLimit(1)
                             .fixedSize()
-                        } else if chartMode == .eigenvalue, let lastEig = runner.eigenPoints.last {
+                        } else if chartMode == .eigenvalue, let lastEig = runner.eigenPoints.last(where: { eigenY($0) != nil }),
+                                  let lastY = eigenY(lastEig) {
                             HStack(spacing: 4) {
                                 Circle()
-                                    .fill(lastEig.isUnstable ? Color.red : Color.green)
+                                    .fill(eigenUnstable(lastEig) ? Color.red : Color.green)
                                     .frame(width: 6, height: 6)
-                                Text("λ_min: \(String(format: "%.4e", lastEig.lambdaMin))")
+                                Text("\(showCellEigen ? "λ_box" : "λ_min"): \(String(format: "%.4e", lastY))")
                                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundColor(lastEig.isUnstable ? .red : .green)
+                                    .foregroundColor(eigenUnstable(lastEig) ? .red : .green)
                             }
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -491,8 +518,21 @@ struct StressStrainChartView: View {
                     .frame(width: 90)
                     .help("Under force or stress control the logged energy is the enthalpy H = E_el − W_ext, dominated by the load term; E_el is the stored elastic energy.")
                 }
+                // PBC stress control: λ_min chart = free cell (λ_box) or fixed cell (λ_min of K)
+                if hasCellEigen && chartMode == .eigenvalue {
+                    Picker("", selection: $eigenShowsCell) {
+                        Text("Cell").tag(true)
+                        Text("Atoms").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 110)
+                    .help("Under stress control the cell is free. Cell: lowest eigenvalue λ_box of the relaxed cell stiffness (with the Cauchy load stiffness); it reaches 0 at the limit load. Atoms: λ_min of the atomic stiffness K at fixed cell, the strain-control criterion.")
+                }
                 // Force / stress control: x-axis = load α or conjugate strain ε
-                if hasConjugateStrain && chartMode != .gbEnergy && chartMode != .eigenvalue {
+                if (hasConjugateStrain && chartMode != .gbEnergy && chartMode != .eigenvalue) ||
+                    (chartMode == .eigenvalue && runner.eigenPoints.contains { $0.strain != nil }) {
                     Picker("", selection: $plotAgainstConjugateStrain) {
                         Text("x: ε").tag(true)
                         Text("x: α").tag(false)
@@ -688,30 +728,33 @@ struct StressStrainChartView: View {
                             }
                         
                         ForEach(displayEigenPoints) { pt in
-                            LineMark(
-                                x: .value("Shear Strain (α)", pt.alpha),
-                                y: .value("Smallest Eigenvalue (λ_min)", pt.lambdaMin)
-                            )
-                            .foregroundStyle(Color.teal)
-                            .interpolationMethod(.linear)
-                            
-                            PointMark(
-                                x: .value("Shear Strain (α)", pt.alpha),
-                                y: .value("Smallest Eigenvalue (λ_min)", pt.lambdaMin)
-                            )
-                            .symbol(Circle())
-                            .symbolSize(pt.isUnstable ? 55 : 32)
-                            .foregroundStyle(pt.isUnstable ? Color.red : Color.teal)
+                            if let yVal = eigenY(pt) {
+                                LineMark(
+                                    x: .value(eigenXLabel, eigenX(pt)),
+                                    y: .value(eigenYLabel, yVal)
+                                )
+                                .foregroundStyle(Color.teal)
+                                .interpolationMethod(.linear)
+                                
+                                PointMark(
+                                    x: .value(eigenXLabel, eigenX(pt)),
+                                    y: .value(eigenYLabel, yVal)
+                                )
+                                .symbol(Circle())
+                                .symbolSize(eigenUnstable(pt) ? 55 : 32)
+                                .foregroundStyle(eigenUnstable(pt) ? Color.red : Color.teal)
+                            }
                         }
                         
-                        if let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha) {
-                            RuleMark(x: .value("Selected α", eigPt.alpha))
+                        if let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha),
+                           let selY = eigenY(eigPt) {
+                            RuleMark(x: .value("Selected α", eigenX(eigPt)))
                                 .foregroundStyle(Color.secondary.opacity(0.4))
                                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
                             
                             PointMark(
-                                x: .value("Selected α", eigPt.alpha),
-                                y: .value("Smallest Eigenvalue (λ_min)", eigPt.lambdaMin)
+                                x: .value("Selected α", eigenX(eigPt)),
+                                y: .value(eigenYLabel, selY)
                             )
                             .symbolSize(85)
                             .foregroundStyle(Color.cyan)
@@ -900,8 +943,22 @@ struct StressStrainChartView: View {
                     HStack(spacing: 18) {
                         Text("Step: \(eigPt.iteration)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text("Strain α: \(String(format: "%.6f", eigPt.alpha))")
+                        Text("\(hasConjugateStrain ? "Load" : "Strain") α: \(String(format: "%.6f", eigPt.alpha))")
                             .font(.system(size: 11, design: .monospaced))
+                        if let eps = eigPt.strain {
+                            Text("ε: \(String(format: "%.6f", eps))")
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                        if let lb = eigPt.lambdaBox {
+                            Text("λ_box: \(String(format: "%.4e", lb))")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(eigPt.isCellUnstable ? .red : .teal)
+                        }
+                        if let tan = eigPt.boxTangent {
+                            Text("dα/dε: \(String(format: "%.4g", tan))")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
                         Text("λ₁ (min): \(String(format: "%.6e", eigPt.lambdaMin))")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundColor(eigPt.isUnstable ? .red : .teal)
@@ -1017,7 +1074,8 @@ struct StressStrainChartView: View {
     
     private func findClosestEigenPoint(to alpha: Double) -> EigenPoint? {
         guard !runner.eigenPoints.isEmpty else { return nil }
-        return runner.eigenPoints.min(by: { abs($0.alpha - alpha) < abs($1.alpha - alpha) })
+        return runner.eigenPoints.filter { eigenY($0) != nil }
+            .min(by: { abs(eigenX($0) - alpha) < abs(eigenX($1) - alpha) })
     }
     
     private func findClosestGBPoint(to angle: Double) -> GBEnergyPoint? {

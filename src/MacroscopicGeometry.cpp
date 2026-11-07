@@ -2388,6 +2388,46 @@ bool MacroscopicGeometryConfig::finalizeBoundaryTractions(
                       << "Affine or Roller boundary holds the specimen. Add a support or balance the load.\n";
             return false;
         }
+    } else if (cached_force_grips.empty()) { // grip loads act through U, not through the nodal forces
+        // The supports can leave rigid-body modes free (rollers, a single pinned atom): a translation along x (y) when no
+        // node locks u_x (u_y), and a rotation about (x0, y0) when every x-locked node lies on y = y0 and every
+        // y-locked node on x = x0. The load must have no component along a free mode.
+        const double tol_pos = 1e-3 * a0;
+        bool lock_x = false, lock_y = false, rot_free = true, have_y0 = false, have_x0 = false;
+        double x0 = centroid.x(), y0 = centroid.y();
+        for (size_t i = 0; i < n_pts && i < cached_node_bc_role.size(); ++i) {
+            const int role = cached_node_bc_role[i];
+            if (role == 0) continue;
+            bool hold_x = (role == 1 || role == 2 || role == 3), hold_y = (role == 1 || role == 2 || role == 4);
+            const Eigen::Vector2d& p = reference_points[i].coord;
+            if (hold_x) { // u_x held
+                lock_x = true;
+                if (!have_y0) { y0 = p.y(); have_y0 = true; }
+                else if (std::abs(p.y() - y0) > tol_pos) rot_free = false;
+            }
+            if (hold_y) { // u_y held
+                lock_y = true;
+                if (!have_x0) { x0 = p.x(); have_x0 = true; }
+                else if (std::abs(p.x() - x0) > tol_pos) rot_free = false;
+            }
+        }
+        double moment_pivot = 0.0;
+        for (size_t i = 0; i < n_pts; ++i) {
+            const Eigen::Vector2d& f = cached_node_ext_force_unit[i];
+            const Eigen::Vector2d r = reference_points[i].coord - Eigen::Vector2d(x0, y0);
+            moment_pivot += r.x() * f.y() - r.y() * f.x();
+        }
+        const double l_char = std::max(Lx, Ly);
+        const bool free_x = !lock_x && std::abs(resultant.x()) > 1e-10 * force_scale;
+        const bool free_y = !lock_y && std::abs(resultant.y()) > 1e-10 * force_scale;
+        const bool free_rot = rot_free && std::abs(moment_pivot) > 1e-10 * force_scale * l_char;
+        if (free_x || free_y || free_rot) {
+            std::cerr << "[Traction] ERROR: the supports leave a rigid-body "
+                      << (free_rot ? "rotation" : "translation") << " free and the dead load acts along it (R = ("
+                      << resultant.x() << ", " << resultant.y() << "), M = " << moment_pivot
+                      << " per unit alpha). Add a support that holds it or balance the load.\n";
+            return false;
+        }
     }
     return true;
 }

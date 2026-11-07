@@ -368,6 +368,21 @@ the cell Cauchy stress computed from the virial, \(\sigb=\mathbf V/(A_0\bar J)\)
 to \(\sim10^{-8}\) in the controlled component, and the nominally zero components are of the same
 order.
 
+\paragraph{Comparing states under Cauchy control.}
+The reconnection cascade (Section~\ref{sec:protocol}) accepts a new topology when it lowers the
+enthalpy at fixed load. Under Cauchy control the two states are in equilibrium with different
+nominal targets, \(\Pt_0=\Pt(\Fb_0)\) and \(\Pt_1=\Pt(\Fb_1)\), and there is no potential whose
+difference would measure the work of the load. Comparing \(H(\Fb_1;\Pt_1)\) with \(H(\Fb_0;\Pt_0)\)
+would include the spurious term \(-A_0(\Pt_1-\Pt_0):(\Fb-\I)\). We instead evaluate the work of the
+load with the trapezoid rule, \(A_0\,\tfrac12(\Pt_0+\Pt_1):(\Fb_1-\Fb_0)\), so that
+\begin{equation}
+  \Delta\Pi=E_{\mathrm{el}}(1)-E_{\mathrm{el}}(0)-A_0\,\tfrac12(\Pt_0+\Pt_1):(\Fb_1-\Fb_0)
+  =\Delta H+A_0\,(\Pt_1-\Pt_0):\big(\tfrac12(\Fb_0+\Fb_1)-\I\big),
+  \label{eq:cauchyDPi}
+\end{equation}
+summed over the free components; it reduces to \(\Delta H\) under nominal control. A rejected
+reconnection restores both the cell and the target.
+
 \begin{remark}
 Each pass minimizes the frozen-load enthalpy, so its stability test uses
 \(\nabla^2E_{\mathrm{el}}\) and omits the load stiffness \(-A_0\,\partial\Pt/\partial\Fb\) of the
@@ -474,6 +489,96 @@ relaxation, in which case the reconnection cascade is skipped, and again after t
 triggers, the configuration, mesh and cell at the start of the step are restored and written as
 the final result, and the limit load is reported as lying in \((\alpha_{n-1},\alpha_n]\).
 
+\subsection{Stability of the relaxed states}
+\label{sec:stability}
+
+Under strain control the cell is fixed and a relaxed state is stable when the atomic stiffness
+\(\mathbf K^{xx}\) is positive definite on the fluctuations (the two rigid translations excluded).
+The code monitors this through the lowest eigenvalues of \(\mathbf K^{xx}\), computed by
+shift-invert Lanczos at selected steps; \(\lambda_{\min}(\mathbf K^{xx})\to0\) announces an
+avalanche, and near a saddle-node \(\lambda_{\min}^2\) is linear in the distance to the critical
+load.
+
+Under stress control the free cell components are unknowns as well, and the stability condition
+is that the Hessian \eqref{eq:Kfull} of the enthalpy be positive definite. With \(\mathbf K^{ww}\)
+positive definite, this holds if and only if the Schur complement \(A_0\,\mathbb K_{\mathrm{eff}}\)
+of \eqref{eq:Keff} is positive definite as well. A relaxed state can therefore lose stability in two
+ways:
+\begin{itemize}
+\item locally, \(\lambda_{\min}(\mathbf K^{ww})\to0\): an atomic mode softens at fixed cell (nucleation
+or depinning). The result is an avalanche, a strain burst after which a new equilibrium exists at
+the same load;
+\item globally, \(\lambda_{\min}(\mathbb K_{\mathrm{eff}})\to0\) while \(\mathbf K^{ww}\) stays positive
+definite: the relaxed cell has no stiffness left along some combination of the free components.
+This is the limit load of Section~\ref{sec:limit}, beyond which no equilibrium exists nearby.
+\end{itemize}
+The fixed-cell eigenvalue \(\lambda_{\min}(\mathbf K^{xx})\) detects only the first. A soft atomic
+mode that couples to the cell strain also lowers \(\mathbb K_{\mathrm{eff}}\), since the relaxation
+term in \eqref{eq:Keff} grows like \(1/\lambda_{\min}(\mathbf K^{ww})\).
+
+\paragraph{Cell stability matrix.}
+At a relaxed state, the free components satisfy \(\mathbf R(\Fb)=\Pb(\Fb)-\Pt(\Fb)=\mathbf 0\) on
+\(\mathcal S\), with the atoms relaxed. Its Jacobian is
+\begin{equation}
+  \mathbf J=\mathbb K_{\mathrm{eff}}-\mathbb L,\qquad
+  \mathbb L=\frac{\partial\Pt}{\partial\Fb}\Big|_{\mathcal S\times\mathcal S},
+  \label{eq:Jcell}
+\end{equation}
+a matrix of size \(|\mathcal S|\le3\). Under nominal control \(\mathbb L=\mathbf 0\) and
+\(\mathbf J=\mathbb K_{\mathrm{eff}}\) is symmetric. Under Cauchy control \(\mathbb L\) is the load
+stiffness of the follower load, of order \(|\sigt|\), and \(\mathbf J\) is not symmetric. In both cases
+the equilibrium branch folds when a real eigenvalue of \(\mathbf J\) crosses zero, and we monitor
+\begin{equation}
+  \lambda_{\mathrm{box}}=\min\operatorname{Re}\operatorname{eig}\mathbf J .
+  \label{eq:lambdabox}
+\end{equation}
+Under Cauchy control \(\det\mathbf J=0\) is also the point where \(\mathbb K_{\mathrm{eff}}^{-1}\mathbb L\)
+has the eigenvalue \(1\), i.e.\ where the fixed-point iteration of Algorithm~\ref{alg:cauchy} stops
+contracting (Eq.~\eqref{eq:rho}). \(\mathbf J\) also gives the slope of the load--strain curve. Write
+the target as \(\Pt(\Fb,\alpha)\), with \(\partial\Pt/\partial\alpha=\mathbf e_r\otimes\mathbf e_c\) for a
+nominal preset controlling \(\bar P_{rc}\) and \(\partial\Pt/\partial\alpha=\bar J\,\bm\Sigma\,\Fb^{-\mathsf T}\)
+for a Cauchy preset with \(\sigt=\alpha\bm\Sigma\). Differentiating \(\mathbf R=\mathbf 0\) along the
+path gives
+\begin{equation}
+  \frac{\mathrm d\Fb}{\mathrm d\alpha}=\mathbf J^{-1}\frac{\partial\Pt}{\partial\alpha},\qquad
+  \frac{\mathrm d\alpha}{\mathrm d\varepsilon}=\Big[\Big(\mathbf J^{-1}\frac{\partial\Pt}{\partial\alpha}\Big)_{rc}\Big]^{-1},
+  \label{eq:pathtangent}
+\end{equation}
+with \(\varepsilon=\bar F_{rc}\) the controlled cell component (Table~\ref{tab:presets}).
+
+\paragraph{Evaluation.}
+Because \(\x=\Fb\w\) is linear in \(\w\), with \(\mathbf D=\Fb\otimes\I_n\) we have
+\(\mathbf K^{ww}=\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D\) and
+\(\mathbf K^{wF}=\mathbf D^{\mathsf T}\mathbf K^{xF}\). Here \(\mathbf K^{xF}\) collects the first terms of
+\eqref{eq:KFw}, \(\sum_eA_e\,\mathbb A_e:(\partial\F_e/\partial\x)\otimes(\partial\F_e/\partial\Fb)\). The
+geometric term of \eqref{eq:KFw} is the atomic force and vanishes at equilibrium. Hence
+\begin{equation}
+  A_0\,\mathbb K_{\mathrm{eff}}=\mathbf K^{FF}-(\mathbf K^{xF})^{\mathsf T}(\mathbf K^{xx})^{+}\mathbf K^{xF},
+  \label{eq:KeffX}
+\end{equation}
+which needs one sparse factorization of \(\mathbf K^{xx}\) and \(|\mathcal S|\) solves. The two
+translations span the null space of \(\mathbf K^{xx}\), and the columns of \(\mathbf K^{xF}\) are
+orthogonal to it (the forces on a periodic cell sum to zero). The pseudo-inverse in
+\eqref{eq:KeffX} is therefore obtained exactly by pinning one atom. Unlike the preconditioner of
+Section~\ref{sec:precond}, the element tangents are not projected, and the factorization is an
+\(\mathbf L\mathbf D\mathbf L^{\mathsf T}\) decomposition, valid for indefinite matrices. \(\mathbb L\) is
+the derivative of \(\bar J\sigt\Fb^{-\mathsf T}\) with respect to the free components and is evaluated
+by central differences. Whenever \(\lambda_{\min}(\mathbf K^{xx})\) is computed, the code also
+evaluates \(\lambda_{\mathrm{box}}\), \(\varepsilon\) and \(\mathrm d\alpha/\mathrm d\varepsilon\). The
+refinement rule of the monitor also follows \(\lambda_{\mathrm{box}}\), so the approach
+\(\lambda_{\mathrm{box}}^2\propto\alpha_c-\alpha\) to the limit load is resolved step by step.
+
+\paragraph{Examples.}
+For a perfect \(20\times20\) square cell under nominal shear (\(\Delta\alpha=0.005\), all three
+components free, normal stresses zero), \(\lambda_{\mathrm{box}}\) falls from \(2.18\) at
+\(\alpha=0.25\) to \(0.97\), \(0.59\) and \(0.31\) at \(\alpha=0.300\), \(0.310\) and \(0.315\). The
+runaway guard places the limit load in \((0.315,0.320]\). Extrapolating \(\lambda_{\mathrm{box}}^2\)
+linearly through the last two states gives \(\alpha_c\approx0.317\). On the elastic segments of a
+defected \(40\times40\) cell under Cauchy shear, \(\mathrm d\alpha/\mathrm d\varepsilon\) from
+\eqref{eq:pathtangent} agrees with the secant slope of the logged curve to better than \(1\%\).
+\(\lambda_{\mathrm{box}}\) stays between \(2.1\) and \(3.5\) up to \(\sigma_{xy}=0.118\) (no limit
+load), while the avalanches are announced by \(\lambda_{\min}(\mathbf K^{xx})\).
+
 %=====================================================================
 \section{Finite specimens: boundary tractions and force grips}
 \label{sec:traction}
@@ -533,6 +638,14 @@ rigid-body modes as zero-energy directions; they are removed by a minimal isosta
 atom closest to the centroid is fixed (\(u_x=u_y=0\)), and the atom on the same lattice row that
 lies farthest from it has \(u_y=0\), which removes the rotation. Because the load is balanced, the
 anchor reactions vanish at equilibrium and the anchor does not perturb the solution.
+
+Supports can also leave some rigid-body modes free. Rollers hold one displacement component, so a
+translation along \(x\) (\(y\)) remains free when no atom has \(u_x\) (\(u_y\)) prescribed. A rotation
+about \((x_0,y_0)\) remains free when every atom with \(u_x\) prescribed lies on the line \(y=y_0\) and
+every atom with \(u_y\) prescribed on \(x=x_0\), for instance a single row of rollers on one edge, or
+a single pinned atom. The load must then have no component along the free modes: zero resultant
+along a free translation, and zero moment about \((x_0,y_0)\) when the rotation is free. Such a
+load is rejected with the same tolerances.
 
 \paragraph{Conjugate strain.}
 The work-conjugate strain of the dead load is

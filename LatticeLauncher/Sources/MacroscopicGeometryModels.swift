@@ -1369,30 +1369,73 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     /// Mirrors the solver's refusal rule for dead loads: with no kinematic support at all, the tractions
     /// must be self-equilibrated (zero net force and torque). Returns the reason when they are not.
     /// Approximate (unit edge lengths); the solver's check on the real contour is authoritative.
-    public var tractionBalanceIssue: String? {
+    /// Dead loads the supports cannot react: a rigid-body mode the supports leave free (all of them when there
+    /// is none; Roller X holds only u_y, Roller Y only u_x) along which the load has a net force or torque.
+    /// `width` and `height` are the rectangle's size in lattice units, which weight the edge tractions. Returns
+    /// nil when the check needs edge lengths it does not know (non-rectangular outline, hole or box regions);
+    /// the solver then decides.
+    public func tractionBalanceIssue(width lx: Double, height ly: Double) -> String? {
         let rules = boundary_rules.filter { $0.enabled }
         let tractions = rules.filter { $0.kind == .traction }
         let grips = rules.filter { $0.kind == .forceGrip }
         guard !tractions.isEmpty || !grips.isEmpty else { return nil }
-        let supported = rules.contains { [.fixed, .prescribed, .affine, .rollerX, .rollerY].contains($0.kind) }
-        if supported { return nil }
-        if !grips.isEmpty {
+        let supports = rules.filter { [.fixed, .prescribed, .affine, .rollerX, .rollerY].contains($0.kind) }
+        if supports.isEmpty && !grips.isEmpty {
             return "A rigid force grip only transmits the load: add a fixed, prescribed or roller boundary to react it (e.g. clamp the opposite edge)."
         }
-        var fx = 0.0, fy = 0.0
+        if supports.contains(where: { [.fixed, .prescribed, .affine].contains($0.kind) }) { return nil }
+        // Rollers only (or nothing): which rigid-body modes are left?
+        let xLocks = supports.filter { $0.kind == .rollerY } // u_x = 0
+        let yLocks = supports.filter { $0.kind == .rollerX } // u_y = 0
+        let holdsX = !xLocks.isEmpty, holdsY = !yLocks.isEmpty
+        // A rotation about (x0, y0) is admissible when every x-lock lies on the line y = y0 and every y-lock on
+        // x = x0, i.e. all x-locks on one horizontal edge and all y-locks on one vertical edge, each a single
+        // atomic row (a band of two or more rows holds the rotation)
+        let singleRow = !(xLocks + yLocks).contains { $0.thickness_a0 >= 1.0 }
+        let xLockRegions = Set(xLocks.map(\.region)), yLockRegions = Set(yLocks.map(\.region))
+        let rotationFree = (singleRow || supports.isEmpty) && (xLockRegions.isEmpty || (xLockRegions.count == 1 && [.top, .bottom].contains(xLockRegions.first!))) &&
+                           (yLockRegions.isEmpty || (yLockRegions.count == 1 && [.left, .right].contains(yLockRegions.first!)))
+        if holdsX && holdsY && !rotationFree { return nil }
+        let x0: Double = yLockRegions.first == .left ? -0.5 * lx : (yLockRegions.first == .right ? 0.5 * lx : 0.0)
+        let y0: Double = xLockRegions.first == .bottom ? -0.5 * ly : (xLockRegions.first == .top ? 0.5 * ly : 0.0)
+
+        var fx = 0.0, fy = 0.0, moment = 0.0, scale = 0.0, rimTorque = false
         for r in tractions {
             switch r.traction_mode {
             case "radial_outward", "radial_inward":
                 continue // normal traction on a closed contour is self-equilibrated
             case "circumferential_shear", "torsion":
-                return "A rim-shear dead load has a net torque and nothing holds the specimen. Clamp a hole or another boundary."
+                rimTorque = true
+                continue
             default:
-                fx += r.tx
-                fy += r.ty
+                break
             }
+            guard outer_shape == .rectangle else { return nil }
+            // Resultant of a uniform traction on the edge and its point of application (centre at the origin)
+            let length: Double, cx: Double, cy: Double
+            switch r.region {
+            case .top: length = lx; cx = 0; cy = 0.5 * ly
+            case .bottom: length = lx; cx = 0; cy = -0.5 * ly
+            case .left: length = ly; cx = -0.5 * lx; cy = 0
+            case .right: length = ly; cx = 0.5 * lx; cy = 0
+            case .outerPerimeter: length = 2 * (lx + ly); cx = 0; cy = 0
+            default: return nil
+            }
+            let Fx = r.tx * length, Fy = r.ty * length
+            fx += Fx; fy += Fy
+            moment += (cx - x0) * Fy - (cy - y0) * Fx
+            scale += hypot(Fx, Fy)
         }
-        if hypot(fx, fy) > 1e-9 {
-            return String(format: "Unbalanced dead load (net force ≈ (%.2f, %.2f) per unit α) with no support. Add a fixed or roller boundary, or balance the tractions.", fx, fy)
+        if rimTorque && rotationFree {
+            return "A rim-shear dead load has a net torque and nothing holds the specimen against rotation. Clamp a hole or another boundary."
+        }
+        let tol = 1e-9 * max(scale, 1e-300)
+        if (!holdsX && abs(fx) > tol) || (!holdsY && abs(fy) > tol) {
+            let what = supports.isEmpty ? "with no support" : "along a direction the rollers leave free"
+            return String(format: "Unbalanced dead load (net force ≈ (%.2f, %.2f) per unit α) %@. Add a fixed or roller boundary, or balance the tractions.", fx, fy, what)
+        }
+        if rotationFree && abs(moment) > tol * max(lx, ly) {
+            return String(format: "The dead load has a net torque (≈ %.2f per unit α) and the supports leave the rotation free. Add a support or balance the tractions.", moment)
         }
         return nil
     }

@@ -15,10 +15,15 @@
 //   * at each saved avalanche (--eig-at-avalanche=1): also the state after it, POST(i), and
 //     the soft modes of POST(i-1), the last stable state.
 //
+// Under PBC stress control the cell is free, and lambda_min(K) (fixed cell) is the strain-control
+// criterion only. set_box_stability() adds, at the same states, the lowest eigenvalue of the relaxed
+// cell Jacobian (pbc_box_stability), which vanishes at the limit load; refinement then also follows it.
+//
 // Output (in the run directory):
 //   eigen_log.csv                       step, alpha, trigger, lowest eigenvalues (rows of
 //                                       retroactive computations come after later steps:
-//                                       sort by Iteration)
+//                                       sort by Iteration); with set_box_stability also
+//                                       Strain, lambda_box, box_tangent
 //   eigen_modes/soft_modes_XXXXX.vtk    lowest nontrivial modes at POST(i-1) of each
 //                                       avalanche; XXXXX = file id of the PRE-avalanche
 //                                       configuration in vtk_output/. Rigid translations are
@@ -29,6 +34,9 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <functional>
+#include <limits>
+#include <utility>
 #include <vector>
 
 #include "../geometry/Point2D.h"
@@ -51,6 +59,14 @@ struct StabilityMonitorOptions {
   bool enabled() const { return every > 0 || at_avalanche; }
 };
 
+// PBC stress control: the free-cell stability of a relaxed state (see pbc_box_stability)
+struct BoxStabilityPoint {
+  double strain = std::numeric_limits<double>::quiet_NaN();     // as EffectiveStrain in the stress log
+  double lambda_min = std::numeric_limits<double>::quiet_NaN(); // lowest eigenvalue of the cell Jacobian
+  double tangent = std::numeric_limits<double>::quiet_NaN();    // d alpha / d strain along the load path
+};
+using BoxStabilityFunction = std::function<BoxStabilityPoint(UserData &state, int step, double alpha)>;
+
 // Options used by every StabilityMonitor created afterwards (default: off).
 void configure_stability_monitor(const StabilityMonitorOptions &options);
 const StabilityMonitorOptions &stability_monitor_options();
@@ -58,6 +74,9 @@ const StabilityMonitorOptions &stability_monitor_options();
 class StabilityMonitor {
 public:
   StabilityMonitor(); // takes the configured options
+
+  // Adds the Strain, lambda_box, box_tangent columns (call before the first step)
+  void set_box_stability(BoxStabilityFunction fn) { box_fn_ = std::move(fn); }
 
   // Call once per load step, after relaxation, remeshing and the avalanche decision.
   //   post_stress shear stress of the relaxed state (instability detection)
@@ -71,19 +90,22 @@ public:
 
 private:
   StiffnessSpectrum compute(UserData &state, bool with_vectors);
+  BoxStabilityPoint compute_box(UserData &state, int step, double alpha);
   void log(int step, double alpha, const char *trigger, const StiffnessSpectrum &s,
-           double seconds);
+           const BoxStabilityPoint &box, double seconds);
   void write_soft_modes(int file_id, int step, double alpha, const StiffnessSpectrum &s,
                         const std::vector<Point2D> &points,
                         const std::vector<ElementTriangle2D> &mesh,
                         const std::vector<size_t> &active,
                         const std::vector<std::pair<int, int>> &full_mapping);
-  void update_refinement(int step, const StiffnessSpectrum &s);
+  void update_refinement(int step, const StiffnessSpectrum &s, const BoxStabilityPoint &box);
   void start_branch();
 
   StabilityMonitorOptions options_;
   FastStiffnessAssembler assembler_;
   std::ofstream csv_;
+  bool header_written_ = false;
+  BoxStabilityFunction box_fn_;
 
   bool stress_jump(double alpha, double stress);
 
@@ -111,4 +133,8 @@ private:
   bool refining_ = false;
   int last_step_ = -1;       // last computation on the current branch (for extrapolation)
   double last_lambda_ = 0.0;
+  // The same for lambda_box
+  double box_ref_ = -1.0;
+  int box_last_step_ = -1;
+  double box_last_ = 0.0;
 };

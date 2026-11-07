@@ -2262,6 +2262,11 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
     file << "enable_remeshing " << (data.enable_remeshing ? 1 : 0) << "\n";
     file << "F_ext " << data.F_ext(0,0) << " " << data.F_ext(0,1) << " " 
                      << data.F_ext(1,0) << " " << data.F_ext(1,1) << "\n";
+    if (data.has_F_stage1) {
+        file << "F_stage1 " << data.F_stage1(0,0) << " " << data.F_stage1(0,1) << " "
+             << data.F_stage1(1,0) << " " << data.F_stage1(1,1) << "\n";
+    }
+    if (data.relaxation_step) file << "relaxation_step 1\n";
 
     file << "NODES " << data.points.size() << "\n";
     for (size_t i = 0; i < data.points.size(); ++i) {
@@ -2346,6 +2351,18 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
                 double f00, f01, f10, f11;
                 iss >> f00 >> f01 >> f10 >> f11;
                 data.F_ext << f00, f01, f10, f11;
+            }
+            else if (key == "F_stage1") {
+                double f00, f01, f10, f11;
+                if (iss >> f00 >> f01 >> f10 >> f11) {
+                    data.F_stage1 << f00, f01, f10, f11;
+                    data.has_F_stage1 = true;
+                }
+            }
+            else if (key == "relaxation_step") {
+                int r = 0;
+                iss >> r;
+                data.relaxation_step = (r != 0);
             }
             else if (key == "NODES") {
                 iss >> expected_nodes;

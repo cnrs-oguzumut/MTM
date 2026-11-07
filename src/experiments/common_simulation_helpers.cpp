@@ -116,6 +116,9 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     // PBC stress control: the relaxation also moves F_bar, which a rejected pass must restore
     const Eigen::Matrix2d old_F_bar = (userData->stress_ctrl != nullptr && userData->stress_ctrl->F_bar != nullptr)
         ? *userData->stress_ctrl->F_bar : Eigen::Matrix2d::Identity();
+    // ...and, under Cauchy control, the nominal target it was in equilibrium with
+    const Eigen::Matrix2d old_P_target =
+        (userData->stress_ctrl != nullptr) ? userData->stress_ctrl->P_target : Eigen::Matrix2d::Zero();
 
     // ============================================
     // ENERGY OF OLD STATE (before any remeshing)
@@ -261,6 +264,12 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     // COMPARE OLD vs NEW
     // ============================================
     double energy_change = energy_new - energy_old;
+    // Cauchy control: H_old and H_new use different nominal targets; add the work of the target change
+    if (userData->stress_ctrl != nullptr && userData->stress_ctrl->F_bar != nullptr) {
+      energy_change += userData->stress_ctrl->cauchyWorkCorrection(old_F_bar, old_P_target,
+                                                                   *userData->stress_ctrl->F_bar,
+                                                                   userData->stress_ctrl->P_target);
+    }
 
     if (AvalancheRecorder::instance().isSurgeryVTKEnabled()) {
       int load_step = AvalancheRecorder::instance().currentLoadStep();
@@ -297,6 +306,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       x = old_x;
       if (userData->stress_ctrl != nullptr && userData->stress_ctrl->F_bar != nullptr) {
         *userData->stress_ctrl->F_bar = old_F_bar;
+        userData->stress_ctrl->P_target = old_P_target;
       }
       square_points = old_points;
       elements = old_elements;
@@ -658,6 +668,16 @@ std::uint64_t sparse_pattern_hash(const Eigen::SparseMatrix<double> &M) {
   return h;
 }
 
+// Connectivity of the active mesh in solver dofs (a remesh changes it at fixed node count)
+std::uint64_t stress_mesh_signature(const UserData *ud) {
+  std::uint64_t h = 1469598103934665603ULL ^ ud->active_elements.size();
+  for (size_t idx : ud->active_elements)
+    for (int a = 0; a < 3; a++)
+      h = (h ^ static_cast<std::uint64_t>(ud->full_mapping[ud->elements[idx].getNodeIndex(a)].second + 2)) *
+          1099511628211ULL;
+  return h;
+}
+
 struct StressPreconditioner {
   FastStiffnessAssembler assembler;
   std::unique_ptr<SparseCholeskyBackend> chol;
@@ -667,6 +687,9 @@ struct StressPreconditioner {
   Eigen::MatrixXd L_S; // m x m, lower
   std::vector<double> tmp;
   int calls_since_refresh = 0;
+  int last_iterations = 0;                    // iterations of the last minimization (refresh_iterations)
+  std::uint64_t mesh_sig = 0;                 // mesh the factor was built on
+  std::vector<std::pair<int, int>> comps_built; // free cell components it was built for
   double assemble_seconds = 0.0, factorize_seconds = 0.0;
 
   bool build(const alglib::real_1d_array &x_nodes, UserData *ud, const Eigen::Matrix2d &F,
@@ -677,6 +700,8 @@ struct StressPreconditioner {
     const int n = static_cast<int>(ud->interior_mapping.size());
     n2 = 2 * n;
     m = static_cast<int>(comps.size());
+    mesh_sig = stress_mesh_signature(ud);
+    comps_built = comps;
     const SpMat &K = assembler.assembleStiffness(x_nodes, ud, opt.project_psd); // also caches F_e at x
     Eigen::MatrixXd K_xF, K_FF;
     assemble_box_border(ud, F, comps, opt.project_psd, n, K_xF, K_FF);
@@ -784,7 +809,8 @@ void precond_stress_enthalpy(const alglib::real_1d_array &t, double &func, algli
 // preconditioner is rebuilt at the current point when the run stalls before grad_tol (avalanche).
 // Returns false (z untouched) when the preconditioner cannot be factorized.
 bool minimize_stress_enthalpy_preconditioned(alglib::real_1d_array &z, StressRelaxContext &ctx, int corrections,
-                                             int maxits, const PreconditionedLBFGSOptions &opt) {
+                                             int maxits, const PreconditionedLBFGSOptions &opt,
+                                             alglib::minlbfgsreport &out_rep) {
   const int N = static_cast<int>(z.length());
   const int n = ctx.n;
   std::vector<std::pair<int, int>> comps;
@@ -807,9 +833,12 @@ bool minimize_stress_enthalpy_preconditioned(alglib::real_1d_array &z, StressRel
   int iterations = 0, nfev = 0, restarts = 0, termination = 0;
 
   auto build_at = [&](const alglib::real_1d_array &zz, bool force) {
+    // Reuse (--precond-refresh > 1) only on the same mesh and cell components, and, with
+    // --precond-refresh-iters, while the last minimization was short
     if (!force && g_stress_precond.chol && g_stress_precond.n2 == 2 * n &&
-        g_stress_precond.m == static_cast<int>(comps.size()) &&
-        g_stress_precond.calls_since_refresh < std::max(1, opt.refresh_every))
+        g_stress_precond.comps_built == comps && g_stress_precond.mesh_sig == stress_mesh_signature(ctx.ud) &&
+        g_stress_precond.calls_since_refresh < std::max(1, opt.refresh_every) &&
+        (opt.refresh_iterations <= 0 || g_stress_precond.last_iterations <= opt.refresh_iterations))
       return true;
     const Eigen::Matrix2d F = stressFbarFromVector(ctx, zz);
     applyFbar(ctx, F);
@@ -849,6 +878,10 @@ bool minimize_stress_enthalpy_preconditioned(alglib::real_1d_array &z, StressRel
     g_stress_precond.calls_since_refresh = 1;
     ++restarts;
   }
+  g_stress_precond.last_iterations = iterations;
+  out_rep.iterationscount = iterations;
+  out_rep.nfev = nfev;
+  out_rep.terminationtype = termination;
   if (opt.verbose) {
     double gmax = 0.0, h = 0.0;
     stress_enthalpy(z, h, pc.g_work, &ctx);
@@ -924,7 +957,7 @@ void relax_with_stress_control(alglib::real_1d_array &x, UserData *userData, int
                            g_relaxation_solver->options().type == LBFGSPreconditioner::Stiffness &&
                            std::getenv("MTM_STRESS_PLAIN") == nullptr;
   if (!use_precond ||
-      !minimize_stress_enthalpy_preconditioned(z, ctx, corrections, maxits, g_relaxation_solver->options())) {
+      !minimize_stress_enthalpy_preconditioned(z, ctx, corrections, maxits, g_relaxation_solver->options(), rep)) {
     // Plain L-BFGS. The homogeneous energy is periodic in shear under Lagrange reduction, so
     // H = E - A0 Pt : F is unbounded along the box components: cap the step (0.5 a0) so the line
     // search cannot extrapolate past the shear barrier.
@@ -1013,6 +1046,97 @@ void set_pbc_stress_control_options(const std::string &preset, bool relax_stage1
 }
 
 const PBCStressControl &pbc_stress_control_options() { return g_pbc_stress_options; }
+
+PBCBoxStability pbc_box_stability(UserData &state, const PBCStressControl &sc, double alpha, bool loaded) {
+  using SpMat = Eigen::SparseMatrix<double>;
+  PBCBoxStability out;
+  std::vector<std::pair<int, int>> comps;
+  for (int k = 0; k < 3; ++k)
+    if (sc.comp_free[k]) comps.emplace_back(PBCStressControl::compRow(k), PBCStressControl::compCol(k));
+  const int m = static_cast<int>(comps.size());
+  const int n = static_cast<int>(state.interior_mapping.size());
+  if (m == 0 || n < 2 || sc.A0 <= 0.0) return out;
+  const Eigen::Matrix2d F = state.F_external;
+
+  alglib::real_1d_array x;
+  x.setlength(2 * n);
+  map_points_to_solver_array(x, state.points, state.interior_mapping, n);
+  for (auto &element : state.elements) element.setExternalDeformation(F);
+  static FastStiffnessAssembler assembler;
+  const SpMat &K = assembler.assembleStiffness(x, &state, false); // also caches F_e at x
+  Eigen::MatrixXd K_xF, K_FF;
+  assemble_box_border(&state, F, comps, false, n, K_xF, K_FF);
+
+  // K is singular along the two translations and K_xF is orthogonal to them (the forces sum to zero),
+  // so K^+ K_xF is exact with one node pinned (dofs 0 and n removed)
+  auto reduced = [n](int i) { return i - (i > 0 ? 1 : 0) - (i > n ? 1 : 0); };
+  std::vector<Eigen::Triplet<double>> trip;
+  trip.reserve(static_cast<size_t>(K.nonZeros()));
+  for (int c = 0; c < K.outerSize(); ++c)
+    for (SpMat::InnerIterator it(K, c); it; ++it) {
+      const int r = static_cast<int>(it.row()), cc = static_cast<int>(it.col());
+      if (r == 0 || r == n || cc == 0 || cc == n) continue;
+      trip.emplace_back(reduced(r), reduced(cc), it.value());
+    }
+  SpMat K_r(2 * n - 2, 2 * n - 2);
+  K_r.setFromTriplets(trip.begin(), trip.end());
+  Eigen::MatrixXd B_r(2 * n - 2, m);
+  for (int i = 0; i < 2 * n; ++i)
+    if (i != 0 && i != n) B_r.row(reduced(i)) = K_xF.row(i);
+  Eigen::SimplicialLDLT<SpMat> ldlt(K_r);
+  if (ldlt.info() != Eigen::Success) return out;
+  const Eigen::MatrixXd Y = ldlt.solve(B_r);
+  if (ldlt.info() != Eigen::Success) return out;
+  Eigen::MatrixXd S = (K_FF - B_r.transpose() * Y) / sc.A0;
+  S = 0.5 * (S + S.transpose());
+
+  // Load stiffness and load direction dPt/dalpha
+  const bool force = loaded && PBCStressControl::isForcePreset(sc.preset);
+  const bool cauchy = force && PBCStressControl::isCauchyPreset(sc.preset);
+  const int tr = PBCStressControl::targetRow(sc.preset), tc = PBCStressControl::targetCol(sc.preset);
+  Eigen::Matrix2d pattern = Eigen::Matrix2d::Zero(); // d sigma_t / d alpha (Cauchy) or d Pt / d alpha
+  pattern(tr, tc) = 1.0;
+  pattern(tc, tr) = 1.0;
+  auto Pt = [](const Eigen::Matrix2d &Fb, const Eigen::Matrix2d &sigma) {
+    return Fb.determinant() * sigma * Fb.inverse().transpose();
+  };
+  Eigen::MatrixXd J = S;
+  Eigen::VectorXd b = Eigen::VectorXd::Zero(m);
+  if (cauchy) {
+    const Eigen::Matrix2d sigma = alpha * pattern;
+    const double h = 1e-6;
+    for (int q = 0; q < m; ++q) {
+      Eigen::Matrix2d Fp = F, Fm = F;
+      Fp(comps[q].first, comps[q].second) += h;
+      Fm(comps[q].first, comps[q].second) -= h;
+      const Eigen::Matrix2d dP = (Pt(Fp, sigma) - Pt(Fm, sigma)) / (2.0 * h);
+      for (int a = 0; a < m; ++a) J(a, q) -= dP(comps[a].first, comps[a].second);
+    }
+    const Eigen::Matrix2d dP_dalpha = Pt(F, pattern);
+    for (int a = 0; a < m; ++a) b(a) = dP_dalpha(comps[a].first, comps[a].second);
+  } else if (force) {
+    for (int a = 0; a < m; ++a)
+      if (comps[a].first == tr && comps[a].second == tc) b(a) = 1.0;
+  }
+
+  if (cauchy) {
+    Eigen::EigenSolver<Eigen::MatrixXd> eig(J, false);
+    if (eig.info() == Eigen::Success) out.lambda_min = eig.eigenvalues().real().minCoeff();
+  } else {
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(J, Eigen::EigenvaluesOnly);
+    if (eig.info() == Eigen::Success) out.lambda_min = eig.eigenvalues().minCoeff();
+  }
+  if (force) {
+    int t = -1;
+    for (int a = 0; a < m; ++a)
+      if (comps[a].first == tr && comps[a].second == tc) t = a;
+    if (t >= 0) {
+      const Eigen::VectorXd dF_dalpha = J.fullPivLu().solve(b);
+      if (std::abs(dF_dalpha(t)) > 0.0) out.tangent = 1.0 / dF_dalpha(t);
+    }
+  }
+  return out;
+}
 
 void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corrections) {
   if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasForceGrips()) {

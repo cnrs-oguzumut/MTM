@@ -918,9 +918,18 @@ public class ProcessRunner: ObservableObject {
         let lines = content.components(separatedBy: .newlines)
         
         var parsed: [EigenPoint] = []
+        // Optional stress-control columns, found by name (they follow the lambda_k columns)
+        var strainCol = -1, boxCol = -1, tangentCol = -1
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("Iteration") { continue }
+            if trimmed.hasPrefix("Iteration") {
+                let names = trimmed.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                strainCol = names.firstIndex(of: "Strain") ?? -1
+                boxCol = names.firstIndex(of: "lambda_box") ?? -1
+                tangentCol = names.firstIndex(of: "box_tangent") ?? -1
+                continue
+            }
+            if trimmed.isEmpty { continue }
             
             let parts = trimmed.components(separatedBy: ",")
             guard parts.count >= 6 else { continue }
@@ -939,13 +948,22 @@ public class ProcessRunner: ObservableObject {
                 lambda2 = l2
             }
             
+            func column(_ k: Int) -> Double? {
+                guard k >= 0, k < parts.count,
+                      let v = Double(parts[k].trimmingCharacters(in: .whitespaces)), v.isFinite else { return nil }
+                return v
+            }
+            
             parsed.append(EigenPoint(
                 iteration: iter,
                 alpha: alpha,
                 trigger: trigger,
                 lambdaMin: lambda1,
                 lambda2: lambda2,
-                failedShifts: failedShifts
+                failedShifts: failedShifts,
+                strain: column(strainCol),
+                lambdaBox: column(boxCol),
+                boxTangent: column(tangentCol)
             ))
         }
         

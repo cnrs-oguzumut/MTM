@@ -79,6 +79,23 @@ struct PBCStressControl {
         return w;
     }
 
+    // Cauchy control has no potential, so H(F; Pt(F)) of two equilibria at the same load misses the work
+    // done by the change of the target between them. With the trapezoid rule for that work,
+    // A0 (Pt_old + Pt_new) / 2 : (F_new - F_old), the enthalpy change becomes
+    //   dPi = dH + A0 (Pt_new - Pt_old) : (F_mid - I)   (free components; 0 under nominal control)
+    double cauchyWorkCorrection(const Eigen::Matrix2d& F_old, const Eigen::Matrix2d& P_old,
+                                const Eigen::Matrix2d& F_new, const Eigen::Matrix2d& P_new) const {
+        if (!active || !cauchy) return 0.0;
+        double c = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            if (!comp_free[k]) continue;
+            const int r = compRow(k), col = compCol(k);
+            const double F_mid = 0.5 * (F_old(r, col) + F_new(r, col));
+            c += A0 * (P_new(r, col) - P_old(r, col)) * (F_mid - (r == col ? 1.0 : 0.0));
+        }
+        return c;
+    }
+
     double maxStressDrivenJump(const Eigen::Matrix2d& F) const {
         double jump = 0.0;
         for (int k = 0; k < 3; ++k) {

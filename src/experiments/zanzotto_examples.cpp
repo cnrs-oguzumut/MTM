@@ -695,6 +695,12 @@ void example_1_conti_zanzotto_loading(
   };
   // Restart: the lattice is regenerated from the command line, so it must describe the same specimen
   if (restart_chk != nullptr) {
+    if (restart_chk->relaxation_step) {
+      std::cerr << "[RESTART] Fatal: the checkpoint was written at the relaxation step before the loading (Stage 1, "
+                   "relaxation at a prescribed shear strain, or zero-stress relaxation), which is not a load point to "
+                   "resume from. Restart from a later checkpoint, or rerun from the start." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
     if (!restart_chk->ref_points.empty() && !(has_custom_geom && !is_periodic_dislocs)) {
       std::cerr << "[RESTART] Fatal: the checkpoint was written by a custom-geometry run. Restart with the "
                    "original run's --geometry-json, --bc, --lattice and rotation flags." << std::endl;
@@ -902,7 +908,8 @@ void example_1_conti_zanzotto_loading(
   }
   double relax_strain_sigma0 = 0.0; // stress after the relaxation step (start of the stress schedule)
   Eigen::Matrix2d F_bar_state = (restart_chk != nullptr) ? restart_chk->F_ext : Eigen::Matrix2d::Identity();
-  Eigen::Matrix2d F_stage1 = Eigen::Matrix2d::Identity(); // box after the alpha = 0 relaxation (schedule origin)
+  Eigen::Matrix2d F_stage1 = (restart_chk != nullptr && restart_chk->has_F_stage1)
+      ? restart_chk->F_stage1 : Eigen::Matrix2d::Identity(); // box after the alpha = 0 relaxation (schedule origin)
   Eigen::Matrix2d F_bar_n = F_bar_state, F_bar_nm1 = F_bar_state;
   double F_bar_dalpha_n = 0.0;
   bool F_bar_hist_smooth = false;
@@ -1033,6 +1040,20 @@ void example_1_conti_zanzotto_loading(
               << " stress loading from the relaxed stress up to " << alpha_max << " (step " << std::abs(step_size)
               << "); alpha_start is not used." << std::endl;
   }
+  // PBC stress control with --relax-stress: the zero-stress relaxation runs at alpha = 0 also when the
+  // schedule starts elsewhere (custom geometries prepend alpha = 0 for their Stage 1 already)
+  if (stress_ctrl_enabled && stress_ctrl.relax_stage1 && !stress_relax_strain && !stage1_pre_relax_active &&
+      restart_chk == nullptr && !alpha_values.empty() && std::abs(alpha_values.front()) > 1e-15) {
+    alpha_values.insert(alpha_values.begin(), 0.0);
+  }
+  // PBC stress control starting at alpha = 0: that step is a zero-load relaxation, which would relax the
+  // initial noise away; the noise is applied at the first loaded step instead (as after a Stage 1)
+  const bool stress_zero_step0 = stress_ctrl_enabled && !stress_relax_strain && !stage1_pre_relax_active &&
+                                 restart_chk == nullptr && alpha_values.size() > 1 &&
+                                 std::abs(alpha_values.front()) < 1e-15;
+  // Step 0 relaxes before the loading: its checkpoints are marked, a restart does not resume from them
+  const bool step0_is_relaxation =
+      restart_chk == nullptr && (stage1_pre_relax_active || stress_relax_strain || stress_zero_step0);
 
   int file_counter = (restart_chk != nullptr ? restart_chk->iteration + 1 : 0);
   double post_energy_previous = 0.0;
@@ -1066,6 +1087,11 @@ void example_1_conti_zanzotto_loading(
   double traction_strain_previous =
       (restart_chk != nullptr && has_custom_geom && !is_periodic_dislocs)
           ? macro_geom.computeTractionConjugateStrain(square_points) : 0.0;
+  if (restart_chk != nullptr && stress_ctrl_enabled) {
+    // PBC stress control: conjugate strain of the resumed cell, from the Stage-1 cell
+    const int r = PBCStressControl::targetRow(stress_ctrl.preset), c = PBCStressControl::targetCol(stress_ctrl.preset);
+    traction_strain_previous = restart_chk->F_ext(r, c) - F_stage1(r, c);
+  }
   double elastic_dstrain_ref = 0.0, elastic_dalpha_ref = 0.0;
   bool have_elastic_ref = false;
   std::vector<Point2D> traction_points_n, traction_points_nm1;
@@ -1075,6 +1101,21 @@ void example_1_conti_zanzotto_loading(
 
   // Lowest stiffness eigenvalues during the run (off unless --eig-every / --eig-at-avalanche)
   StabilityMonitor stability_monitor;
+  if (stress_ctrl_enabled) {
+    // Free-cell stability at the same states; strain from the Stage-1 cell, as EffectiveStrain
+    stability_monitor.set_box_stability([&](UserData &state, int step, double alpha) {
+      BoxStabilityPoint p;
+      if (step == 0 && stress_relax_strain) return p; // relaxation step at fixed strain: the cell is held
+      const int r = PBCStressControl::targetRow(stress_ctrl.preset);
+      const int c = PBCStressControl::targetCol(stress_ctrl.preset);
+      p.strain = state.F_external(r, c) - F_stage1(r, c);
+      const bool loaded = step > 0 && stress_preset_is_force;
+      const PBCBoxStability b = pbc_box_stability(state, stress_ctrl, loaded ? alpha : 0.0, loaded);
+      p.lambda_min = b.lambda_min;
+      p.tangent = b.tangent;
+      return p;
+    });
+  }
   int avalanche_counter = 0;
 
   // Process each alpha value
@@ -1096,15 +1137,16 @@ void example_1_conti_zanzotto_loading(
     // and thermal/positional noise is activated only here at the start of loading.
     const bool is_stage1_relax_step =
         stage1_pre_relax_active && (i == 0) && (restart_chk == nullptr);
+    const bool is_stress_zero_relax_step = stress_zero_step0 && (i == 0);
     const size_t first_loading_idx =
-        (stage1_pre_relax_active && restart_chk == nullptr) ? 1 : 0;
-    const bool is_first_loading_step =
-        !is_stage1_relax_step && (i == first_loading_idx) && (restart_chk == nullptr);
+        ((stage1_pre_relax_active || stress_zero_step0) && restart_chk == nullptr) ? 1 : 0;
+    const bool is_first_loading_step = !is_stage1_relax_step && !is_stress_zero_relax_step &&
+                                       (i == first_loading_idx) && (restart_chk == nullptr);
     const double actual_dalpha =
         is_first_loading_step ? alpha
         : (i == 0 ? (restart_chk != nullptr ? step_size : alpha)
                   : (alpha - ((stress_relax_strain && i == 1) ? relax_strain_sigma0 : alpha_values[i - 1])));
-    const double effective_noise_level = is_stage1_relax_step ? 0.0 : noise_level;
+    const double effective_noise_level = (is_stage1_relax_step || is_stress_zero_relax_step) ? 0.0 : noise_level;
     // PBC stress control: the alpha = 0 step is a zero-stress box relaxation; stress presets then drive
     const bool stress_relax_step = stress_ctrl_enabled && (i == 0) && std::abs(alpha) < 1e-15;
     const bool stress_relax_strain_step = stress_relax_strain && (i == 0);
@@ -1184,6 +1226,8 @@ void example_1_conti_zanzotto_loading(
       F_ext = F_pred;
       dF_ext = F_pred * F_bar_state.inverse();
       stress_ctrl.F_bar = &F_ext;
+      // Cauchy: the nominal target at the predicted cell, so PreEnergy is an enthalpy like PostEnergy
+      if (stress_ctrl.cauchy) stress_ctrl.setNominalFromCauchy(F_ext);
       stress_ctrl.F_step_start = F_bar_state;
       stress_ctrl.F_jump_limit = stress_force_step ? 0.5 : 0.0;
     }
@@ -1379,6 +1423,16 @@ void example_1_conti_zanzotto_loading(
     // Enthalpy after the continuous relaxation, before any reconnection: the fixed-alpha reference
     // for the force-controlled avalanche test (Pi drops on every step under a dead load otherwise)
     const double enthalpy_before_cascade = post_energy;
+    // Cauchy control: H after the cascade uses another nominal target; correct the comparison by the work
+    // of the target change (PBCStressControl::cauchyWorkCorrection)
+    const Eigen::Matrix2d F_before_cascade = F_ext;
+    const Eigen::Matrix2d P_before_cascade = stress_ctrl.P_target;
+    const auto cascade_enthalpy_change = [&]() {
+      return post_energy - enthalpy_before_cascade +
+             (stress_ctrl_enabled ? stress_ctrl.cauchyWorkCorrection(F_before_cascade, P_before_cascade, F_ext,
+                                                                    stress_ctrl.P_target)
+                                  : 0.0);
+    };
 
     // Past the limit load the continuous relaxation itself runs away: skip the remesh cascade
     const bool runaway_before_cascade = force_control_step &&
@@ -1535,7 +1589,7 @@ void example_1_conti_zanzotto_loading(
       }
       const bool strain_burst = have_elastic_ref && excess > 1e-12 &&
                                 fractional_strain_burst >= stress_drop_threshold;
-      const bool enthalpy_dropped = post_energy < enthalpy_before_cascade;
+      const bool enthalpy_dropped = cascade_enthalpy_change() < 0.0;
       stress_drop_detected = can_detect_avalanche && strain_burst &&
                              (enable_remeshing ? (remesh_accepted && enthalpy_dropped) : true);
 
@@ -1606,6 +1660,8 @@ void example_1_conti_zanzotto_loading(
       chk_eq.mode = (step_size > 0 ? "positive" : "negative");
       chk_eq.seed = seed; chk_eq.enable_remeshing = enable_remeshing;
       chk_eq.F_ext = F_ext; chk_eq.points = square_points;
+      chk_eq.F_stage1 = F_stage1; chk_eq.has_F_stage1 = stress_ctrl_enabled;
+      chk_eq.relaxation_step = (i == 0 && step0_is_relaxation);
       if (has_custom_geom && !is_periodic_dislocs) {
         for (const auto &p : square_points_ref) chk_eq.ref_points.push_back(p.coord);
       }
@@ -1827,6 +1883,8 @@ void example_1_conti_zanzotto_loading(
           chk_pre.mode = (step_size > 0 ? "positive" : "negative");
           chk_pre.seed = seed; chk_pre.enable_remeshing = enable_remeshing;
           chk_pre.F_ext = pre_F_ext; chk_pre.points = pre_points;
+          chk_pre.F_stage1 = F_stage1; chk_pre.has_F_stage1 = stress_ctrl_enabled;
+          chk_pre.relaxation_step = (i == 0 && step0_is_relaxation);
           if (has_custom_geom && !is_periodic_dislocs) {
             for (const auto &p : square_points_ref) chk_pre.ref_points.push_back(p.coord);
           }
@@ -1869,6 +1927,8 @@ void example_1_conti_zanzotto_loading(
         chk_post.mode = (step_size > 0 ? "positive" : "negative");
         chk_post.seed = seed; chk_post.enable_remeshing = enable_remeshing;
         chk_post.F_ext = F_ext; chk_post.points = square_points;
+        chk_post.F_stage1 = F_stage1; chk_post.has_F_stage1 = stress_ctrl_enabled;
+        chk_post.relaxation_step = (i == 0 && step0_is_relaxation);
         if (has_custom_geom && !is_periodic_dislocs) {
           for (const auto &p : square_points_ref) chk_post.ref_points.push_back(p.coord);
         }
@@ -1902,7 +1962,7 @@ void example_1_conti_zanzotto_loading(
                   << std::scientific << std::setprecision(3) << traction_dstrain << " ("
                   << std::fixed << std::setprecision(1) << (fractional_strain_burst * 100.0)
                   << "% above elastic), ΔΠ(cascade) = " << std::scientific << std::showpos
-                  << (post_energy - enthalpy_before_cascade) << std::noshowpos
+                  << cascade_enthalpy_change() << std::noshowpos
                   << " | Dislocations: " << num_dislocations_pre << " -> " << num_dislocations_post
                   << " | Saved pre_avalanche_" << std::setw(5) << std::setfill('0') << pre_file_id
                   << ".vtk & configuration_" << std::setw(5) << std::setfill('0') << post_file_id
@@ -1977,6 +2037,8 @@ void example_1_conti_zanzotto_loading(
         chk_periodic.mode = (step_size > 0 ? "positive" : "negative");
         chk_periodic.seed = seed; chk_periodic.enable_remeshing = enable_remeshing;
         chk_periodic.F_ext = F_ext; chk_periodic.points = square_points;
+        chk_periodic.F_stage1 = F_stage1; chk_periodic.has_F_stage1 = stress_ctrl_enabled;
+        chk_periodic.relaxation_step = (i == 0 && step0_is_relaxation);
         if (has_custom_geom && !is_periodic_dislocs) {
           for (const auto &p : square_points_ref) chk_periodic.ref_points.push_back(p.coord);
         }

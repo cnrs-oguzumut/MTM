@@ -162,7 +162,7 @@ struct ContentView: View {
     private func launchRun() {
         guard !runner.status.isRunning else { return }
         // The solver refuses unbalanced dead loads on an unsupported specimen; don't start such a run
-        if config.geometryConfig.enabled, config.geometryConfig.tractionBalanceIssue != nil { return }
+        if config.geometryConfig.enabled, config.tractionBalanceIssue != nil { return }
         if config.mode != .volterra && config.mode != .shift && config.protocolMode == .sweepMisorientation {
             runner.startCSLSweep(config: config, candidates: config.sweepCSLCandidates)
         } else {
@@ -2567,7 +2567,7 @@ struct BottomActionBar: View {
                 .tint(.red)
                 .controlSize(.large)
             } else {
-                let tractionIssue = config.geometryConfig.enabled ? config.geometryConfig.tractionBalanceIssue : nil
+                let tractionIssue = config.geometryConfig.enabled ? config.tractionBalanceIssue : nil
                 Button(action: onLaunch) {
                     let btnTitle: String = config.launchButtonSummaryTitle
                     Label(btnTitle, systemImage: "play.fill")

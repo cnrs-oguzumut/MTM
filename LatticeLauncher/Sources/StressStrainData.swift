@@ -138,9 +138,17 @@ public struct EigenPoint: Identifiable, Equatable {
     public let lambdaMin: Double
     public let lambda2: Double?
     public let failedShifts: Int
+    /// PBC stress control: conjugate strain, lowest eigenvalue of the relaxed cell Jacobian, and the
+    /// load-path tangent dα/dε (eigen_log.csv columns Strain, lambda_box, box_tangent)
+    public let strain: Double?
+    public let lambdaBox: Double?
+    public let boxTangent: Double?
     
     public var isUnstable: Bool {
         lambdaMin <= 0.0 || failedShifts > 0
+    }
+    public var isCellUnstable: Bool {
+        (lambdaBox ?? 1.0) <= 0.0
     }
     
     public init(
@@ -149,7 +157,10 @@ public struct EigenPoint: Identifiable, Equatable {
         trigger: String,
         lambdaMin: Double,
         lambda2: Double? = nil,
-        failedShifts: Int = 0
+        failedShifts: Int = 0,
+        strain: Double? = nil,
+        lambdaBox: Double? = nil,
+        boxTangent: Double? = nil
     ) {
         self.id = "\(iteration)-\(trigger)-\(alpha)"
         self.iteration = iteration
@@ -158,6 +169,9 @@ public struct EigenPoint: Identifiable, Equatable {
         self.lambdaMin = lambdaMin
         self.lambda2 = lambda2
         self.failedShifts = failedShifts
+        self.strain = strain
+        self.lambdaBox = lambdaBox
+        self.boxTangent = boxTangent
     }
 }
 

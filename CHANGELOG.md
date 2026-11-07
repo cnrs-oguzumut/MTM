@@ -2,6 +2,70 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — free-cell stability under PBC stress control
+- Under stress control the stability monitor (`--eig-every`, `--eig-at-avalanche`) now also evaluates the
+  stability of the free cell. That is λ_box, the lowest eigenvalue (real part) of the relaxed cell Jacobian
+  J = K_eff − ∂Pᵗ/∂F̄ on the free components. K_eff = (K_FF − K_xFᵀ K⁺ K_xF)/A₀ is the relaxed (Schur
+  complement) cell stiffness, from the unprojected element tangents. ∂Pᵗ/∂F̄ is the Cauchy follower-load
+  stiffness (zero for nominal presets). λ_box reaches 0 at the limit load, where the fixed-cell λ_min(K) can
+  still be positive.
+- eigen_log.csv gains three columns after the lambda_k columns under stress control: `Strain` (as
+  EffectiveStrain), `lambda_box`, and `box_tangent` = dα/dε along the load path, the slope of the
+  load–strain curve. Their cells are empty at the strain-controlled relaxation step. Refinement (`--eig-refine`,
+  `--eig-refine-ahead`) also follows λ_box. Runs without stress control write the same file as before
+  (byte-identical in a strain-control check).
+- Checks: a perfect 20×20 cell under nominal shear has λ_box 2.18 → 0.31 from α = 0.25 to 0.315, with the limit
+  load in (0.315, 0.32]. Extrapolating λ_box² gives α_c ≈ 0.317. In a defected 40×40 cell under Cauchy shear,
+  box_tangent matches the secant slope of the logged curve to < 1 % on the elastic steps.
+- GUI: under stress control the λ_min chart has a Cell / Atoms picker (λ_box or λ_min(K)) and the ε / α axis
+  picker. The x-axis label no longer calls a stress load "Shear Strain". The hover readout shows ε, λ_box
+  and dα/dε.
+- docs/stress_and_traction_control.tex: new subsection "Stability of the relaxed states".
+
+### Fixed — review of the stress-control and traction work
+- Cauchy control: a rejected reconnection pass restored the cell but not the nominal target, so the rest of
+  the step logged H and E_el with the trial target. It now restores both.
+- Cauchy control: reconnection acceptance, and the avalanche test "cascade lowered the enthalpy", compared H
+  values taken with different nominal targets. They now use ΔΠ = ΔH + A₀(Pᵗ₁ − Pᵗ₀):(F̄_mid − I), the
+  trapezoid rule for the work of the target change; nominal control is unchanged. In a 40×40 Cauchy-shear
+  test the avalanches fall on the same steps, a few cascade passes are now rejected, and the final F̄₁₂
+  moves by 1e-4.
+- Cauchy control: `PreEnergy` (and `EnergyChange`) was the elastic energy, because the target was set only
+  inside the relaxation. It is now the enthalpy at the predicted cell, like `PostEnergy`.
+- `--relax-stress=1` was ignored when α_start ≠ 0 on a plain periodic cell. The zero-stress relaxation
+  now runs at α = 0 first.
+- Plain periodic stress runs starting at α = 0 applied the initial noise at that zero-load step, where it
+  relaxed away. It is now applied at the first loaded step, as after a Stage 1. Strain-control runs are
+  unchanged.
+- Restart:
+  - checkpoints carry the Stage-1 cell (`F_stage1`), so a resumed stress run keeps its strain origin;
+  - the first resumed step no longer sees a bogus strain increment (a mid-run restart now reproduces the
+    original EffectiveStrain exactly);
+  - checkpoints written at the relaxation step before loading (Stage 1, relaxation at a prescribed shear
+    strain, zero-stress relaxation) are marked, and a restart from them is refused with a message, since
+    the loading setup (re-anchoring, first-step noise) would be skipped.
+  - Older checkpoints load as before.
+- Stress preconditioner:
+  - with `--precond-refresh > 1` the factor is reused only on the same mesh and cell components;
+  - `--precond-refresh-iters` is honoured;
+  - `MTM_STRESS_TRACE` prints the real iteration count on the preconditioned path.
+- Dead loads:
+  - supports that leave a rigid-body mode free (rollers along one direction, a single row of rollers, a
+    single pinned atom) are now checked: a load with a net force along a free translation, or a net moment
+    about a free rotation, is refused instead of running away to a false "limit load".
+  - The GUI preview weights edge tractions by edge length, checks the torque, and handles roller-only
+    supports.
+- GUI: the launch button names the PBC stress preset ("PBC Cauchy Shear (σ_xy = α)", …) instead of
+  "PBC Simple Shear".
+- Not changed: force grips still relax with plain L-BFGS, a performance limit rather than a bug.
+- Checks: strain-control output is byte-identical; nominal stress control matches the previous build to the
+  solver tolerance (σ ~1e-8).
+
+### Fixed — eigenvalue runs crashed at startup
+- `--eig-at-avalanche=` and `--eig-refine-ahead=` were read from the wrong character offset. The GUI always passes
+  `--eig-at-avalanche`, so every run with "Compute Lowest Stiffness Eigenvalues" on stopped at startup with
+  `stoi: no conversion`.
+
 ### Added — stiffness preconditioner for PBC stress control
 - With `--precond=stiffness` (the GUI default), stress-controlled PBC relaxations (nominal and Cauchy) are now
   preconditioned too. Before, they silently ran plain L-BFGS whatever the preconditioner setting. The

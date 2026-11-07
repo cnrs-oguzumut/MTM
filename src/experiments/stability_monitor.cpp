@@ -24,6 +24,25 @@ std::uint64_t mesh_hash(const std::vector<ElementTriangle2D> &elements,
   return h;
 }
 
+// Refinement test on one stability measure lambda (see StabilityMonitor::update_refinement)
+bool approaching_instability(const StabilityMonitorOptions &o, double &ref, int &last_step,
+                             double &last, int step, double lambda) {
+  if (ref < 0.0) ref = lambda;
+  const bool below = o.refine > 0.0 && ref > 0.0 && lambda < o.refine * ref;
+
+  // Saddle-node: lambda^2 ~ s (alpha_c - alpha). Extrapolate lambda^2 linearly through the
+  // previous point of this branch to estimate the steps left until it vanishes.
+  bool approaching = false;
+  if (o.refine_ahead > 0.0 && last_step >= 0 && step > last_step && lambda < last) {
+    const double l2 = lambda * lambda;
+    const double drop_per_step = (last * last - l2) / static_cast<double>(step - last_step);
+    approaching = l2 / drop_per_step < o.refine_ahead * o.every;
+  }
+  last_step = step;
+  last = lambda;
+  return below || approaching || lambda <= 0.0;
+}
+
 // Fraction of |v|^2 carried by the two uniform translations (solver layout [u..., v...]).
 double translation_fraction(const Eigen::VectorXd &v) {
   const Eigen::Index m = v.size() / 2;
@@ -42,10 +61,8 @@ const StabilityMonitorOptions &stability_monitor_options() { return g_stability_
 
 StabilityMonitor::StabilityMonitor() : options_(g_stability_options) {
   if (!options_.enabled()) return;
-  csv_.open("eigen_log.csv");
-  csv_ << "Iteration,Alpha,Trigger,FailedShifts,Seconds";
-  for (int k = 1; k <= options_.modes; k++) csv_ << ",lambda_" << k;
-  csv_ << "\n" << std::scientific << std::setprecision(12);
+  csv_.open("eigen_log.csv"); // header at the first row, once set_box_stability had its chance
+  csv_ << std::scientific << std::setprecision(12);
 }
 
 StiffnessSpectrum StabilityMonitor::compute(UserData &state, bool with_vectors) {
@@ -62,47 +79,61 @@ StiffnessSpectrum StabilityMonitor::compute(UserData &state, bool with_vectors) 
   return lowest_stiffness_modes(K, opt);
 }
 
+BoxStabilityPoint StabilityMonitor::compute_box(UserData &state, int step, double alpha) {
+  return box_fn_ ? box_fn_(state, step, alpha) : BoxStabilityPoint{};
+}
+
 void StabilityMonitor::log(int step, double alpha, const char *trigger,
-                           const StiffnessSpectrum &s, double seconds) {
+                           const StiffnessSpectrum &s, const BoxStabilityPoint &box,
+                           double seconds) {
+  if (!header_written_) {
+    csv_ << "Iteration,Alpha,Trigger,FailedShifts,Seconds";
+    for (int k = 1; k <= options_.modes; k++) csv_ << ",lambda_" << k;
+    if (box_fn_) csv_ << ",Strain,lambda_box,box_tangent";
+    csv_ << "\n";
+    header_written_ = true;
+  }
   csv_ << step << "," << alpha << "," << trigger << "," << s.failed_shifts << "," << seconds;
   for (int k = 0; k < options_.modes; k++) {
     csv_ << ",";
     if (k < s.num_computed) csv_ << s.eigenvalues(k);
   }
+  if (box_fn_) {
+    for (double v : {box.strain, box.lambda_min, box.tangent}) {
+      csv_ << ",";
+      if (std::isfinite(v)) csv_ << v;
+    }
+  }
   csv_ << "\n";
   csv_.flush();
   std::cout << "Stability monitor [" << trigger << "] step " << step << ": lambda_min = "
             << (s.num_computed ? s.eigenvalues(0) : std::numeric_limits<double>::quiet_NaN())
-            << (s.failed_shifts ? " (UNSTABLE: eigenvalue below the first trial shift)" : "")
-            << ", " << seconds << " s" << std::endl;
+            << (s.failed_shifts ? " (UNSTABLE: eigenvalue below the first trial shift)" : "");
+  if (std::isfinite(box.lambda_min))
+    std::cout << ", lambda_box = " << box.lambda_min << (box.lambda_min <= 0.0 ? " (UNSTABLE cell)" : "");
+  std::cout << ", " << seconds << " s" << std::endl;
 }
 
-void StabilityMonitor::update_refinement(int step, const StiffnessSpectrum &s) {
-  if (s.num_computed == 0) return;
-  const double lambda_min = s.eigenvalues(0);
-  if (lambda_ref_ < 0.0) lambda_ref_ = lambda_min;
-  const bool below = options_.refine > 0.0 && lambda_ref_ > 0.0 &&
-                     lambda_min < options_.refine * lambda_ref_;
-
-  // Saddle-node: lambda^2 ~ s (alpha_c - alpha). Extrapolate lambda^2 linearly through the
-  // previous point of this branch to estimate the steps left until it vanishes.
-  bool approaching = false;
-  if (options_.refine_ahead > 0.0 && last_step_ >= 0 && step > last_step_ &&
-      lambda_min < last_lambda_) {
-    const double l2 = lambda_min * lambda_min;
-    const double drop_per_step =
-        (last_lambda_ * last_lambda_ - l2) / static_cast<double>(step - last_step_);
-    approaching = l2 / drop_per_step < options_.refine_ahead * options_.every;
-  }
-  refining_ = options_.every > 0 && (below || approaching || lambda_min <= 0.0);
-  last_step_ = step;
-  last_lambda_ = lambda_min;
+void StabilityMonitor::update_refinement(int step, const StiffnessSpectrum &s,
+                                         const BoxStabilityPoint &box) {
+  const bool have_box = std::isfinite(box.lambda_min);
+  if (s.num_computed == 0 && !have_box) return;
+  bool refine = false;
+  if (s.num_computed > 0)
+    refine = approaching_instability(options_, lambda_ref_, last_step_, last_lambda_, step,
+                                     s.eigenvalues(0));
+  if (have_box)
+    refine = approaching_instability(options_, box_ref_, box_last_step_, box_last_, step,
+                                     box.lambda_min) || refine;
+  refining_ = options_.every > 0 && refine;
 }
 
 void StabilityMonitor::start_branch() {
   lambda_ref_ = -1.0;
   refining_ = false;
   last_step_ = -1;
+  box_ref_ = -1.0;
+  box_last_step_ = -1;
 }
 
 void StabilityMonitor::write_soft_modes(int file_id, int step, double alpha,
@@ -233,9 +264,11 @@ void StabilityMonitor::end_of_step(int step, double alpha, double post_stress, U
                       post.second_derivative_function);
         const auto t0 = Clock::now();
         s = compute(kept, vectors);
-        if (!st.computed)
+        if (!st.computed) {
+          const BoxStabilityPoint box = compute_box(kept, st.step, st.alpha);
           log(st.step, st.alpha, avalanche && last ? "before_avalanche" : "before_instability", s,
-              seconds(Clock::now() - t0).count());
+              box, seconds(Clock::now() - t0).count());
+        }
         st.computed = true;
       }
       if (vectors)
@@ -257,8 +290,9 @@ void StabilityMonitor::end_of_step(int step, double alpha, double post_stress, U
     // Vectors are kept so that they can be written if the next step is an avalanche.
     last_spectrum_ = compute(post, options_.at_avalanche && options_.vectors > 0);
     last_spectrum_step_ = step;
-    log(step, alpha, trigger, last_spectrum_, seconds(Clock::now() - t0).count());
-    update_refinement(step, last_spectrum_);
+    const BoxStabilityPoint box = compute_box(post, step, alpha);
+    log(step, alpha, trigger, last_spectrum_, box, seconds(Clock::now() - t0).count());
+    update_refinement(step, last_spectrum_, box);
     computed = true;
   }
 

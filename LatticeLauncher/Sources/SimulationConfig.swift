@@ -957,6 +957,13 @@ public extension SimulationConfig {
         return isPeriodicDislocs || boundaryCondition == .periodic
     }
 
+    /// Dead load the supports cannot react (see MacroscopicGeometryConfigModel.tractionBalanceIssue), for the
+    /// current specimen size
+    var tractionBalanceIssue: String? {
+        let rowSpacing = latticeSymmetry == .triangular ? sqrt(3.0) / 2.0 : 1.0
+        return geometryConfig.tractionBalanceIssue(width: Double(nx), height: Double(ny) * rowSpacing)
+    }
+
     /// Relaxation at a nonzero shear strain: plain periodic cell (no periodic dislocations) + shear stress preset
     var pbcRelaxStrainApplies: Bool { pbcRelaxStrainApplies(geometry: geometryConfig) }
     func pbcRelaxStrainApplies(geometry: MacroscopicGeometryConfigModel) -> Bool {
@@ -1082,6 +1089,19 @@ public extension SimulationConfig {
             return "Launch Δθ Sweep (\(sweepCSLCandidates.count) runs)"
         case .relaxThenLoad:
             let bcShort = isEffectivePeriodicPBC ? "PBC" : "Surface"
+            // PBC box control: the stress preset, not the strain-control loading
+            if isPeriodicLoadingRun {
+                switch pbcStressControl {
+                case "cauchy_shear": return "Launch: PBC Cauchy Shear (σ_xy = α)"
+                case "cauchy_uniaxial_y": return "Launch: PBC Cauchy Uniaxial (σ_yy = α)"
+                case "cauchy_uniaxial_x": return "Launch: PBC Cauchy Uniaxial (σ_xx = α)"
+                case "shear": return "Launch: PBC Nominal Shear (P₁₂ = α)"
+                case "uniaxial_y": return "Launch: PBC Nominal Uniaxial (P₂₂ = α)"
+                case "uniaxial_x": return "Launch: PBC Nominal Uniaxial (P₁₁ = α)"
+                case "relax_normal": return "Launch: PBC Shear F₁₂ = α (σ_xx = σ_yy = 0)"
+                default: break
+                }
+            }
             return "Launch: \(bcShort) \(activeMechanicalLoading.shortTitle)"
         }
     }

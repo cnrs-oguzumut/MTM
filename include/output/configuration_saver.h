@@ -58,6 +58,13 @@ public:
         // Reference positions X_0 (custom geometry: the Stage-1 re-anchored state). Optional
         // REF_NODES section; empty when absent (older checkpoints, periodic cells).
         std::vector<Eigen::Vector2d> ref_points;
+        // PBC stress control: the cell after the alpha = 0 relaxation (origin of the conjugate strain).
+        // Optional F_stage1 line; identity when absent.
+        Eigen::Matrix2d F_stage1 = Eigen::Matrix2d::Identity();
+        bool has_F_stage1 = false;
+        // Written at a relaxation step that precedes the loading (Stage 1, relaxation at a prescribed shear
+        // strain, zero-stress relaxation): not a load point to resume from. Optional relaxation_step line.
+        bool relaxation_step = false;
     };
 
     static void saveCheckpoint(const std::string& filename, const CheckpointData& data);
