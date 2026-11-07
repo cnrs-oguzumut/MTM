@@ -400,6 +400,10 @@ minima, separated from runaway shearing of the cell by the barrier of the energy
 the line search from extrapolating across that barrier, the step length of the minimizer is
 capped (to \(0.5\) in units of the lattice parameter in \(\mathbf z\)).
 
+When the stiffness preconditioner is selected, the same minimization is carried out in
+preconditioned variables, with the atom--cell stiffness factorized as a bordered sparse Cholesky
+factor. The construction is given in Section~\ref{sec:precond}.
+
 %=====================================================================
 \section{Load stepping, avalanches and the limit load}
 \label{sec:protocol}
@@ -580,9 +584,10 @@ step \(n\) was smooth, with roller components extrapolated only along their free
 The method of Sections~\ref{sec:nominal}--\ref{sec:cauchy} uses first derivatives only: the cell
 components are additional unknowns of an L-BFGS minimization, and the Cauchy target is reached by a
 fixed-point iteration on the nominal target. This section sets out Newton-type alternatives that use
-second derivatives of the energy, and compares them with the present method. Apart from variant
-A with the reference tangent, which an earlier stress-controlled example of the code implemented,
-these are options and not part of the implementation described above.
+second derivatives of the energy, and compares them with the present method. Variant C, the
+stiffness-preconditioned minimizer, is implemented and is described in detail in
+Section~\ref{sec:precond}; variant A with the reference tangent was implemented in an earlier
+stress-controlled example of the code. The others are options.
 
 \subsection{Second derivatives of the cell energy}
 
@@ -696,16 +701,149 @@ safeguards the method becomes a damped Newton minimizer of \(H\), and the reconn
 again be accepted on \(H\).
 
 \subsection{Variant C: stiffness-preconditioned L-BFGS including the cell}
+\label{sec:precond}
 
-The present minimizer can be given Newton-like steps while keeping descent. L-BFGS with initial
-inverse Hessian \(\mathbf M^{-1}\) is equivalent to plain L-BFGS in the variables
-\(\mathbf M^{1/2}\mathbf z\). Taking \(\mathbf M\) as the block stiffness \eqref{eq:Kfull}, projected to
-positive semidefinite element contributions, shifted (\(\mathbf M=\mathbf K_+ +s\,\I\)) and refreshed
-periodically, makes the first L-BFGS step a modified Newton step, while the line search keeps every
-iterate a descent step of \(H\). The code already uses this preconditioner, with a sparse
-Cholesky factorization, for the atomic unknowns under strain control; the extension consists of
-adding the bordering blocks \eqref{eq:KFF}--\eqref{eq:KFw}, scaled to the variable
-\(\sqrt{A_0}\,\bar F_{ij}\) of Section~\ref{sec:numerics}. The Cauchy fixed-point loop is unchanged.
+The present minimizer can be given Newton-like steps while keeping descent. This variant is
+implemented and is used whenever the stiffness preconditioner is selected; this subsection
+describes it in full.
+
+\paragraph{Change of variables.}
+Let \(\mathbf z=(\w,\bm\zeta)\), \(\bm\zeta=\sqrt{A_0}\,(\bar F_{ij})_{(ij)\in\mathcal S}\), be the unknowns
+of Section~\ref{sec:numerics}, and let \(\mathbf P=\mathbf R\mathbf R^{\mathsf T}\) be a symmetric
+positive definite matrix. L-BFGS is run, unmodified, on the variables \(\mathbf t\) defined by
+\begin{equation}
+  \mathbf z=\mathbf z_0+\mathbf R^{-\mathsf T}\mathbf t,\qquad
+  \frac{\partial H}{\partial\mathbf t}=\mathbf R^{-1}\frac{\partial H}{\partial\mathbf z},
+  \label{eq:cov}
+\end{equation}
+starting from \(\mathbf t=\mathbf 0\). This is exactly L-BFGS on \(\mathbf z\) with initial inverse
+Hessian \(\mathbf P^{-1}\). If \(\mathbf P\) is close to the Hessian of \(H\), the Hessian in
+\(\mathbf t\) is close to the identity: the first step is a (modified) Newton step, and the number of
+iterations no longer grows with the condition number of the stiffness, which for plain L-BFGS scales
+with the square of the cell size in lattice spacings (the long-wavelength modes). The line search is
+unchanged, so every iterate still lowers \(H\).
+
+\paragraph{The preconditioner.}
+\(\mathbf P\) is the Gauss--Newton part of the Hessian \eqref{eq:Kfull}, built from element tangents
+projected to positive semidefinite form. For each triangle, the eigenvalues of the \(4\times4\)
+tangent \(\mathbb A_e\) (in Voigt-like index pairs \(iJ\)) are clamped at zero, giving \(\mathbb A^+_e\).
+With \(\mathbf J_e=\partial\F_e/\partial(\x,\Fb_{\mathcal S})\), the assembled blocks are
+\begin{align}
+  \mathbf K^{xx}&=\sum_eA_e\,\Big(\frac{\partial\F_e}{\partial\x}\Big)^{\mathsf T}\mathbb A^+_e
+    \frac{\partial\F_e}{\partial\x},\qquad
+  K^{xF}_{a i,(rc)}=\sum_{e\ni a}A_e\,\frac{\partial\F_e}{\partial x_{a,i}}:\mathbb A^+_e:
+    \big(\mathbf e_r\otimes\G_e^{\mathsf T}\mathbf e_c\big),\nonumber\\
+  K^{FF}_{(rc),(sd)}&=\sum_eA_e\,\big(\mathbf e_r\otimes\G_e^{\mathsf T}\mathbf e_c\big):\mathbb A^+_e:
+    \big(\mathbf e_s\otimes\G_e^{\mathsf T}\mathbf e_d\big),
+  \label{eq:Pblocks}
+\end{align}
+where \(\partial\F_e/\partial\bar F_{rc}=\mathbf e_r\otimes\G_e^{\mathsf T}\mathbf e_c\) follows from
+\(\F_e=\Fb\G_e\). The geometric term of \eqref{eq:KFw} and the Cauchy load stiffness
+\(-A_0\mathbb L\) are left out, so \(\mathbf P\) is symmetric and positive semidefinite by
+construction. Since \(\x=\Fb\w\), the atomic block in the unknowns \(\w\) is obtained with
+\(\mathbf D=\Fb\otimes\I_n\) (in the solver layout \([u_1\dots u_n,v_1\dots v_n]\)), and the scaling
+\(\bm\zeta=\sqrt{A_0}\,\Fb_{\mathcal S}\) divides the cell rows by \(\sqrt{A_0}\):
+\begin{equation}
+  \mathbf P=\begin{pmatrix}\mathbf M_{ww}&\mathbf M_{w\zeta}\\ \mathbf M_{\zeta w}&\mathbf M_{\zeta\zeta}\end{pmatrix},\quad
+  \mathbf M_{ww}=\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D+s\,\I,\quad
+  \mathbf M_{w\zeta}=\frac{\mathbf D^{\mathsf T}\mathbf K^{xF}}{\sqrt{A_0}},\quad
+  \mathbf M_{\zeta\zeta}=\frac{\mathbf K^{FF}}{A_0}.
+  \label{eq:Pmat}
+\end{equation}
+The shift \(s=10^{-6}\,\overline{\operatorname{diag}\mathbf M_{ww}}\) removes the two rigid translations
+of the periodic cell, which are zero modes of \(\mathbf K^{xx}\) (it is increased a hundredfold
+whenever a factorization fails).
+
+\paragraph{Bordered Cholesky factorization.}
+The atomic block is large and sparse, the cell block has at most three rows. The factor is taken in
+block lower-triangular form,
+\begin{equation}
+  \mathbf R=\begin{pmatrix}\mathbf R_w&\mathbf 0\\ \mathbf B^{\mathsf T}&\mathbf L_S\end{pmatrix},\qquad
+  \mathbf R_w\mathbf R_w^{\mathsf T}=\mathbf M_{ww},\quad
+  \mathbf B=\mathbf R_w^{-1}\mathbf M_{w\zeta},\quad
+  \mathbf L_S\mathbf L_S^{\mathsf T}=\mathbf S=\mathbf M_{\zeta\zeta}-\mathbf B^{\mathsf T}\mathbf B ,
+  \label{eq:bordered}
+\end{equation}
+which satisfies \(\mathbf R\mathbf R^{\mathsf T}=\mathbf P\). \(\mathbf R_w\) is a sparse supernodal
+Cholesky factor with a fill-reducing ordering, computed once per refresh; \(\mathbf B\) requires one
+triangular solve per free cell component; and \(\mathbf S\), the Schur complement of the atoms in
+\(\mathbf P\), is the preconditioner's estimate of the relaxed cell stiffness (the analogue of
+\eqref{eq:Keff}), a dense matrix of size at most \(3\times3\). It is positive semidefinite because
+\(\mathbf P\) is; a small relative shift is added before its dense Cholesky factorization. The two
+operations needed by \eqref{eq:cov} are then
+\begin{align}
+  \mathbf R^{-1}\mathbf g:&\quad
+  \mathbf y_w=\mathbf R_w^{-1}\mathbf g_w,\qquad
+  \mathbf y_\zeta=\mathbf L_S^{-1}\big(\mathbf g_\zeta-\mathbf B^{\mathsf T}\mathbf y_w\big),
+  \label{eq:Rinv}\\
+  \mathbf R^{-\mathsf T}\mathbf t:&\quad
+  \mathbf d_\zeta=\mathbf L_S^{-\mathsf T}\mathbf t_\zeta,\qquad
+  \mathbf d_w=\mathbf R_w^{-\mathsf T}\big(\mathbf t_w-\mathbf B\,\mathbf d_\zeta\big),
+  \label{eq:RinvT}
+\end{align}
+that is, two sparse triangular solves per evaluation of \(H\), plus \(O(nm)\) dense operations
+for the border. The cell is therefore preconditioned through its coupling to all atoms: a change of
+the cell is accompanied, in the preconditioned metric, by the non-affine relaxation of the atoms
+that the stiffness predicts.
+
+\paragraph{Refresh, stalls and termination.}
+\(\mathbf P\) is assembled and factorized at the start of every stress-controlled relaxation, i.e.\
+once per load step under nominal control and once per pass of Algorithm~\ref{alg:cauchy} under
+Cauchy control (or less often, if a reuse interval is set). The symbolic analysis is kept while
+the mesh is unchanged. During an avalanche the configuration moves far from the point where
+\(\mathbf P\) was built, and L-BFGS can stall before reaching the tolerance; \(\mathbf P\) is then
+rebuilt at the current point and the minimization continues (at most three times). The
+relaxation stops when
+\begin{equation}
+  \max\big|\partial H/\partial\mathbf z\big|<\varepsilon_g ,
+\end{equation}
+measured on the unpreconditioned gradient, whose atomic part is the force and whose cell part is
+\(\sqrt{A_0}(\bar P_{ij}-P^{\mathrm t}_{ij})\) by \eqref{eq:gradz}; with \(\varepsilon_g=10^{-6}\) the
+macroscopic stress is matched to \(\varepsilon_g/\sqrt{A_0}\). In the preconditioned variables
+the step-length cap of Section~\ref{sec:numerics} is not used, because the first step is already
+scaled by the stiffness. The limit-load guard of Section~\ref{sec:limit} is unchanged. If a
+factorization fails, the relaxation falls back to plain L-BFGS.
+
+\paragraph{Performance and path dependence.}
+Table~\ref{tab:precond} compares the two solvers on a defected periodic cell of
+\(100\times100\) atoms (square lattice, \(2\times10^4\) triangles), relaxed at
+\(\bar F_{12}=0.14\) with noise and then loaded in Cauchy shear in steps of
+\(\Delta\sigma=0.005\), with the reconnection cascade enabled. Each preconditioned relaxation
+takes between \(0\) and about \(40\) iterations and at most \(\sim0.1\)~s including assembly and
+factorization, so that the remaining cost of an elastic load step is dominated by the
+reconnection trial and the output, not by the solver. Stresses are matched equally well by both
+solvers (\(|\bar\sigma_{12}-\sigma^{\mathrm t}_{12}|\lesssim10^{-8}\), normal components
+\(\lesssim10^{-9}\)).
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{seed 42} & \multicolumn{2}{c}{seed 7}\\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+& plain & preconditioned & plain & preconditioned\\
+\midrule
+total wall time (s) & 119 & 35 & 134 & 51\\
+load steps completed & 8 (limit load) & 10 & 16 & 16\\
+elastic step (s) & 1.9--3.8 & 0.5--0.8 & 1.8--2.8 & 0.5--1.0\\
+step with avalanche (s) & 9--53 & 4--7 & 5--29 & 2--12\\
+\bottomrule
+\end{tabular}
+\caption{Plain and stiffness-preconditioned L-BFGS for Cauchy shear of a defected
+\(100\times100\) periodic cell (same initial state for both solvers within each seed; six
+threads per run).}
+\label{tab:precond}
+\end{table}
+
+The two solvers produce the same states, to the solver tolerance, until the first avalanche.
+During an avalanche they can settle into different metastable states; in the run of seed~42 the
+preconditioned solver reached a lower energy in the fifth reconnection pass of the first stress
+step, and the two dislocation structures differ from there on, with the limit load reached at
+\(\sigma=0.047\) by the plain solver and not before \(0.057\) by the preconditioned one. This
+sensitivity is a property of the avalanche dynamics, not of either solver: any change of the
+minimizer, of its tolerance or of rounding selects among nearby metastable states. Quantities such
+as the limit load and the avalanche statistics should therefore be reported as ensemble averages
+over noise realizations.
 
 \subsection{Variant D: accelerating the Cauchy loop}
 
@@ -733,7 +871,7 @@ A: cell Newton, reference CB tangent & \(\mathbb A(\F_0)\) & linear, heavy dampi
 A: cell Newton, current CB tangent & \(\mathbb A(\Fb\F_0)\) & quadratic (perfect crystal); linear, \(\to1\) at limit load (defects) & partly & no functional\\
 A: cell Newton, Schur tangent & \(\mathbb K_{\mathrm{eff}}-\mathbb L\) & quadratic (outer); nested relaxations & no near singular \(\mathbb K_{\mathrm{eff}}\) & no functional\\
 B: full Newton & \(\mathbf K\), \(-A_0\mathbb L\) & quadratic near stable equilibria & only with trust region / shift & on \(H\) if globalized\\
-C: preconditioned L-BFGS & \(\mathbf K_+ +s\I\) as preconditioner & near-Newton per iteration, fewer iterations & yes: descent with line search & on \(H\)\\
+C: preconditioned L-BFGS (implemented) & \(\mathbf K_+ +s\I\) as preconditioner & near-Newton per iteration, fewer iterations & yes: descent with line search & on \(H\)\\
 D: Broyden / Anderson outer & secant estimate of \(\mathbb J\) & superlinear (outer) & as inner solver & unchanged\\
 \bottomrule
 \end{tabular}
@@ -745,9 +883,10 @@ Variants C and D can be combined with each other and with the present formulatio
 \paragraph{Cost.}
 A sparse Cholesky factorization of the \(2N\times2N\) atomic stiffness of a two-dimensional mesh
 costs \(O(N^{3/2})\) with nested-dissection ordering, against \(O(N)\) for an L-BFGS iteration. The
-bordering by at most three cell components adds three solves with the factor. The balance between
-fewer iterations and more expensive iterations depends on the size of the cell and on how often the
-factorization must be refreshed. It has to be measured on representative runs, not estimated.
+bordering by at most three cell components adds three solves with the factor. For variant C the
+balance has been measured (Table~\ref{tab:precond}): on a \(100\times100\) defected cell it is a
+factor of \(2.6\)--\(3.4\) in total run time and \(3\)--\(5\) on elastic steps. For the other
+variants it has not been measured.
 
 \paragraph{Assessment.}
 The Newton variants pay off in the elastic stretches between plastic events, where the energy is

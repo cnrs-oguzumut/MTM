@@ -1534,7 +1534,7 @@ struct SidebarControlsView: View {
                         HelpPopoverButton(
                             title: "L-BFGS Metric Preconditioner",
                             summary: "Accelerates energy minimization by preconditioning the L-BFGS search direction with a sparse Cholesky factorization (CHOLMOD).",
-                            formulaOrTip: "• 'Laplacian (Graph)' or 'Elastic Tangent' dramatically reduces iterations for large crystals (N ≥ 150).\n• Refresh = 0 re-factorizes adaptively when convergence slows.",
+                            formulaOrTip: "• 'Laplacian (Graph)' or 'Elastic Tangent' dramatically reduces iterations for large crystals (N ≥ 150).\n• Refresh = 0 re-factorizes adaptively when convergence slows.\n• PBC stress control: 'Stiffness' also preconditions the box components (bordered Cholesky); the other metrics run plain L-BFGS there.",
                             docTopic: .solverAndEigenvalues,
                             onOpenDocs: onOpenDocs
                         )

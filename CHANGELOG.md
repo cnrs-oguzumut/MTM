@@ -2,6 +2,32 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — stiffness preconditioner for PBC stress control
+- With `--precond=stiffness` (the GUI default), stress-controlled PBC relaxations (nominal and Cauchy) are now
+  preconditioned too. Before, they silently ran plain L-BFGS whatever the preconditioner setting. The
+  preconditioner is the Gauss-Newton stiffness in the solver's unknowns (w, √A₀ F̄): the atom block DᵀKD
+  (x = F̄w) bordered by the box rows K_xF and K_FF, assembled from the same PSD-projected element tangents.
+  It is factored as a bordered Cholesky: a sparse CHOLMOD factor of the atom block, ≤ 3 triangular solves for
+  the border, and a dense Cholesky of the ≤ 3×3 Schur complement (the preconditioner's relaxed box stiffness).
+- The relaxation stops at max|∂H/∂z| < `--precond-tol` (1e-6), so the box stress matches its target to
+  1e-6/√A₀. It is rebuilt every relaxation (each Cauchy pass), and at the current point when L-BFGS stalls
+  during an avalanche (≤ 3 times). The 0.5 a₀ step cap of the plain solver is not used in the preconditioned
+  variables. If a factorization fails it falls back to plain L-BFGS. `MTM_STRESS_PLAIN=1` forces the plain
+  solver. Other preconditioner types still run plain L-BFGS under stress control. The strain-control code is
+  unchanged.
+- 100×100 defected periodic cell (relaxed at F₁₂ = 0.14 with noise, Cauchy shear in steps of 0.005, remeshing
+  on): 35 s vs 119 s (seed 42) and 51 s vs 134 s (seed 7). Elastic steps are 3–5× faster, avalanche steps 2–7×.
+  Each relaxation is now ≤ ~40 iterations and ≤ ~0.1 s, so an elastic step's time is mostly the remesh trial
+  and output. Stresses match as before: σ_xy to ~1e-8 of the target, normal components ~1e-9.
+- The two solvers give the same states until the first avalanche and can then settle into different metastable
+  states (seed 42: limit load at 0.047 plain, none up to 0.057 preconditioned). That is avalanche path
+  dependence, not an error.
+- Unchanged code paths are byte-identical to HEAD: stress control with `--precond=none`, and stress control with
+  `MTM_STRESS_PLAIN=1`. Strain-controlled runs with the stiffness preconditioner change by ~1e-14. The strain
+  code is untouched; the build uses `-flto -ffast-math`, so adding code changes whole-program inlining and
+  rounding.
+- docs/stress_and_traction_control.tex explains the construction (Section "Variant C").
+
 ### Added — force control (dead-load tractions, plan Phase A)
 - New boundary kind `traction` (`traction_mode`: `cartesian` with `tx`/`ty`, `radial_outward`, `radial_inward`,
   `circumferential_shear`). α is the nominal traction. Loaded atoms stay free, and the solver minimizes
