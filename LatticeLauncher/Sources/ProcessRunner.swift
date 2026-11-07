@@ -46,6 +46,8 @@ public class ProcessRunner: ObservableObject {
     @Published public var currentStress: Double = 0.0
     @Published public var currentEnergy: Double = 0.0
     @Published public var avalancheCount: Int = 0
+    /// Force / stress control: conjugate strain ε of the last point (nil for strain-driven runs)
+    @Published public var currentConjugateStrain: Double? = nil
     @Published public var elapsedTime: TimeInterval = 0
     
     // Live Stress-Strain & Eigenvalue Curve points
@@ -103,6 +105,7 @@ public class ProcessRunner: ObservableObject {
         currentStress = 0.0
         currentEnergy = 0.0
         avalancheCount = 0
+        currentConjugateStrain = nil
         dislocationData = nil
     }
     
@@ -121,6 +124,7 @@ public class ProcessRunner: ObservableObject {
             self.currentStress = 0.0
             self.currentEnergy = 0.0
             self.avalancheCount = 0
+            self.currentConjugateStrain = nil
         }
         self.pollGBEnergyCSV()
         self.pollDislocationProfiles(dir: dir)
@@ -296,6 +300,7 @@ public class ProcessRunner: ObservableObject {
         self.currentStress = 0.0
         self.currentEnergy = 0.0
         self.avalancheCount = 0
+        self.currentConjugateStrain = nil
         if !isSweepRunning {
             self.elapsedTime = 0
             self.startTime = Date()
@@ -762,7 +767,8 @@ public class ProcessRunner: ObservableObject {
                     indenterLoad: parseCol(20),
                     meanContactPressure: parseCol(21),
                     contactAtoms: parseCol(22),
-                    effectiveStrain: parseCol(23) // traction runs only (EffectiveStrain column)
+                    effectiveStrain: parseCol(23), // traction runs only (EffectiveStrain column)
+                    elasticEnergy: parts.count > 24 ? parseCol(24) : nil // ElasticEnergy column, same runs
                 ))
             }
             
@@ -776,6 +782,8 @@ public class ProcessRunner: ObservableObject {
                         self.currentAlpha = last.alpha
                         self.currentStress = last.postStress
                         self.currentEnergy = last.postEnergy
+                        self.currentConjugateStrain = allPoints.contains { $0.effectiveStrain != 0 }
+                            ? last.effectiveStrain : nil
                         if abs(last.postStress) > self.peakStress {
                             self.peakStress = abs(last.postStress)
                             self.yieldStrain = last.alpha

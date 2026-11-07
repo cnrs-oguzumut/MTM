@@ -2302,7 +2302,11 @@ struct LiveStatusHeaderView: View {
                             )
                         }
                         MetricPill(label: "Step", value: "\(runner.currentStep)")
-                        MetricPill(label: config.mode == .shift ? "Shift (u/a₀)" : "Strain |α|", value: String(format: "%.4f", runner.currentAlpha))
+                        if let eps = runner.currentConjugateStrain {
+                            MetricPill(label: "Strain ε", value: String(format: "%.4f", eps))
+                        } else {
+                            MetricPill(label: config.mode == .shift ? "Shift (u/a₀)" : "Strain |α|", value: String(format: "%.4f", runner.currentAlpha))
+                        }
                         MetricPill(label: "Stress σ", value: String(format: "%.4f", runner.currentStress))
                     }
                     if let lmin = runner.currentLambdaMin ?? runner.dislocationData?.lambdaMin {

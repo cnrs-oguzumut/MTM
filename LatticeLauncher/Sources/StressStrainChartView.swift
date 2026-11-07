@@ -41,6 +41,18 @@ struct StressStrainChartView: View {
     @State private var showGBSigmaLabels: Bool = true
     /// Force / stress control: plot against the conjugate strain (bursts show as jumps along x)
     @State private var plotAgainstConjugateStrain: Bool = true
+    /// Force / stress control: the logged energy is the enthalpy H = E_el - W_ext; plot E_el unless asked
+    @State private var plotEnthalpy: Bool = false
+
+    private var hasElasticEnergy: Bool {
+        runner.curvePoints.contains { $0.elasticEnergy != nil }
+    }
+    private func energyValue(_ pt: StressStrainPoint) -> Double {
+        (hasElasticEnergy && !plotEnthalpy) ? (pt.elasticEnergy ?? pt.postEnergy) : pt.postEnergy
+    }
+    private var energyLabel: String {
+        hasElasticEnergy ? (plotEnthalpy ? "Enthalpy H = E_el − W_ext" : "Elastic Energy E_el") : "Internal Energy (E)"
+    }
 
     /// The run logged a conjugate strain (dead load, force grip or PBC stress control)
     private var hasConjugateStrain: Bool {
@@ -209,7 +221,7 @@ struct StressStrainChartView: View {
             
         case .energy:
             guard !runner.curvePoints.isEmpty else { return 0.0...100.0 }
-            let vals = runner.curvePoints.map(\.postEnergy)
+            let vals = runner.curvePoints.map { energyValue($0) }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.01
             let span = maxY - minY
@@ -467,6 +479,18 @@ struct StressStrainChartView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 
+                // Force / stress control: energy = elastic E_el or enthalpy H
+                if hasElasticEnergy && chartMode == .energy {
+                    Picker("", selection: $plotEnthalpy) {
+                        Text("E_el").tag(false)
+                        Text("H").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 90)
+                    .help("Under force or stress control the logged energy is the enthalpy H = E_el − W_ext, dominated by the load term; E_el is the stored elastic energy.")
+                }
                 // Force / stress control: x-axis = load α or conjugate strain ε
                 if hasConjugateStrain && chartMode != .gbEnergy && chartMode != .eigenvalue {
                     Picker("", selection: $plotAgainstConjugateStrain) {
@@ -695,8 +719,8 @@ struct StressStrainChartView: View {
                     } else {
                         // 1. Primary Stress / Energy Line Mark (+ PointMark when sparse)
                         ForEach(displayCurvePoints) { pt in
-                            let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
-                            let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : "Internal Energy (E)"
+                            let yVal = chartMode == .stress ? stressValue(for: pt) : energyValue(pt)
+                            let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : energyLabel
                             LineMark(
                                 x: .value(conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)", xValue(pt)),
                                 y: .value(yLabel, yVal)
@@ -718,8 +742,8 @@ struct StressStrainChartView: View {
                         // 2. Plasticity / Remesh Events Overlay
                         if showRemeshEvents {
                             ForEach(displayRemeshEvents) { pt in
-                                let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
-                                let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : "Internal Energy (E)"
+                                let yVal = chartMode == .stress ? stressValue(for: pt) : energyValue(pt)
+                                let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : energyLabel
                                 PointMark(
                                     x: .value(conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)", xValue(pt)),
                                     y: .value(yLabel, yVal)
@@ -765,7 +789,7 @@ struct StressStrainChartView: View {
                             
                             PointMark(
                                 x: .value("Selected α", xValue(pt)),
-                                y: .value("Value", chartMode == .stress ? stressValue(for: pt) : pt.postEnergy)
+                                y: .value("Value", chartMode == .stress ? stressValue(for: pt) : energyValue(pt))
                             )
                             .symbolSize(80)
                             .foregroundStyle(Color.cyan)
@@ -916,7 +940,8 @@ struct StressStrainChartView: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.orange)
                         }
-                        Text("Energy E: \(String(format: "%.6e", pt.postEnergy))")
+                        Text(pt.elasticEnergy.map { "E_el: \(String(format: "%.6e", $0))  H: \(String(format: "%.6e", pt.postEnergy))" }
+                             ?? "Energy E: \(String(format: "%.6e", pt.postEnergy))")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.purple)
                         if pt.shouldRemesh && pt.iteration > 0 {

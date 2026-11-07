@@ -87,6 +87,10 @@
 - **GUI chart under force / stress control** plots against the conjugate strain ε by default, so strain
   bursts at fixed load show as jumps along x. An `x: ε | x: α` toggle appears for such runs, the readout
   shows both, and the series is renamed "Conjugate Strain ε (force / stress control)".
+- **GUI energy under force / stress control.** The logged energy there is the enthalpy H = E_el − W_ext,
+  dominated by the load term (≈ −A₀σε). The Energy tab now plots the elastic energy E_el (`ElasticEnergy`
+  column) by default, with an `E_el | H` toggle, and the readout shows both. The status pill shows the
+  conjugate strain ε instead of α (which is the stress there).
 - **GUI avalanche count under force / stress control.** The count was based on drops of the logged energy.
   Under force or stress control that energy is the enthalpy, which falls at every load step, so every step
   counted. Such runs now count the solver's own flags (`fractional_drops.csv`).

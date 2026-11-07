@@ -61,6 +61,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
     public let contactAtoms: Double
     /// Work-conjugate strain of a dead load, sum f0 . u / A (0 when the run has no traction rules)
     public let effectiveStrain: Double
+    /// Elastic energy E_el (force / stress control only; PostEnergy is then the enthalpy H = E_el - W_ext)
+    public let elasticEnergy: Double?
     
     public init(
         iteration: Int,
@@ -82,7 +84,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
         indenterLoad: Double = 0.0,
         meanContactPressure: Double = 0.0,
         contactAtoms: Double = 0.0,
-        effectiveStrain: Double = 0.0
+        effectiveStrain: Double = 0.0,
+        elasticEnergy: Double? = nil
     ) {
         self.iteration = iteration
         self.alpha = alpha
@@ -104,6 +107,7 @@ public struct StressStrainPoint: Identifiable, Equatable {
         self.meanContactPressure = meanContactPressure
         self.contactAtoms = contactAtoms
         self.effectiveStrain = effectiveStrain
+        self.elasticEnergy = elasticEnergy
     }
 
     public func value(for component: StressComponentType) -> Double {
