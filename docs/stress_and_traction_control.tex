@@ -128,6 +128,92 @@ where \(\G_e\) does not depend on \(\Fb\). The energy is therefore a function
      =\Big(\sum_e A_e\,\Pk_e\,\F_e^{\mathsf T}\Big)\Fb^{-\mathsf T}.
   \label{eq:dEdF}
 \end{align}
+
+\paragraph{Derivation of \eqref{eq:dEdw} and \eqref{eq:dEdF}.}
+We use components \(i,j,k,m,\alpha\in\{1,2\}\), the convention
+\((\mathbf u\otimes\mathbf v)_{i\alpha}=u_iv_\alpha\) (so \(\mathbf u\otimes\mathbf v=\mathbf u\mathbf v^{\mathsf T}\)),
+and the inner product \(\mathbf A:\mathbf B=\sum_{i,\alpha}A_{i\alpha}B_{i\alpha}=\tr(\mathbf A^{\mathsf T}\mathbf B)\).
+In components, \eqref{eq:xw} and \eqref{eq:FeG} read
+\begin{equation}
+  x_{a,i}=\sum_j\bar F_{ij}\,w_{a,j},\qquad
+  (F_e)_{i\alpha}=\sum_{b\in e}\sum_j\bar F_{ij}\big(w_{b,j}+T^e_{b,j}\big)(\nabla N^e_b)_\alpha
+  =\sum_j\bar F_{ij}\,(G_e)_{j\alpha}.
+  \label{eq:FeGcomp}
+\end{equation}
+The cell enters \(\F_e\) only through the left factor \(\Fb\), the atoms only through \(\G_e\). The
+periodic images are included: their positions \(\Fb(\w_b+\T^e_b)\) also scale with \(\Fb\).
+
+\emph{Nodal forces.} From \eqref{eq:Fe}, \(\partial(F_e)_{k\alpha}/\partial x_{a,i}=\delta_{ki}(\nabla N^e_a)_\alpha\)
+for \(a\in e\), and the chain rule with \((P_e)_{k\alpha}=\partial W/\partial(F_e)_{k\alpha}\) gives the
+force expression in \eqref{eq:E}:
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}
+  =\sum_{e\ni a}A_e\sum_{k,\alpha}(P_e)_{k\alpha}\,\delta_{ki}(\nabla N^e_a)_\alpha
+  =\sum_{e\ni a}A_e\,(\Pk_e\nabla N^e_a)_i .
+\end{equation}
+
+\emph{Derivative with respect to the internal coordinates.} At fixed \(\Fb\), \(w_{a,j}\) enters
+\(E_{\mathrm{el}}\) only through \(\x_a\), with \(\partial x_{a,i}/\partial w_{a,j}=\bar F_{ij}\). Hence
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial w_{a,j}}
+  =\sum_i\frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}\,\bar F_{ij}
+  =\sum_i(\Fb^{\mathsf T})_{ji}\,\frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}
+  =\Big(\Fb^{\mathsf T}\frac{\partial E_{\mathrm{el}}}{\partial\x_a}\Big)_j .
+\end{equation}
+The sum runs over the \emph{first} index of \(\bar F_{ij}\), which is why the transpose appears; this
+is \eqref{eq:dEdw}. Equivalently, a variation \(\delta\w_a\) at fixed \(\Fb\) moves the atom by
+\(\delta\x_a=\Fb\,\delta\w_a\), and
+\[
+  \delta E_{\mathrm{el}}=\Big(\frac{\partial E_{\mathrm{el}}}{\partial\x_a}\Big)^{\mathsf T}\Fb\,\delta\w_a
+  =\Big(\Fb^{\mathsf T}\frac{\partial E_{\mathrm{el}}}{\partial\x_a}\Big)^{\mathsf T}\delta\w_a .
+\]
+The same result
+follows through \(\G_e\): with \(\partial(G_e)_{m\alpha}/\partial w_{a,j}=\delta_{mj}(\nabla N^e_a)_\alpha\),
+\[
+  \frac{\partial E_{\mathrm{el}}}{\partial w_{a,j}}
+  =\sum_{e\ni a}A_e\sum_{i,\alpha}(P_e)_{i\alpha}\,\bar F_{ij}\,(\nabla N^e_a)_\alpha
+  =\sum_i\bar F_{ij}\,\frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}} .
+\]
+
+\emph{Derivative with respect to the cell, first form.} At fixed \(\w\), \(\G_e\) is constant and, from
+\eqref{eq:FeGcomp},
+\begin{equation}
+  \frac{\partial(F_e)_{k\alpha}}{\partial\bar F_{ij}}
+  =\sum_m\delta_{ki}\,\delta_{mj}\,(G_e)_{m\alpha}=\delta_{ki}\,(G_e)_{j\alpha}.
+  \label{eq:dFedFb}
+\end{equation}
+The chain rule over all entries of \(\F_e\) then gives
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial\bar F_{ij}}
+  =\sum_eA_e\sum_{k,\alpha}(P_e)_{k\alpha}\,\delta_{ki}\,(G_e)_{j\alpha}
+  =\sum_eA_e\sum_\alpha(P_e)_{i\alpha}\,(\G_e^{\mathsf T})_{\alpha j}
+  =\Big(\sum_eA_e\,\Pk_e\,\G_e^{\mathsf T}\Big)_{ij}.
+\end{equation}
+Here the sum runs over the \emph{second} index of both \(\Pk_e\) and \(\G_e\), which produces
+\(\G_e^{\mathsf T}\). In matrix form: at fixed \(\w\), \(\delta\F_e=\delta\Fb\,\G_e\), and with the cyclic
+property of the trace,
+\[
+  \delta E_{\mathrm{el}}=\sum_eA_e\,\Pk_e:\delta\F_e
+  =\sum_eA_e\tr\!\big(\Pk_e^{\mathsf T}\,\delta\Fb\,\G_e\big)
+  =\sum_eA_e\tr\!\big(\G_e\Pk_e^{\mathsf T}\,\delta\Fb\big)
+  =\Big(\sum_eA_e\,\Pk_e\G_e^{\mathsf T}\Big):\delta\Fb ,
+\]
+since \((\Pk_e\G_e^{\mathsf T})^{\mathsf T}=\G_e\Pk_e^{\mathsf T}\). This is the first equality in
+\eqref{eq:dEdF}. Note that a variation of \(\Fb\) at fixed \(\w\) moves every atom affinely,
+\(\delta\x_a=\delta\Fb\,\w_a\); this is why \(\partial E_{\mathrm{el}}/\partial\Fb\) is the macroscopic
+stress and does not vanish when the atoms are in equilibrium.
+
+\emph{Second form.} Since \(\det\Fb>0\), \eqref{eq:FeG} gives \(\G_e=\Fb^{-1}\F_e\) and therefore
+\(\G_e^{\mathsf T}=\F_e^{\mathsf T}\Fb^{-\mathsf T}\). The factor \(\Fb^{-\mathsf T}\) is the same for every
+triangle and comes out of the sum:
+\[
+  \frac{\partial E_{\mathrm{el}}}{\partial\Fb}
+  =\sum_eA_e\,\Pk_e\,\F_e^{\mathsf T}\,\Fb^{-\mathsf T}
+  =\Big(\sum_eA_e\,\Pk_e\,\F_e^{\mathsf T}\Big)\Fb^{-\mathsf T}.
+\]
+This form needs only \(\F_e\) and \(\Pk_e\), which each triangle has already computed for its energy and
+forces; \(\G_e\) is never formed.
+
 The matrix \(\mathbf V=\sum_e A_e\Pk_e\F_e^{\mathsf T}\) is the (Kirchhoff) virial of the cell. It
 is accumulated during the same element loop that computes the energy and the nodal forces, so the
 derivative with respect to the cell costs nothing extra.
@@ -176,12 +262,20 @@ rotation \(\mathbf R\). Every \(\Fb\) with positive determinant has a unique dec
 The cell then has three kinematic degrees of freedom \((\bar F_{11},\bar F_{12},\bar F_{22})\),
 conjugate to \((\bar P_{11},\bar P_{12},\bar P_{22})\). The fourth component \(\bar P_{21}\) is not
 an independent unknown: objectivity implies the rotational balance
-\(\Pb\,\Fb^{\mathsf T}=(\Pb\,\Fb^{\mathsf T})^{\mathsf T}\), which in the gauge \eqref{eq:gauge}
-reads
+\(\Pb\,\Fb^{\mathsf T}=(\Pb\,\Fb^{\mathsf T})^{\mathsf T}\). With
+\((\Pb\Fb^{\mathsf T})_{ij}=\sum_K\bar P_{iK}\bar F_{jK}\) and \(\bar F_{21}=0\), the two off-diagonal
+entries are \((\Pb\Fb^{\mathsf T})_{12}=\bar P_{12}\bar F_{22}\) and
+\((\Pb\Fb^{\mathsf T})_{21}=\bar P_{21}\bar F_{11}+\bar P_{22}\bar F_{12}\), so in the gauge
+\eqref{eq:gauge} the balance reads
 \begin{equation}
-  \bar P_{21}\,\bar F_{11}=\bar P_{11}\,\bar F_{12}+\bar P_{12}\,\bar F_{22}.
+  \bar P_{21}\,\bar F_{11}+\bar P_{22}\,\bar F_{12}=\bar P_{12}\,\bar F_{22}.
   \label{eq:P21}
 \end{equation}
+(The balance itself follows from objectivity: for an infinitesimal rotation
+\(\mathbf R=\I+\epsilon\mathbf W\), \(\mathbf W^{\mathsf T}=-\mathbf W\),
+\(0=\mathrm dE_{\mathrm{el}}(\w,\mathbf R\Fb)/\mathrm d\epsilon=A_0\Pb:(\mathbf W\Fb)
+=A_0\tr\!\big(\Pb^{\mathsf T}\mathbf W\Fb\big)=A_0\,(\Pb\Fb^{\mathsf T}):\mathbf W\) for every skew
+\(\mathbf W\), i.e.\ \(\Pb\Fb^{\mathsf T}\) is symmetric.)
 
 \begin{proposition}\label{prop:full}
 Let \(\Fb\) satisfy \eqref{eq:gauge} and let \(\Pb\) and \(\Pt\) both satisfy the rotational
@@ -301,6 +395,50 @@ the three loadings of Table~\ref{tab:presets} give the explicit targets
   P^{\mathrm t}_{11}=s\,\bar F_{22},\quad P^{\mathrm t}_{12}=0,\quad P^{\mathrm t}_{22}=0 .
   \label{eq:Ptxx}
 \end{align}
+
+\paragraph{Derivation.}
+By \eqref{eq:macrostress}, \(\sigb=\bar J^{-1}\Pb\Fb^{\mathsf T}\). Multiplying on the right by
+\(\bar J\,\Fb^{-\mathsf T}\) gives \(\Pb=\bar J\,\sigb\,\Fb^{-\mathsf T}\), so prescribing \(\sigb=\sigt\)
+prescribes the nominal stress \eqref{eq:Ptsig}, which depends on the current cell. In the gauge
+\eqref{eq:gauge}, \(\bar J=\bar F_{11}\bar F_{22}\) and
+\[
+  \Fb^{-1}=\frac{1}{\bar F_{11}\bar F_{22}}\begin{pmatrix}\bar F_{22}&-\bar F_{12}\\0&\bar F_{11}\end{pmatrix},
+  \qquad
+  \bar J\,\Fb^{-\mathsf T}=\begin{pmatrix}\bar F_{22}&0\\-\bar F_{12}&\bar F_{11}\end{pmatrix}
+  \equiv\operatorname{cof}\Fb ,
+\]
+the cofactor matrix. Hence \(\Pt=\sigt\operatorname{cof}\Fb\), which is linear in the cell components.
+For the three loadings,
+\begin{align*}
+  \tau\begin{pmatrix}0&1\\1&0\end{pmatrix}\operatorname{cof}\Fb
+   &=\tau\begin{pmatrix}-\bar F_{12}&\bar F_{11}\\ \bar F_{22}&0\end{pmatrix},\\
+  s\begin{pmatrix}0&0\\0&1\end{pmatrix}\operatorname{cof}\Fb
+   &=s\begin{pmatrix}0&0\\-\bar F_{12}&\bar F_{11}\end{pmatrix},\\
+  s\begin{pmatrix}1&0\\0&0\end{pmatrix}\operatorname{cof}\Fb
+   &=s\begin{pmatrix}\bar F_{22}&0\\0&0\end{pmatrix}.
+\end{align*}
+The \((11),(12),(22)\) entries are \eqref{eq:Ptshear}--\eqref{eq:Ptxx}. The \((21)\) entries
+(\(\tau\bar F_{22}\), \(-s\bar F_{12}\), \(0\)) are not prescribed: they satisfy the rotational balance
+\eqref{eq:P21}, as they must, since \(\Pt\Fb^{\mathsf T}=\bar J\sigt\) is symmetric.
+
+\paragraph{Load stiffness.}
+Ordering the free components as \((11,12,22)\), the derivative \(\mathbb L=\partial\Pt/\partial\Fb\)
+of the targets \eqref{eq:Ptshear}--\eqref{eq:Ptxx} is
+\begin{equation}
+  \mathbb L_{\text{shear}}=\tau\begin{pmatrix}0&-1&0\\1&0&0\\0&0&0\end{pmatrix},\qquad
+  \mathbb L_{yy}=s\begin{pmatrix}0&0&0\\0&0&0\\1&0&0\end{pmatrix},\qquad
+  \mathbb L_{xx}=s\begin{pmatrix}0&0&1\\0&0&0\\0&0&0\end{pmatrix}.
+  \label{eq:Lload}
+\end{equation}
+For instance, \(P^{\mathrm t}_{11}=-\tau\bar F_{12}\) gives the entry \(-\tau\) in row \(11\), column
+\(12\). A load derives from a work potential exactly when \(\mathbb L\) is symmetric (equality of the
+mixed second derivatives of the potential), and none of these is: \(\mathbb L_{\text{shear}}\) is even
+antisymmetric. The hydrostatic target \(\sigt=-p\I\) gives \(\Pt=-p\operatorname{cof}\Fb\),
+\(P^{\mathrm t}_{11}=-p\bar F_{22}\), \(P^{\mathrm t}_{22}=-p\bar F_{11}\), and a symmetric \(\mathbb L\).
+The same matrices give the exterior derivative of the work one-form below,
+\(\mathrm d\omega=A_0\sum_{a<b}(\mathbb L_{ba}-\mathbb L_{ab})\,\mathrm d\bar F_a\wedge\mathrm d\bar F_b\)
+with \(a,b\) running over \((11,12,22)\).
+
 A pure Cauchy shear thus requires a compressive nominal normal stress \(-\tau\bar F_{12}\) on the
 cell, which cancels the normal Cauchy stress of \eqref{eq:nominalshear}. The work one-form
 \(\omega=A_0\sum_{\mathcal S}P^{\mathrm t}_{ij}(\Fb)\,\mathrm d\bar F_{ij}\) is not closed:
@@ -404,8 +542,11 @@ dimension of a length, so that the gradient components
   =\sqrt{A_0}\,\big(\bar P_{ij}-P^{\mathrm t}_{ij}\big)
   \label{eq:gradz}
 \end{equation}
-have the same scaling as the atomic forces, and the limited-memory quasi-Newton (L-BFGS) Hessian
-estimate is well conditioned across the two blocks. Positions are recovered as
+have the same scaling as the atomic forces. (With \(\zeta_{ij}=\sqrt{A_0}\,\bar F_{ij}\),
+\(\partial H/\partial\zeta_{ij}=A_0^{-1/2}\,\partial H/\partial\bar F_{ij}\); then use \eqref{eq:H},
+\eqref{eq:dEdF} and \(\partial E_{\mathrm{el}}/\partial\Fb=A_0\Pb\) from \eqref{eq:macrostress}.) The
+limited-memory quasi-Newton (L-BFGS) Hessian
+estimate is then well conditioned across the two blocks. Positions are recovered as
 \(\x_a=\Fb\w_a\), and the periodic image translations follow \(\Fb\) in every function evaluation.
 
 Lagrange reduction makes the homogeneous energy bounded and periodic along lattice-invariant shears
@@ -537,8 +678,18 @@ has the eigenvalue \(1\), i.e.\ where the fixed-point iteration of Algorithm~\re
 contracting (Eq.~\eqref{eq:rho}). \(\mathbf J\) also gives the slope of the load--strain curve. Write
 the target as \(\Pt(\Fb,\alpha)\), with \(\partial\Pt/\partial\alpha=\mathbf e_r\otimes\mathbf e_c\) for a
 nominal preset controlling \(\bar P_{rc}\) and \(\partial\Pt/\partial\alpha=\bar J\,\bm\Sigma\,\Fb^{-\mathsf T}\)
-for a Cauchy preset with \(\sigt=\alpha\bm\Sigma\). Differentiating \(\mathbf R=\mathbf 0\) along the
-path gives
+for a Cauchy preset with \(\sigt=\alpha\bm\Sigma\) (from \(\Pt=\bar J\sigt\Fb^{-\mathsf T}\), linear in
+\(\alpha\) at fixed \(\Fb\)). Along the equilibrium path \(\Fb(\alpha)\) the residual
+\(\mathbf R(\Fb(\alpha),\alpha)=\Pb(\Fb(\alpha))-\Pt(\Fb(\alpha),\alpha)\) vanishes identically, with
+\(\Pb\) the relaxed stress (atoms at equilibrium). Its total derivative is therefore zero:
+\[
+  \mathbf 0=\frac{\mathrm d\mathbf R}{\mathrm d\alpha}
+  =\Big(\frac{\partial\Pb}{\partial\Fb}-\frac{\partial\Pt}{\partial\Fb}\Big)\frac{\mathrm d\Fb}{\mathrm d\alpha}
+   -\frac{\partial\Pt}{\partial\alpha}
+  =\mathbf J\,\frac{\mathrm d\Fb}{\mathrm d\alpha}-\frac{\partial\Pt}{\partial\alpha},
+\]
+using \(\partial\Pb/\partial\Fb=\mathbb K_{\mathrm{eff}}\) from \eqref{eq:Keff}. Solving for the cell
+rate, and inverting its controlled component,
 \begin{equation}
   \frac{\mathrm d\Fb}{\mathrm d\alpha}=\mathbf J^{-1}\frac{\partial\Pt}{\partial\alpha},\qquad
   \frac{\mathrm d\alpha}{\mathrm d\varepsilon}=\Big[\Big(\mathbf J^{-1}\frac{\partial\Pt}{\partial\alpha}\Big)_{rc}\Big]^{-1},
@@ -551,7 +702,16 @@ Because \(\x=\Fb\w\) is linear in \(\w\), with \(\mathbf D=\Fb\otimes\I_n\) we h
 \(\mathbf K^{ww}=\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D\) and
 \(\mathbf K^{wF}=\mathbf D^{\mathsf T}\mathbf K^{xF}\). Here \(\mathbf K^{xF}\) collects the first terms of
 \eqref{eq:KFw}, \(\sum_eA_e\,\mathbb A_e:(\partial\F_e/\partial\x)\otimes(\partial\F_e/\partial\Fb)\). The
-geometric term of \eqref{eq:KFw} is the atomic force and vanishes at equilibrium. Hence
+geometric term of \eqref{eq:KFw} is the atomic force and vanishes at equilibrium (see
+\eqref{eq:KxF}). Since \(\det\Fb\neq0\), \(\mathbf D\) is invertible and
+\((\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D)^{-1}=\mathbf D^{-1}(\mathbf K^{xx})^{-1}\mathbf D^{-\mathsf T}\), so the
+cell kinematics cancel from the relaxation term:
+\[
+  \mathbf K^{Fw}(\mathbf K^{ww})^{-1}\mathbf K^{wF}
+  =(\mathbf K^{xF})^{\mathsf T}\mathbf D\,\mathbf D^{-1}(\mathbf K^{xx})^{-1}\mathbf D^{-\mathsf T}\mathbf D^{\mathsf T}\mathbf K^{xF}
+  =(\mathbf K^{xF})^{\mathsf T}(\mathbf K^{xx})^{-1}\mathbf K^{xF}.
+\]
+Hence
 \begin{equation}
   A_0\,\mathbb K_{\mathrm{eff}}=\mathbf K^{FF}-(\mathbf K^{xF})^{\mathsf T}(\mathbf K^{xx})^{+}\mathbf K^{xF},
   \label{eq:KeffX}
@@ -729,6 +889,70 @@ elastic Hessian with respect to \(\w\) and the free components of \(\Fb\) is the
   \label{eq:Kfull}
 \end{equation}
 
+\paragraph{Derivation of \eqref{eq:KFF}--\eqref{eq:Kww}.}
+Lower-case indices refer to the current frame, upper-case \(J,L\) to the reference frame, and
+repeated indices are summed. By definition \(P_{e,iJ}=\partial W/\partial F_{iJ}\) and
+\(\mathbb A_{e,iJkL}=\partial P_{iJ}/\partial F_{kL}\) at \(\F_e\), so a change of \(\F_e\) changes the
+stress by \(\mathrm dP_{e,iJ}=\mathbb A_{e,iJkL}\,\mathrm dF_{e,kL}\). The tangent has the major symmetry
+\(\mathbb A_{e,iJkL}=\mathbb A_{e,kLiJ}\) (equality of mixed partials of \(W\)). We start from the
+first derivatives, in components (Eqs.~\eqref{eq:dEdF} and \eqref{eq:E}):
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial\bar F_{ij}}=\sum_eA_e\,P_{e,iJ}\,G_{e,jJ},\qquad
+  \frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}=\sum_{e\ni a}A_e\,P_{e,iJ}\,\nabla N^e_{a,J}.
+  \label{eq:firstcomp}
+\end{equation}
+Only two derivatives of the kinematics are needed. At fixed \(\w\), Eq.~\eqref{eq:dFedFb} gives
+\(\partial F_{e,mL}/\partial\bar F_{kl}=\delta_{mk}G_{e,lL}\). At fixed \(\Fb\), from \eqref{eq:FeG},
+\begin{equation}
+  \frac{\partial G_{e,jJ}}{\partial w_{a,k}}=\delta_{jk}\,\nabla N^e_{a,J},\qquad
+  \frac{\partial F_{e,mL}}{\partial w_{a,k}}=\bar F_{mn}\frac{\partial G_{e,nL}}{\partial w_{a,k}}
+  =\bar F_{mk}\,\nabla N^e_{a,L}\qquad(a\in e).
+  \label{eq:dGdw}
+\end{equation}
+
+\emph{\(\mathbf K^{FF}\).} Differentiate the first expression in \eqref{eq:firstcomp} with respect
+to \(\bar F_{kl}\) at fixed \(\w\). Only \(\Pk_e\) changes, because \(\G_e\) depends on \(\w\) alone:
+\[
+  \frac{\partial^2E_{\mathrm{el}}}{\partial\bar F_{ij}\,\partial\bar F_{kl}}
+  =\sum_eA_e\,\frac{\partial P_{e,iJ}}{\partial\bar F_{kl}}\,G_{e,jJ}
+  =\sum_eA_e\,\mathbb A_{e,iJmL}\,\delta_{mk}\,G_{e,lL}\,G_{e,jJ}
+  =\sum_eA_e\,\mathbb A_{e,iJkL}\,G_{e,jJ}\,G_{e,lL},
+\]
+which is \eqref{eq:KFF}. It is symmetric under \((ij)\leftrightarrow(kl)\) by the major symmetry of
+\(\mathbb A_e\).
+
+\emph{\(\mathbf K^{Fw}\).} Differentiate the same expression with respect to \(w_{a,k}\) at fixed
+\(\Fb\). Now both factors depend on the atoms, and the product rule gives two terms:
+\[
+  \frac{\partial^2E_{\mathrm{el}}}{\partial\bar F_{ij}\,\partial w_{a,k}}
+  =\sum_{e\ni a}A_e\Big(\underbrace{\mathbb A_{e,iJmL}\,\bar F_{mk}\,\nabla N^e_{a,L}}_{\partial P_{e,iJ}/\partial w_{a,k}}\,G_{e,jJ}
+   +P_{e,iJ}\,\underbrace{\delta_{jk}\,\nabla N^e_{a,J}}_{\partial G_{e,jJ}/\partial w_{a,k}}\Big),
+\]
+which is \eqref{eq:KFw}. The sum runs over the triangles that contain \(a\), the only ones whose
+\(\G_e\) depends on \(\w_a\). By the second expression in \eqref{eq:firstcomp}, the geometric term is
+\(\delta_{jk}\,\partial E_{\mathrm{el}}/\partial x_{a,i}\), the force on atom \(a\); it vanishes at atomic
+equilibrium. The first term is \(\bar F_{mk}K^{xF}_{am,ij}\) with
+\begin{equation}
+  K^{xF}_{am,ij}=\frac{\partial}{\partial\bar F_{ij}}\Big|_{\w}\frac{\partial E_{\mathrm{el}}}{\partial x_{a,m}}
+  =\sum_{e\ni a}A_e\,\mathbb A_{e,mLiJ}\,\nabla N^e_{a,L}\,G_{e,jJ},
+  \label{eq:KxF}
+\end{equation}
+the change of the nodal forces under an affine change of the cell (obtained by differentiating the
+second expression in \eqref{eq:firstcomp} at fixed \(\w\), and using the major symmetry). With
+\(\mathbf D=\Fb\otimes\I_n\), the map \(\delta\w\mapsto\delta\x=\Fb\,\delta\w\) on all atoms, this reads
+\(\mathbf K^{wF}=\mathbf D^{\mathsf T}\mathbf K^{xF}\) at equilibrium.
+
+\emph{\(\mathbf K^{ww}\).} At fixed \(\Fb\), \(\x_a=\Fb\w_a\) is linear in \(\w\). Differentiating
+\eqref{eq:dEdw} once more,
+\[
+  \frac{\partial^2E_{\mathrm{el}}}{\partial w_{a,j}\,\partial w_{b,l}}
+  =\bar F_{ij}\,\frac{\partial}{\partial w_{b,l}}\frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}
+  =\bar F_{ij}\,\frac{\partial^2E_{\mathrm{el}}}{\partial x_{a,i}\,\partial x_{b,k}}\,\bar F_{kl}
+  =\big(\Fb^{\mathsf T}\mathbf K^{xx}_{ab}\Fb\big)_{jl},
+\]
+which is \eqref{eq:Kww}. There is no geometric term because the map \(\w\mapsto\x\) is linear; for all
+atoms at once, \(\mathbf K^{ww}=\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D\).
+
 \paragraph{Relaxed and Cauchy--Born tangents.}
 Eliminating the atoms at equilibrium gives the relaxed (effective) tangent of the cell, the Schur
 complement
@@ -738,10 +962,31 @@ complement
   \partial E_{\mathrm{el}}/\partial\w=\mathbf 0 .
   \label{eq:Keff}
 \end{equation}
+To derive \eqref{eq:Keff}, follow a family of atomic equilibria \(\w(\Fb)\), on which
+\(\mathbf g(\w,\Fb)=\partial E_{\mathrm{el}}/\partial\w=\mathbf 0\). Differentiating this identity,
+\(\mathbf K^{ww}\,\mathrm d\w+\mathbf K^{wF}\,\mathrm d\Fb=\mathbf 0\), so
+\(\mathrm d\w=-(\mathbf K^{ww})^{-1}\mathbf K^{wF}\,\mathrm d\Fb\). The nominal stress
+\(A_0\Pb=\partial E_{\mathrm{el}}/\partial\Fb\) evaluated on the family changes by
+\[
+  A_0\,\mathrm d\Pb=\mathbf K^{FF}\,\mathrm d\Fb+\mathbf K^{Fw}\,\mathrm d\w
+  =\big(\mathbf K^{FF}-\mathbf K^{Fw}(\mathbf K^{ww})^{-1}\mathbf K^{wF}\big)\,\mathrm d\Fb .
+\]
+The relaxed energy \(E^\ast(\Fb)=E_{\mathrm{el}}(\w(\Fb),\Fb)\) has
+\(\mathrm dE^\ast/\mathrm d\Fb=\partial E_{\mathrm{el}}/\partial\Fb+(\partial E_{\mathrm{el}}/\partial\w)\,
+\mathrm d\w/\mathrm d\Fb=A_0\Pb\) (the second term vanishes at equilibrium; this is the Hill--Mandel
+statement above). Hence \(A_0\mathbb K_{\mathrm{eff}}=\mathrm d^2E^\ast/\mathrm d\Fb^2\) is symmetric. Here
+\((\mathbf K^{ww})^{-1}\) acts on the complement of the two rigid translations of \(\w\), which span the
+null space of \(\mathbf K^{ww}\); the columns of \(\mathbf K^{wF}\) are orthogonal to them because the
+forces on a periodic cell sum to zero for every \(\Fb\).
 \(\mathbf K^{FF}/A_0\) alone is the affine (unrelaxed) tangent. For a homogeneously deformed lattice all
-triangles share the same \(\F_e\), \(\Pk_e\) and \(\mathbb A_e\); since a periodic fluctuation
-\(\delta\w\) changes the element gradients by amounts whose area average over the cell vanishes,
-\(\mathbf K^{Fw}\delta\w=\mathbf 0\), the relaxation term vanishes, and \(\mathbb K_{\mathrm{eff}}\) reduces to
+triangles share the same \(\F_e\), \(\Pk_e\) and \(\mathbb A_e\). A periodic fluctuation \(\delta\w\)
+changes the element gradients by \(\delta\G_e=\sum_{a\in e}\delta\w_a\otimes\nabla N^e_a\), whose
+area-weighted sum vanishes,
+\(\sum_eA_e\,\delta\G_e=\sum_a\delta\w_a\otimes\big(\sum_{e\ni a}A_e\nabla N^e_a\big)=\mathbf 0\): for every
+node of a periodic mesh, \(\sum_{e\ni a}A_e\nabla N^e_a=\mathbf 0\) (the outward normals of the closed
+patch around \(a\) sum to zero). With uniform \(\mathbb A_e\), \(\G_e\) and \(\Pk_e\), both terms of
+\eqref{eq:KFw} contract against this sum, so \(\mathbf K^{Fw}\delta\w=\mathbf 0\), the relaxation term
+vanishes, and \(\mathbb K_{\mathrm{eff}}\) reduces to
 the Cauchy--Born tangent \(\mathbb A(\Fb\F_0)\), the quantity computed by the acoustic-tensor
 routines of the code (\(\F_0\) maps \(\mathbb Z^2\) to the lattice). In a cell with defects, \(\mathbf
 K^{ww}\) is positive definite at a stable equilibrium, so the relaxation term is positive

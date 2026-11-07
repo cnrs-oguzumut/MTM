@@ -2,6 +2,19 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Docs — derivations in stress_and_traction_control.tex
+- Step-by-step derivations, each in index and matrix form, of:
+  - the cell derivatives (7)–(8) and the rotational balance;
+  - the scaled gradient;
+  - the Hessian blocks K^FF, K^Fw, K^ww, with the geometric term shown to be the atomic force;
+  - the relaxed tangent K_eff and why the homogeneous lattice has no relaxation term;
+  - the Cauchy targets via cof F̄ and the load-stiffness matrices 𝕃 (and why only the hydrostatic target
+    has a potential);
+  - the x-form of K_eff and the load-path tangent.
+- Fixed Eq. (P21), the rotational balance in the upper-triangular gauge. It now reads
+  P̄₂₁F̄₁₁ + P̄₂₂F̄₁₂ = P̄₁₂F̄₂₂; the old form, P̄₂₁F̄₁₁ = P̄₁₁F̄₁₂ + P̄₁₂F̄₂₂, was wrong. Its only use, the nominal-shear
+  example with P̄₂₂ = 0, is unaffected, and the code does not use it.
+
 ### Added — free-cell stability under PBC stress control
 - Under stress control the stability monitor (`--eig-every`, `--eig-at-avalanche`) now also evaluates the
   stability of the free cell. That is λ_box, the lowest eigenvalue (real part) of the relaxed cell Jacobian
