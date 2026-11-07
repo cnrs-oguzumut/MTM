@@ -35,6 +35,11 @@ struct StressStrainChartView: View {
     @State private var chartMode: ChartMetricMode = .stress
     @State private var stressComponent: StressComponentType = .primary
     @State private var scaleMode: ChartScaleMode = .autoFit
+    /// x-axis zoom (drag on the chart): lower bound, and upper bound or nil = follow the newest data
+    @State private var xZoomLower: Double? = nil
+    @State private var xZoomUpper: Double? = nil
+    @State private var zoomDragStart: CGFloat? = nil
+    @State private var zoomDragCurrent: CGFloat? = nil
     @State private var showRemeshEvents: Bool = true
     @State private var showYieldLine: Bool = true
     @State private var useInteriorGBGauge: Bool = true
@@ -128,6 +133,26 @@ struct StressStrainChartView: View {
         runner.curvePoints.filter { $0.iteration > 0 && $0.shouldRemesh }
     }
     
+    // MARK: - x-axis zoom
+
+    private var isXZoomed: Bool { xZoomLower != nil && chartMode != .gbEnergy }
+    /// Largest x of all data in the current mode (not only the visible part)
+    private var dataXMax: Double? {
+        chartMode == .eigenvalue
+            ? runner.eigenPoints.filter { eigenY($0) != nil }.map { eigenX($0) }.max()
+            : runner.curvePoints.map { xValue($0) }.max()
+    }
+    private func inXZoom(_ x: Double) -> Bool {
+        guard isXZoomed, let lo = xZoomLower else { return true }
+        return x >= lo && (xZoomUpper.map { x <= $0 } ?? true)
+    }
+    private func resetXZoom() {
+        xZoomLower = nil
+        xZoomUpper = nil
+        zoomDragStart = nil
+        zoomDragCurrent = nil
+    }
+
     // MARK: - Dynamic Clever Domain Calculations
     
     private var activeAlphas: [Double] {
@@ -155,6 +180,12 @@ struct StressStrainChartView: View {
             return lo < hi ? lo...hi : 0.0...60.0
         }
         
+        if isXZoomed, let lo = xZoomLower {
+            let hi = xZoomUpper ?? max(dataXMax ?? lo, lo)
+            let span = max(hi - lo, 1e-9)
+            return lo...(hi + (xZoomUpper == nil ? span * 0.05 : 0.0))
+        }
+
         let alphas = activeAlphas
         let firstAlpha = alphas.first ?? (runner.activeConfig?.alphaStart ?? 0.14)
         
@@ -219,7 +250,8 @@ struct StressStrainChartView: View {
             
         case .stress:
             guard !runner.curvePoints.isEmpty else { return 0.0...0.05 }
-            let vals = runner.curvePoints.map { stressValue(for: $0) }
+            let zoomed = runner.curvePoints.filter { inXZoom(xValue($0)) }
+            let vals = (zoomed.isEmpty ? runner.curvePoints : zoomed).map { stressValue(for: $0) }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.01
             let span = maxY - minY
@@ -247,7 +279,8 @@ struct StressStrainChartView: View {
             
         case .energy:
             guard !runner.curvePoints.isEmpty else { return 0.0...100.0 }
-            let vals = runner.curvePoints.map { energyValue($0) }
+            let zoomed = runner.curvePoints.filter { inXZoom(xValue($0)) }
+            let vals = (zoomed.isEmpty ? runner.curvePoints : zoomed).map { energyValue($0) }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.01
             let span = maxY - minY
@@ -269,7 +302,8 @@ struct StressStrainChartView: View {
             return yMin <= yMax ? yMin...yMax : (minY - 0.1)...(maxY + 0.1)
             
         case .eigenvalue:
-            let vals = runner.eigenPoints.compactMap { eigenY($0) }
+            let zoomedEig = runner.eigenPoints.filter { inXZoom(eigenX($0)) }
+            let vals = (zoomedEig.isEmpty ? runner.eigenPoints : zoomedEig).compactMap { eigenY($0) }
             guard !vals.isEmpty else { return -0.05...0.5 }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.1
@@ -391,6 +425,16 @@ struct StressStrainChartView: View {
                 .controlSize(.small)
                 .fixedSize()
                 .help(scaleMode.tooltip)
+
+                if isXZoomed {
+                    Button(action: resetXZoom) {
+                        Label("Zoom", systemImage: "xmark.circle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help("Showing a zoomed x range (drag on the chart to choose it). Click, or double-click the chart, to show all points.")
+                }
                 
                 Divider()
                     .frame(height: 14)
@@ -884,8 +928,43 @@ struct StressStrainChartView: View {
                                     selectedAlpha = nil
                                 }
                             }
+                            // Drag across the chart to zoom the x axis; double-click to show all points
+                            .gesture(
+                                DragGesture(minimumDistance: 6)
+                                    .onChanged { value in
+                                        guard chartMode != .gbEnergy else { return }
+                                        zoomDragStart = value.startLocation.x
+                                        zoomDragCurrent = value.location.x
+                                    }
+                                    .onEnded { value in
+                                        defer { zoomDragStart = nil; zoomDragCurrent = nil }
+                                        guard chartMode != .gbEnergy,
+                                              let a: Double = proxy.value(atX: value.startLocation.x),
+                                              let b: Double = proxy.value(atX: value.location.x),
+                                              abs(value.location.x - value.startLocation.x) > 6 else { return }
+                                        let lo = min(a, b), hi = max(a, b)
+                                        // A selection that reaches the newest point keeps following the live data
+                                        let follow = (dataXMax.map { hi >= $0 } ?? true)
+                                        xZoomLower = lo
+                                        xZoomUpper = follow ? nil : hi
+                                    }
+                            )
+                            .onTapGesture(count: 2) { resetXZoom() }
+                        if let s0 = zoomDragStart, let s1 = zoomDragCurrent {
+                            Rectangle()
+                                .fill(BlueHour.accent.opacity(0.15))
+                                .overlay(Rectangle().stroke(BlueHour.accent.opacity(0.6), lineWidth: 1))
+                                .frame(width: abs(s1 - s0), height: geo.size.height)
+                                .position(x: (s0 + s1) / 2, y: geo.size.height / 2)
+                                .allowsHitTesting(false)
+                        }
                     }
                 }
+                .help("Drag across the chart to zoom the x axis; double-click to show all points.")
+                .onChange(of: chartMode) { _, _ in resetXZoom() }
+                .onChange(of: plotAgainstConjugateStrain) { _, _ in resetXZoom() }
+                .onChange(of: scaleMode) { _, _ in resetXZoom() }
+                .onChange(of: runner.outputDirectory) { _, _ in resetXZoom() }
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
                 .padding(.bottom, 8)
@@ -1028,7 +1107,7 @@ struct StressStrainChartView: View {
     }
     
     private var displayCurvePoints: [StressStrainPoint] {
-        let pts = runner.curvePoints
+        let pts = isXZoomed ? runner.curvePoints.filter { inXZoom(xValue($0)) } : runner.curvePoints
         guard pts.count > 1000 else { return pts }
         let stride = max(1, pts.count / 800)
         var sampled: [StressStrainPoint] = []
@@ -1043,7 +1122,7 @@ struct StressStrainChartView: View {
     }
     
     private var displayRemeshEvents: [StressStrainPoint] {
-        let events = remeshEvents
+        let events = isXZoomed ? remeshEvents.filter { inXZoom(xValue($0)) } : remeshEvents
         guard events.count > 400 else { return events }
         let stride = max(1, events.count / 300)
         var sampled: [StressStrainPoint] = []
@@ -1054,7 +1133,7 @@ struct StressStrainChartView: View {
     }
     
     private var displayEigenPoints: [EigenPoint] {
-        let pts = runner.eigenPoints
+        let pts = isXZoomed ? runner.eigenPoints.filter { inXZoom(eigenX($0)) } : runner.eigenPoints
         guard pts.count > 1000 else { return pts }
         let stride = max(1, pts.count / 800)
         var sampled: [EigenPoint] = []

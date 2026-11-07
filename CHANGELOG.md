@@ -2,6 +2,12 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — GUI: x-axis zoom on the results chart
+- Drag across the stress / energy / λ_min chart to zoom the x axis to that range. The y axis refits to the
+  points inside it. A selection that reaches the newest point keeps following the live data. Double-click
+  the chart, click the "Zoom ✕" chip, or pick a scale mode to show all points again. Useful when the
+  relaxation step (e.g. F₁₂ = 0.14 before stress loading) squeezes the loading curve into a corner.
+
 ### Added — avalanche-size columns under force / stress control
 - energy_stress_log.csv of force- and stress-controlled runs gains three columns at the end: `StrainJump`
   (Δε of the step), `CascadeEnthalpyChange` (ΔΠ of the reconnection cascade at fixed load,
