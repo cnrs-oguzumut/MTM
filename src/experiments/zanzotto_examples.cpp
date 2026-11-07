@@ -2078,6 +2078,11 @@ void example_1_conti_zanzotto_loading(
         traction_columns.push_back({"Fbar12", F_ext(0, 1)});
         traction_columns.push_back({"Fbar22", F_ext(1, 1)});
       }
+      // Avalanche statistics under force control: the strain jump of the step, the enthalpy change of the
+      // reconnection cascade at fixed load (Cauchy-corrected), and the avalanche flag; 0 on other steps
+      traction_columns.push_back({"StrainJump", force_control_step ? traction_dstrain : 0.0});
+      traction_columns.push_back({"CascadeEnthalpyChange", force_control_step ? cascade_enthalpy_change() : 0.0});
+      traction_columns.push_back({"Avalanche", stress_drop_detected ? 1.0 : 0.0});
     }
     ConfigurationSaver::logEnergyAndStress_v2(
         i, alpha_log, pre_energy, pre_stress, post_energy, post_stress, pre_area,

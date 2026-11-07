@@ -612,6 +612,12 @@ and, when remeshing is enabled, the reconnection cascade of the step was accepte
 enthalpy below its value after the continuous relaxation. The left-hand side of \eqref{eq:burst}
 is the fractional strain burst, the force-control analogue of the fractional stress drop.
 
+Two measures of the size of an avalanche are available at every flagged step: the strain jump
+\(\Delta\varepsilon_n\), and the enthalpy change of the reconnection cascade at fixed load,
+\(\Delta\Pi_n=H_{\mathrm{after\ cascade}}-H_{\mathrm{before\ cascade}}<0\) (with the correction
+\eqref{eq:cauchyDPi} under Cauchy control). Both are recorded for each load step, together with the
+avalanche flag, so that size distributions can be built from either.
+
 \paragraph{Energy reported.}
 Under force control the functional minimized is \(H=E_{\mathrm{el}}-W_{\mathrm{ext}}\), which
 decreases monotonically along a loading path dominated by the work term. The elastic energy

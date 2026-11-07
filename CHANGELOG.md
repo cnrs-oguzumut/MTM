@@ -2,6 +2,14 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — avalanche-size columns under force / stress control
+- energy_stress_log.csv of force- and stress-controlled runs gains three columns at the end: `StrainJump`
+  (Δε of the step), `CascadeEnthalpyChange` (ΔΠ of the reconnection cascade at fixed load,
+  Cauchy-corrected; the value the console prints for each avalanche), and `Avalanche` (1 when the step is
+  flagged). They are 0 on steps that are not force-controlled. Existing columns keep their positions.
+- 40×40 Cauchy-shear check: the 5 flagged avalanches match fractional_drops.csv and the console, StrainJump
+  equals the difference of EffectiveStrain on every row, and ΔΠ < 0 on each avalanche.
+
 ### Changed — α is a stress throughout a relaxation-at-strain stress run
 - With `--relax-strain`, step 0 holds the cell at F₁₂ = relax_strain, and the loading after it is a stress
   schedule. The logs wrote the strain (e.g. 0.14) as α at step 0 and the target stress (e.g. 0.0069) from
