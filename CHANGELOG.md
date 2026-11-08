@@ -2,6 +2,14 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — GUI: core position against applied stress
+- In a Volterra cylinder load run, the "Core glide x_c − x₀" curve can be plotted against the far-field shear
+  stress σ_xy applied by the frozen ring (`AppliedSigmaXY`; "x: σ", the default), also under strain control,
+  or against the load α ("x: α").
+- A dashed orange curve shows the core position after the fixed-mesh relaxation, before that step's
+  remeshing (`CoreShiftRelaxed`). A jump only on the solid curve came from the reconnection; a jump on the
+  dashed curve is an instability of the lattice energy.
+
 ### Added — cylinder load diagnostic: jump in the relaxation, or after remeshing?
 - `--cyl-step-remesh=0` keeps the initial mesh (the Delaunay mesh of the dislocated crystal) for the whole
   load, so the core moves only through the lattice energy at fixed connectivity. The GUI has a "Remesh after

@@ -67,6 +67,10 @@ public struct StressStrainPoint: Identifiable, Equatable {
     public let elasticEnergy: Double?
     /// Volterra cylinder load: core glide x_c − x₀ (CoreShift column; nil in other runs)
     public let coreShift: Double?
+    /// Volterra cylinder load: core glide after the fixed-mesh relaxation, before remeshing (CoreShiftRelaxed)
+    public let coreShiftRelaxed: Double?
+    /// Volterra cylinder load: Cauchy–Born shear stress applied by the frozen ring (AppliedSigmaXY)
+    public let appliedSigmaXY: Double?
 
     public init(
         iteration: Int,
@@ -90,7 +94,9 @@ public struct StressStrainPoint: Identifiable, Equatable {
         contactAtoms: Double = 0.0,
         effectiveStrain: Double = 0.0,
         elasticEnergy: Double? = nil,
-        coreShift: Double? = nil
+        coreShift: Double? = nil,
+        coreShiftRelaxed: Double? = nil,
+        appliedSigmaXY: Double? = nil
     ) {
         self.iteration = iteration
         self.alpha = alpha
@@ -114,6 +120,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
         self.effectiveStrain = effectiveStrain
         self.elasticEnergy = elasticEnergy
         self.coreShift = coreShift
+        self.coreShiftRelaxed = coreShiftRelaxed
+        self.appliedSigmaXY = appliedSigmaXY
     }
 
     public func value(for component: StressComponentType) -> Double {

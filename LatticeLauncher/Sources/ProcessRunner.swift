@@ -725,11 +725,15 @@ public class ProcessRunner: ObservableObject {
             var effectiveStrainCol: Int? = nil
             var elasticEnergyCol: Int? = nil
             var coreShiftCol: Int? = nil
+            var coreShiftRelaxedCol: Int? = nil
+            var appliedSigmaCol: Int? = nil
             if let header = lines.first(where: { $0.hasPrefix("Iteration") }) {
                 let names = header.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 effectiveStrainCol = names.firstIndex(of: "EffectiveStrain")
                 elasticEnergyCol = names.firstIndex(of: "ElasticEnergy")
                 coreShiftCol = names.firstIndex(of: "CoreShift")
+                coreShiftRelaxedCol = names.firstIndex(of: "CoreShiftRelaxed")
+                appliedSigmaCol = names.firstIndex(of: "AppliedSigmaXY")
             }
 
             for line in lines {
@@ -790,7 +794,9 @@ public class ProcessRunner: ObservableObject {
                     contactAtoms: parseCol(22),
                     effectiveStrain: parseOptional(effectiveStrainCol) ?? 0.0, // traction runs only
                     elasticEnergy: parseOptional(elasticEnergyCol), // same runs
-                    coreShift: parseOptional(coreShiftCol) // Volterra cylinder load runs
+                    coreShift: parseOptional(coreShiftCol), // Volterra cylinder load runs
+                    coreShiftRelaxed: parseOptional(coreShiftRelaxedCol),
+                    appliedSigmaXY: parseOptional(appliedSigmaCol)
                 ))
             }
             
