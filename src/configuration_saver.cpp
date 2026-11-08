@@ -1,5 +1,6 @@
 #include "../include/output/configuration_saver.h"
 #include "../include/defects/Defectanalysis.h"
+#include "../include/lattice_energy/ReferenceFrame.h"
 #include "../include/reductions/LagrangeReduction.h"
 #include "../include/geometry/DomainDimensions.h"
 #include "../include/geometry/MacroscopicGeometry.h"
@@ -50,6 +51,31 @@ namespace {
         Eigen::Matrix2d R_theta;
         R_theta << c, -s,
                    s,  c;
+
+        // In triangular-reference mode, elements are measured against one equilateral parent triangle,
+        // so raw F differs across up/down triangles and cyclic CCW vertex orderings by 60-degree rotations
+        // R(k * 60 deg), k in {0..5}. Choose k that minimises ||F * R(k * 60 deg)^T - R_theta||_F.
+        if (reference_frame() == ReferenceFrame::Triangular) {
+            Eigen::Matrix2d best_F = F;
+            double min_dist_sq = 0.0;
+            bool has_best = false;
+            for (int k = 0; k < 6; ++k) {
+                const double ang = static_cast<double>(k) * (M_PI / 3.0);
+                const double ck = std::cos(ang);
+                const double sk = std::sin(ang);
+                Eigen::Matrix2d Rk_T;
+                Rk_T <<  ck, sk,
+                        -sk, ck;
+                const Eigen::Matrix2d F_cand = F * Rk_T;
+                const double dist_sq = (F_cand - R_theta).squaredNorm();
+                if (!has_best || dist_sq < min_dist_sq) {
+                    has_best = true;
+                    min_dist_sq = dist_sq;
+                    best_F = F_cand;
+                }
+            }
+            return best_F;
+        }
 
         // Target sits at the midpoint (F12 = 1/4) of the Lagrange fundamental domain
         // between the square phase (F12 = 0) and triangular phase (F12 = +1/2).
@@ -105,6 +131,10 @@ void ConfigurationSaver::setReferenceRotationDeg(double deg) {
 
 double ConfigurationSaver::getReferenceRotationDeg() {
     return g_reference_rotation_deg;
+}
+
+Eigen::Matrix2d ConfigurationSaver::alignDeformationGradient(const Eigen::Matrix2d& F, double theta_rad) {
+    return computeAlignedDeformationGradient(F, theta_rad);
 }
 
 void ConfigurationSaver::ensureDirectoryExists(const std::string& directory) {
@@ -207,7 +237,7 @@ void ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
         
         if(reduction==true) {
             // Apply Lagrange reduction
-            result = lagrange::reduce(C);
+            result = reduce_metric(C);
             C = result.C_reduced;
         }
         
@@ -546,7 +576,7 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
         Eigen::Matrix2d C = F.transpose() * F;
         if(reduction==true) {
             // Apply Lagrange reduction
-            result = lagrange::reduce(C);
+            result = reduce_metric(C);
             C = result.C_reduced;
         }
 
@@ -713,7 +743,7 @@ void ConfigurationSaver::logEnergyAndStress_v2(
             const Eigen::Matrix2d F = computeAlignedDeformationGradient(
                 element.getDeformationGradient());
             Eigen::Matrix2d C = F.transpose() * F;
-            lagrange::Result res = lagrange::reduce(C);
+            lagrange::Result res = reduce_metric(C);
             C = res.C_reduced;
 
             Eigen::Matrix2d dE_dC =
@@ -1030,7 +1060,7 @@ void ConfigurationSaver::writeToVTKFile(
     
         // Apply Lagrange reduction 
         if(reduction==true) {
-            result = lagrange::reduce(C);
+            result = reduce_metric(C);
             C = result.C_reduced;
         }
         
@@ -2267,6 +2297,8 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
              << data.F_stage1(1,0) << " " << data.F_stage1(1,1) << "\n";
     }
     if (data.relaxation_step) file << "relaxation_step 1\n";
+    file << "reference_frame "
+         << (reference_frame() == ReferenceFrame::Triangular ? "triangular" : "square") << "\n";
 
     file << "NODES " << data.points.size() << "\n";
     for (size_t i = 0; i < data.points.size(); ++i) {
@@ -2325,6 +2357,7 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
     data.elements.clear();
     data.active_elements.clear();
     data.ref_points.clear();
+    data.reference_frame_tag = "square";
 
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') continue;
@@ -2364,7 +2397,21 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
                 iss >> r;
                 data.relaxation_step = (r != 0);
             }
+            else if (key == "reference_frame") {
+                std::string rf;
+                if (iss >> rf) {
+                    data.reference_frame_tag = rf;
+                }
+            }
             else if (key == "NODES") {
+                const std::string active_tag =
+                    (reference_frame() == ReferenceFrame::Triangular) ? "triangular" : "square";
+                if (data.reference_frame_tag != active_tag) {
+                    std::cerr << "Error: Checkpoint '" << filename << "' has reference_frame '"
+                              << data.reference_frame_tag << "', which does not match active reference_frame '"
+                              << active_tag << "'." << std::endl;
+                    return false;
+                }
                 iss >> expected_nodes;
                 data.points.reserve(expected_nodes);
                 reading_nodes = true;

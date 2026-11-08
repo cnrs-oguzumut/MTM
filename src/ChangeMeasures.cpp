@@ -1,4 +1,5 @@
 #include "../include/output/ChangeMeasures.h"
+#include "../include/lattice_energy/ReferenceFrame.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -281,7 +282,7 @@ analyzeElementReduction(std::vector<ElementTriangle2D> &elements,
     Eigen::Matrix2d C = element.getMetricTensor();
 
     // Apply Lagrange reduction with counting
-    lagrange::ResultWithCount result = lagrange::reduceAndCount(C);
+    lagrange::ResultWithCount result = reduce_metric_and_count(C);
 
     // Record if third condition is triggered (1) or not (0)
     m3_activation.push_back(result.third_condition_count > 0 ? 1 : 0);

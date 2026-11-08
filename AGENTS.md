@@ -58,4 +58,13 @@ These rules document essential conventions and known pitfalls in this repository
 ---
 
 ## 6. Checkpoint Restart Scaling
-- **Rule:** When calling `ConfigurationSaver::loadCheckpoint`, calculate `dndx` using $h = \text{calc\_scale} = a_0 / (4/3)^{0.25}$ for triangular lattices, rather than hardcoded square lattice parameters.
+- **Rule:** When calling `ConfigurationSaver::loadCheckpoint`, calculate `dndx` using $h = \text{calc\_scale} = a_0 / (4/3)^{0.25}$ for triangular lattices in $\mathbb{Z}^2$ mode, or always pass `setup.dndx` from `make_reference_setup(...)`.
+
+---
+
+## 7. Triangular Reference Mode (Without Lagrange Reduction)
+- **Scope:** Enabled via `--triangular-reference=1` (`ReferenceFrame::Triangular`) strictly for triangular lattices using atomistic pair potentials (`potential_mode` 1, 2, or 4). Zanzotto (`potential_mode == 3`), square lattices, and `--acoustic-study` always use `ReferenceFrame::SquareZ2`.
+- **Single Source of Truth (`make_reference_setup`):** Never construct `calc_scale`, `h`, `dndx`, `C_ref`, `F0`, or the lattice calculator manually in drivers. Always call `make_reference_setup(...)` in `include/lattice_energy/ReferenceFrame.h`:
+  - **In `ReferenceFrame::Triangular`:** Uses `TriangularLatticeCalculator(a0, r_cutoff)` with an adaptive cutoff-ellipse summation window (lower bound $10$, cap $64$), an equilateral reference triangle $(0,0), (a_0,0), (a_0/2, a_0\sqrt{3}/2)$ of area $\frac{\sqrt{3}}{4}a_0^2$, $\mathbf{C}_{\text{ref}} = \mathbf{F}_0 = \mathbf{I}$, and `reduce_metric(C)` returning $\{\mathbf{C}, \mathbf{I}, \text{false}\}$.
+  - **Never mix frames:** Never pass the right-isosceles $\mathbb{Z}^2$ `dndx` or $\mathbf{F}_0 \neq \mathbf{I}$ into `TriangularLatticeCalculator`, as that applies the triangular distortion twice.
+- **Rotational Alignment in Output (`computeAlignedDeformationGradient`):** Because up- and down-pointing equilateral mesh triangles differ from the fixed parent triangle by multiples of $60^\circ$, `computeAlignedDeformationGradient` right-multiplies $\mathbf{F}$ by $\mathbf{R}(k \cdot 60^\circ)^T$ ($k \in \{0,\dots,5\}$, pure rotations only) in `ReferenceFrame::Triangular` so that pristine elements satisfy $\mathbf{F}_{\text{aligned}} = \mathbf{I}$, `ElementRotationAngleDeg = 0`, and element-averaged First Piola-Kirchhoff stress $\langle \mathbf{P} \rangle$ does not cancel between up- and down-pointing triangles.

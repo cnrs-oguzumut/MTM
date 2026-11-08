@@ -24,6 +24,7 @@
 #include "../include/geometry/NeighborAnalyzer.h"
 #include "../include/interatomic/inter_atomic.h"
 #include "../include/lattice_energy/EnergyFunctions.h"
+#include "../include/lattice_energy/ReferenceFrame.h"
 #include "../include/lattice_energy/SquareLatticeCalculator.h"
 #include "../include/lattice_energy/Strain_Energy_LatticeCalculator.h"
 #include "../include/mesh/ElementTriangle2D.h"
@@ -216,18 +217,9 @@ void shift_vertical_horizontal(
   std::cout << "Optimal lattice parameter a_0: " << std::fixed << std::setprecision(8)
             << lattice_constant << std::endl;
 
-  // Unimodular GL(2, Z) reference element scaling trick for triangular and atomistic lattices
-  double calc_scale = (potential_mode == 3)
-      ? 1.0
-      : ((lattice_type == "triangular")
-             ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25))
-             : optimal_lattice_parameter);
-
-  double h = (potential_mode == 3) ? 1.0 : calc_scale;
-  Eigen::Vector2d p1(0.0, 0.0);
-  Eigen::Vector2d p2(h, 0.0);
-  Eigen::Vector2d p3(0.0, h);
-  Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+  ReferenceSetup ref_setup = make_reference_setup(
+      lattice_type, potential_mode, optimal_lattice_parameter, r_cutoff, potential_func);
+  const Eigen::Matrix<double, 3, 2> &dndx = ref_setup.dndx;
 
   // ==================== GENERATE INITIAL LATTICE ====================
   std::vector<Point2D> square_points;
@@ -368,40 +360,16 @@ void shift_vertical_horizontal(
 
   auto [elements, active_elements] = mesher.createMesh(
       square_points, free_dofs, Eigen::Matrix2d::Identity(), &dndx);
-  double element_area = elements.empty() ? 0.5 : elements[0].getReferenceArea();
+  double element_area = elements.empty() ? ref_setup.element_area : elements[0].getReferenceArea();
 
   for (auto &element : elements) {
     element.set_dof_mapping(full_mapping);
   }
 
   // ==================== SETUP LATTICE ENERGY CALCULATOR ====================
-  std::unique_ptr<BaseLatticeCalculator> calculator_ptr;
-  Eigen::Matrix2d C_ref;
-
-  if (potential_mode == 3) {
-    calculator_ptr = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
-    if (lattice_type == "triangular") {
-      double a2 = std::sqrt(4.0 / 3.0);
-      C_ref << a2, 0.5 * a2,
-               0.5 * a2, a2;
-    } else {
-      C_ref = Eigen::Matrix2d::Identity();
-    }
-  } else {
-    if (lattice_type == "triangular") {
-      calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
-      double a2 = std::sqrt(4.0 / 3.0);
-      C_ref << a2, 0.5 * a2,
-               0.5 * a2, a2;
-    } else {
-      calculator_ptr = std::make_unique<SquareLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
-      C_ref = Eigen::Matrix2d::Identity();
-    }
-  }
-
-  BaseLatticeCalculator &calculator = *calculator_ptr;
+  BaseLatticeCalculator &calculator = *ref_setup.calc;
   Eigen::Matrix2d F_ext = Eigen::Matrix2d::Identity();
-  double zero = calculator.calculate_energy(C_ref, potential_func, 0);
+  double zero = ref_setup.zero;
   std::cout << "Reference state energy (zero): " << zero << std::endl;
 
   horizontal_steps = std::max(1, horizontal_steps);

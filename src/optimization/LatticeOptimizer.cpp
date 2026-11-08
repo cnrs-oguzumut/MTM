@@ -1,4 +1,5 @@
 #include "../include/optimization/LatticeOptimizer.h"
+#include "../include/lattice_energy/ReferenceFrame.h"
 #include "../include/output/ChangeMeasures.h"
 #include "../include/geometry/MacroscopicGeometry.h"
 
@@ -580,7 +581,7 @@ void minimize_energy_with_triangles(
             const Eigen::Matrix2d& F = element.getDeformationGradient();
             const Eigen::Matrix2d& C = element.getMetricTensor(); // Use cached C = F^T * F
             
-            const auto result = lagrange::reduce(C);
+            const auto result = reduce_metric(C);
             const double area = element.getReferenceArea();
             
             const double element_energy = userData->calculator.calculate_energy(

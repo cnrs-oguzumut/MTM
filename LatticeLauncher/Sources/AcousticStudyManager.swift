@@ -426,6 +426,7 @@ public class AcousticStudyManager: ObservableObject {
         
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
+        // Never pass --triangular-reference: the acoustic study is Z² reference + Lagrange reduction by design.
         p.arguments = [
             "--acoustic-study",
             "--print-elastic-constants",
@@ -494,36 +495,54 @@ public class AcousticStudyManager: ObservableObject {
             }
         } else if potentialMode == .ljV2 {
             if latticeSymmetry == .triangular {
-                ec.equilibrium_lattice_parameter = 0.687204426704008
-                ec.C11 = 110.936
-                ec.C22 = 110.936
-                ec.C12 = 36.9788
-                ec.C66 = 36.9788
+                ec.equilibrium_lattice_parameter = 0.687204444204348
+                ec.C11 = 110.936252
+                ec.C22 = 110.936252
+                ec.C12 = 36.978751
+                ec.C66 = 36.978751
                 ec.Zener_A = 1.0
             } else {
-                ec.equilibrium_lattice_parameter = 0.692978556224715
-                ec.C11 = 83.1502
-                ec.C22 = 83.1502
-                ec.C12 = -5.8797
-                ec.C66 = -5.8797
-                ec.Zener_A = -0.132
+                ec.equilibrium_lattice_parameter = 0.678391908621209
+                ec.C11 = 110.120461
+                ec.C22 = 110.120461
+                ec.C12 = -6.393994
+                ec.C66 = -6.393994
+                ec.Zener_A = -0.109755
             }
         } else if potentialMode == .square {
             // Mode 4 Square Gaussian
-            ec.equilibrium_lattice_parameter = (latticeSymmetry == .triangular) ? 1.0 : 1.065846222482338
-            ec.C11 = 79.875
-            ec.C22 = 79.875
-            ec.C12 = 10.874
-            ec.C66 = 10.874
-            ec.Zener_A = 0.315
+            if latticeSymmetry == .triangular {
+                ec.equilibrium_lattice_parameter = 1.209331112398887
+                ec.C11 = 7.884021
+                ec.C22 = 7.884021
+                ec.C12 = 2.628007
+                ec.C66 = 2.628007
+                ec.Zener_A = 1.0
+            } else {
+                ec.equilibrium_lattice_parameter = 1.065846222482338
+                ec.C11 = 79.875005
+                ec.C22 = 79.875005
+                ec.C12 = 10.873622
+                ec.C66 = 10.873622
+                ec.Zener_A = 0.315171
+            }
         } else {
             // Mode 2 LJ v3
-            ec.equilibrium_lattice_parameter = (latticeSymmetry == .triangular) ? 0.996407177045697 : 0.985415026120263
-            ec.C11 = 42.0
-            ec.C22 = 42.0
-            ec.C12 = 14.0
-            ec.C66 = 14.0
-            ec.Zener_A = 1.0
+            if latticeSymmetry == .triangular {
+                ec.equilibrium_lattice_parameter = 0.996407146898866
+                ec.C11 = 37.212002
+                ec.C22 = 37.212002
+                ec.C12 = 12.404001
+                ec.C66 = 12.404001
+                ec.Zener_A = 1.0
+            } else {
+                ec.equilibrium_lattice_parameter = 0.940038209781993
+                ec.C11 = 75.129737
+                ec.C22 = 75.129737
+                ec.C12 = -3.777587
+                ec.C66 = -3.777587
+                ec.Zener_A = -0.095747
+            }
         }
         
         ec.bulk_modulus = 0.25 * (ec.C11 + ec.C22 + 2.0 * ec.C12)
@@ -561,6 +580,7 @@ public class AcousticStudyManager: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.currentDirectoryURL = URL(fileURLWithPath: root)
+        // Never pass --triangular-reference: the acoustic study is Z² reference + Lagrange reduction by design.
         p.arguments = [
             "--acoustic-study",
             "--potential-mode=\(potentialMode.rawValue)",

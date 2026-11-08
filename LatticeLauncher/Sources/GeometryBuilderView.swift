@@ -4327,6 +4327,7 @@ public struct GeometryBuilderView: View {
         previewManager.ny = config.ny
         previewManager.latticeSymmetry = config.latticeSymmetry
         previewManager.potentialMode = config.potentialMode
+        previewManager.triangularReference = config.triangularReference
         previewManager.boundaryCondition = config.geometryConfig.enabled ? .fixed : config.boundaryCondition
         previewManager.beta = config.beta
         previewManager.bulkK = config.bulkK

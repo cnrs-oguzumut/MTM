@@ -11,29 +11,30 @@
 /**
  * @class TriangularLatticeCalculator
  * 
- * IMPORTANT ARCHITECTURAL USAGE NOTE:
- * -----------------------------------
- * AVOID using TriangularLatticeCalculator for metric-based calculations, shear studies,
- * stiffness/acoustic spectrum studies, or any Cauchy-Born models involving metric reduction
- * (e.g. lagrange::reduce).
- * 
- * WHY:
- * 1. TriangularLatticeCalculator internally hard-codes the triangular reference basis
- *    positions p = (m + 0.5*n, sqrt(3)/2 * n). If a triangular metric C = F_0^T * F_0
- *    is also supplied, the triangular distortion is applied twice, artificially stretching
- *    bonds by ~1.20x and invalidating the ground state energy and stiffness eigenvalues.
- * 2. Lagrange reduction (GL(2, Z)) strictly operates on the integer reference lattice Z^2.
- * 
- * RECOMMENDED ALTERNATIVE FOR METRIC / REDUCTION STUDIES:
- * Use SquareLatticeCalculator over Z^2 with:
- *   - calc_scale = a_0 / (4/3)^(1/4)
- *   - C_ref = [[sqrt(4/3), 0.5*sqrt(4/3)], [0.5*sqrt(4/3), sqrt(4/3)]]
- *   - normalization = calc->getUnitCellArea() * (sqrt(3)/2)
- * 
- * WHERE TriangularLatticeCalculator IS APPROPRIATE:
- * Reserved strictly for direct-coordinate simulation frameworks where atomic positions
- * are explicitly placed in physical space and not mapped through a metric tensor, such
- * as nanoindentation or discrete dislocation core energy studies.
+ * ARCHITECTURAL USAGE NOTE:
+ * -------------------------
+ * TriangularLatticeCalculator evaluates pair potentials directly on the physical
+ * triangular lattice:
+ *   p = m * [1, 0] + n * [1/2, sqrt(3)/2],   r = scal * sqrt(p^T * C * p),
+ * using an adaptive summation window over (m, n) that covers the cutoff ellipse
+ * for any positive-definite metric C (making the lattice sum GL(2, Z)-invariant).
+ *
+ * VALID USAGE:
+ * 1. Triangular-reference mode (--triangular-reference=1, ReferenceFrame::Triangular):
+ *    - Reference parent triangle is equilateral: (0,0), (a_0, 0), (a_0/2, a_0*sqrt(3)/2),
+ *      so an undeformed crystal has C = C_ref = I and F_0 = I.
+ *    - Lagrange reduction is NOT applied (reduce_metric returns m = I).
+ *    - Unit-cell area normalisation is getUnitCellArea() = (sqrt(3)/2) * a_0^2.
+ * 2. Direct physical-coordinate evaluations at C = I (e.g. Volterra elastic constants,
+ *    nanoindentation).
+ *
+ * DO NOT MIX WITH Z^2 METRICS OR LAGRANGE REDUCTION:
+ * - Never pass the Z^2 reference metric C_ref = F_0^T * F_0 or use right-isosceles
+ *   shape derivatives with TriangularLatticeCalculator (that applies the triangular
+ *   distortion twice).
+ * - Never apply Z^2 Lagrange reduction (lagrange::reduce) before passing C to
+ *   TriangularLatticeCalculator. For Z^2-reference + reduction studies, use
+ *   SquareLatticeCalculator(a_0 / (4/3)^(1/4), r_cutoff).
  */
 class TriangularLatticeCalculator : public BaseLatticeCalculator {
 public:

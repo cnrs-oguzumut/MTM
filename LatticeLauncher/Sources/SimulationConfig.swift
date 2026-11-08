@@ -114,6 +114,15 @@ public class SimulationConfig: ObservableObject {
     @Published public var latticeSymmetry: LatticeSymmetry = .square
     @Published public var beta: Double = -0.25
     @Published public var bulkK: Double = 5.0
+    /// Triangular reference configuration (TriangularLatticeCalculator, C = I undeformed, no Lagrange
+    /// reduction). Only meaningful for triangular lattices with atomistic potentials (modes 1, 2, 4);
+    /// Zanzotto (mode 3) always uses the Z² reference with reduction.
+    @Published public var triangularReference: Bool = false
+
+    /// True when the triangular-reference run mode actually applies (guards the CLI flag and run-dir tag).
+    public var usesTriangularReference: Bool {
+        latticeSymmetry == .triangular && potentialMode != .zanzotto && triangularReference
+    }
     
     // 3. Loading & Mode
     @Published public var mode: LoadingMode = .positive
@@ -311,6 +320,7 @@ public class SimulationConfig: ObservableObject {
         let isPeriodicDislocs = (geometryConfig.enabled && geometryConfig.microstructure.mode == .periodicDislocations)
         let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed && !isPeriodicDislocs) ? "_fixed" : ""
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
+        let triRefTag = usesTriangularReference ? "_triref" : ""
         let rotTag = useRotation ? ((boundaryCondition == .fixed || geometryConfig.enabled || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
         let relaxTag = (mode == .volterra && relaxMacroStress && cylinderLoadMode == .none) ? "_relax" : ""
         let cylLoadTag = (mode == .volterra && cylinderLoadMode != .none)
@@ -319,9 +329,9 @@ public class SimulationConfig: ObservableObject {
         let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? (isPeriodicDislocs ? "_pbc_dislocs_\(2 * geometryConfig.microstructure.dislocation_pair_count)D" : "_\(geometryConfig.preset_name)") : ""
         if mode == .shift {
             let pertTag = shiftPerturbMesh ? "_pert" : ""
-            return String(format: "run_shift_%dx%d_amp%.1f_%@%@%@%@%@", nx, ny, shiftAmplitude, remeshTag, pertTag, latTag, potTag, rotTag)
+            return String(format: "run_shift_%dx%d_amp%.1f_%@%@%@%@%@%@", nx, ny, shiftAmplitude, remeshTag, pertTag, latTag, potTag, triRefTag, rotTag)
         }
-        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)\(dipoleTag)\(cylLoadTag)"
+        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(triRefTag)\(rotTag)\(relaxTag)\(dipoleTag)\(cylLoadTag)"
     }
     
     public var targetDirectory: String {
@@ -370,6 +380,11 @@ public class SimulationConfig: ObservableObject {
         // Lattice Symmetry & Potential Parameters
         args.append("--lattice=\(latticeSymmetry.rawValue)")
         args.append("--potential-mode=\(potentialMode.rawValue)")
+        // Triangular reference (no Lagrange reduction): triangular + atomistic potentials only;
+        // the simulator hard-errors on square lattice or Zanzotto, so never emit it there.
+        if usesTriangularReference {
+            args.append("--triangular-reference=1")
+        }
         if potentialMode == .zanzotto {
             args.append(String(format: "--beta=%.4f", beta))
             args.append(String(format: "--K=%.4f", bulkK))

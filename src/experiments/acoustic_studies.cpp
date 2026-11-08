@@ -344,8 +344,6 @@ void parametricAcousticStudy_v2() {
   SquareLatticeCalculator strain_calculator(scale, r_cutoff);
   // TriangularLatticeCalculator strain_calculator(scale,r_cutoff);
   normalisation = strain_calculator.getUnitCellArea();
-  // since I use triangular lattice vectors
-  normalisation *= sqrt(3.) / 2.;
   std::cout << "normalisation: " << normalisation << std::endl;
 
   // Strain_Energy_LatticeCalculator strain_calculator(scale);
@@ -1109,9 +1107,6 @@ ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double
 
         auto calc = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
         normalisation = calc->getUnitCellArea();
-        if (config.lattice_type == "triangular") {
-            normalisation *= std::sqrt(3.0) / 2.0;
-        }
         calculator_ptr = std::move(calc);
     }
 
@@ -1222,14 +1217,14 @@ ShearPathResult computeSimpleShearPath(const AcousticStudyConfig& config, double
         Eigen::Matrix2d Q12_Z = rotSym2(res_ac.q12_xx, res_ac.q12_yy, res_ac.q12_xy);
 
         // 2. Map wave-normal basis from integer lattice indices Z^2 to physical undeformed crystal B_0
-        // via G0 = a0 * F0^{-T} so Q^Lagr(N) is directly in physical Cartesian coordinates of B_0
+        // via G0 = F0^{-T} (with det(F0) = 1) so Q^Lagr(N) is directly in physical Cartesian coordinates of B_0
         Eigen::Matrix2d G0 = Eigen::Matrix2d::Identity();
         if (std::abs(F0.determinant()) > 1e-12) {
-            G0 = a0 * F0.inverse().transpose();
+            G0 = F0.inverse().transpose();
         }
         // In integer basis: Q(N_Z) = N_Z1^2 Q11_Z + N_Z1*N_Z2 Q12_Z + N_Z2^2 Q22_Z
-        // Since N_Z = G0^{-1} N_Lagr, let H0 = G0.inverse() = (1/a0) * F0^T:
-        Eigen::Matrix2d H0 = (1.0 / a0) * F0.transpose();
+        // Since N_Z = G0^{-1} N_Lagr, let H0 = G0.inverse() = F0^T:
+        Eigen::Matrix2d H0 = F0.transpose();
         auto evalQZ = [&](const Eigen::Vector2d& v1, const Eigen::Vector2d& v2) -> Eigen::Matrix2d {
             return (v1(0) * v2(0)) * Q11_Z
                  + 0.5 * (v1(0) * v2(1) + v1(1) * v2(0)) * Q12_Z
@@ -1385,9 +1380,6 @@ void runParametricAcousticStudy(const AcousticStudyConfig& config) {
 
         auto calc = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
         normalisation = calc->getUnitCellArea();
-        if (config.lattice_type == "triangular") {
-            normalisation *= std::sqrt(3.0) / 2.0;
-        }
         calculator_ptr = std::move(calc);
     }
 

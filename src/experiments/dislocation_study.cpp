@@ -396,7 +396,7 @@ static DislocationNodalFields compute_dislocation_nodal_fields(UserData* userDat
     Eigen::Matrix2d P;
 
     if (reduction) {
-      result = lagrange::reduce(C);
+      result = reduce_metric(C);
       C = result.C_reduced;
     }
 
@@ -745,6 +745,8 @@ static void write_dislocation_profiles_json_and_csv(
   jf << "  \"status\": \"" << (relaxed ? "completed" : "in_progress") << "\",\n";
   jf << "  \"lattice_type\": \"" << lattice_type << "\",\n";
   jf << "  \"potential_mode\": " << potential_mode << ",\n";
+  jf << "  \"reference_frame\": \""
+     << (reference_frame() == ReferenceFrame::Triangular ? "triangular" : "square") << "\",\n";
   jf << "  \"beta\": " << beta << ",\n";
   jf << "  \"bulk_K\": " << bulk_K << ",\n";
   jf << "  \"R_free\": " << R_free << ",\n";
@@ -1029,26 +1031,11 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   }
   lattice_constant = optimal_lattice_parameter;
 
-  // NOTE: Lagrange reduction (GL(2, Z)) in the minimization operates on the integer reference grid Z^2.
-  // We ALWAYS use SquareLatticeCalculator over Z^2. For triangular lattice, calc_scale = a_0 / (4/3)^{1/4}
-  // with reference metric C_ref = [[sqrt(4/3), 0.5*sqrt(4/3)], [0.5*sqrt(4/3), sqrt(4/3)]].
-  // Reference element leg h matches calc_scale (or 1.0 for continuum model) so that undeformed physical elements evaluate to C_ref.
-  double calc_scale = (potential_mode == 3)
-      ? 1.0
-      : ((lattice_type == "triangular") ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25)) : optimal_lattice_parameter);
-  h = (potential_mode == 3) ? 1.0 : calc_scale;
-
-  if (potential_mode != 3) {
-    calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
-  }
-  BaseLatticeCalculator &calculator = *calculator_ptr;
-
-  // Reference triangle shape derivatives: ALWAYS standard square reference triangle (p1=(0,0), p2=(h,0), p3=(0,h))
-  // with leg length h matching reference element scale so that undeformed physical elements evaluate to C_ref
-  Eigen::Vector2d p1(0.0, 0.0);
-  Eigen::Vector2d p2(h, 0.0);
-  Eigen::Vector2d p3(0.0, h);
-  Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+  ReferenceSetup ref_setup = make_reference_setup(
+      lattice_type, potential_mode, optimal_lattice_parameter, r_cutoff, potential_func);
+  h = (potential_mode == 3) ? 1.0 : ref_setup.calc_scale;
+  BaseLatticeCalculator &calculator = *ref_setup.calc;
+  const Eigen::Matrix<double, 3, 2> &dndx = ref_setup.dndx;
 
   // Generate pristine reference lattice
   std::vector<Point2D> square_points_ref =
@@ -1234,7 +1221,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   auto [elements, active_elements] = mesher.createMesh(
       pts_for_mesh, x_for_mesh,
       Eigen::Matrix2d::Identity(), &dndx);
-  double element_area = elements.empty() ? 0.0 : elements[0].getReferenceArea();
+  double element_area = elements.empty() ? ref_setup.element_area : elements[0].getReferenceArea();
 
   for (auto &element : elements) {
     element.set_reference_mesh(square_points);
@@ -1244,12 +1231,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
             << (enable_remeshing ? "reconnected Delaunay" : "fixed pristine lattice") << ")." << std::endl;
 
   // Setup energy calculation
-  Eigen::Matrix2d C_ref = Eigen::Matrix2d::Identity();
-  if (lattice_type == "triangular") {
-    double a2 = std::sqrt(4.0 / 3.0);
-    C_ref << a2, 0.5 * a2, 0.5 * a2, a2;
-  }
-  double zero = calculator.calculate_energy(C_ref, potential_func, 0);
+  double zero = ref_setup.zero;
 
   Eigen::Matrix2d F_ext = Eigen::Matrix2d::Identity();
   bool plasticity = false;
@@ -1399,18 +1381,10 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       }
 
       // Step C: Compute instantaneous spatial tangent stiffness via AcousticTensor
-      // For triangular lattice, the reference state mapping Z^2 to equilateral triangles
-      // is F0 = (4/3)^{1/4} * [[1, 0.5], [0, sqrt(3)/2]]. The total deformation gradient
-      // relative to Z^2 is F_tot = F_bar * F0, ensuring C_tot = C_ref at F_bar = I.
-      Eigen::Matrix2d F0 = Eigen::Matrix2d::Identity();
-      if (lattice_type == "triangular") {
-        double s = std::pow(4.0 / 3.0, 0.25);
-        F0 << s, 0.5 * s,
-              0.0, s * std::sqrt(3.0) / 2.0;
-      }
+      const Eigen::Matrix2d &F0 = ref_setup.F0;
       Eigen::Matrix2d F_tot = F_bar * F0;
       Eigen::Matrix2d C_tot = F_tot.transpose() * F_tot;
-      lagrange::Result red_res = lagrange::reduce(C_tot);
+      lagrange::Result red_res = reduce_metric(C_tot);
       Eigen::Matrix2d Z = red_res.m_matrix;
       double normalisation = calculator.getUnitCellArea();
 
@@ -1557,17 +1531,12 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     const bool stress_mode = (load.mode == "stress");
     const Eigen::Vector2d c = dislocation_core;
     const double a = lattice_constant;
-    // F0 maps Z^2 to the lattice, as in the macro-stress relaxation above (AGENTS rule 3)
-    Eigen::Matrix2d F0 = Eigen::Matrix2d::Identity();
-    if (lattice_type == "triangular") {
-      const double s3 = std::pow(4.0 / 3.0, 0.25);
-      F0 << s3, 0.5 * s3, 0.0, s3 * std::sqrt(3.0) / 2.0;
-    }
+    const Eigen::Matrix2d &F0 = ref_setup.F0;
     const double cell_area = calculator.getUnitCellArea();
     // Cauchy stress of the homogeneous lattice deformed by F_bar (the far field of the ring)
     auto cb_stress = [&](const Eigen::Matrix2d &Fb) {
       const Eigen::Matrix2d F = Fb * F0;
-      const lagrange::Result red = lagrange::reduce(F.transpose() * F);
+      const lagrange::Result red = reduce_metric(F.transpose() * F);
       const Eigen::Matrix2d dE = calculator.calculate_derivative(red.C_reduced, potential_func_der) / cell_area;
       const Eigen::Matrix2d P = 2.0 * F * red.m_matrix * dE * red.m_matrix.transpose();
       return Eigen::Matrix2d(P * F.transpose() / F.determinant());

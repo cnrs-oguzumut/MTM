@@ -1,4 +1,5 @@
 #include "../include/geometry/MacroscopicGeometry.h"
+#include "../include/lattice_energy/ReferenceFrame.h"
 #include "../include/geometry/DomainInfo.h"
 #include "../include/optimization/LatticeOptimizer.h"
 #include "../include/mesh/ElementTriangle2D.h"
@@ -1514,7 +1515,7 @@ double MacroscopicGeometryConfig::computeKinematicContactForce(
 
         const Eigen::Matrix2d& F = elem.getDeformationGradient();
         Eigen::Matrix2d C = elem.getMetricTensor();
-        auto result = lagrange::reduce(C);
+        auto result = reduce_metric(C);
         Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
             result.C_reduced, userData->derivative_function) / normalisation;
         Eigen::Matrix2d P_stress = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();
@@ -2554,7 +2555,7 @@ double MacroscopicGeometryConfig::computeRimTorque(
 
         const Eigen::Matrix2d& F = elem.getDeformationGradient();
         Eigen::Matrix2d C = elem.getMetricTensor();
-        auto result = lagrange::reduce(C);
+        auto result = reduce_metric(C);
         Eigen::Matrix2d dE_dC = userData->calculator.calculate_derivative(
             result.C_reduced, userData->derivative_function) / normalisation;
         Eigen::Matrix2d P_stress = 2.0 * F * result.m_matrix * dE_dC * result.m_matrix.transpose();

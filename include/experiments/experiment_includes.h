@@ -30,6 +30,7 @@
 #include "../geometry/Point2D.h"
 #include "../interatomic/inter_atomic.h"
 #include "../lattice_energy/EnergyFunctions.h"
+#include "../lattice_energy/ReferenceFrame.h"
 #include "../lattice_energy/SquareLatticeCalculator.h"
 #include "../lattice_energy/Strain_Energy_LatticeCalculator.h"
 #include "../lattice_energy/TriangularLatticeCalculator.h"

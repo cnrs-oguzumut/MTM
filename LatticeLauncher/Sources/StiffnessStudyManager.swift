@@ -105,6 +105,8 @@ public struct StiffnessStudyConfigModel: Codable {
     public var ny: Int?
     public var lattice_type: String?
     public var potential_mode: Int?
+    /// "triangular" (no Lagrange reduction) or "square" (Z² reference + reduction); missing → square
+    public var reference_frame: String?
     public var bc: String?
     public var alpha_min: Double?
     public var alpha_max: Double?
@@ -186,7 +188,14 @@ public class StiffnessStudyManager: ObservableObject {
     @Published public var ny: Int = 10
     @Published public var latticeSymmetry: LatticeSymmetry = .square
     @Published public var potentialMode: AcousticPotentialMode = .zanzotto
+    /// Triangular reference (no Lagrange reduction); applies only to triangular + atomistic potentials
+    @Published public var triangularReference: Bool = false
     @Published public var boundaryCondition: BoundaryConditionMode = .periodic
+
+    /// True when --triangular-reference=1 must be passed (the simulator rejects it on square / Zanzotto)
+    public var usesTriangularReference: Bool {
+        latticeSymmetry == .triangular && potentialMode != .zanzotto && triangularReference
+    }
     
     // Shear Range
     @Published public var alphaMin: Double = -0.3
@@ -295,6 +304,9 @@ public class StiffnessStudyManager: ObservableObject {
             "--initial-mesh-only",
             "--initial-mesh-json=\(initJsonOut)"
         ]
+        if usesTriangularReference {
+            args.append("--triangular-reference=1")
+        }
         
         if useRotation {
             args.append("--use-rotation")
@@ -385,6 +397,9 @@ public class StiffnessStudyManager: ObservableObject {
             "--stiffness-fullscale-json=\(fsOut)",
             "--initial-mesh-json=\(initJsonOut)"
         ]
+        if usesTriangularReference {
+            args.append("--triangular-reference=1")
+        }
         if useRotation {
             args.append("--use-rotation")
             if boundaryCondition == .periodic {
@@ -599,6 +614,7 @@ public class StiffnessStudyManager: ObservableObject {
                 if let pm = cfg.potential_mode, let mode = AcousticPotentialMode(rawValue: pm) {
                     self.potentialMode = mode
                 }
+                self.triangularReference = (cfg.reference_frame == "triangular")
                 if let bcStr = cfg.bc, let bcMode = BoundaryConditionMode(rawValue: bcStr) {
                     self.boundaryCondition = bcMode
                 }
@@ -725,6 +741,9 @@ public class StiffnessStudyManager: ObservableObject {
             "--single-alpha=\(String(format: "%.6f", alpha))",
             "--stiffness-fullscale-json=\(fsOut)"
         ]
+        if usesTriangularReference {
+            args.append("--triangular-reference=1")
+        }
         if uniqueLevelsOnly {
             args.append("--unique-levels")
         }

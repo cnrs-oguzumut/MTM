@@ -229,6 +229,8 @@ static void test_periodic_dislocations_setup() {
     std::cout << "[PASS] Multi-Plane Single-Dislocation Periodic Setup (Square & Triangular, net b = 0) verified." << std::endl;
 }
 
+void run_triangular_reference_tests();
+
 int main() {
     // Test square lattice generation
     int nx = 2;
@@ -258,6 +260,7 @@ int main() {
     test_polygon_ray_casting_and_cutouts();
     test_nanoindenter_shapes_and_penalty();
     test_periodic_dislocations_setup();
+    run_triangular_reference_tests();
 
     std::cout << "All tests passed!" << std::endl;
     return 0;

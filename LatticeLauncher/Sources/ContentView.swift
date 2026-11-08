@@ -178,6 +178,7 @@ struct ContentView: View {
         previewManager.ny = config.ny
         previewManager.latticeSymmetry = config.latticeSymmetry
         previewManager.potentialMode = config.potentialMode
+        previewManager.triangularReference = config.triangularReference
         previewManager.boundaryCondition = (config.mode == .shift || config.geometryConfig.enabled) ? .fixed : config.boundaryCondition
         previewManager.beta = config.beta
         previewManager.bulkK = config.bulkK
@@ -1319,6 +1320,7 @@ struct SidebarControlsView: View {
                                         previewManager.ny = config.ny
                                         previewManager.latticeSymmetry = config.latticeSymmetry
                                         previewManager.potentialMode = config.potentialMode
+                                        previewManager.triangularReference = config.triangularReference
                                         previewManager.boundaryCondition = .fixed
                                         previewManager.beta = config.beta
                                         previewManager.bulkK = config.bulkK
@@ -1425,15 +1427,33 @@ struct SidebarControlsView: View {
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
-                                Text("Coarse-grained via Cauchy-Born with Lagrange reduction.")
+                                Text(config.usesTriangularReference
+                                     ? "Coarse-grained via Cauchy-Born without Lagrange reduction (triangular reference)."
+                                     : "Coarse-grained via Cauchy-Born with Lagrange reduction.")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
                             .padding(.vertical, 2)
+
+                            // Triangular reference: physical triangular lattice as reference (C = I undeformed),
+                            // Lagrange reduction never applied. Atomistic potentials on triangular lattices only.
+                            Toggle("Triangular reference (no Lagrange reduction)", isOn: $config.triangularReference)
+                                .font(.caption)
+                                .disabled(config.latticeSymmetry != .triangular || config.potentialMode == .zanzotto)
+                                .help(config.latticeSymmetry != .triangular
+                                      ? "Only for the triangular lattice. Square lattices always use the Z² reference with Lagrange reduction."
+                                      : "Use the undeformed triangular lattice as reference (C = I) and never apply Lagrange reduction.")
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
+                    // The simulator rejects --triangular-reference on square lattices and Zanzotto: clear it there
+                    .onChange(of: config.latticeSymmetry) { sym in
+                        if sym != .triangular { config.triangularReference = false }
+                    }
+                    .onChange(of: config.potentialMode) { pot in
+                        if pot == .zanzotto { config.triangularReference = false }
+                    }
                 }
     }
     
@@ -1574,6 +1594,7 @@ struct SidebarControlsView: View {
                                 previewManager.ny = config.ny
                                 previewManager.latticeSymmetry = config.latticeSymmetry
                                 previewManager.potentialMode = config.potentialMode
+                                previewManager.triangularReference = config.triangularReference
                                 previewManager.boundaryCondition = (config.mode == .shift || config.geometryConfig.enabled) ? .fixed : config.boundaryCondition
                                 previewManager.beta = config.beta
                                 previewManager.bulkK = config.bulkK

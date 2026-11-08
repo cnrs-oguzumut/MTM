@@ -617,7 +617,7 @@ void assemble_box_border(UserData *ud, const Eigen::Matrix2d &F_bar, const std::
   for (size_t e = 0; e < active.size(); e++) {
     const ElementTriangle2D &element = ud->elements[active[e]];
     const Eigen::Matrix2d &F = element.getDeformationGradient();
-    const auto red = lagrange::reduce(element.getMetricTensor());
+    const auto red = reduce_metric(element.getMetricTensor());
     const Eigen::Matrix2d dE_dC =
         ud->calculator.calculate_derivative(red.C_reduced, ud->derivative_function) / normalisation;
     const HessianComponents d2E =

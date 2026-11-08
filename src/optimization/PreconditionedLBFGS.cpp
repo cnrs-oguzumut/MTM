@@ -1,5 +1,6 @@
 // PreconditionedLBFGS.cpp
 #include "../include/optimization/PreconditionedLBFGS.h"
+#include "../include/lattice_energy/ReferenceFrame.h"
 #include "../include/optimization/SparseCholesky.h"
 #include "../include/geometry/MacroscopicGeometry.h"
 
@@ -235,7 +236,7 @@ FastStiffnessAssembler::assembleStiffness(const alglib::real_1d_array &x,
     ElementTriangle2D &element = userData->elements[active[e]];
     element.calculate_deformation_gradient(x);
     const Eigen::Matrix2d &F = element.getDeformationGradient();
-    const auto red = lagrange::reduce(element.getMetricTensor());
+    const auto red = reduce_metric(element.getMetricTensor());
 
     const Eigen::Matrix2d dE_dC =
         userData->calculator.calculate_derivative(red.C_reduced,

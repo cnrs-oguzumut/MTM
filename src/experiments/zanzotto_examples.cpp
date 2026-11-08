@@ -559,9 +559,8 @@ void example_1_conti_zanzotto_loading(
   double lattice_constant = optimal_lattice_parameter;
   std::cout << "Optimal lattice parameter a_0: " << std::fixed << std::setprecision(8) << lattice_constant << std::endl;
 
-  double calc_scale = (potential_mode == 3)
-      ? 1.0
-      : ((lattice_type == "triangular") ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25)) : optimal_lattice_parameter);
+  ReferenceSetup ref_setup = make_reference_setup(
+      lattice_type, potential_mode, optimal_lattice_parameter, r_cutoff, potential_func);
 
   // ==================== SETUP REFERENCE GEOMETRY ====================
   // Save domain dimensions
@@ -571,16 +570,7 @@ void example_1_conti_zanzotto_loading(
             << (enable_remeshing ? "ENABLED (adaptive remeshing)" : "DISABLED (fixed mesh, no remeshing)")
             << std::endl;
 
-  // Reference element is always kept SQUARE (reference state)
-  double h = (potential_mode == 3) ? 1.0 : calc_scale;                      // Reference element size
-
-  // Reference element is kept square (right isosceles triangle with legs h)
-  Eigen::Vector2d p1(0.0, 0.0);
-  Eigen::Vector2d p2(h, 0.0);
-  Eigen::Vector2d p3(0.0, h);
-
-  // Calculate shape function derivatives for reference element
-  Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+  const Eigen::Matrix<double, 3, 2> &dndx = ref_setup.dndx;
   if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
     std::cout << "Reference element shape derivatives (dN/dx):\n" << dndx << std::endl;
   }
@@ -855,7 +845,7 @@ void example_1_conti_zanzotto_loading(
     for (auto &element : elements) {
       element.set_shape_derivatives(dndx);
       // Older checkpoints carry the distorted current areas of the initial mesh
-      element.setReferenceArea(ElementTriangle2D::referenceElementArea(dndx));
+      element.setReferenceArea(ref_setup.element_area);
       element.set_reference_mesh(square_points); // fixed / driven nodes are read from here
       element.set_dof_mapping(full_mapping);
       element.setExternalDeformation(restart_chk->F_ext);
@@ -872,7 +862,7 @@ void example_1_conti_zanzotto_loading(
       element.set_dof_mapping(full_mapping);
     }
   }
-  double element_area = elements.empty() ? 0.5 : elements[0].getReferenceArea();
+  double element_area = elements.empty() ? ref_setup.element_area : elements[0].getReferenceArea();
 
   // Dead-load tractions need the reference boundary edges, so they are assembled once the mesh exists
   if (has_custom_geom && !is_periodic_dislocs &&
@@ -949,46 +939,17 @@ void example_1_conti_zanzotto_loading(
             << std::endl;
 
   // Setup energy calculation
-  std::unique_ptr<BaseLatticeCalculator> calculator_ptr;
-  Eigen::Matrix2d C_ref;
-
-  if (potential_mode == 3) {
-    calculator_ptr = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
-    if (lattice_type == "triangular") {
-      double a2 = std::sqrt(4.0 / 3.0);
-      C_ref << a2, 0.5 * a2,
-               0.5 * a2, a2;
-    } else {
-      C_ref = Eigen::Matrix2d::Identity();
-    }
-  } else {
-    if (lattice_type == "triangular") {
-      double calc_scale = optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25);
-      calculator_ptr = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
-      double a2 = std::sqrt(4.0 / 3.0);
-      C_ref << a2, 0.5 * a2,
-               0.5 * a2, a2;
-    } else {
-      calculator_ptr = std::make_unique<SquareLatticeCalculator>(optimal_lattice_parameter, r_cutoff);
-      C_ref = Eigen::Matrix2d::Identity();
-    }
-  }
-
-  BaseLatticeCalculator& calculator = *calculator_ptr;
-  double zero = calculator.calculate_energy(C_ref, potential_func, 0);
+  BaseLatticeCalculator& calculator = *ref_setup.calc;
+  double zero = ref_setup.zero;
 
   std::cout << "Reference state energy (zero): " << zero << std::endl;
 
   if (stress_ctrl_enabled) {
     // Bulk (Cauchy-Born) Voigt stiffness at the reference state, and the uniaxial-stress Poisson ratio
     // it predicts (small-alpha check for --stress-control=uniaxial_x/_y). F0 maps Z^2 to the lattice.
-    Eigen::Matrix2d F0 = Eigen::Matrix2d::Identity();
-    if (lattice_type == "triangular") {
-      const double s0 = std::pow(4.0 / 3.0, 0.25);
-      F0 << s0, 0.5 * s0, 0.0, s0 * std::sqrt(3.0) / 2.0;
-    }
+    const Eigen::Matrix2d &F0 = ref_setup.F0;
     const Eigen::Matrix2d F_tot = F_bar_state * F0;
-    const lagrange::Result red_res = lagrange::reduce(Eigen::Matrix2d(F_tot.transpose() * F_tot));
+    const lagrange::Result red_res = reduce_metric(Eigen::Matrix2d(F_tot.transpose() * F_tot));
     AcousticTensor acoustic_tensor(F_tot, red_res.C_reduced, red_res.m_matrix);
     acoustic_tensor.computeEnergyDerivatives(calculator, potential_func_der, potential_func_sder,
                                              calculator.getUnitCellArea());
@@ -1748,7 +1709,7 @@ void example_1_conti_zanzotto_loading(
           el.calculate_deformation_gradient(square_points);
           const Eigen::Matrix2d F_el = el.getDeformationGradient();
           const Eigen::Matrix2d C_el = F_el.transpose() * F_el;
-          const auto red = lagrange::reduce(C_el);
+          const auto red = reduce_metric(C_el);
           const double e_el = calculator.calculate_energy(
                                   red.C_reduced, potential_func, zero) /
                               norm_area;
@@ -2263,27 +2224,31 @@ void restart_zanzotto_simulation(const std::string& checkpoint_path,
   }
 
   double optimal_lattice_parameter = 1.0;
+  double r_cutoff = 2.5;
+  std::function<double(double)> pot_fn = square_energy;
   if (potential_mode == 3) {
     optimal_lattice_parameter = (lattice_type == "triangular") ? std::pow(4.0 / 3.0, 0.25) : 1.0;
+    pot_fn = square_energy;
   } else if (potential_mode == 1) {
+    r_cutoff = 2.5;
+    pot_fn = lennard_jones_energy_v2;
     optimal_lattice_parameter = find_optimal_lattice_parameter(
-        lennard_jones_energy_v2, lattice_type, 2.5, lennard_jones_energy_der_v2, lennard_jones_energy_sder_v2);
+        lennard_jones_energy_v2, lattice_type, r_cutoff, lennard_jones_energy_der_v2, lennard_jones_energy_sder_v2);
   } else if (potential_mode == 2) {
+    r_cutoff = 1.86602540378444;
+    pot_fn = lennard_jones_energy_v3;
     optimal_lattice_parameter = find_optimal_lattice_parameter(
-        lennard_jones_energy_v3, lattice_type, 1.86602540378444, lennard_jones_energy_der_v3, lennard_jones_energy_sder_v3);
+        lennard_jones_energy_v3, lattice_type, r_cutoff, lennard_jones_energy_der_v3, lennard_jones_energy_sder_v3);
   } else if (potential_mode == 4) {
+    r_cutoff = 2.5;
+    pot_fn = square_energy;
     optimal_lattice_parameter = find_optimal_lattice_parameter(
-        square_energy, lattice_type, 2.5, square_energy_der, square_energy_sder);
+        square_energy, lattice_type, r_cutoff, square_energy_der, square_energy_sder);
   }
 
-  double calc_scale = (potential_mode == 3)
-      ? 1.0
-      : ((lattice_type == "triangular") ? (optimal_lattice_parameter / std::pow(4.0 / 3.0, 0.25)) : optimal_lattice_parameter);
-  double h = (potential_mode == 3) ? 1.0 : calc_scale;
-  Eigen::Vector2d p1(0.0, 0.0);
-  Eigen::Vector2d p2(h, 0.0);
-  Eigen::Vector2d p3(0.0, h);
-  Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+  ReferenceSetup ref_setup = make_reference_setup(
+      lattice_type, potential_mode, optimal_lattice_parameter, r_cutoff, pot_fn);
+  const Eigen::Matrix<double, 3, 2> &dndx = ref_setup.dndx;
 
   ConfigurationSaver::CheckpointData chk;
   if (!ConfigurationSaver::loadCheckpoint(path, chk, dndx)) {

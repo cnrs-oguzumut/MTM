@@ -19,6 +19,7 @@
 #include "../../include/optimization/StiffnessSpectrum.h"
 #include "../../include/lattice_energy/SquareLatticeCalculator.h"
 #include "../../include/lattice_energy/TriangularLatticeCalculator.h"
+#include "../../include/lattice_energy/ReferenceFrame.h"
 #include "../../include/lattice_energy/Strain_Energy_LatticeCalculator.h"
 #include "../../include/lattice_energy/EnergyFunctions.h"
 #include "../../include/geometry/DomainInfo.h"
@@ -155,7 +156,7 @@ static void exportInitialMeshJSON(
         double area = elem.getReferenceArea();
 
         Eigen::Matrix2d C = elem.getMetricTensor();
-        const auto red = lagrange::reduce(C);
+        const auto red = reduce_metric(C);
         double elem_e = calc->calculate_energy(red.C_reduced, pot_func, zero_energy) / normalisation;
 
         Eigen::Matrix2d dE_dC = calc->calculate_derivative(red.C_reduced, deriv_func) / normalisation;
@@ -223,7 +224,7 @@ static void exportInitialMeshJSON(
             Eigen::Vector2d p2 = points_ref[n2].coord + t2 + Eigen::Vector2d(off_x, off_y);
 
             Eigen::Matrix2d C = elem.getMetricTensor();
-            const auto red = lagrange::reduce(C);
+            const auto red = reduce_metric(C);
             double elem_e = calc->calculate_energy(red.C_reduced, pot_func, zero_energy) / normalisation;
 
             Eigen::Matrix2d dE_dC = calc->calculate_derivative(red.C_reduced, deriv_func) / normalisation;
@@ -327,45 +328,12 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
 
     std::cout << "  Optimal lattice parameter a_0 = " << std::fixed << std::setprecision(8) << a_0 << "\n";
 
-    // 2. Calculator instantiation
-    std::unique_ptr<BaseLatticeCalculator> calc;
-    double normalisation = 1.0;
-    Eigen::Matrix2d C_ref;
-
-    double calc_scale = a_0;
-    if (config.potential_mode == 3) {
-        calc = std::make_unique<Strain_Energy_LatticeCalculator>(1.0);
-        normalisation = calc->getUnitCellArea();
-        if (config.lattice_type == "triangular") {
-            double a2 = std::sqrt(4.0 / 3.0);
-            C_ref << a2, 0.5 * a2,
-                     0.5 * a2, a2;
-            calc_scale = 1.0;
-        } else {
-            C_ref = Eigen::Matrix2d::Identity();
-            calc_scale = 1.0;
-        }
-    } else {
-        if (config.lattice_type == "triangular") {
-            // NOTE: Do NOT use TriangularLatticeCalculator here.
-            // Lagrange reduction (GL(2, Z)) operates on the integer reference grid Z^2.
-            // Using SquareLatticeCalculator with reference metric C_ref = F0^T * F0 avoids
-            // double-applying the triangular distortion. (TriangularLatticeCalculator is
-            // reserved for direct physical-coordinate simulations such as nanoindentation).
-            calc_scale = a_0 / std::pow(4.0 / 3.0, 0.25);
-            calc = std::make_unique<SquareLatticeCalculator>(calc_scale, r_cutoff);
-            normalisation = calc->getUnitCellArea() * (std::sqrt(3.0) / 2.0);
-            double a2 = std::sqrt(4.0 / 3.0);
-            C_ref << a2, 0.5 * a2,
-                     0.5 * a2, a2;
-        } else {
-            calc_scale = a_0;
-            calc = std::make_unique<SquareLatticeCalculator>(a_0, r_cutoff);
-            normalisation = calc->getUnitCellArea();
-            C_ref = Eigen::Matrix2d::Identity();
-        }
-    }
-    double zero_energy = calc->calculate_energy(C_ref, pot_func, 0.0);
+    // 2. Calculator & reference setup
+    ReferenceSetup ref_setup = make_reference_setup(
+        config.lattice_type, config.potential_mode, a_0, r_cutoff, pot_func);
+    std::unique_ptr<BaseLatticeCalculator> calc = std::move(ref_setup.calc);
+    double normalisation = calc->getUnitCellArea();
+    double zero_energy = ref_setup.zero;
 
     int study_ny = config.ny;
     MacroscopicGeometryConfig macro_geom;
@@ -507,13 +475,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     x0.setlength(total_dofs);
     map_points_to_solver_array(x0, points_ref, interior_mapping, free_nodes);
 
-    // Reference element shape function derivatives:
-    // User requirement: Always use square reference (p1=(0,0), p2=(h,0), p3=(0,h)) without rotating.
-    double h = (config.potential_mode == 3) ? 1.0 : calc_scale;
-    Eigen::Vector2d p1(0.0, 0.0);
-    Eigen::Vector2d p2(h, 0.0);
-    Eigen::Vector2d p3(0.0, h);
-    Eigen::Matrix<double, 3, 2> dndx = calculateShapeDerivatives(p1, p2, p3);
+    // Reference element shape function derivatives from ReferenceSetup
+    const Eigen::Matrix<double, 3, 2> &dndx = ref_setup.dndx;
     const Eigen::Matrix<double, 3, 2>* manual_dndx = &dndx;
 
     auto [elements, active_elements] =
@@ -730,7 +693,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
         double total_energy = 0.0;
         for (size_t idx : active_elements) {
             const ElementTriangle2D &elem = elements[idx];
-            const auto red = lagrange::reduce(elem.getMetricTensor());
+            const auto red = reduce_metric(elem.getMetricTensor());
             double elem_e = calc->calculate_energy(red.C_reduced, pot_func, zero_energy) / normalisation;
             total_energy += elem_e;
         }
@@ -744,19 +707,9 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             R_cont << std::cos(rad), -std::sin(rad),
                       std::sin(rad),  std::cos(rad);
         }
-        Eigen::Matrix2d C_cont = F_shear.transpose() * F_shear;
-        if (config.lattice_type == "triangular") {
-            Eigen::Matrix2d F0;
-            double a = std::pow(4.0 / 3.0, 0.25);
-            F0 << a, a * 0.5,
-                  0.0, a * std::sqrt(3.0) / 2.0;
-            Eigen::Matrix2d F_tot = F_shear * R_cont * F0;
-            C_cont = F_tot.transpose() * F_tot;
-        } else {
-            Eigen::Matrix2d F_tot = F_shear * R_cont;
-            C_cont = F_tot.transpose() * F_tot;
-        }
-        const auto red_cont = lagrange::reduce(C_cont);
+        const Eigen::Matrix2d F_tot = F_shear * R_cont * ref_setup.F0;
+        Eigen::Matrix2d C_cont = F_tot.transpose() * F_tot;
+        const auto red_cont = reduce_metric(C_cont);
         double continuum_energy = calc->calculate_energy(red_cont.C_reduced, pot_func, zero_energy) / normalisation;
 
         bool is_stable = (lambda_min > 0.0);
@@ -867,6 +820,8 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             json << "    \"ny\": " << config.ny << ",\n";
             json << "    \"lattice_type\": \"" << config.lattice_type << "\",\n";
             json << "    \"potential_mode\": " << config.potential_mode << ",\n";
+            json << "    \"reference_frame\": \""
+                 << (reference_frame() == ReferenceFrame::Triangular ? "triangular" : "square") << "\",\n";
             json << "    \"bc\": \"" << config.bc << "\",\n";
             json << "    \"alpha_min\": " << config.alpha_min << ",\n";
             json << "    \"alpha_max\": " << config.alpha_max << ",\n";

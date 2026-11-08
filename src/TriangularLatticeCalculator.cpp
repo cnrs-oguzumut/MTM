@@ -1,4 +1,71 @@
 #include "../include/lattice_energy/TriangularLatticeCalculator.h"
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <iostream>
+#include <utility>
+
+namespace {
+constexpr int kMaxLatticeSumBound = 64;
+std::atomic<long> g_cap_hit_count{0};
+std::atomic<bool> g_cap_warned{false};
+
+std::pair<int, int> compute_lattice_sum_bounds(const Eigen::Matrix2d& C,
+                                               double rcut,
+                                               double scal,
+                                               int min_bound) {
+    if (scal <= 1e-12 || !C.allFinite()) {
+        return {min_bound, min_bound};
+    }
+    // B = [[1, 0.5], [0, sqrt(3)/2]], G = B^T C B
+    Eigen::Matrix2d B;
+    B << 1.0, 0.5,
+         0.0, std::sqrt(3.0) / 2.0;
+    const Eigen::Matrix2d G = B.transpose() * C * B;
+    const double detG = G(0, 0) * G(1, 1) - G(0, 1) * G(1, 0);
+    if (!(detG > 1e-12 && G(0, 0) > 1e-12 && G(1, 1) > 1e-12)) {
+        return {min_bound, min_bound};
+    }
+
+    const double invG00 = G(1, 1) / detG;
+    const double invG11 = G(0, 0) / detG;
+    const double ratio = rcut / scal;
+    const double raw0 = std::ceil(ratio * std::sqrt(std::max(0.0, invG00))) + 1.0;
+    const double raw1 = std::ceil(ratio * std::sqrt(std::max(0.0, invG11))) + 1.0;
+
+    int nmax0 = min_bound;
+    int nmax1 = min_bound;
+    bool capped = false;
+    if (raw0 > static_cast<double>(kMaxLatticeSumBound)) {
+        nmax0 = kMaxLatticeSumBound;
+        capped = true;
+    } else if (raw0 > static_cast<double>(min_bound)) {
+        nmax0 = static_cast<int>(raw0);
+    }
+    if (raw1 > static_cast<double>(kMaxLatticeSumBound)) {
+        nmax1 = kMaxLatticeSumBound;
+        capped = true;
+    } else if (raw1 > static_cast<double>(min_bound)) {
+        nmax1 = static_cast<int>(raw1);
+    }
+
+    // Warn once when a non-collapsed state (det(C) >= 0.25, excluding crushed line-search trial steps)
+    // hits the summation window cap
+    const double detC = C(0, 0) * C(1, 1) - C(0, 1) * C(1, 0);
+    if (capped && detC >= 0.25) {
+        const long c = g_cap_hit_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        bool expected = false;
+        if (g_cap_warned.compare_exchange_strong(expected, true)) {
+            std::cerr << "[TriangularLatticeCalculator] WARNING: lattice-sum window hit the cap (+/-"
+                      << kMaxLatticeSumBound << ", raw bounds " << raw0 << " x " << raw1
+                      << " at det(C) = " << detC
+                      << "); the pair-potential cutoff ellipse exceeds the summation box (hit #"
+                      << c << ")." << std::endl;
+        }
+    }
+    return {nmax0, nmax1};
+}
+} // namespace
 
 TriangularLatticeCalculator::TriangularLatticeCalculator(double scale,double cutoff_radius) : 
     rcut(cutoff_radius),
@@ -16,13 +83,14 @@ double TriangularLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
                                 const std::function<double(double)>& pot, 
                                 double zero) {
     double phi = 0.0;
+    const auto [nmax0, nmax1] = compute_lattice_sum_bounds(C, rcut, scal, nb_atoms);
     
     // In a triangular lattice, points are at positions:
     // r = m*a₁ + n*a₂ where a₁ = [1,0] and a₂ = [1/2, √3/2]
     // We transform these coordinates using matrix multiplication
     
-    for (int m = -nb_atoms; m <= nb_atoms; ++m) {
-        for (int n = -nb_atoms; n <= nb_atoms; ++n) {
+    for (int m = -nmax0; m <= nmax0; ++m) {
+        for (int n = -nmax1; n <= nmax1; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
             // For triangular lattice, points are at m*[1,0] + n*[1/2, √3/2]
             double px = m + 0.5 * n;
@@ -52,9 +120,10 @@ double TriangularLatticeCalculator::calculate_energy(const Eigen::Matrix2d& C,
 Eigen::Matrix2d TriangularLatticeCalculator::calculate_derivative(const Eigen::Matrix2d& C,
                                     const std::function<double(double)>& dpot) {
     Eigen::Matrix2d phi = Eigen::Matrix2d::Zero();
+    const auto [nmax0, nmax1] = compute_lattice_sum_bounds(C, rcut, scal, nb_atoms);
     
-    for (int m = -nb_atoms; m <= nb_atoms; ++m) {
-        for (int n = -nb_atoms; n <= nb_atoms; ++n) {
+    for (int m = -nmax0; m <= nmax0; ++m) {
+        for (int n = -nmax1; n <= nmax1; ++n) {
             // Convert from lattice coordinates to Cartesian coordinates
             double px = static_cast<double>(m) + 0.5 * static_cast<double>(n);
             double py = sqrt(3.)/2 * static_cast<double>(n); // √3/2
@@ -117,10 +186,11 @@ HessianComponents TriangularLatticeCalculator::calculate_hessian_components(cons
                                                                            const std::function<double(double)>& d2pot) {
     HessianComponents hessian;
     double scale_4 = scal * scal * scal * scal; // (scal^4) factor for Hessian terms
+    const auto [nmax0, nmax1] = compute_lattice_sum_bounds(C, rcut, scal, nb_atoms);
     
     // Loop over lattice points (adapted from square lattice for triangular geometry)
-    for (int m = -nb_atoms; m <= nb_atoms; ++m) {
-        for (int n = -nb_atoms; n <= nb_atoms; ++n) {
+    for (int m = -nmax0; m <= nmax0; ++m) {
+        for (int n = -nmax1; n <= nmax1; ++n) {
             // Skip the origin
             if (m == 0 && n == 0) continue;
             

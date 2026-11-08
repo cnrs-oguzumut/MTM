@@ -14,6 +14,7 @@
 #include "../include/experiments/shifted_dislocation_study.h"
 #include "../include/output/AvalancheRecorder.h"
 #include "../include/lattice_energy/EnergyFunctions.h"
+#include "../include/lattice_energy/ReferenceFrame.h"
 #include "../include/experiments/acoustic_studies.h"
 #include "../include/experiments/stiffness_shear_study.h"
 
@@ -28,6 +29,7 @@ int main(int argc, char **argv) {
   bool use_cylinder = false;
   bool export_full_mesh = true;
   bool relax_macro_stress = false;
+  bool triangular_reference = false;
   std::string stress_control_preset;  // PBC nominal-stress control: shear | uniaxial_y | uniaxial_x | relax_normal
   double stress_relax_strain = 0.0;   // --relax-strain=<F12>: relaxation step at F12 before stress loading
   bool legacy_stress_servo = false;   // run the legacy PBC Cauchy-stress servo (validation baseline)
@@ -335,6 +337,10 @@ int main(int argc, char **argv) {
       relax_macro_stress = true;
     } else if (arg == "--relax-stress=0" || arg == "--relax-macro-stress=0") {
       relax_macro_stress = false;
+    } else if (arg == "--triangular-reference" || arg == "--triangular-reference=1") {
+      triangular_reference = true;
+    } else if (arg == "--triangular-reference=0") {
+      triangular_reference = false;
     } else if (arg.rfind("--stress-control=", 0) == 0) {
       stress_control_preset = arg.substr(17);
       if (stress_control_preset == "none" || stress_control_preset == "off") stress_control_preset.clear();
@@ -419,6 +425,21 @@ int main(int argc, char **argv) {
     }
   }
 
+  // Validate and configure reference frame
+  if (triangular_reference) {
+    if (lattice_type != "triangular") {
+      std::cerr << "Error: --triangular-reference is only supported for --lattice=triangular (got '"
+                << lattice_type << "')." << std::endl;
+      return 1;
+    }
+    if (potential_mode == 3) {
+      std::cerr << "Error: --triangular-reference is not supported with Zanzotto potential (--potential-mode=3)."
+                << std::endl;
+      return 1;
+    }
+  }
+  set_reference_frame(triangular_reference ? ReferenceFrame::Triangular : ReferenceFrame::SquareZ2);
+
   // Set Zanzotto potential parameters
   energy_functions::set_parameters(beta, bulk_K);
 
@@ -460,6 +481,7 @@ int main(int argc, char **argv) {
 
   std::cout << "System size: nx=" << nx << ", ny=" << ny
             << " | lattice=" << lattice_type
+            << " | reference_frame=" << (reference_frame() == ReferenceFrame::Triangular ? "triangular" : "square")
             << " | beta=" << beta << " | K=" << bulk_K
             << " | mode=" << mode << " | seed=" << seed
             << " | noise=" << noise_level
@@ -559,6 +581,7 @@ int main(int argc, char **argv) {
   // 4. Acoustic Studies:
   //    Calculates and logs acoustic tensor properties / stability across states.
   if (run_acoustic_study || mode == "acoustic" || mode == "acoustic_study" || mode == "parametric_acoustic") {
+    set_reference_frame(ReferenceFrame::SquareZ2);
     AcousticStudyConfig acoustic_cfg;
     acoustic_cfg.mode = potential_mode;
     acoustic_cfg.lattice_type = lattice_type;

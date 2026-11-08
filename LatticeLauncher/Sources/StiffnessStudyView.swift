@@ -248,8 +248,24 @@ public struct StiffnessStudyView: View {
                                         Slider(value: $manager.bulkK, in: 1.0...20.0, step: 0.5)
                                     }
                                 }
+
+                                // Triangular reference (C = I undeformed, no Lagrange reduction): triangular + atomistic only
+                                Toggle("Triangular reference (no Lagrange reduction)", isOn: $manager.triangularReference)
+                                    .font(.caption)
+                                    .disabled(manager.latticeSymmetry != .triangular || manager.potentialMode == .zanzotto)
+                                    .help(manager.potentialMode == .zanzotto
+                                          ? "Zanzotto always uses the Z² reference with Lagrange reduction."
+                                          : (manager.latticeSymmetry != .triangular
+                                             ? "Only for the triangular lattice."
+                                             : "Use the undeformed triangular lattice as reference (C = I) and never apply Lagrange reduction."))
                             }
                             .padding(.top, 4)
+                            .onChange(of: manager.latticeSymmetry) { sym in
+                                if sym != .triangular { manager.triangularReference = false }
+                            }
+                            .onChange(of: manager.potentialMode) { pot in
+                                if pot == .zanzotto { manager.triangularReference = false }
+                            }
                         }
                         
                         // 4. Simple Shear Path Sweep
