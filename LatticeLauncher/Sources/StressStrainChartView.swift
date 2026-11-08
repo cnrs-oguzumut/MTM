@@ -65,8 +65,14 @@ struct StressStrainChartView: View {
     private var hasConjugateStrain: Bool {
         runner.curvePoints.contains { $0.effectiveStrain != 0 }
     }
+    /// Volterra cylinder load run: the log carries the core glide x_c − x₀
+    private var hasCoreShift: Bool {
+        runner.curvePoints.contains { $0.coreShift != nil }
+    }
     private var conjugateStrainAxis: Bool {
+        // Core glide is always plotted against the load α (γ or τ)
         hasConjugateStrain && plotAgainstConjugateStrain && chartMode != .eigenvalue && chartMode != .gbEnergy
+            && !(chartMode == .stress && stressComponent == .coreShift)
     }
     /// x coordinate of a curve point: the load parameter α, or the conjugate strain ε under force control
     private func xValue(_ pt: StressStrainPoint) -> Double {
@@ -406,6 +412,16 @@ struct StressStrainChartView: View {
                         Section(header: Text("Force / Stress Control")) {
                             Text(StressComponentType.effectiveStrain.rawValue).tag(StressComponentType.effectiveStrain)
                         }
+                        if hasCoreShift {
+                            Section(header: Text("Dislocation Core (Volterra Load)")) {
+                                Text(StressComponentType.coreShift.rawValue).tag(StressComponentType.coreShift)
+                            }
+                        }
+                    }
+                    .onChange(of: hasCoreShift, initial: true) { _, present in
+                        // Volterra load run: open on the core glide; fall back when the column goes away
+                        if present && stressComponent == .primary { stressComponent = .coreShift }
+                        if !present && stressComponent == .coreShift { stressComponent = .primary }
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()

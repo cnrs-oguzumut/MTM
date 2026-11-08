@@ -105,6 +105,8 @@ struct ContentView: View {
     @State private var workspace: WorkspaceMode = .specimen
     @State private var specimenSub: SpecimenSubView = .blueprint
     @State private var resultsSub: ResultsSubView = .curves
+    /// Volterra load runs: show the α curves (core glide, stress) instead of the core profiles
+    @State private var volterraShowsLoadCurve: Bool = true
     @State private var inspectorStep: SetupInspectorStep = .crystal
     @AppStorage("showConsoleDrawer") private var showConsole: Bool = false
     @AppStorage("geometryBCPreviewStage") private var geometryBCPreviewStageRaw: String = "Loading Step BCs & Indenter"
@@ -360,7 +362,29 @@ struct ContentView: View {
                     : config.targetDirectory
                 VTKSnapshotViewer(runDirectory: effectiveSnapDir, isRunning: runner.status.isRunning)
             } else if config.mode == .volterra {
-                DislocationProfileChartView()
+                if config.cylinderLoadMode != .none || runner.curvePoints.contains(where: { $0.coreShift != nil }) {
+                    HStack {
+                        Picker("Volterra results", selection: $volterraShowsLoadCurve) {
+                            Text("Load Curve: Core Glide / σ vs α").tag(true)
+                            Text("Core Profiles E(r), σ(r)").tag(false)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
+                        .fixedSize()
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    Divider()
+                    if volterraShowsLoadCurve {
+                        StressStrainChartView()
+                    } else {
+                        DislocationProfileChartView()
+                    }
+                } else {
+                    DislocationProfileChartView()
+                }
             } else {
                 StressStrainChartView()
             }
@@ -1058,7 +1082,55 @@ struct SidebarControlsView: View {
                                     IntField(title: "30", value: $config.maxMacroIters, width: 75)
                                 }
                             }
-                            
+
+                            Divider()
+                            HStack {
+                                Text("Load:")
+                                    .font(.subheadline)
+                                Picker("", selection: $config.cylinderLoadMode) {
+                                    ForEach(CylinderLoadMode.allCases) { m in
+                                        Text(m.displayName).tag(m)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                            }
+                            if config.cylinderLoadMode != .none {
+                                HStack {
+                                    Text(config.cylinderLoadMode == .strain ? "End γ:" : "End τ:")
+                                        .font(.caption)
+                                    DoubleField(title: "0.01", value: $config.cylinderLoadEnd, width: 75)
+                                    Spacer()
+                                    Text("Step:")
+                                        .font(.caption)
+                                    DoubleField(title: "1e-4", value: $config.cylinderLoadStep, width: 75, minValue: 1e-8)
+                                }
+                                Text(config.cylinderLoadMode == .strain
+                                     ? "Strain control shears the frozen ring by γ = α from 0 to End (zero normal stress); the core relaxes at each step and the first core jump gives the critical stress. With remeshing on, that jump can coincide with a mesh reconnection rather than an elastic instability; compare a run without remeshing. A negative End loads in reverse."
+                                     : "Stress control applies a far-field Cauchy stress (0, τ, 0) on the frozen ring, τ = α from 0 to End. (τ₊ − τ₋)/2 from a forward (End > 0) and a reverse (End < 0) run removes a constant internal stress, but not the ring's pull back toward the centre, which raises |τ| both ways: repeat for two or three R_free (ring ≥ 3 a) and extrapolate. With remeshing on, the jump can coincide with a mesh reconnection; compare a run without remeshing.")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Toggle("Dipole (+b / −b)", isOn: $config.dipoleEnabled)
+                                .font(.caption)
+                            if config.dipoleEnabled {
+                                HStack {
+                                    Text("Separation dx:")
+                                        .font(.caption)
+                                    IntField(title: "10", value: $config.dipoleDx, width: 55)
+                                    Spacer()
+                                    Text("dy:")
+                                        .font(.caption)
+                                    IntField(title: "0", value: $config.dipoleDy, width: 55)
+                                }
+                                Text("Second dislocation of opposite Burgers vector at (dx, dy) lattice steps from the first; a cross-check on the single-dislocation result. On one glide plane (dy = 0) the cores attract and may annihilate during the initial relaxation; dy > 0 (e.g. 4) gives a bound dipole. dx = dy = 0 is a single dislocation.")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
                             Text(config.latticeSymmetry == .triangular ?
                                  "Uses Isotropic 2D Volterra solution (Eq. 15) with ν = C₁₂/C₁₁ and equilibrium spacing a₀ computed from active potential." :
                                  "Uses Anisotropic Stroh solution (Eqs. A5–A16) with (κ, ξ, ζ, g₁, g₂, g₃) and equilibrium spacing a₀ computed from active potential.")

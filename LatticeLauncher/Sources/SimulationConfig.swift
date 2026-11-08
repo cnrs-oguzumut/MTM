@@ -35,6 +35,22 @@ public enum LoadingMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Volterra cylinder load loop: shear the frozen ring step by step (`--cyl-load=`)
+public enum CylinderLoadMode: String, CaseIterable, Identifiable {
+    case none = "none"
+    case strain = "strain"
+    case stress = "stress"
+
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .none: return "None"
+        case .strain: return "Strain γ"
+        case .stress: return "Stress τ"
+        }
+    }
+}
+
 public enum EigenSolverType: String, CaseIterable, Identifiable {
     case fast = "fast"
     case legacy = "legacy"
@@ -120,7 +136,18 @@ public class SimulationConfig: ObservableObject {
     @Published public var pbcRelaxStrain: Double = 0.0
     @Published public var stressTol: Double = 1e-5
     @Published public var maxMacroIters: Int = 30
-    
+
+    // Volterra cylinder load loop (Peierls stress) and ±b dipole
+    /// none = single relaxation; strain = shear strain γ on the frozen ring; stress = far-field Cauchy τ
+    @Published public var cylinderLoadMode: CylinderLoadMode = .none
+    /// End of the α schedule (γ or τ); a negative end loads in reverse
+    @Published public var cylinderLoadEnd: Double = 0.01
+    @Published public var cylinderLoadStep: Double = 1e-4
+    /// Place a second, opposite dislocation (−b) at (dipoleDx, dipoleDy) lattice steps from the first
+    @Published public var dipoleEnabled: Bool = false
+    @Published public var dipoleDx: Int = 10
+    @Published public var dipoleDy: Int = 4
+
     // 3. Loading Schedule & Two-Stage Protocol (Shear & Microstructure modes)
     @Published public var protocolMode: SimulationProtocolMode = .relaxThenLoad
     @Published public var sweepContinuousMode: Bool = true
@@ -279,12 +306,15 @@ public class SimulationConfig: ObservableObject {
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
         let rotTag = useRotation ? ((boundaryCondition == .fixed || geometryConfig.enabled || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
         let relaxTag = (mode == .volterra && relaxMacroStress) ? "_relax" : ""
+        let cylLoadTag = (mode == .volterra && cylinderLoadMode != .none)
+            ? "_load_\(cylinderLoadMode.rawValue)\(cylinderLoadEnd < 0 ? "_rev" : "")" : ""
+        let dipoleTag = (mode == .volterra && dipoleEnabled) ? "_dipole\(dipoleDx)x\(dipoleDy)" : ""
         let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? (isPeriodicDislocs ? "_pbc_dislocs_\(2 * geometryConfig.microstructure.dislocation_pair_count)D" : "_\(geometryConfig.preset_name)") : ""
         if mode == .shift {
             let pertTag = shiftPerturbMesh ? "_pert" : ""
             return String(format: "run_shift_%dx%d_amp%.1f_%@%@%@%@%@", nx, ny, shiftAmplitude, remeshTag, pertTag, latTag, potTag, rotTag)
         }
-        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)"
+        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)\(dipoleTag)\(cylLoadTag)"
     }
     
     public var targetDirectory: String {
@@ -362,6 +392,17 @@ public class SimulationConfig: ObservableObject {
                 args.append("--relax-stress=1")
                 args.append(String(format: "--stress-tol=%.1e", stressTol))
                 args.append("--max-macro-iters=\(maxMacroIters)")
+            }
+            // none (today's single relaxation) is the simulator default: emit the flag only when loading
+            if cylinderLoadMode != .none {
+                args.append("--cyl-load=\(cylinderLoadMode.rawValue)")
+                args.append("--alpha-start=0.000000")
+                args.append(String(format: "--alpha-end=%.6f", cylinderLoadEnd))
+                args.append(String(format: "--step-size=%.8f", max(1e-8, abs(cylinderLoadStep))))
+            }
+            if dipoleEnabled {
+                args.append("--dipole-dx=\(dipoleDx)")
+                args.append("--dipole-dy=\(dipoleDy)")
             }
         } else if mode == .shift {
             args.append(String(format: "--shift-amplitude=%.4f", shiftAmplitude))
@@ -1060,7 +1101,14 @@ public extension SimulationConfig {
     /// Concise, unmistakable one-line summary of the active BC + Loading physics.
     var activePhysicsSummaryBadge: String {
         if mode == .volterra {
-            return "Fixed Cylinder (R=\(Int(rFree))a₀) • Single Edge Dislocation"
+            let core = dipoleEnabled ? "Dislocation Dipole ±b (\(dipoleDx), \(dipoleDy))" : "Single Edge Dislocation"
+            let load: String
+            switch cylinderLoadMode {
+            case .none: load = ""
+            case .strain: load = String(format: " • Shear γ → %g", cylinderLoadEnd)
+            case .stress: load = String(format: " • Stress τ → %g", cylinderLoadEnd)
+            }
+            return "Fixed Cylinder (R=\(Int(rFree))a₀) • \(core)\(load)"
         }
         if mode == .shift {
             return "Staircase BCs • Block Shift (A=\(String(format: "%.1f", shiftAmplitude))a₀)"
@@ -1077,7 +1125,11 @@ public extension SimulationConfig {
     /// Explicit title for the primary Launch button so the user always sees what will run.
     var launchButtonSummaryTitle: String {
         if mode == .volterra {
-            return "Launch Volterra Dislocation"
+            switch cylinderLoadMode {
+            case .none: return dipoleEnabled ? "Launch Volterra Dipole" : "Launch Volterra Dislocation"
+            case .strain: return "Launch Volterra: Shear Ring (γ = α)"
+            case .stress: return "Launch Volterra: Far-Field Stress (τ = α)"
+            }
         }
         if mode == .shift {
             return "Launch Staircase Shift"

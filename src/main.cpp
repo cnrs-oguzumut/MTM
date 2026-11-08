@@ -34,6 +34,8 @@ int main(int argc, char **argv) {
   double stress_tol = 1e-5;
   int max_macro_iters = 30;
   double alpha_start = 0.14;
+  bool alpha_start_given = false; // the cylinder load starts from 0 unless --alpha-start is given
+  CylinderLoadOptions cylinder_load; // --cyl-load, --dipole-dx, --dipole-dy (Volterra cylinder only)
   double alpha_end = 1.0;
   double step_size = 6e-5;
   double noise_level = 0.04;
@@ -308,6 +310,12 @@ int main(int argc, char **argv) {
       use_cylinder = true;
     } else if (arg == "--volterra" || arg == "--dislocation") {
       mode = "volterra";
+    } else if (arg.rfind("--cyl-load=", 0) == 0) {
+      cylinder_load.mode = arg.substr(11);
+    } else if (arg.rfind("--dipole-dx=", 0) == 0) {
+      cylinder_load.dipole_dx = std::stoi(arg.substr(12));
+    } else if (arg.rfind("--dipole-dy=", 0) == 0) {
+      cylinder_load.dipole_dy = std::stoi(arg.substr(12));
     } else if (arg == "--full-mesh" || arg == "--all-elements") {
       export_full_mesh = true;
     } else if (arg == "--circle" || arg == "--circle-only" || arg == "--active-only") {
@@ -352,8 +360,10 @@ int main(int argc, char **argv) {
       alpha_end = std::stod(arg.substr(12));
     } else if (arg.rfind("--alpha-start=", 0) == 0) {
       alpha_start = std::stod(arg.substr(14));
+      alpha_start_given = true;
     } else if (arg.rfind("--alpha-min=", 0) == 0) {
       alpha_start = std::stod(arg.substr(12));
+      alpha_start_given = true;
     } else if (arg.rfind("--step-size=", 0) == 0) {
       step_size = std::stod(arg.substr(12));
     } else if (arg.rfind("--checkpoint-interval=", 0) == 0) {
@@ -515,10 +525,14 @@ int main(int argc, char **argv) {
               << ", mesh=" << (export_full_mesh ? "full" : "circle")
               << ", lattice=" << lattice_type << ", potential_mode=" << potential_mode
               << ", relax_macro_stress=" << (relax_macro_stress ? "true" : "false") << " <<<\n" << std::endl;
+    cylinder_load.alpha_start = alpha_start_given ? alpha_start : 0.0;
+    cylinder_load.alpha_end = alpha_end;
+    cylinder_load.step = step_size;
+    cylinder_load.save_vtk_every = save_vtk_every > 0 ? save_vtk_every : 50;
     single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh,
                                            lattice_type, potential_mode, beta, bulk_K,
                                            relax_macro_stress, stress_tol, max_macro_iters,
-                                           stability_options);
+                                           stability_options, cylinder_load);
     return 0;
   }
   // 3. Multi-Shift Dislocation Study (no remeshing):

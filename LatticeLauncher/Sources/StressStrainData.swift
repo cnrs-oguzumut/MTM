@@ -15,6 +15,7 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
     case meanContactPressure = "Mean Contact Pressure p_m"
     case contactAtoms = "Contact Atoms N_c"
     case effectiveStrain = "Conjugate Strain ε (force / stress control)"
+    case coreShift = "Core glide x_c − x₀"
 
     public var id: String { rawValue }
 
@@ -34,6 +35,7 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
         case .meanContactPressure: return "Contact p_m"
         case .contactAtoms: return "Contact N_c"
         case .effectiveStrain: return "Strain ε"
+        case .coreShift: return "x_c − x₀"
         }
     }
 }
@@ -63,7 +65,9 @@ public struct StressStrainPoint: Identifiable, Equatable {
     public let effectiveStrain: Double
     /// Elastic energy E_el (force / stress control only; PostEnergy is then the enthalpy H = E_el - W_ext)
     public let elasticEnergy: Double?
-    
+    /// Volterra cylinder load: core glide x_c − x₀ (CoreShift column; nil in other runs)
+    public let coreShift: Double?
+
     public init(
         iteration: Int,
         alpha: Double,
@@ -85,7 +89,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
         meanContactPressure: Double = 0.0,
         contactAtoms: Double = 0.0,
         effectiveStrain: Double = 0.0,
-        elasticEnergy: Double? = nil
+        elasticEnergy: Double? = nil,
+        coreShift: Double? = nil
     ) {
         self.iteration = iteration
         self.alpha = alpha
@@ -108,6 +113,7 @@ public struct StressStrainPoint: Identifiable, Equatable {
         self.contactAtoms = contactAtoms
         self.effectiveStrain = effectiveStrain
         self.elasticEnergy = elasticEnergy
+        self.coreShift = coreShift
     }
 
     public func value(for component: StressComponentType) -> Double {
@@ -126,6 +132,7 @@ public struct StressStrainPoint: Identifiable, Equatable {
         case .meanContactPressure: return meanContactPressure
         case .contactAtoms: return contactAtoms
         case .effectiveStrain: return effectiveStrain
+        case .coreShift: return coreShift ?? 0.0
         }
     }
 }

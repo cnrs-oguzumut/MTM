@@ -718,7 +718,20 @@ public class ProcessRunner: ObservableObject {
             let lines = content.components(separatedBy: .newlines)
             var allPoints: [StressStrainPoint] = []
             allPoints.reserveCapacity(lines.count)
-            
+
+            // Columns 0–22 are fixed; the optional trailing columns differ per run type (traction
+            // runs: EffectiveStrain, ElasticEnergy; Volterra cylinder loads: AppliedSigmaXY, Fbar…,
+            // Core…, CoreShift, CoreJump), so look those up by header name
+            var effectiveStrainCol: Int? = nil
+            var elasticEnergyCol: Int? = nil
+            var coreShiftCol: Int? = nil
+            if let header = lines.first(where: { $0.hasPrefix("Iteration") }) {
+                let names = header.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                effectiveStrainCol = names.firstIndex(of: "EffectiveStrain")
+                elasticEnergyCol = names.firstIndex(of: "ElasticEnergy")
+                coreShiftCol = names.firstIndex(of: "CoreShift")
+            }
+
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty || trimmed.hasPrefix("Iteration") { continue }
@@ -746,6 +759,14 @@ public class ProcessRunner: ObservableObject {
                     }
                     return val
                 }
+                func parseOptional(_ idx: Int?) -> Double? {
+                    guard let idx = idx, idx < parts.count,
+                          let val = Double(parts[idx].trimmingCharacters(in: .whitespacesAndNewlines)),
+                          val.isFinite else {
+                        return nil
+                    }
+                    return val
+                }
 
                 allPoints.append(StressStrainPoint(
                     iteration: iter,
@@ -767,8 +788,9 @@ public class ProcessRunner: ObservableObject {
                     indenterLoad: parseCol(20),
                     meanContactPressure: parseCol(21),
                     contactAtoms: parseCol(22),
-                    effectiveStrain: parseCol(23), // traction runs only (EffectiveStrain column)
-                    elasticEnergy: parts.count > 24 ? parseCol(24) : nil // ElasticEnergy column, same runs
+                    effectiveStrain: parseOptional(effectiveStrainCol) ?? 0.0, // traction runs only
+                    elasticEnergy: parseOptional(elasticEnergyCol), // same runs
+                    coreShift: parseOptional(coreShiftCol) // Volterra cylinder load runs
                 ))
             }
             

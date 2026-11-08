@@ -2,6 +2,38 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — load loop and dipole option for the dislocation cylinder (Peierls stress)
+- `--volterra` (single dislocation in a cylinder, analytic field frozen outside R_free) gains a load loop:
+  - `--cyl-load=strain` shears the frozen ring by F₁₂ = γ (F₁₁, F₂₂ such that its Cauchy–Born normal stress
+    vanishes);
+  - `--cyl-load=stress` sets the ring's homogeneous F̄ so that its Cauchy–Born Cauchy stress is
+    (σ_xx, σ_xy, σ_yy) = (0, τ, 0);
+  - the schedule comes from `--alpha-start` (default 0 here), `--alpha-end` and `--step-size`, and a
+    negative end loads in reverse.
+- Each step relaxes the core with the ring fixed (and remeshes when enabled). The core position is where the
+  slip across its glide plane equals b/2, interpolated below one lattice spacing, in the unsheared frame. A
+  step that moves a core more than a/2 is flagged as a jump.
+- energy_stress_log.csv gains `AppliedSigmaXY, Fbar11, Fbar12, Fbar22, Core1X, Core1Y, [Core2X, Core2Y],
+  CoreShift, [Core2Shift], CoreJump`.
+- The stability monitor (`--eig-every`, …) runs at every step. The run stops when a core reaches 3a from the
+  ring.
+- `--dipole-dx=N --dipole-dy=N` inserts a +b / −b pair separated by N lattice spacings and N rows.
+- A loaded run is refused when the frozen ring is thinner than 3a, since free surfaces would bias the result.
+  A dipole that annihilates during the initial relaxation is reported and nothing is loaded.
+- Without `--cyl-load` the cylinder output is unchanged: byte-identical on the square lattice, within the
+  relaxation tolerance (~1e-6) on the triangular one.
+- GUI: load picker (None / Strain γ / Stress τ), End and Step, a dipole toggle with dx and dy (default
+  dy = 4: a bound dipole), and a "Load Curve" view of the core glide against α. Optional log columns are now
+  read by header name.
+- Findings (Zanzotto model):
+  - Triangular, β = 4: the core shifts elastically within its valley, then jumps. (τ₊ − τ₋)/2 = 0.0116,
+    0.01095 and 0.0101 for R_free = 20, 30 and 60 (≈ 0.0095 extrapolated).
+  - The ring's pull toward the centre raises |τ| in both directions, so it does not cancel in
+    (τ₊ − τ₋)/2: extrapolate in R_free.
+  - With remeshing on, the jump coincides with the first accepted mesh reconnection, and the core mode's
+    eigenvalue stays positive. Without remeshing, the core glides from τ ≈ 0.0003.
+  - Square, β = −0.25: smooth glide, no threshold above 5e-5.
+
 ### Fixed — "Relax box stress to zero" now works together with a relaxation at prescribed strain
 - With `--relax-strain` set, `--relax-stress=1` had no effect: there was no α = 0 step, so the stress
   schedule started at the relaxed stress σ₀. σ₀ can be negative, e.g. −0.0048 in a 150×150 cell at
