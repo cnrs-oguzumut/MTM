@@ -47,7 +47,9 @@ struct StressStrainChartView: View {
     /// Force / stress control: plot against the conjugate strain (bursts show as jumps along x)
     @State private var plotAgainstConjugateStrain: Bool = true
     /// Volterra cylinder load: plot against the applied far-field stress σ_xy instead of the load α
-    @State private var plotAgainstAppliedStress: Bool = true
+    /// Volterra cylinder load: x axis = applied far-field stress σ_xy, load α (γ or τ), or dislocation position x_d / b
+    enum VolterraXAxis: Hashable { case appliedStress, load, corePosition }
+    @State private var volterraXAxis: VolterraXAxis = .corePosition
     /// Force / stress control: the logged energy is the enthalpy H = E_el - W_ext; plot E_el unless asked
     @State private var plotEnthalpy: Bool = false
     /// PBC stress control: λ_min chart shows the free-cell eigenvalue λ_box (true) or the fixed-cell λ_min(K)
@@ -83,17 +85,22 @@ struct StressStrainChartView: View {
     private var hasCoreShiftRelaxed: Bool {
         runner.curvePoints.contains { $0.coreShiftRelaxed != nil }
     }
-    private var appliedStressAxis: Bool {
-        hasAppliedStress && plotAgainstAppliedStress && chartMode != .eigenvalue && chartMode != .gbEnergy
+    private var volterraAxisActive: Bool {
+        hasAppliedStress && chartMode != .eigenvalue && chartMode != .gbEnergy
     }
+    private var appliedStressAxis: Bool { volterraAxisActive && volterraXAxis == .appliedStress }
+    /// Dislocation position x_d / b (core glide in Burgers vectors), as in Fig. 8 of the MTM cylinder paper
+    private var corePositionAxis: Bool { volterraAxisActive && volterraXAxis == .corePosition }
     /// x coordinate of a curve point: the load parameter α, the conjugate strain ε under force control, or the
     /// applied far-field stress in a Volterra cylinder load
     private func xValue(_ pt: StressStrainPoint) -> Double {
+        if corePositionAxis { return (pt.coreShift ?? 0.0) / max(pt.burgers ?? 1.0, 1e-12) }
         if appliedStressAxis { return pt.appliedSigmaXY ?? pt.alpha }
         return conjugateStrainAxis ? pt.effectiveStrain : pt.alpha
     }
     private var xAxisLabel: String {
-        appliedStressAxis ? "Applied Stress (σ_xy)" : (conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)")
+        corePositionAxis ? "Dislocation Position (x_d / b)"
+            : (appliedStressAxis ? "Applied Stress (σ_xy)" : (conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)"))
     }
 
     /// PBC stress control: the eigen log carries the free-cell stability λ_box and the strain
@@ -431,14 +438,19 @@ struct StressStrainChartView: View {
                         }
                         if hasCoreShift {
                             Section(header: Text("Dislocation Core (Volterra Load)")) {
+                                Text(StressComponentType.appliedSigmaXY.rawValue).tag(StressComponentType.appliedSigmaXY)
                                 Text(StressComponentType.coreShift.rawValue).tag(StressComponentType.coreShift)
                             }
                         }
                     }
                     .onChange(of: hasCoreShift, initial: true) { _, present in
-                        // Volterra load run: open on the core glide; fall back when the column goes away
-                        if present && stressComponent == .primary { stressComponent = .coreShift }
-                        if !present && stressComponent == .coreShift { stressComponent = .primary }
+                        // Volterra load run: open on the shear stress inside the free region (Cauchy σ_xy, averaged
+                        // over the free disc) against the dislocation position, as in Fig. 8a; fall back when the
+                        // columns go away
+                        if present && stressComponent == .primary { stressComponent = .cauchyXY }
+                        if !present && (stressComponent == .coreShift || stressComponent == .appliedSigmaXY) {
+                            stressComponent = .primary
+                        }
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
@@ -609,21 +621,16 @@ struct StressStrainChartView: View {
                 }
                 // Volterra cylinder load: x-axis = applied far-field stress or load α (γ or τ)
                 if hasAppliedStress && chartMode != .gbEnergy && chartMode != .eigenvalue {
-                    Picker("", selection: $plotAgainstAppliedStress) {
-                        Text("x: σ").tag(true)
-                        Text("x: α").tag(false)
+                    Picker("", selection: $volterraXAxis) {
+                        Text("x: x_d").tag(VolterraXAxis.corePosition)
+                        Text("x: σ").tag(VolterraXAxis.appliedStress)
+                        Text("x: α").tag(VolterraXAxis.load)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .controlSize(.small)
-                    .frame(width: 96)
-                    .help("Volterra cylinder load: plot against the far-field shear stress σ_xy applied by the frozen ring (also under strain control), or against the load α (γ or τ).")
-                }
-                if chartMode == .stress && stressComponent == .coreShift && hasCoreShiftRelaxed {
-                    Text("solid: final · dashed: before remesh")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .help("Core glide after each step (solid) and after the fixed-mesh relaxation, before that step's remeshing (dashed). A jump only on the solid curve came from the reconnection; a jump on the dashed curve is an instability of the lattice energy.")
+                    .fixedSize()
+                    .help("Volterra cylinder load: x axis = dislocation position x_d / b (with Cauchy Shear σ_xy, the average over the free disc, as y this is σ̄₁₂(x_d) as in Fig. 8a), the far-field shear stress σ_xy applied by the frozen ring, or the load α (γ or τ).")
                 }
                 // Force / stress control: x-axis = load α or conjugate strain ε
                 if (hasConjugateStrain && chartMode != .gbEnergy && chartMode != .eigenvalue) ||
@@ -919,7 +926,8 @@ struct StressStrainChartView: View {
                         
                         // 3. Peak / Yield Stress Guide Line
                         let peakVal = currentPeakStress
-                        if showYieldLine && chartMode == .stress && peakVal > 0 {
+                        // (not for the core glide, where a "peak" line has no meaning)
+                        if showYieldLine && chartMode == .stress && stressComponent != .coreShift && peakVal > 0 {
                             let lastStress = runner.curvePoints.last.map { stressValue(for: $0) } ?? 0.0
                             let peakY = lastStress < 0 ? -peakVal : peakVal
                             RuleMark(
@@ -953,6 +961,23 @@ struct StressStrainChartView: View {
                 }
                 .chartXScale(domain: xDomain)
                 .chartYScale(domain: yDomain)
+                // Volterra load: legend for the before-remesh curve (on the plot, so the toolbar stays one row)
+                .overlay(alignment: .topLeading) {
+                    if chartMode == .stress && stressComponent == .coreShift && hasCoreShiftRelaxed {
+                        Text("solid: final · dashed: before remesh")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(BlueHour.controlSurface.opacity(0.85))
+                            .cornerRadius(4)
+                            .padding(6)
+                            .allowsHitTesting(false)
+                            .help("Core glide after each step (solid) and after the fixed-mesh relaxation, before that step's remeshing (dashed). A jump only on the solid curve came from the reconnection; a jump on the dashed curve is an instability of the lattice energy.")
+                    }
+                }
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 7)) { value in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
@@ -1031,7 +1056,7 @@ struct StressStrainChartView: View {
                 .help("Drag across the chart to zoom the x axis; double-click to show all points.")
                 .onChange(of: chartMode) { _, _ in resetXZoom() }
                 .onChange(of: plotAgainstConjugateStrain) { _, _ in resetXZoom() }
-                .onChange(of: plotAgainstAppliedStress) { _, _ in resetXZoom() }
+                .onChange(of: volterraXAxis) { _, _ in resetXZoom() }
                 .onChange(of: scaleMode) { _, _ in resetXZoom() }
                 .onChange(of: runner.outputDirectory) { _, _ in resetXZoom() }
                 .padding(.horizontal, 16)

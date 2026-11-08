@@ -1094,6 +1094,8 @@ struct SidebarControlsView: View {
                                 }
                                 .pickerStyle(.segmented)
                                 .labelsHidden()
+                                .fixedSize() // natural width: a flexible segmented control re-lays out on every redraw
+                                Spacer()
                             }
                             if config.cylinderLoadMode != .none {
                                 HStack {
@@ -1105,6 +1107,23 @@ struct SidebarControlsView: View {
                                         .font(.caption)
                                     DoubleField(title: "1e-4", value: $config.cylinderLoadStep, width: 75, minValue: 1e-8)
                                 }
+                                HStack {
+                                    Text("Cycle to x_d = (b, 0 = off):")
+                                        .font(.caption)
+                                    Spacer()
+                                    DoubleField(title: "2", value: $config.cylinderCycleB, width: 60)
+                                }
+                                .help("Peierls protocol (Fig. 8 of the MTM cylinder paper): load until the dislocation has glided this many Burgers vectors, then reverse the load until it is back at its start. End then only caps |α|.")
+                                HStack {
+                                    Text("Normal stress σ_xx:")
+                                        .font(.caption)
+                                    DoubleField(title: "0", value: $config.cylinderSigmaXX, width: 60)
+                                    Spacer()
+                                    Text("σ_yy:")
+                                        .font(.caption)
+                                    DoubleField(title: "0", value: $config.cylinderSigmaYY, width: 60)
+                                }
+                                .help("Normal stresses of the ring's far-field (Cauchy–Born) stress, applied at the first load step, e.g. σ_yy = −0.1 for the hard-core case of Fig. 8e.")
                                 Toggle("Remesh after each load step", isOn: $config.cylinderStepRemesh)
                                     .font(.caption)
                                     .help("On: each step's relaxation is followed by a Delaunay reconnection when it lowers the energy. Off: the initial mesh is kept, so the core moves only through the lattice energy at fixed connectivity. The log records the core both before and after remeshing (CoreShiftRelaxed, JumpBeforeRemesh).")

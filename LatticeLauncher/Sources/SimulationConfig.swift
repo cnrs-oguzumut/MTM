@@ -145,6 +145,11 @@ public class SimulationConfig: ObservableObject {
     @Published public var cylinderLoadStep: Double = 1e-4
     /// Remesh after each load step (with remeshing on); off keeps the initial mesh for the whole load
     @Published public var cylinderStepRemesh: Bool = true
+    /// Load cycle: forward until the core has glided this many b, then back to its start (0 = off)
+    @Published public var cylinderCycleB: Double = 2.0
+    /// Normal stresses σ_xx, σ_yy of the ring (Cauchy–Born), applied at the first load step
+    @Published public var cylinderSigmaXX: Double = 0.0
+    @Published public var cylinderSigmaYY: Double = 0.0
     /// Place a second, opposite dislocation (−b) at (dipoleDx, dipoleDy) lattice steps from the first
     @Published public var dipoleEnabled: Bool = false
     @Published public var dipoleDx: Int = 10
@@ -402,6 +407,9 @@ public class SimulationConfig: ObservableObject {
                 args.append(String(format: "--alpha-end=%.6f", cylinderLoadEnd))
                 args.append(String(format: "--step-size=%.8f", max(1e-8, abs(cylinderLoadStep))))
                 if !cylinderStepRemesh { args.append("--cyl-step-remesh=0") }
+                if cylinderCycleB > 0 { args.append(String(format: "--cyl-cycle=%g", cylinderCycleB)) }
+                if cylinderSigmaXX != 0 { args.append(String(format: "--cyl-sxx=%.8g", cylinderSigmaXX)) }
+                if cylinderSigmaYY != 0 { args.append(String(format: "--cyl-syy=%.8g", cylinderSigmaYY)) }
             }
             if dipoleEnabled {
                 args.append("--dipole-dx=\(dipoleDx)")

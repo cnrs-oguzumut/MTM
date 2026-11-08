@@ -16,6 +16,7 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
     case contactAtoms = "Contact Atoms N_c"
     case effectiveStrain = "Conjugate Strain ε (force / stress control)"
     case coreShift = "Core glide x_c − x₀"
+    case appliedSigmaXY = "Applied σ_xy (frozen ring)"
 
     public var id: String { rawValue }
 
@@ -36,6 +37,7 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
         case .contactAtoms: return "Contact N_c"
         case .effectiveStrain: return "Strain ε"
         case .coreShift: return "x_c − x₀"
+        case .appliedSigmaXY: return "σ_app"
         }
     }
 }
@@ -71,6 +73,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
     public let coreShiftRelaxed: Double?
     /// Volterra cylinder load: Cauchy–Born shear stress applied by the frozen ring (AppliedSigmaXY)
     public let appliedSigmaXY: Double?
+    /// Volterra cylinder load: Burgers vector length b, the unit of the dislocation position x_d / b (Burgers)
+    public let burgers: Double?
 
     public init(
         iteration: Int,
@@ -96,7 +100,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
         elasticEnergy: Double? = nil,
         coreShift: Double? = nil,
         coreShiftRelaxed: Double? = nil,
-        appliedSigmaXY: Double? = nil
+        appliedSigmaXY: Double? = nil,
+        burgers: Double? = nil
     ) {
         self.iteration = iteration
         self.alpha = alpha
@@ -122,6 +127,7 @@ public struct StressStrainPoint: Identifiable, Equatable {
         self.coreShift = coreShift
         self.coreShiftRelaxed = coreShiftRelaxed
         self.appliedSigmaXY = appliedSigmaXY
+        self.burgers = burgers
     }
 
     public func value(for component: StressComponentType) -> Double {
@@ -141,6 +147,7 @@ public struct StressStrainPoint: Identifiable, Equatable {
         case .contactAtoms: return contactAtoms
         case .effectiveStrain: return effectiveStrain
         case .coreShift: return coreShift ?? 0.0
+        case .appliedSigmaXY: return appliedSigmaXY ?? 0.0
         }
     }
 }

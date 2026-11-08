@@ -2,6 +2,31 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Fixed — cylinder load stopped at the first step with --potential-mode=2
+- The ring's deformation is found by Newton iteration to a stress residual of 1e-11. The polynomial
+  Lennard-Jones of mode 2 has a rounding-noise floor of about 1e-10, so the solve never converged and the
+  load stopped at step 1 ("Could not find the ring deformation"). After four iterations a residual below
+  1e-9 is now accepted.
+- A mode 2 load cycle now completes: triangular, R_free = 35, first jump at τ ∈ (0.062, 0.063]. Other
+  potentials change at the relaxation-tolerance level (~1e-6).
+
+### Added — Peierls protocol for the dislocation cylinder: stress against dislocation position
+- `--cyl-cycle=N` loads until the dislocation has glided N Burgers vectors, then reverses the load until it is
+  back at its start (the protocol of Fig. 8 in the MTM cylinder paper); `--alpha-end` then only caps |α|.
+- `--cyl-sxx`, `--cyl-syy` set the normal stresses of the ring's Cauchy–Born stress, in both load modes,
+  applied at the first load step (e.g. σ_yy = −0.1 for the hard-core case).
+- The load log adds a `Burgers` column (b), the unit of the dislocation position x_d / b.
+- GUI:
+  - The Volterra load chart has an x-axis choice "x_d / σ / α": dislocation position x_d / b, the ring's
+    applied stress, or the load.
+  - It opens on the shear stress inside the free region (Cauchy σ_xy, averaged over the free disc) against
+    x_d / b, as in Fig. 8a.
+  - The ring's Cauchy–Born stress is available as "Applied σ_xy (frozen ring)".
+  - The Volterra card has the cycle (default 2 b) and the normal stresses.
+- Test: triangular, β = 4, R_free = 30, no remeshing, cycle to 2b. The core hops one b at a time, forward and
+  back, and the free-region stress traces the hysteresis loop. Within a valley it rises with x_d and drops at
+  each hop.
+
 ### Added — GUI: core position against applied stress
 - In a Volterra cylinder load run, the "Core glide x_c − x₀" curve can be plotted against the far-field shear
   stress σ_xy applied by the frozen ring (`AppliedSigmaXY`; "x: σ", the default), also under strain control,

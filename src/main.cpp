@@ -312,6 +312,12 @@ int main(int argc, char **argv) {
       mode = "volterra";
     } else if (arg.rfind("--cyl-load=", 0) == 0) {
       cylinder_load.mode = arg.substr(11);
+    } else if (arg.rfind("--cyl-cycle=", 0) == 0) {
+      cylinder_load.cycle_b = std::stod(arg.substr(12));
+    } else if (arg.rfind("--cyl-sxx=", 0) == 0) {
+      cylinder_load.sigma_xx = std::stod(arg.substr(10));
+    } else if (arg.rfind("--cyl-syy=", 0) == 0) {
+      cylinder_load.sigma_yy = std::stod(arg.substr(10));
     } else if (arg.rfind("--cyl-step-remesh=", 0) == 0) {
       cylinder_load.step_remesh = std::stoi(arg.substr(18)) != 0;
     } else if (arg.rfind("--dipole-dx=", 0) == 0) {

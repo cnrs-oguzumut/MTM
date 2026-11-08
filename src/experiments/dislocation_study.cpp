@@ -1584,14 +1584,17 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
         Eigen::VectorXd r(unknowns.size());
         for (size_t q = 0; q < unknowns.size(); ++q) {
           const int k = unknowns[q];
-          r(q) = sg(comp_r[k], comp_c[k]) - ((stress_mode && k == 1) ? value : 0.0);
+          const double target = (k == 0) ? load.sigma_xx : (k == 2 ? load.sigma_yy : value);
+          r(q) = sg(comp_r[k], comp_c[k]) - target;
         }
         return r;
       };
       ok = false;
       for (int it = 0; it < 60; ++it) {
         const Eigen::VectorXd r = residual(Fb);
-        if (r.cwiseAbs().maxCoeff() < 1e-11) {
+        // Converged at 1e-11; after a few iterations accept 1e-9, the rounding-noise floor of some potentials
+        // (e.g. the polynomial Lennard-Jones of --potential-mode=2)
+        if (r.cwiseAbs().maxCoeff() < 1e-11 || (it >= 4 && r.cwiseAbs().maxCoeff() < 1e-9)) {
           ok = true;
           break;
         }
@@ -1667,6 +1670,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       cols.push_back({"CoreShiftRelaxed", core_relaxed[0].x() - core_ref0[0].x()});
       if (core_relaxed.size() > 1) cols.push_back({"Core2ShiftRelaxed", core_relaxed[1].x() - core_ref0[1].x()});
       cols.push_back({"JumpBeforeRemesh", jump_relaxed ? 1.0 : 0.0});
+      cols.push_back({"Burgers", burgers_vector.x()}); // length unit of the core glide (x_d / b)
       const double area = ConfigurationSaver::calculateTotalArea2D(&userData);
       ConfigurationSaver::logEnergyAndStress_v2(iter, alpha, e_pre, s_pre, e_post, sig_avg(0, 1), area, area,
                                                 changes, &userData, nullptr, &cols);
@@ -1706,8 +1710,28 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     int file_id = relaxed_file_id + 1;
     int first_jump = -1;
     double alpha_prev = 0.0, alpha_before_jump = 0.0, alpha_at_jump = 0.0;
-    for (size_t k = 0; k < alphas.size() && !lost0; ++k) {
-      const double alpha = alphas[k];
+    // Load cycle: forward until the first core has glided cycle_b b, then back until it returns to its start
+    const bool cycle = load.cycle_b > 0.0;
+    const double alpha_cap = std::max(std::abs(load.alpha_end), dstep);
+    double cycle_dir = dir;
+    bool cycle_reversed = false;
+    if (cycle) {
+      std::cout << "[Cylinder Load] Load cycle: forward until the core has glided " << load.cycle_b
+                << " b, then reverse until it is back at its start (|alpha| <= " << alpha_cap << ")." << std::endl;
+    }
+    for (size_t k = 0; !lost0; ++k) {
+      double alpha = 0.0;
+      if (cycle) {
+        alpha = (k == 0 && load.alpha_start != 0.0) ? load.alpha_start : alpha_prev + cycle_dir * dstep;
+        if (std::abs(alpha) > alpha_cap * (1.0 + 1e-9)) {
+          std::cout << "[Cylinder Load] |alpha| reached |alpha_end| = " << alpha_cap
+                    << " before the cycle completed: stopping." << std::endl;
+          break;
+        }
+      } else {
+        if (k >= alphas.size()) break;
+        alpha = alphas[k];
+      }
       const int step = static_cast<int>(k) + 1;
       bool ok = false;
       const Eigen::Matrix2d Fb = solve_ring_F(alpha, Fb_prev, ok);
@@ -1785,8 +1809,19 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                          : "")
                 << std::endl;
 
-      if (jump || (load.save_vtk_every > 0 && step % load.save_vtk_every == 0) || k + 1 == alphas.size() ||
-          near_ring) {
+      bool cycle_done = false;
+      if (cycle) {
+        const double glide_b = dir * (core_ref[0].x() - core_ref0[0].x()) / burgers_vector.x();
+        if (!cycle_reversed && glide_b >= load.cycle_b) {
+          cycle_reversed = true;
+          cycle_dir = -dir;
+          std::cout << "[Cylinder Load] Core glide reached " << load.cycle_b << " b: reversing the load." << std::endl;
+        } else if (cycle_reversed && glide_b <= 0.0) {
+          cycle_done = true;
+        }
+      }
+      const bool last_step = cycle ? cycle_done : (k + 1 == alphas.size());
+      if (jump || (load.save_vtk_every > 0 && step % load.save_vtk_every == 0) || last_step || near_ring) {
         save_vtk(file_id++, alpha);
       }
       monitor.end_of_step(step, alpha, sg_post(0, 1), userData, jump, step_start_elements, step_start_active,
@@ -1795,6 +1830,10 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       Fb_prev = Fb;
       core_ref_prev = core_ref;
       alpha_prev = alpha;
+      if (cycle_done) {
+        std::cout << "[Cylinder Load] The core is back at its start: load cycle complete." << std::endl;
+        break;
+      }
       if (lost) {
         std::cout << "[Cylinder Load] A core is no longer found on its glide plane (it left the free region, or "
                      "the dipole annihilated): stopping." << std::endl;
