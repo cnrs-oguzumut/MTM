@@ -246,8 +246,9 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
 
       // Calculate deformation gradient with current positions
       element.calculate_deformation_gradient(x);
-      // Also update area calculations
-      element.calculateReferenceArea(square_points);
+      // Material area = the reference element's (F is measured against it), not the triangle's
+      // current area, which a pre-displaced mesh (dislocations, grain boundaries) would distort
+      element.setReferenceArea(ElementTriangle2D::referenceElementArea(*manual_shape_derivative));
       element.calculateCurrentArea(x);
     } else {
       // Otherwise calculate shape derivatives normally

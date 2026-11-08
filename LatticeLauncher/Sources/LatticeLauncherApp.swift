@@ -30,5 +30,114 @@ struct LatticeLauncherApp: App {
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
+        .commands {
+            // 1. Experiment Menu
+            CommandMenu("Experiment") {
+                Button("Run Simulation") {
+                    NotificationCenter.default.post(name: .runSimulationCommand, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+                .disabled(runner.status.isRunning)
+                
+                Button("Stop Simulation") {
+                    NotificationCenter.default.post(name: .stopSimulationCommand, object: nil)
+                }
+                .keyboardShortcut(".", modifiers: [.command])
+                .disabled(!runner.status.isRunning)
+                
+                Divider()
+                
+                Menu("Load Sample Experiment") {
+                    ForEach(SampleExperimentPreset.allCases) { preset in
+                        Button(preset.title) {
+                            NotificationCenter.default.post(name: .applySampleExperiment, object: preset.rawValue)
+                        }
+                    }
+                }
+                
+                Divider()
+                
+                Button("Open Output Folder in Finder") {
+                    runner.openOutputFolder()
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                
+                Button("Open VTK Snapshot…") {
+                    NotificationCenter.default.post(name: .openVTKFile, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: [.command])
+            }
+            
+            // 2. View Menu Shortcuts
+            CommandGroup(after: .toolbar) {
+                Divider()
+                Button("Specimen Blueprint") {
+                    NotificationCenter.default.post(name: .switchMainDisplayTab, object: "blueprint")
+                }
+                .keyboardShortcut("1", modifiers: [.command])
+                
+                Button("Specimen FEM Mesh") {
+                    NotificationCenter.default.post(name: .switchMainDisplayTab, object: "femMesh")
+                }
+                .keyboardShortcut("2", modifiers: [.command])
+                
+                Button("Results & Plots") {
+                    NotificationCenter.default.post(name: .switchMainDisplayTab, object: "results")
+                }
+                .keyboardShortcut("3", modifiers: [.command])
+                
+                Button("Split View (Specimen + Results)") {
+                    NotificationCenter.default.post(name: .switchMainDisplayTab, object: "split")
+                }
+                .keyboardShortcut("4", modifiers: [.command])
+                
+                Button("VTK Snapshot Viewer") {
+                    NotificationCenter.default.post(name: .switchMainDisplayTab, object: "snapshots")
+                }
+                .keyboardShortcut("5", modifiers: [.command])
+                
+                Divider()
+                
+                Button("Show / Hide Console") {
+                    NotificationCenter.default.post(name: .toggleConsoleDrawer, object: nil)
+                }
+                .keyboardShortcut("j", modifiers: [.command])
+                
+                Button("Toggle Guided / Expert Hints") {
+                    NotificationCenter.default.post(name: .toggleComplexityMode, object: nil)
+                }
+                .keyboardShortcut("e", modifiers: [.command, .option])
+            }
+            
+            // 3. Help Menu (Mac App Store compliant Help & Onboarding)
+            CommandGroup(replacing: .help) {
+                Button("Welcome & Quick-Start Tour…") {
+                    NotificationCenter.default.post(name: .showWelcomeTour, object: nil)
+                }
+                
+                Button("Lattice Launcher Documentation & Physics Guide…") {
+                    NotificationCenter.default.post(name: .showDocumentationCenter, object: DocumentationTopic.quickStart.rawValue)
+                }
+                .keyboardShortcut("?", modifiers: [.command])
+                
+                Divider()
+                
+                Button("Guide: How to Install Dislocations (2M Periodic & Volterra)…") {
+                    NotificationCenter.default.post(name: .showDocumentationCenter, object: DocumentationTopic.installingDislocations.rawValue)
+                }
+                
+                Button("Guide: Bicrystals, Voronoi & CSL Rationalizer…") {
+                    NotificationCenter.default.post(name: .showDocumentationCenter, object: DocumentationTopic.grainBoundariesCSL.rawValue)
+                }
+                
+                Button("Guide: Two-Stage Boundary Conditions & Nanoindenter…") {
+                    NotificationCenter.default.post(name: .showDocumentationCenter, object: DocumentationTopic.boundaryConditionsIndenter.rawValue)
+                }
+                
+                Button("Glossary of Physical Symbols & Parameters…") {
+                    NotificationCenter.default.post(name: .showDocumentationCenter, object: DocumentationTopic.parameterGlossary.rawValue)
+                }
+            }
+        }
     }
 }

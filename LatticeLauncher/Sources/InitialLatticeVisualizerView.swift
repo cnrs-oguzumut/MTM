@@ -50,12 +50,48 @@ public struct InitialLatticeVisualizerView: View {
     @State private var hoveredElementPress: Double? = nil
     @State private var hoveredElementNodes: [Int]? = nil
     
+    // GPU rendering (large meshes) & large-crystal node guard
+    @State private var gpuCache = FEMPreviewGPUCache()
+    @State private var gpuFitToken = 0
+    @State private var approvedNodeCount: Int? = nil
+    @State private var askShowNodes = false
+    
     public init(manager: StiffnessStudyManager) {
         self.manager = manager
     }
     
     private var mesh: InitialMeshModel? {
         manager.initialMeshData
+    }
+    
+    private var isPeriodicView: Bool { viewMode == .periodic3x3 }
+    
+    private func displayNodeCount(_ m: InitialMeshModel) -> Int {
+        FEMPreviewGPUCache.nodeCount(m, periodic: isPeriodicView)
+    }
+    
+    private func useGPU(_ m: InitialMeshModel) -> Bool {
+        FEMPreviewGPUCache.triangleCount(m, periodic: isPeriodicView) > LargeMeshPolicy.gpuTriangleThreshold
+    }
+    
+    /// Hide nodes automatically when the crystal is large (unless the user approved this size).
+    private func applyNodeGuard() {
+        guard let m = mesh else { return }
+        let n = displayNodeCount(m)
+        if LargeMeshPolicy.isLarge(n) && approvedNodeCount != n { showNodes = false }
+    }
+    
+    private var showNodesBinding: Binding<Bool> {
+        Binding(
+            get: { showNodes },
+            set: { on in
+                if on, let m = mesh, LargeMeshPolicy.isLarge(displayNodeCount(m)), approvedNodeCount != displayNodeCount(m) {
+                    askShowNodes = true
+                } else {
+                    showNodes = on
+                }
+            }
+        )
     }
     
     public var body: some View {
@@ -68,20 +104,38 @@ public struct InitialLatticeVisualizerView: View {
             // MAIN CANVAS AREA
             ZStack(alignment: .bottomLeading) {
                 if let mesh = mesh, !mesh.primary_nodes.isEmpty {
-                    GeometryReader { geo in
-                        canvasView(mesh: mesh, size: geo.size)
-                            .gesture(
-                                DragGesture()
-                                    .onChanged { val in
-                                        panOffset = CGSize(
-                                            width: dragStartOffset.width + val.translation.width,
-                                            height: dragStartOffset.height + val.translation.height
-                                        )
-                                    }
-                                    .onEnded { _ in
-                                        dragStartOffset = panOffset
-                                    }
-                            )
+                    if useGPU(mesh) {
+                        gpuCanvas(mesh: mesh)
+                    } else {
+                        GeometryReader { geo in
+                            canvasView(mesh: mesh, size: geo.size)
+                                .gesture(
+                                    DragGesture()
+                                        .onChanged { val in
+                                            panOffset = CGSize(
+                                                width: dragStartOffset.width + val.translation.width,
+                                                height: dragStartOffset.height + val.translation.height
+                                            )
+                                        }
+                                        .onEnded { _ in
+                                            dragStartOffset = panOffset
+                                        }
+                                )
+                        }
+                    }
+                    
+                    // Nodes hidden note (large crystals)
+                    let nCount = displayNodeCount(mesh)
+                    if LargeMeshPolicy.isLarge(nCount) && !showNodes && approvedNodeCount != nCount {
+                        VStack {
+                            NodesHiddenNote(nodeCount: nCount) {
+                                approvedNodeCount = nCount
+                                showNodes = true
+                            }
+                            .padding(.top, 8)
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity)
                     }
                     
                     // BOTTOM OVERLAYS: HUD INFO & COLORBAR LEGEND
@@ -114,11 +168,69 @@ public struct InitialLatticeVisualizerView: View {
             } else if manager.initialMeshData?.bc == "fixed" {
                 viewMode = .primary
             }
+            applyNodeGuard()
         }
         .onChange(of: manager.initialMeshData?.bc) { newBC in
             if newBC == "fixed" {
                 viewMode = .primary
             }
+        }
+        .onChange(of: manager.initialMeshVersion) { _ in
+            hoveredElementId = nil
+            applyNodeGuard()
+        }
+        .onChange(of: viewMode) { _ in
+            hoveredElementId = nil
+            applyNodeGuard()
+        }
+        .largeNodeConfirmation(isPresented: $askShowNodes, nodeCount: mesh.map(displayNodeCount) ?? 0) {
+            if let m = mesh { approvedNodeCount = displayNodeCount(m) }
+            showNodes = true
+        }
+    }
+    
+    // MARK: - GPU Canvas (large meshes)
+    private func gpuCanvas(mesh: InitialMeshModel) -> some View {
+        let geo = gpuCache.geometry(for: mesh, version: manager.initialMeshVersion, periodic: isPeriodicView)
+        let vals = gpuCache.values(for: mesh, version: manager.initialMeshVersion, periodic: isPeriodicView, field: colorField)
+        var a = MeshAppearance()
+        a.colormap = colorPalette.meshColormap
+        a.rangeMin = Float(colorFieldMin(mesh: mesh))
+        a.rangeMax = Float(colorFieldMax(mesh: mesh))
+        a.showEdges = showWireframe
+        a.showNodes = showNodes
+        a.showOutline = showDomainBorders
+        a.solidFill = SIMD4(0.31, 0.55, 0.95, 0.28)
+        a.edgeColor = SIMD4(0, 0, 0, geo.triangleCount > 40_000 ? 0.25 : 0.45)
+        a.nodeSizePx = geo.nodeCount > 20_000 ? 2.5 : 4
+        return MetalMeshView(geometry: geo, values: vals, appearance: a, fitToken: gpuFitToken) { p in
+            updateHover(mesh: mesh, world: p)
+        }
+    }
+    
+    private func updateHover(mesh: InitialMeshModel, world: SIMD2<Float>?) {
+        guard let p = world, let t = gpuCache.locator?.triangle(at: p) else {
+            if hoveredElementId != nil { hoveredElementId = nil }
+            return
+        }
+        if FEMPreviewGPUCache.usesTiling(mesh, periodic: isPeriodicView) {
+            guard mesh.elements_3x3.indices.contains(t) else { return }
+            let e = mesh.elements_3x3[t]
+            hoveredElementId = e.orig_id
+            hoveredElementNodes = nil
+            hoveredElementEnergy = e.strain_energy_density
+            hoveredElementVM = e.von_mises
+            hoveredElementShear = e.sigma_xy
+            hoveredElementPress = e.pressure
+        } else {
+            guard mesh.elements.indices.contains(t) else { return }
+            let e = mesh.elements[t]
+            hoveredElementId = e.id
+            hoveredElementNodes = e.nodes
+            hoveredElementEnergy = e.strain_energy_density
+            hoveredElementVM = e.von_mises
+            hoveredElementShear = e.sigma_xy
+            hoveredElementPress = e.pressure
         }
     }
     
@@ -169,13 +281,17 @@ public struct InitialLatticeVisualizerView: View {
                 
                 // Display Toggles Menu
                 Menu {
-                    Toggle("Show Nodes", isOn: $showNodes)
+                    Toggle("Show Nodes", isOn: showNodesBinding)
                     Toggle("Node ID Numbers", isOn: $showNodeLabels)
+                        .disabled((mesh.map(displayNodeCount) ?? 0) > LargeMeshPolicy.labelLimit || (mesh.map(useGPU) ?? false))
                     Toggle("Element Wireframe", isOn: $showWireframe)
                     Toggle("Element ID Numbers", isOn: $showElementLabels)
+                        .disabled(mesh.map(useGPU) ?? false)
                     Toggle("Highlight Boundary Crossing", isOn: $highlightCrossing)
+                        .disabled(mesh.map(useGPU) ?? false)
                     Toggle("Domain Box Borders", isOn: $showDomainBorders)
                     Toggle("Show Driven BC Arrows", isOn: $showBCVectors)
+                        .disabled(mesh.map(useGPU) ?? false)
                 } label: {
                     Label("Layers", systemImage: "square.3.layers.3d")
                         .font(.caption)
@@ -186,6 +302,18 @@ public struct InitialLatticeVisualizerView: View {
                 Divider().frame(height: 18)
                 
                 // Zoom & Pan Actions
+                if let m = mesh, useGPU(m) {
+                    HStack(spacing: 6) {
+                        Button(action: { gpuFitToken += 1 }) {
+                            Label("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        Text("GPU · scroll/pinch to zoom, drag to pan")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                } else {
                 HStack(spacing: 4) {
                     Button(action: { zoomScale = max(0.2, zoomScale - 0.25) }) {
                         Image(systemName: "minus.magnifyingglass")
@@ -212,6 +340,7 @@ public struct InitialLatticeVisualizerView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                }
                 }
                 
                 Divider().frame(height: 18)
@@ -419,7 +548,7 @@ public struct InitialLatticeVisualizerView: View {
                                 ctx.fill(Path(ellipseIn: circleRect), with: .color(Color.gray.opacity(0.65)))
                             }
                             
-                            if showNodeLabels && isPrimary && zoomScale >= 1.5 {
+                            if showNodeLabels && isPrimary && zoomScale >= 1.5 && mesh.primary_nodes.count <= LargeMeshPolicy.labelLimit {
                                 let label = Text("\(node.id)")
                                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
                                     .foregroundColor(.primary)
@@ -464,7 +593,7 @@ public struct InitialLatticeVisualizerView: View {
                             }
                         }
                         
-                        if showNodeLabels && zoomScale >= 1.5 {
+                        if showNodeLabels && zoomScale >= 1.5 && mesh.primary_nodes.count <= LargeMeshPolicy.labelLimit {
                             let label = Text("\(node.id)")
                                 .font(.system(size: 8, weight: .semibold, design: .monospaced))
                                 .foregroundColor(.primary)

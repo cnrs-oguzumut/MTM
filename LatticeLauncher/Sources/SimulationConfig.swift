@@ -35,6 +35,22 @@ public enum LoadingMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Volterra cylinder load loop: shear the frozen ring step by step (`--cyl-load=`)
+public enum CylinderLoadMode: String, CaseIterable, Identifiable {
+    case none = "none"
+    case strain = "strain"
+    case stress = "stress"
+
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .none: return "None"
+        case .strain: return "Strain γ"
+        case .stress: return "Stress τ"
+        }
+    }
+}
+
 public enum EigenSolverType: String, CaseIterable, Identifiable {
     case fast = "fast"
     case legacy = "legacy"
@@ -109,9 +125,36 @@ public class SimulationConfig: ObservableObject {
     
     // Dislocation Stress Relaxation (Full Cauchy Tensor)
     @Published public var relaxMacroStress: Bool = false
+    /// PBC stress control preset: "none", nominal "shear" (P12 = α), "uniaxial_y" (P22 = α),
+    /// "uniaxial_x" (P11 = α), their Cauchy versions "cauchy_shear" (σ_xy = α), "cauchy_uniaxial_y"
+    /// (σ_yy = α), "cauchy_uniaxial_x" (σ_xx = α), and "relax_normal" (F12 = α strain-driven, P11 = P22 = 0)
+    @Published public var pbcStressControl: String = "none"
+    /// PBC Stage 1: relax all three box stresses to zero at α = 0 before loading
+    @Published public var pbcRelaxBoxStress: Bool = false
+    /// Plain PBC + shear stress preset: relaxation step held at F12 = this strain (noise ON, strain
+    /// control) so dislocations nucleate; the stress schedule then rises from the relaxed stress. 0 = off
+    @Published public var pbcRelaxStrain: Double = 0.0
     @Published public var stressTol: Double = 1e-5
     @Published public var maxMacroIters: Int = 30
-    
+
+    // Volterra cylinder load loop (Peierls stress) and ±b dipole
+    /// none = single relaxation; strain = shear strain γ on the frozen ring; stress = far-field Cauchy τ
+    @Published public var cylinderLoadMode: CylinderLoadMode = .none
+    /// End of the α schedule (γ or τ); a negative end loads in reverse
+    @Published public var cylinderLoadEnd: Double = 0.01
+    @Published public var cylinderLoadStep: Double = 1e-4
+    /// Load cycle: forward until the core has glided this many b, then back to its start (0 = off)
+    @Published public var cylinderCycleB: Double = 2.0
+    /// Normal stresses σ_xx, σ_yy (average inside R_free when cylinderAverageStress is on, otherwise Cauchy–Born on the ring)
+    @Published public var cylinderSigmaXX: Double = 0.0
+    @Published public var cylinderSigmaYY: Double = 0.0
+    /// Control the average stress inside R_free at each step (and at zero load) by iterating F̄ on the ring
+    @Published public var cylinderAverageStress: Bool = true
+    /// Place a second, opposite dislocation (−b) at (dipoleDx, dipoleDy) lattice steps from the first
+    @Published public var dipoleEnabled: Bool = false
+    @Published public var dipoleDx: Int = 10
+    @Published public var dipoleDy: Int = 4
+
     // 3. Loading Schedule & Two-Stage Protocol (Shear & Microstructure modes)
     @Published public var protocolMode: SimulationProtocolMode = .relaxThenLoad
     @Published public var sweepContinuousMode: Bool = true
@@ -269,13 +312,16 @@ public class SimulationConfig: ObservableObject {
         let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed && !isPeriodicDislocs) ? "_fixed" : ""
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
         let rotTag = useRotation ? ((boundaryCondition == .fixed || geometryConfig.enabled || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
-        let relaxTag = (mode == .volterra && relaxMacroStress) ? "_relax" : ""
+        let relaxTag = (mode == .volterra && relaxMacroStress && cylinderLoadMode == .none) ? "_relax" : ""
+        let cylLoadTag = (mode == .volterra && cylinderLoadMode != .none)
+            ? "_load_\(cylinderLoadMode.rawValue)\(cylinderLoadEnd < 0 ? "_rev" : "")" : ""
+        let dipoleTag = (mode == .volterra && dipoleEnabled) ? "_dipole\(dipoleDx)x\(dipoleDy)" : ""
         let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? (isPeriodicDislocs ? "_pbc_dislocs_\(2 * geometryConfig.microstructure.dislocation_pair_count)D" : "_\(geometryConfig.preset_name)") : ""
         if mode == .shift {
             let pertTag = shiftPerturbMesh ? "_pert" : ""
             return String(format: "run_shift_%dx%d_amp%.1f_%@%@%@%@%@", nx, ny, shiftAmplitude, remeshTag, pertTag, latTag, potTag, rotTag)
         }
-        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)"
+        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(rotTag)\(relaxTag)\(dipoleTag)\(cylLoadTag)"
     }
     
     public var targetDirectory: String {
@@ -349,10 +395,25 @@ public class SimulationConfig: ObservableObject {
         if mode == .volterra {
             args.append(String(format: "--r-free=%.2f", rFree))
             args.append(exportFullMesh ? "--full-mesh" : "--circle")
-            if relaxMacroStress {
+            if relaxMacroStress && cylinderLoadMode == .none {
                 args.append("--relax-stress=1")
                 args.append(String(format: "--stress-tol=%.1e", stressTol))
                 args.append("--max-macro-iters=\(maxMacroIters)")
+            }
+            // none (today's single relaxation) is the simulator default: emit the flag only when loading
+            if cylinderLoadMode != .none {
+                args.append("--cyl-load=\(cylinderLoadMode.rawValue)")
+                args.append("--alpha-start=0.000000")
+                args.append(String(format: "--alpha-end=%.6f", cylinderLoadEnd))
+                args.append(String(format: "--step-size=%.8f", max(1e-8, abs(cylinderLoadStep))))
+                if cylinderCycleB > 0 { args.append(String(format: "--cyl-cycle=%g", cylinderCycleB)) }
+                if cylinderSigmaXX != 0 { args.append(String(format: "--cyl-sxx=%.8g", cylinderSigmaXX)) }
+                if cylinderSigmaYY != 0 { args.append(String(format: "--cyl-syy=%.8g", cylinderSigmaYY)) }
+                if cylinderAverageStress { args.append("--cyl-avg-stress=1") }
+            }
+            if dipoleEnabled {
+                args.append("--dipole-dx=\(dipoleDx)")
+                args.append("--dipole-dy=\(dipoleDy)")
             }
         } else if mode == .shift {
             args.append(String(format: "--shift-amplitude=%.4f", shiftAmplitude))
@@ -420,8 +481,8 @@ public class SimulationConfig: ObservableObject {
         
         // Boundary condition & Macroscopic Geometry Studio
         if mode != .shift && mode != .volterra {
-            if activeGeometry.enabled {
-                let isPeriodicDislocs = (activeGeometry.microstructure.mode == .periodicDislocations)
+            let isPeriodicDislocs = (activeGeometry.enabled && activeGeometry.microstructure.mode == .periodicDislocations)
+            if activeGeometry.enabled && (isPeriodicDislocs || boundaryCondition != .periodic) {
                 args.append(isPeriodicDislocs ? "--bc=periodic" : "--bc=fixed")
                 var effectiveGeom = activeGeometry
                 effectiveGeom.microstructure.relax_only = (activeProtocol != .relaxThenLoad)
@@ -440,6 +501,13 @@ public class SimulationConfig: ObservableObject {
                 }
             } else {
                 args.append("--bc=\(boundaryCondition.rawValue)")
+            }
+            if isPeriodicLoadingRun(geometry: activeGeometry) {
+                if pbcStressControl != "none" { args.append("--stress-control=\(pbcStressControl)") }
+                if pbcRelaxBoxStress { args.append("--relax-stress=1") }
+                if pbcRelaxStrainApplies(geometry: activeGeometry) && pbcRelaxStrain != 0 {
+                    args.append("--relax-strain=\(pbcRelaxStrain)")
+                }
             }
         }
         
@@ -467,5 +535,637 @@ public class SimulationConfig: ObservableObject {
         let envs = "OMP_NUM_THREADS=\(ompThreads) MKL_NUM_THREADS=\(blasThreads) OPENBLAS_NUM_THREADS=\(blasThreads)"
         let argsStr = buildArguments().joined(separator: " ")
         return "\(envs) \(binaryPath) \(argsStr)"
+    }
+}
+
+// MARK: - Unified Boundary Regime & Mechanical Loading Truth Model
+
+public enum ActiveBoundaryRegime: String, CaseIterable, Identifiable {
+    case periodicPBC = "periodic_pbc"
+    case finiteSurfaceBCs = "finite_surface_bcs"
+    
+    public var id: String { rawValue }
+    
+    public var title: String {
+        switch self {
+        case .periodicPBC: return "Full 2D Periodic (PBC)"
+        case .finiteSurfaceBCs: return "Surface Grips / Custom BCs"
+        }
+    }
+    
+    public var shortBadge: String {
+        switch self {
+        case .periodicPBC: return "2D Periodic (PBC)"
+        case .finiteSurfaceBCs: return "Surface BCs"
+        }
+    }
+    
+    public var icon: String {
+        switch self {
+        case .periodicPBC: return "repeat.circle.fill"
+        case .finiteSurfaceBCs: return "rectangle.inset.filled"
+        }
+    }
+}
+
+public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
+    case simpleShearPos = "simple_shear_pos"
+    case simpleShearNeg = "simple_shear_neg"
+    case uniaxialTensionY = "uniaxial_tension_y"
+    case uniaxialCompY = "uniaxial_comp_y"
+    case uniaxialTensionX = "uniaxial_tension_x"
+    case shearParallelGB = "shear_parallel_gb"
+    case affineShearBox = "affine_shear_box"
+    case radialExpansionOutward = "radial_expansion_outward"
+    case radialCompressionInward = "radial_compression_inward"
+    case nanoindentation = "nanoindentation"
+    case staircaseShift = "staircase_shift"
+    case volterraDislocation = "volterra"
+    case customRegional = "custom_regional"
+    
+    public var id: String { rawValue }
+    
+    /// Primary mechanical loading modes shown in the visual grid.
+    public static var primaryGridModes: [ActiveMechanicalLoading] {
+        [
+            .simpleShearPos,
+            .simpleShearNeg,
+            .uniaxialTensionY,
+            .uniaxialCompY,
+            .uniaxialTensionX,
+            .shearParallelGB,
+            .radialExpansionOutward,
+            .radialCompressionInward,
+            .affineShearBox,
+            .nanoindentation
+        ]
+    }
+    
+    public var shortTitle: String {
+        switch self {
+        case .simpleShearPos: return "Simple Shear (+γ_xy)"
+        case .simpleShearNeg: return "Reverse Shear (-γ_xy)"
+        case .uniaxialTensionY: return "Uniaxial Tension Y (+ε_yy)"
+        case .uniaxialCompY: return "Compression Y (-ε_yy)"
+        case .uniaxialTensionX: return "Uniaxial Tension X (+ε_xx)"
+        case .shearParallelGB: return "Shear ∥ Vertical GB (+Y)"
+        case .affineShearBox: return "Affine Shear Box (4 Walls)"
+        case .radialExpansionOutward: return "Radial Outward Pull (+ε_r)"
+        case .radialCompressionInward: return "Radial Inward Push (-ε_r)"
+        case .nanoindentation: return "Nanoindentation (Top Tip)"
+        case .staircaseShift: return "Staircase Shift"
+        case .volterraDislocation: return "Volterra Dislocation Core"
+        case .customRegional: return "Custom Regional BCs"
+        }
+    }
+    
+    public var displayName: String { shortTitle }
+    
+    public var detailSubtitle: String {
+        switch self {
+        case .simpleShearPos: return "Top driven +X (or PBC F_xy = +α) • Measures σ_xy"
+        case .simpleShearNeg: return "Top driven -X (or PBC F_xy = -α) • Measures σ_xy"
+        case .uniaxialTensionY: return "Top pulled +Y, Bottom fixed, Sides free • Measures σ_yy"
+        case .uniaxialCompY: return "Top pushed -Y, Bottom fixed, Sides free • Measures σ_yy"
+        case .uniaxialTensionX: return "Right pulled +X, Left roller, Top/Bot roller • Measures σ_xx"
+        case .shearParallelGB: return "Right driven +Y, Left fixed, Top/Bot free • Measures σ_xy"
+        case .affineShearBox: return "All outer walls driven by F_xy = +α • Measures σ_xy"
+        case .radialExpansionOutward: return "Outer rim pulled radially outward u = +α(r - r_c) • Measures ½(σ_xx+σ_yy)"
+        case .radialCompressionInward: return "Outer rim pushed radially inward u = -α(r - r_c) • Measures ½(σ_xx+σ_yy)"
+        case .nanoindentation: return "Rigid tip pressing into top free surface • Measures Load P(δ)"
+        case .staircaseShift: return "Alternating horizontal & vertical block shifts"
+        case .volterraDislocation: return "Single edge dislocation inside cylindrical R_free"
+        case .customRegional: return "User-defined regional boundary rules in Step 2"
+        }
+    }
+    
+    public var icon: String {
+        switch self {
+        case .simpleShearPos: return "arrow.right.square.fill"
+        case .simpleShearNeg: return "arrow.left.square.fill"
+        case .uniaxialTensionY: return "arrow.up.and.down.square.fill"
+        case .uniaxialCompY: return "arrow.down.to.line.compact"
+        case .uniaxialTensionX: return "arrow.left.and.right.square.fill"
+        case .shearParallelGB: return "arrow.up.right.and.arrow.down.left.rectangle.fill"
+        case .affineShearBox: return "skew"
+        case .radialExpansionOutward: return "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left"
+        case .radialCompressionInward: return "arrow.down.right.and.arrow.up.left"
+        case .nanoindentation: return "Scope"
+        case .staircaseShift: return "stairs"
+        case .volterraDislocation: return " hurricane"
+        case .customRegional: return "slider.horizontal.3"
+        }
+    }
+    
+    public var sfSymbol: String {
+        switch self {
+        case .simpleShearPos: return "arrow.right.circle.fill"
+        case .simpleShearNeg: return "arrow.left.circle.fill"
+        case .uniaxialTensionY: return "arrow.up.circle.fill"
+        case .uniaxialCompY: return "arrow.down.circle.fill"
+        case .uniaxialTensionX: return "arrow.left.and.right.circle.fill"
+        case .shearParallelGB: return "arrow.up.and.down.circle.fill"
+        case .affineShearBox: return "skew"
+        case .radialExpansionOutward: return "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left"
+        case .radialCompressionInward: return "arrow.down.right.and.arrow.up.left"
+        case .nanoindentation: return "arrow.down.to.line.circle.fill"
+        case .staircaseShift: return "stairs"
+        case .volterraDislocation: return "scope"
+        case .customRegional: return "slider.horizontal.3"
+        }
+    }
+    
+    /// Whether this loading mode is compatible with Full 2D Periodic (PBC) torus boundary conditions.
+    public var supportsPeriodicPBC: Bool {
+        switch self {
+        case .simpleShearPos, .simpleShearNeg:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+public extension SimulationConfig {
+    /// True iff the C++ solver will execute with Full 2D Periodic Boundary Conditions (T² torus).
+    var isEffectivePeriodicPBC: Bool {
+        guard mode != .shift && mode != .volterra else { return false }
+        if geometryConfig.enabled {
+            return geometryConfig.microstructure.mode == .periodicDislocations
+        }
+        return boundaryCondition == .periodic
+    }
+    
+    /// The active boundary condition regime that the C++ solver will actually run.
+    var activeBoundaryRegime: ActiveBoundaryRegime {
+        isEffectivePeriodicPBC ? .periodicPBC : .finiteSurfaceBCs
+    }
+    
+    /// The exact mechanical loading mode that the C++ solver will actually execute.
+    var activeMechanicalLoading: ActiveMechanicalLoading {
+        if mode == .volterra { return .volterraDislocation }
+        if mode == .shift { return .staircaseShift }
+        
+        // When in 2D PBC or when custom geometry rules are disabled, C++ runs homogeneous F_xy = ±α simple shear.
+        if isEffectivePeriodicPBC || !geometryConfig.enabled {
+            return (mode == .negative) ? .simpleShearNeg : .simpleShearPos
+        }
+        
+        // Custom geometry rules are active (finite specimen)
+        if geometryConfig.indenter.enabled {
+            return .nanoindentation
+        }
+        
+        let rules = geometryConfig.boundary_rules.filter(\.enabled)
+        func ruleOf(_ reg: BoundaryRegionSelector) -> BoundaryZoneRuleModel? {
+            rules.first(where: { $0.region == reg })
+        }
+        let sign: Double = (mode == .negative) ? -1.0 : 1.0
+        
+        if let perim = ruleOf(.outerPerimeter), perim.kind == .affine {
+            if perim.affine_mode == "uniaxial_y" {
+                return sign >= 0 ? .uniaxialTensionY : .uniaxialCompY
+            } else if perim.affine_mode == "uniaxial_x" {
+                return .uniaxialTensionX
+            } else if perim.affine_mode == "biaxial" || perim.affine_mode == "radial_outward" {
+                return sign >= 0 ? .radialExpansionOutward : .radialCompressionInward
+            } else if perim.affine_mode == "radial_inward" || perim.affine_mode == "biaxial_compression" {
+                return sign >= 0 ? .radialCompressionInward : .radialExpansionOutward
+            }
+            return .affineShearBox
+        }
+        
+        if let bot = ruleOf(.bottom), bot.kind == .fixed,
+           let top = ruleOf(.top), top.kind == .prescribed {
+            let ux = sign * top.ux
+            let uy = sign * top.uy
+            if abs(ux - 1.0) < 0.05 && abs(uy) < 0.05 {
+                return .simpleShearPos
+            }
+            if abs(ux + 1.0) < 0.05 && abs(uy) < 0.05 {
+                return .simpleShearNeg
+            }
+            if abs(ux) < 0.05 && abs(uy - 1.0) < 0.05 {
+                return .uniaxialTensionY
+            }
+            if abs(ux) < 0.05 && abs(uy + 1.0) < 0.05 {
+                return .uniaxialCompY
+            }
+        }
+        
+        if let left = ruleOf(.left), (left.kind == .fixed || left.kind == .rollerY),
+           let right = ruleOf(.right), right.kind == .prescribed {
+            let ux = sign * right.ux
+            let uy = sign * right.uy
+            if left.kind == .fixed && abs(ux) < 0.05 && abs(uy - 1.0) < 0.05 {
+                return .shearParallelGB
+            }
+            if abs(ux - 1.0) < 0.05 && abs(uy) < 0.05 {
+                return .uniaxialTensionX
+            }
+        }
+        
+        return .customRegional
+    }
+    
+    /// Switches the global Boundary Regime while keeping the loading direction consistent.
+    func setBoundaryRegime(_ regime: ActiveBoundaryRegime) {
+        if mode == .shift || mode == .volterra {
+            mode = .positive
+        }
+        switch regime {
+        case .periodicPBC:
+            let wasNegShear = (activeMechanicalLoading == .simpleShearNeg)
+            boundaryCondition = .periodic
+            geometryConfig.indenter.enabled = false
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.enabled = true
+                geometryConfig.microstructure.enforce_periodic_bc = true
+                geometryConfig.outer_shape = .rectangle
+                geometryConfig.cutouts = []
+            } else {
+                geometryConfig.enabled = false
+                if geometryConfig.microstructure.mode != .singleCrystal {
+                    geometryConfig.microstructure.mode = .singleCrystal
+                }
+            }
+            mode = wasNegShear ? .negative : .positive
+            
+        case .finiteSurfaceBCs:
+            let prevLoading = activeMechanicalLoading
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            // Preserve shear if the user was previously in Simple Shear
+            if prevLoading == .simpleShearPos {
+                applyMechanicalLoading(.simpleShearPos)
+            } else if prevLoading == .simpleShearNeg {
+                applyMechanicalLoading(.simpleShearNeg)
+            }
+        }
+    }
+    
+    /// Atomically applies the chosen mechanical loading mode and synchronizes all boundary rules and CLI flags.
+    func applyMechanicalLoading(_ load: ActiveMechanicalLoading) {
+        switch load {
+        case .simpleShearPos:
+            mode = .positive
+            geometryConfig.indenter.enabled = false
+            if isEffectivePeriodicPBC {
+                // Already in 2D PBC: mode = .positive drives F_xy = +α
+                return
+            }
+            if geometryConfig.enabled {
+                geometryConfig.boundary_rules = [
+                    BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                    BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
+                    BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                    BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                    BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+                ]
+                geometryConfig.primary_stress_component = "sigma_xy"
+            }
+            
+        case .simpleShearNeg:
+            geometryConfig.indenter.enabled = false
+            if isEffectivePeriodicPBC || !geometryConfig.enabled {
+                mode = .negative
+                return
+            }
+            mode = .positive
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: -1.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "sigma_xy"
+            
+        case .uniaxialTensionY:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
+                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "sigma_yy"
+            
+        case .uniaxialCompY:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: -1.0),
+                BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "sigma_yy"
+            
+        case .uniaxialTensionX:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 2.0),
+                BoundaryZoneRuleModel(region: .right, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0, lock_x: true, lock_y: false),
+                BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 2.0),
+                BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 2.0),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "sigma_xx"
+            
+        case .shearParallelGB:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .bicrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .left, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .right, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0, lock_x: true, lock_y: true),
+                BoundaryZoneRuleModel(region: .bottom, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "sigma_xy"
+            
+        case .affineShearBox:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: "simple_shear_x"),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "sigma_xy"
+            
+        case .radialExpansionOutward:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: "radial_outward"),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "hydrostatic"
+            
+        case .radialCompressionInward:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = false
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .outerPerimeter, kind: .affine, thickness_a0: 2.0, affine_mode: "radial_inward"),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "hydrostatic"
+            
+        case .nanoindentation:
+            mode = .positive
+            boundaryCondition = .fixed
+            if geometryConfig.microstructure.mode == .periodicDislocations {
+                geometryConfig.microstructure.mode = .singleCrystal
+            }
+            geometryConfig.enabled = true
+            geometryConfig.indenter.enabled = true
+            geometryConfig.boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 2.0),
+                BoundaryZoneRuleModel(region: .right, kind: .rollerY, thickness_a0: 2.0),
+                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5),
+                BoundaryZoneRuleModel(region: .holeSurfaces, kind: .free, thickness_a0: 1.5)
+            ]
+            geometryConfig.primary_stress_component = "indentation_load"
+            if protocolMode == .relaxOnly {
+                protocolMode = .relaxThenLoad
+                geometryConfig.microstructure.relax_only = false
+            }
+            
+        case .staircaseShift:
+            mode = .shift
+            
+        case .volterraDislocation:
+            mode = .volterra
+            
+        case .customRegional:
+            mode = .positive
+            boundaryCondition = .fixed
+            geometryConfig.enabled = true
+        }
+        // Stage 1 follows these rules automatically while it is still linked to them
+        // (see MacroscopicGeometryConfigModel.boundary_rules didSet); custom Stage 1 rules are kept.
+    }
+    
+    /// Affine mode of the enabled outer-perimeter rule, if any.
+    private var outerPerimeterAffineMode: String? {
+        geometryConfig.boundary_rules.first { $0.enabled && $0.region == .outerPerimeter && $0.kind == .affine }?.affine_mode
+    }
+
+    /// Enabled dead-load traction rule, if any (force-controlled loading).
+    private var activeTractionRule: BoundaryZoneRuleModel? {
+        geometryConfig.enabled ? geometryConfig.boundary_rules.first { $0.enabled && $0.kind.isForceControl } : nil
+    }
+
+    /// Loading run on a periodic cell (plain PBC or periodic dislocations): box stress control applies.
+    var isPeriodicLoadingRun: Bool { isPeriodicLoadingRun(geometry: geometryConfig) }
+
+    func isPeriodicLoadingRun(geometry: MacroscopicGeometryConfigModel) -> Bool {
+        guard mode != .shift && mode != .volterra else { return false }
+        let isPeriodicDislocs = geometry.enabled && geometry.microstructure.mode == .periodicDislocations
+        return isPeriodicDislocs || boundaryCondition == .periodic
+    }
+
+    /// Dead load the supports cannot react (see MacroscopicGeometryConfigModel.tractionBalanceIssue), for the
+    /// current specimen size
+    var tractionBalanceIssue: String? {
+        let rowSpacing = latticeSymmetry == .triangular ? sqrt(3.0) / 2.0 : 1.0
+        return geometryConfig.tractionBalanceIssue(width: Double(nx), height: Double(ny) * rowSpacing)
+    }
+
+    /// Relaxation at a nonzero shear strain: plain periodic cell (no periodic dislocations) + shear stress preset
+    var pbcRelaxStrainApplies: Bool { pbcRelaxStrainApplies(geometry: geometryConfig) }
+    func pbcRelaxStrainApplies(geometry: MacroscopicGeometryConfigModel) -> Bool {
+        let isPeriodicDislocs = geometry.enabled && geometry.microstructure.mode == .periodicDislocations
+        return isPeriodicLoadingRun(geometry: geometry) && !isPeriodicDislocs &&
+            ["shear", "cauchy_shear"].contains(pbcStressControl)
+    }
+
+    /// PBC stress preset that makes α a nominal stress (force control), if any.
+    var pbcForceControlPreset: String? {
+        guard isPeriodicLoadingRun, ["shear", "uniaxial_y", "uniaxial_x",
+                                     "cauchy_shear", "cauchy_uniaxial_y", "cauchy_uniaxial_x"].contains(pbcStressControl)
+        else { return nil }
+        return pbcStressControl
+    }
+
+    var activeStressComponentLabel: String {
+        if let p = pbcForceControlPreset {
+            let measure = p.hasPrefix("cauchy_") ? "Cauchy" : "nominal"
+            switch p {
+            case "uniaxial_y", "cauchy_uniaxial_y": return "Tensile Stress σ_yy (\(measure) box stress control)"
+            case "uniaxial_x", "cauchy_uniaxial_x": return "Axial Stress σ_xx (\(measure) box stress control)"
+            default: return "Shear Stress σ_xy (\(measure) box stress control)"
+            }
+        }
+        if let t = activeTractionRule {
+            switch t.kind == .forceGrip ? "cartesian" : t.traction_mode {
+            case "radial_outward", "radial_inward": return "Mean Radial Stress ½(σ_xx+σ_yy) (dead load)"
+            case "circumferential_shear": return "Shear Stress σ_xy (dead load)"
+            default:
+                let horizontalFace = t.region == .top || t.region == .bottom
+                let verticalFace = t.region == .left || t.region == .right
+                if horizontalFace && abs(t.ty) > abs(t.tx) { return "Tensile Stress σ_yy (dead load)" }
+                if verticalFace && abs(t.tx) > abs(t.ty) { return "Axial Stress σ_xx (dead load)" }
+                return "Shear Stress σ_xy (dead load)"
+            }
+        }
+        if activeMechanicalLoading == .affineShearBox, let m = outerPerimeterAffineMode {
+            if m == "circumferential_shear" || m == "torsion" { return "Rim Torque T = Σ r × f" }
+            if m == "pure_shear" { return "Pure-Shear Stress ½(σ_xx−σ_yy)" }
+        }
+        switch activeMechanicalLoading {
+        case .simpleShearPos, .simpleShearNeg, .shearParallelGB, .affineShearBox:
+            return "Shear Stress σ_xy"
+        case .uniaxialTensionY:
+            return "Tensile Stress σ_yy"
+        case .uniaxialCompY:
+            return "Compressive Stress σ_yy"
+        case .uniaxialTensionX:
+            return "Axial Stress σ_xx"
+        case .radialExpansionOutward, .radialCompressionInward:
+            return "Mean Radial Stress ½(σ_xx+σ_yy)"
+        case .nanoindentation:
+            return "Indentation Load P(δ)"
+        case .staircaseShift:
+            return "Shear Stress σ_xy"
+        case .volterraDislocation:
+            return "Core Energy E(r)"
+        case .customRegional:
+            return "Stress (\(geometryConfig.primary_stress_component))"
+        }
+    }
+    
+    var activeStrainParameterNoun: String {
+        if let p = pbcForceControlPreset {
+            return p.hasPrefix("cauchy_") ? "applied Cauchy box stress α (stress control)"
+                                          : "applied nominal box stress α (stress control)"
+        }
+        if activeTractionRule != nil { return "applied nominal traction α (force control)" }
+        if activeMechanicalLoading == .affineShearBox, let m = outerPerimeterAffineMode {
+            if m == "circumferential_shear" || m == "torsion" { return "rim rotation θ = α (rad)" }
+            if m == "pure_shear" { return "pure-shear strain ε" }
+        }
+        switch activeMechanicalLoading {
+        case .simpleShearPos, .simpleShearNeg, .shearParallelGB, .affineShearBox:
+            return "shear strain γ_xy"
+        case .uniaxialTensionY:
+            return "tensile strain ε_yy"
+        case .uniaxialCompY:
+            return "compressive strain |ε_yy|"
+        case .uniaxialTensionX:
+            return "axial strain ε_xx"
+        case .radialExpansionOutward:
+            return "radial outward strain +ε_r"
+        case .radialCompressionInward:
+            return "radial inward strain |ε_r|"
+        case .nanoindentation:
+            return "depth ratio α = δ/δ_max"
+        default:
+            return "load parameter α"
+        }
+    }
+    
+    /// Concise, unmistakable one-line summary of the active BC + Loading physics.
+    var activePhysicsSummaryBadge: String {
+        if mode == .volterra {
+            let core = dipoleEnabled ? "Dislocation Dipole ±b (\(dipoleDx), \(dipoleDy))" : "Single Edge Dislocation"
+            let load: String
+            switch cylinderLoadMode {
+            case .none: load = ""
+            case .strain: load = String(format: " • Shear γ → %g", cylinderLoadEnd)
+            case .stress: load = String(format: " • Stress τ → %g", cylinderLoadEnd)
+            }
+            return "Fixed Cylinder (R=\(Int(rFree))a₀) • \(core)\(load)"
+        }
+        if mode == .shift {
+            return "Staircase BCs • Block Shift (A=\(String(format: "%.1f", shiftAmplitude))a₀)"
+        }
+        if protocolMode == .sweepMisorientation {
+            return "\(activeBoundaryRegime.shortBadge) • Δθ Misorientation Sweep (\(sweepCSLCandidates.count) runs)"
+        }
+        if protocolMode == .relaxOnly {
+            return "\(activeBoundaryRegime.shortBadge) • Equilibrate Only (α = 0, No External Load)"
+        }
+        return "\(activeBoundaryRegime.shortBadge) • \(activeMechanicalLoading.shortTitle)"
+    }
+    
+    /// Explicit title for the primary Launch button so the user always sees what will run.
+    var launchButtonSummaryTitle: String {
+        if mode == .volterra {
+            switch cylinderLoadMode {
+            case .none: return dipoleEnabled ? "Launch Volterra Dipole" : "Launch Volterra Dislocation"
+            case .strain: return "Launch Volterra: Shear Ring (γ = α)"
+            case .stress: return "Launch Volterra: Far-Field Stress (τ = α)"
+            }
+        }
+        if mode == .shift {
+            return "Launch Staircase Shift"
+        }
+        switch protocolMode {
+        case .relaxOnly:
+            return "Launch Relax Only (α = 0)"
+        case .sweepMisorientation:
+            return "Launch Δθ Sweep (\(sweepCSLCandidates.count) runs)"
+        case .relaxThenLoad:
+            let bcShort = isEffectivePeriodicPBC ? "PBC" : "Surface"
+            // PBC box control: the stress preset, not the strain-control loading
+            if isPeriodicLoadingRun {
+                switch pbcStressControl {
+                case "cauchy_shear": return "Launch: PBC Cauchy Shear (σ_xy = α)"
+                case "cauchy_uniaxial_y": return "Launch: PBC Cauchy Uniaxial (σ_yy = α)"
+                case "cauchy_uniaxial_x": return "Launch: PBC Cauchy Uniaxial (σ_xx = α)"
+                case "shear": return "Launch: PBC Nominal Shear (P₁₂ = α)"
+                case "uniaxial_y": return "Launch: PBC Nominal Uniaxial (P₂₂ = α)"
+                case "uniaxial_x": return "Launch: PBC Nominal Uniaxial (P₁₁ = α)"
+                case "relax_normal": return "Launch: PBC Shear F₁₂ = α (σ_xx = σ_yy = 0)"
+                default: break
+                }
+            }
+            return "Launch: \(bcShort) \(activeMechanicalLoading.shortTitle)"
+        }
     }
 }

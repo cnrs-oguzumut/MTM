@@ -46,6 +46,8 @@ public class ProcessRunner: ObservableObject {
     @Published public var currentStress: Double = 0.0
     @Published public var currentEnergy: Double = 0.0
     @Published public var avalancheCount: Int = 0
+    /// Force / stress control: conjugate strain ε of the last point (nil for strain-driven runs)
+    @Published public var currentConjugateStrain: Double? = nil
     @Published public var elapsedTime: TimeInterval = 0
     
     // Live Stress-Strain & Eigenvalue Curve points
@@ -75,7 +77,7 @@ public class ProcessRunner: ObservableObject {
     private var csvPollingTimer: Timer?
     private var startTime: Date?
     private let maxLogLines = 10_000
-    private var outputDirectory: String = ""
+    @Published public var outputDirectory: String = ""
     private var pendingSweepCandidates: [CSLRationalMatch] = []
     private var currentSweepCandidate: CSLRationalMatch? = nil
     private var totalSweepCount: Int = 0
@@ -103,6 +105,7 @@ public class ProcessRunner: ObservableObject {
         currentStress = 0.0
         currentEnergy = 0.0
         avalancheCount = 0
+        currentConjugateStrain = nil
         dislocationData = nil
     }
     
@@ -121,16 +124,103 @@ public class ProcessRunner: ObservableObject {
             self.currentStress = 0.0
             self.currentEnergy = 0.0
             self.avalancheCount = 0
+            self.currentConjugateStrain = nil
         }
         self.pollGBEnergyCSV()
         self.pollDislocationProfiles(dir: dir)
     }
     
-    public func openOutputFolder() {
-        let dir = !sweepOutputDirectory.isEmpty && FileManager.default.fileExists(atPath: sweepOutputDirectory)
-            ? sweepOutputDirectory
-            : (outputDirectory.isEmpty ? FileManager.default.currentDirectoryPath : outputDirectory)
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir)
+    public func openOutputFolder(fallbackDirectory: String? = nil) {
+        let fm = FileManager.default
+        var candidate = ""
+        if !sweepOutputDirectory.isEmpty && fm.fileExists(atPath: sweepOutputDirectory) {
+            candidate = sweepOutputDirectory
+        } else if !outputDirectory.isEmpty && fm.fileExists(atPath: outputDirectory) {
+            candidate = outputDirectory
+        } else if let fb = fallbackDirectory, !fb.isEmpty {
+            candidate = fb
+        } else if !outputDirectory.isEmpty {
+            candidate = outputDirectory
+        } else {
+            candidate = SimulationConfig.detectProjectRoot()
+        }
+
+        if !fm.fileExists(atPath: candidate) {
+            try? fm.createDirectory(atPath: candidate, withIntermediateDirectories: true)
+        }
+        if !fm.fileExists(atPath: candidate) {
+            candidate = SimulationConfig.detectProjectRoot()
+        }
+
+        let folderURL = URL(fileURLWithPath: candidate, isDirectory: true)
+        if !NSWorkspace.shared.open(folderURL) {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: candidate)
+        }
+    }
+
+    public func openInParaView(fallbackDirectory: String? = nil, specificVTKURL: URL? = nil) -> Bool {
+        let fm = FileManager.default
+        var appURL: URL? = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "org.paraview.ParaView")
+        if appURL == nil {
+            for dir in ["/Applications", NSHomeDirectory() + "/Applications"] {
+                if let names = try? fm.contentsOfDirectory(atPath: dir),
+                   let n = names.filter({ $0.lowercased().hasPrefix("paraview") && $0.hasSuffix(".app") }).sorted().last {
+                    appURL = URL(fileURLWithPath: dir).appendingPathComponent(n)
+                    break
+                }
+            }
+        }
+        guard let app = appURL else { return false }
+
+        // Resolve target VTK file if none explicitly provided
+        var targetVTK: URL? = specificVTKURL
+        if targetVTK == nil {
+            let baseDir: String = {
+                if !sweepRelaxedVTKDirectory.isEmpty && fm.fileExists(atPath: sweepRelaxedVTKDirectory) {
+                    return sweepRelaxedVTKDirectory
+                }
+                if !outputDirectory.isEmpty && fm.fileExists(atPath: outputDirectory) {
+                    return outputDirectory
+                }
+                if let fb = fallbackDirectory, !fb.isEmpty && fm.fileExists(atPath: fb) {
+                    return fb
+                }
+                return SimulationConfig.detectProjectRoot()
+            }()
+            let vtkDir = fm.fileExists(atPath: "\(baseDir)/vtk_output") ? "\(baseDir)/vtk_output" : baseDir
+            if let items = try? fm.contentsOfDirectory(atPath: vtkDir) {
+                let vtkFiles = items.filter { $0.lowercased().hasSuffix(".vtk") }.sorted()
+                if let latest = vtkFiles.last {
+                    targetVTK = URL(fileURLWithPath: vtkDir).appendingPathComponent(latest)
+                }
+            }
+        }
+
+        let execURL = app.appendingPathComponent("Contents/MacOS/paraview")
+        if fm.isExecutableFile(atPath: execURL.path) {
+            let proc = Process()
+            proc.executableURL = execURL
+            if let vtk = targetVTK {
+                proc.arguments = [vtk.path]
+                proc.currentDirectoryURL = vtk.deletingLastPathComponent()
+            }
+            do {
+                try proc.run()
+                return true
+            } catch {
+                // Fall back to NSWorkspace below
+            }
+        }
+
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        if let vtk = targetVTK {
+            config.arguments = [vtk.path]
+            NSWorkspace.shared.open([vtk], withApplicationAt: app, configuration: config)
+        } else {
+            NSWorkspace.shared.openApplication(at: app, configuration: config)
+        }
+        return true
     }
     
     public func openSweepTextFile() {
@@ -210,6 +300,7 @@ public class ProcessRunner: ObservableObject {
         self.currentStress = 0.0
         self.currentEnergy = 0.0
         self.avalancheCount = 0
+        self.currentConjugateStrain = nil
         if !isSweepRunning {
             self.elapsedTime = 0
             self.startTime = Date()
@@ -611,10 +702,42 @@ public class ProcessRunner: ObservableObject {
                 return
             }
             
+            // Force / stress control logs the enthalpy, which falls at every load step: count the
+            // solver's own avalanche flags (fractional_drops.csv) instead of energy drops
+            var solverAvalanches: Int? = nil
+            if content.contains("StrainBurstFraction"),
+               let drops = try? String(contentsOfFile: "\(self.outputDirectory)/fractional_drops.csv", encoding: .utf8) {
+                var count = 0
+                for row in drops.components(separatedBy: .newlines).dropFirst() {
+                    let last = row.trimmingCharacters(in: .whitespaces).components(separatedBy: ",").last
+                    if last == "1" { count += 1 }
+                }
+                solverAvalanches = count
+            }
+
             let lines = content.components(separatedBy: .newlines)
             var allPoints: [StressStrainPoint] = []
             allPoints.reserveCapacity(lines.count)
-            
+
+            // Columns 0–22 are fixed; the optional trailing columns differ per run type (traction
+            // runs: EffectiveStrain, ElasticEnergy; Volterra cylinder loads: AppliedSigmaXY, Fbar…,
+            // Core…, CoreShift, CoreJump), so look those up by header name
+            var effectiveStrainCol: Int? = nil
+            var elasticEnergyCol: Int? = nil
+            var coreShiftCol: Int? = nil
+            var coreShiftRelaxedCol: Int? = nil
+            var appliedSigmaCol: Int? = nil
+            var burgersCol: Int? = nil
+            if let header = lines.first(where: { $0.hasPrefix("Iteration") }) {
+                let names = header.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                effectiveStrainCol = names.firstIndex(of: "EffectiveStrain")
+                elasticEnergyCol = names.firstIndex(of: "ElasticEnergy")
+                coreShiftCol = names.firstIndex(of: "CoreShift")
+                coreShiftRelaxedCol = names.firstIndex(of: "CoreShiftRelaxed")
+                appliedSigmaCol = names.firstIndex(of: "AppliedSigmaXY")
+                burgersCol = names.firstIndex(of: "Burgers")
+            }
+
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty || trimmed.hasPrefix("Iteration") { continue }
@@ -642,6 +765,14 @@ public class ProcessRunner: ObservableObject {
                     }
                     return val
                 }
+                func parseOptional(_ idx: Int?) -> Double? {
+                    guard let idx = idx, idx < parts.count,
+                          let val = Double(parts[idx].trimmingCharacters(in: .whitespacesAndNewlines)),
+                          val.isFinite else {
+                        return nil
+                    }
+                    return val
+                }
 
                 allPoints.append(StressStrainPoint(
                     iteration: iter,
@@ -662,7 +793,13 @@ public class ProcessRunner: ObservableObject {
                     vonMisesMax: parseCol(19),
                     indenterLoad: parseCol(20),
                     meanContactPressure: parseCol(21),
-                    contactAtoms: parseCol(22)
+                    contactAtoms: parseCol(22),
+                    effectiveStrain: parseOptional(effectiveStrainCol) ?? 0.0, // traction runs only
+                    elasticEnergy: parseOptional(elasticEnergyCol), // same runs
+                    coreShift: parseOptional(coreShiftCol), // Volterra cylinder load runs
+                    coreShiftRelaxed: parseOptional(coreShiftRelaxedCol),
+                    appliedSigmaXY: parseOptional(appliedSigmaCol),
+                    burgers: parseOptional(burgersCol)
                 ))
             }
             
@@ -676,12 +813,14 @@ public class ProcessRunner: ObservableObject {
                         self.currentAlpha = last.alpha
                         self.currentStress = last.postStress
                         self.currentEnergy = last.postEnergy
+                        self.currentConjugateStrain = allPoints.contains { $0.effectiveStrain != 0 }
+                            ? last.effectiveStrain : nil
                         if abs(last.postStress) > self.peakStress {
                             self.peakStress = abs(last.postStress)
                             self.yieldStrain = last.alpha
                         }
                     }
-                    self.updateAvalancheStats()
+                    self.updateAvalancheStats(solverCount: solverAvalanches)
                 }
                 self.pollEigenCSV()
                 if !self.isSweepRunning {
@@ -810,9 +949,18 @@ public class ProcessRunner: ObservableObject {
         let lines = content.components(separatedBy: .newlines)
         
         var parsed: [EigenPoint] = []
+        // Optional stress-control columns, found by name (they follow the lambda_k columns)
+        var strainCol = -1, boxCol = -1, tangentCol = -1
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("Iteration") { continue }
+            if trimmed.hasPrefix("Iteration") {
+                let names = trimmed.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                strainCol = names.firstIndex(of: "Strain") ?? -1
+                boxCol = names.firstIndex(of: "lambda_box") ?? -1
+                tangentCol = names.firstIndex(of: "box_tangent") ?? -1
+                continue
+            }
+            if trimmed.isEmpty { continue }
             
             let parts = trimmed.components(separatedBy: ",")
             guard parts.count >= 6 else { continue }
@@ -831,13 +979,22 @@ public class ProcessRunner: ObservableObject {
                 lambda2 = l2
             }
             
+            func column(_ k: Int) -> Double? {
+                guard k >= 0, k < parts.count,
+                      let v = Double(parts[k].trimmingCharacters(in: .whitespaces)), v.isFinite else { return nil }
+                return v
+            }
+            
             parsed.append(EigenPoint(
                 iteration: iter,
                 alpha: alpha,
                 trigger: trigger,
                 lambdaMin: lambda1,
                 lambda2: lambda2,
-                failedShifts: failedShifts
+                failedShifts: failedShifts,
+                strain: column(strainCol),
+                lambdaBox: column(boxCol),
+                boxTangent: column(tangentCol)
             ))
         }
         
@@ -899,7 +1056,11 @@ public class ProcessRunner: ObservableObject {
     }
     
     /// Computes true physical energy drops (E_{i} < E_{i-1}) across the entire relaxed curve
-    private func updateAvalancheStats() {
+    private func updateAvalancheStats(solverCount: Int? = nil) {
+        if let n = solverCount {
+            self.avalancheCount = n
+            return
+        }
         guard curvePoints.count >= 2 else {
             self.avalancheCount = 0
             return

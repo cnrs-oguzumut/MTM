@@ -3,6 +3,7 @@
 #include <Eigen/Dense>
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <tuple>
 #include <vector>
 
@@ -54,9 +55,31 @@ void configure_relaxation_solver(const PreconditionedLBFGSOptions &options,
 // Tells relax_configuration() which load step is being solved.
 void relaxation_begin_step(int step);
 
+// Caps L-BFGS iterations per relax_configuration() call (0 = unlimited, the default).
+void set_relaxation_max_iterations(int maxits);
+
 // Minimizes the energy starting from x (in place) with the configured solver.
 // `corrections` is the L-BFGS memory used by the plain (unpreconditioned) solver.
 void relax_configuration(alglib::real_1d_array &x, UserData *userData, int corrections);
+
+// PBC stress control: stability of the free cell at a relaxed state (state.F_external = F_bar).
+// With the atoms relaxed, the free components obey R(F_bar) = P_bar(F_bar) - Pt(F_bar) = 0, whose Jacobian is
+//   J = S - dPt/dF_bar,   S = (K_FF - K_xF^T K^+ K_xF) / A0   (free components only, <= 3 x 3),
+// from the unprojected element tangents; S is the relaxed (Schur-complement) cell stiffness and dPt/dF_bar
+// the Cauchy follower-load stiffness (zero for nominal presets). The relaxed equilibrium is stable while
+// K and J are positive; lambda_min(J) -> 0 at the limit load even where lambda_min(K) > 0.
+//   lambda_min  smallest eigenvalue of J (real part; J is nonsymmetric under Cauchy control)
+//   tangent     d alpha / d F_t along the load path (F_t: controlled component), = slope of the
+//               load-strain curve; only when `loaded` (alpha is the stress target of a force preset)
+// The has_* flags are false when the cell has no free component or the factorization fails (not NaN
+// sentinels: the build uses -ffast-math, which assumes there are no NaNs).
+struct PBCBoxStability {
+  double lambda_min = 0.0;
+  double tangent = 0.0;
+  bool has_lambda = false;
+  bool has_tangent = false;
+};
+PBCBoxStability pbc_box_stability(UserData &state, const PBCStressControl &sc, double alpha, bool loaded);
 
 void writeSizesToFile(int Nx, int Ny);
 

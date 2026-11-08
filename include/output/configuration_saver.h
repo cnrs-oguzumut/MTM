@@ -55,6 +55,16 @@ public:
         std::vector<Point2D> points;
         std::vector<ElementTriangle2D> elements;
         std::vector<size_t> active_elements;
+        // Reference positions X_0 (custom geometry: the Stage-1 re-anchored state). Optional
+        // REF_NODES section; empty when absent (older checkpoints, periodic cells).
+        std::vector<Eigen::Vector2d> ref_points;
+        // PBC stress control: the cell after the alpha = 0 relaxation (origin of the conjugate strain).
+        // Optional F_stage1 line; identity when absent.
+        Eigen::Matrix2d F_stage1 = Eigen::Matrix2d::Identity();
+        bool has_F_stage1 = false;
+        // Written at a relaxation step that precedes the loading (Stage 1, relaxation at a prescribed shear
+        // strain, zero-stress relaxation): not a load point to resume from. Optional relaxation_step line.
+        bool relaxation_step = false;
     };
 
     static void saveCheckpoint(const std::string& filename, const CheckpointData& data);
@@ -138,7 +148,10 @@ public:
     double post_area,
     bool shouldRemesh,
     UserData* postUserData = nullptr,
-    const std::vector<int>* contact_atoms = nullptr);  // Added plasticity flag & extended stress metrics
+    const std::vector<int>* contact_atoms = nullptr,  // Added plasticity flag & extended stress metrics
+    // Optional extra columns appended after ContactAtoms (force-controlled runs only). The header
+    // is written when the file is created, so pass the same names on every call of a run.
+    const std::vector<std::pair<std::string, double>>* extra_columns = nullptr);
 
     /**
      * Write configuration data to VTK format for visualization

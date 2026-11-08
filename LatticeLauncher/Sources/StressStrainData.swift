@@ -14,6 +14,9 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
     case indenterLoad = "Indenter Load F_y(δ)"
     case meanContactPressure = "Mean Contact Pressure p_m"
     case contactAtoms = "Contact Atoms N_c"
+    case effectiveStrain = "Conjugate Strain ε (force / stress control)"
+    case coreShift = "Core glide x_c − x₀"
+    case appliedSigmaXY = "Applied σ_xy (frozen ring)"
 
     public var id: String { rawValue }
 
@@ -32,6 +35,9 @@ public enum StressComponentType: String, CaseIterable, Identifiable {
         case .indenterLoad: return "Load F_y(δ)"
         case .meanContactPressure: return "Contact p_m"
         case .contactAtoms: return "Contact N_c"
+        case .effectiveStrain: return "Strain ε"
+        case .coreShift: return "x_c − x₀"
+        case .appliedSigmaXY: return "σ_app"
         }
     }
 }
@@ -57,7 +63,19 @@ public struct StressStrainPoint: Identifiable, Equatable {
     public let indenterLoad: Double
     public let meanContactPressure: Double
     public let contactAtoms: Double
-    
+    /// Work-conjugate strain of a dead load, sum f0 . u / A (0 when the run has no traction rules)
+    public let effectiveStrain: Double
+    /// Elastic energy E_el (force / stress control only; PostEnergy is then the enthalpy H = E_el - W_ext)
+    public let elasticEnergy: Double?
+    /// Volterra cylinder load: core glide x_c − x₀ (CoreShift column; nil in other runs)
+    public let coreShift: Double?
+    /// Volterra cylinder load: core glide after the fixed-mesh relaxation, before remeshing (CoreShiftRelaxed)
+    public let coreShiftRelaxed: Double?
+    /// Volterra cylinder load: Cauchy–Born shear stress applied by the frozen ring (AppliedSigmaXY)
+    public let appliedSigmaXY: Double?
+    /// Volterra cylinder load: Burgers vector length b, the unit of the dislocation position x_d / b (Burgers)
+    public let burgers: Double?
+
     public init(
         iteration: Int,
         alpha: Double,
@@ -77,7 +95,13 @@ public struct StressStrainPoint: Identifiable, Equatable {
         vonMisesMax: Double = 0.0,
         indenterLoad: Double = 0.0,
         meanContactPressure: Double = 0.0,
-        contactAtoms: Double = 0.0
+        contactAtoms: Double = 0.0,
+        effectiveStrain: Double = 0.0,
+        elasticEnergy: Double? = nil,
+        coreShift: Double? = nil,
+        coreShiftRelaxed: Double? = nil,
+        appliedSigmaXY: Double? = nil,
+        burgers: Double? = nil
     ) {
         self.iteration = iteration
         self.alpha = alpha
@@ -98,6 +122,12 @@ public struct StressStrainPoint: Identifiable, Equatable {
         self.indenterLoad = indenterLoad
         self.meanContactPressure = meanContactPressure
         self.contactAtoms = contactAtoms
+        self.effectiveStrain = effectiveStrain
+        self.elasticEnergy = elasticEnergy
+        self.coreShift = coreShift
+        self.coreShiftRelaxed = coreShiftRelaxed
+        self.appliedSigmaXY = appliedSigmaXY
+        self.burgers = burgers
     }
 
     public func value(for component: StressComponentType) -> Double {
@@ -115,6 +145,9 @@ public struct StressStrainPoint: Identifiable, Equatable {
         case .indenterLoad: return indenterLoad
         case .meanContactPressure: return meanContactPressure
         case .contactAtoms: return contactAtoms
+        case .effectiveStrain: return effectiveStrain
+        case .coreShift: return coreShift ?? 0.0
+        case .appliedSigmaXY: return appliedSigmaXY ?? 0.0
         }
     }
 }
@@ -127,9 +160,17 @@ public struct EigenPoint: Identifiable, Equatable {
     public let lambdaMin: Double
     public let lambda2: Double?
     public let failedShifts: Int
+    /// PBC stress control: conjugate strain, lowest eigenvalue of the relaxed cell Jacobian, and the
+    /// load-path tangent dα/dε (eigen_log.csv columns Strain, lambda_box, box_tangent)
+    public let strain: Double?
+    public let lambdaBox: Double?
+    public let boxTangent: Double?
     
     public var isUnstable: Bool {
         lambdaMin <= 0.0 || failedShifts > 0
+    }
+    public var isCellUnstable: Bool {
+        (lambdaBox ?? 1.0) <= 0.0
     }
     
     public init(
@@ -138,7 +179,10 @@ public struct EigenPoint: Identifiable, Equatable {
         trigger: String,
         lambdaMin: Double,
         lambda2: Double? = nil,
-        failedShifts: Int = 0
+        failedShifts: Int = 0,
+        strain: Double? = nil,
+        lambdaBox: Double? = nil,
+        boxTangent: Double? = nil
     ) {
         self.id = "\(iteration)-\(trigger)-\(alpha)"
         self.iteration = iteration
@@ -147,6 +191,9 @@ public struct EigenPoint: Identifiable, Equatable {
         self.lambdaMin = lambdaMin
         self.lambda2 = lambda2
         self.failedShifts = failedShifts
+        self.strain = strain
+        self.lambdaBox = lambdaBox
+        self.boxTangent = boxTangent
     }
 }
 

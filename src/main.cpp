@@ -8,6 +8,7 @@
 #include "../include/experiments/shifted_crystal_study.h"
 #include "../include/experiments/zanzotto_examples.h"
 #include "../include/experiments/stress_controlled_examples.h"
+#include "../include/experiments/pbc_stress_control.h"
 #include "../include/experiments/data_analysis.h"
 #include "../include/experiments/stability_monitor.h"
 #include "../include/experiments/shifted_dislocation_study.h"
@@ -27,9 +28,14 @@ int main(int argc, char **argv) {
   bool use_cylinder = false;
   bool export_full_mesh = true;
   bool relax_macro_stress = false;
+  std::string stress_control_preset;  // PBC nominal-stress control: shear | uniaxial_y | uniaxial_x | relax_normal
+  double stress_relax_strain = 0.0;   // --relax-strain=<F12>: relaxation step at F12 before stress loading
+  bool legacy_stress_servo = false;   // run the legacy PBC Cauchy-stress servo (validation baseline)
   double stress_tol = 1e-5;
   int max_macro_iters = 30;
   double alpha_start = 0.14;
+  bool alpha_start_given = false; // the cylinder load starts from 0 unless --alpha-start is given
+  CylinderLoadOptions cylinder_load; // --cyl-load, --dipole-dx, --dipole-dy (Volterra cylinder only)
   double alpha_end = 1.0;
   double step_size = 6e-5;
   double noise_level = 0.04;
@@ -266,7 +272,7 @@ int main(int argc, char **argv) {
     } else if (arg.rfind("--symmetry=", 0) == 0) {
       lattice_type = arg.substr(11);
     } else if (arg.rfind("--lattice-symmetry=", 0) == 0) {
-      lattice_type = arg.substr(19);
+      lattice_type = arg.substr(15);
     } else if (arg == "--triangular") {
       lattice_type = "triangular";
     } else if (arg == "--square") {
@@ -304,6 +310,22 @@ int main(int argc, char **argv) {
       use_cylinder = true;
     } else if (arg == "--volterra" || arg == "--dislocation") {
       mode = "volterra";
+    } else if (arg.rfind("--cyl-load=", 0) == 0) {
+      cylinder_load.mode = arg.substr(11);
+    } else if (arg.rfind("--cyl-avg-stress=", 0) == 0) {
+      cylinder_load.average_stress = std::stoi(arg.substr(17)) != 0;
+    } else if (arg.rfind("--cyl-cycle=", 0) == 0) {
+      cylinder_load.cycle_b = std::stod(arg.substr(12));
+    } else if (arg.rfind("--cyl-sxx=", 0) == 0) {
+      cylinder_load.sigma_xx = std::stod(arg.substr(10));
+    } else if (arg.rfind("--cyl-syy=", 0) == 0) {
+      cylinder_load.sigma_yy = std::stod(arg.substr(10));
+    } else if (arg.rfind("--cyl-step-remesh=", 0) == 0) {
+      cylinder_load.step_remesh = std::stoi(arg.substr(18)) != 0;
+    } else if (arg.rfind("--dipole-dx=", 0) == 0) {
+      cylinder_load.dipole_dx = std::stoi(arg.substr(12));
+    } else if (arg.rfind("--dipole-dy=", 0) == 0) {
+      cylinder_load.dipole_dy = std::stoi(arg.substr(12));
     } else if (arg == "--full-mesh" || arg == "--all-elements") {
       export_full_mesh = true;
     } else if (arg == "--circle" || arg == "--circle-only" || arg == "--active-only") {
@@ -313,12 +335,25 @@ int main(int argc, char **argv) {
       relax_macro_stress = true;
     } else if (arg == "--relax-stress=0" || arg == "--relax-macro-stress=0") {
       relax_macro_stress = false;
+    } else if (arg.rfind("--stress-control=", 0) == 0) {
+      stress_control_preset = arg.substr(17);
+      if (stress_control_preset == "none" || stress_control_preset == "off") stress_control_preset.clear();
+      if (!stress_control_preset.empty() && !PBCStressControl::isKnownPreset(stress_control_preset)) {
+        std::cerr << "Unknown --stress-control preset '" << stress_control_preset
+                  << "' (shear | uniaxial_y | uniaxial_x | cauchy_shear | cauchy_uniaxial_y | cauchy_uniaxial_x"
+                     " | relax_normal | none)" << std::endl;
+        return 1;
+      }
+    } else if (arg.rfind("--relax-strain=", 0) == 0) {
+      stress_relax_strain = std::stod(arg.substr(15));
+    } else if (arg == "--legacy-stress-servo" || arg == "--legacy-stress-servo=1") {
+      legacy_stress_servo = true;
     } else if (arg.rfind("--stress-tol=", 0) == 0) {
       stress_tol = std::stod(arg.substr(13));
     } else if (arg.rfind("--max-macro-iters=", 0) == 0) {
       max_macro_iters = std::stoi(arg.substr(18));
     } else if (arg.rfind("--max-stress-iters=", 0) == 0) {
-      max_macro_iters = std::stoi(arg.substr(19));
+      max_macro_iters = std::stoi(arg.substr(15));
     } else if (arg == "--trace-avalanche" || arg == "--trace-avalanche=1" || arg == "--trace=1") {
       AvalancheRecorder::instance().setEnabled(true);
     } else if (arg == "--trace-avalanche=0" || arg == "--trace=0") {
@@ -335,8 +370,10 @@ int main(int argc, char **argv) {
       alpha_end = std::stod(arg.substr(12));
     } else if (arg.rfind("--alpha-start=", 0) == 0) {
       alpha_start = std::stod(arg.substr(14));
+      alpha_start_given = true;
     } else if (arg.rfind("--alpha-min=", 0) == 0) {
       alpha_start = std::stod(arg.substr(12));
+      alpha_start_given = true;
     } else if (arg.rfind("--step-size=", 0) == 0) {
       step_size = std::stod(arg.substr(12));
     } else if (arg.rfind("--checkpoint-interval=", 0) == 0) {
@@ -387,9 +424,14 @@ int main(int argc, char **argv) {
 
   configure_relaxation_solver(relax_options, precond_from_step);
   configure_stability_monitor(stability_options);
+  // In the loading pipeline --relax-stress=1 relaxes the periodic box to zero stress at alpha = 0
+  // (Volterra mode keeps its own outer loop)
+  set_pbc_stress_control_options(stress_control_preset, relax_macro_stress && mode != "volterra", stress_relax_strain);
 
   if (!restart_checkpoint.empty()) {
-    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, potential_mode);
+    restart_zanzotto_simulation(restart_checkpoint, checkpoint_interval, stress_drop_threshold, save_triangle_data, max_avalanches, lattice_type, potential_mode,
+                                noise_level, stiffness_use_rotation, stiffness_csl_m, stiffness_csl_n, stiffness_csl_kx, stiffness_csl_ky,
+                                stiffness_rotation_angle, stiffness_bc, geometry_json, save_vtk_every);
     return 0;
   }
 
@@ -493,10 +535,14 @@ int main(int argc, char **argv) {
               << ", mesh=" << (export_full_mesh ? "full" : "circle")
               << ", lattice=" << lattice_type << ", potential_mode=" << potential_mode
               << ", relax_macro_stress=" << (relax_macro_stress ? "true" : "false") << " <<<\n" << std::endl;
+    cylinder_load.alpha_start = alpha_start_given ? alpha_start : 0.0;
+    cylinder_load.alpha_end = alpha_end;
+    cylinder_load.step = step_size;
+    cylinder_load.save_vtk_every = save_vtk_every > 0 ? save_vtk_every : 50;
     single_dislocation_cylinder_relaxation(0, nx, ny, r_free, enable_remeshing, export_full_mesh,
                                            lattice_type, potential_mode, beta, bulk_K,
                                            relax_macro_stress, stress_tol, max_macro_iters,
-                                           stability_options);
+                                           stability_options, cylinder_load);
     return 0;
   }
   // 3. Multi-Shift Dislocation Study (no remeshing):
@@ -577,7 +623,11 @@ int main(int argc, char **argv) {
 
   // 6. Stress-Controlled Loading:
   //    Applies stress-controlled shear/axial loading with adaptive remeshing.
-  // example_3_stress_controlled_final_clean(0, nx, ny);
+  //    Legacy PBC Cauchy-stress servo, kept as the validation baseline for --stress-control.
+  if (legacy_stress_servo) {
+    example_3_stress_controlled_final_clean(0, nx, ny);
+    return 0;
+  }
 
   // 7. Continuous Shear Loading:
   //    Configure loading schedule once; automatically negated for negative loading

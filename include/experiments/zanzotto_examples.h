@@ -61,5 +61,16 @@ void restart_zanzotto_simulation(
     bool save_triangle_data = false,
     int max_avalanches = 0,
     const std::string& lattice_type = "square",
-    int potential_mode = 3);
+    int potential_mode = 3,
+    // Run settings that are not stored in the checkpoint: pass the original run's flags
+    double noise_level = 0.04,
+    bool use_rotation = false,
+    int csl_m = 1,
+    int csl_n = 0,
+    int csl_kx = 1,
+    int csl_ky = 1,
+    double rotation_angle = 0.0,
+    const std::string& bc = "periodic",
+    const std::string& geometry_json = "",
+    int save_vtk_every = 0);
 

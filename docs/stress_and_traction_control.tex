@@ -1,0 +1,1304 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\newcommand{\Fb}{\bar{\mathbf F}}
+\newcommand{\Pb}{\bar{\mathbf P}}
+\newcommand{\sigb}{\bar{\bm\sigma}}
+\newcommand{\Pt}{\mathbf P^{\mathrm t}}
+\newcommand{\sigt}{\bm\sigma^{\mathrm t}}
+\newcommand{\F}{\mathbf F}
+\newcommand{\C}{\mathbf C}
+\newcommand{\Pk}{\mathbf P}
+\newcommand{\I}{\mathbf I}
+\newcommand{\x}{\mathbf x}
+\newcommand{\X}{\mathbf X}
+\newcommand{\w}{\mathbf w}
+\newcommand{\f}{\mathbf f}
+\newcommand{\U}{\mathbf U}
+\newcommand{\T}{\mathbf T}
+\newcommand{\G}{\mathbf G}
+\newcommand{\m}{\mathbf m}
+\newcommand{\tr}{\operatorname{tr}}
+
+\title{Stress and traction control in a Lagrange-reduced lattice finite-element model:\\
+nominal and Cauchy stress loading of periodic cells, and dead-load boundary tractions}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We describe how mechanical loads are prescribed in force (rather than displacement) in a
+two-dimensional lattice finite-element model in which the strain energy of every triangle is
+evaluated after Lagrange (\(\mathrm{GL}(2,\mathbb Z)\)) reduction of its metric. Two settings are
+treated. For periodic cells, the macroscopic deformation gradient of the cell becomes an unknown
+conjugate to a prescribed macroscopic stress. A prescribed nominal (first Piola--Kirchhoff) stress
+is a dead load and leads to the minimization of an enthalpy in the joint space of internal
+coordinates and cell deformation. A prescribed true (Cauchy) stress is a follower load that admits
+no potential; it is enforced exactly by a fixed-point iteration on the nominal target, each pass
+being an enthalpy minimization. For finite specimens, dead-load nominal tractions on boundary
+segments and rigid load-controlled grips are introduced through external work potentials. For both
+settings we give the equilibrium equations, the work-conjugate strain measures used to detect
+plastic strain bursts, the treatment of rigid-body modes and of the gauge rotation, and the
+detection of the limit load past which no equilibrium exists. Finally, Newton-type alternatives
+based on the Cauchy--Born, relaxed (Schur-complement) and full Hessian tangents are formulated and
+compared with the first-order method.
+\end{abstract}
+
+%=====================================================================
+\section{Discrete energy}
+\label{sec:energy}
+%=====================================================================
+
+The reference configuration is a triangulation of the lattice sites \(\{\X_a\}\). Each triangle
+\(e\) with vertices \(a\in e\) carries constant shape-function gradients \(\nabla N_a^e\), so that
+its deformation gradient is
+\begin{equation}
+  \F_e=\sum_{a\in e}\x_a\otimes\nabla N_a^e ,\qquad \C_e=\F_e^{\mathsf T}\F_e .
+  \label{eq:Fe}
+\end{equation}
+The strain-energy density per unit reference area is obtained from a lattice (pair or many-body)
+energy \(\Phi\) evaluated on the reduced metric,
+\begin{equation}
+  W(\C)=\frac{1}{A_{\mathrm{cell}}}\,\Phi\!\left(\m^{\mathsf T}\C\,\m\right),\qquad
+  \m=\m(\C)\in\mathrm{GL}(2,\mathbb Z),
+  \label{eq:W}
+\end{equation}
+where \(\m(\C)\) is the Lagrange reduction of \(\C\) and \(A_{\mathrm{cell}}\) is the area of the
+lattice unit cell, which makes \(W\) an energy per unit area. By construction \(W\) is invariant
+under \(\C\mapsto \mathbf n^{\mathsf T}\C\mathbf n\) for all \(\mathbf n\in\mathrm{GL}(2,\mathbb Z)\),
+i.e.\ under lattice-invariant shears, which is what allows dislocations to nucleate and glide
+without any reconnection of the underlying lattice. The first Piola--Kirchhoff stress of a
+triangle is
+\begin{equation}
+  \Pk_e=\frac{\partial W}{\partial\F}(\F_e)
+  =\frac{2}{A_{\mathrm{cell}}}\,\F_e\,\m\,
+  \frac{\partial\Phi}{\partial\C}\big(\m^{\mathsf T}\C_e\m\big)\,\m^{\mathsf T},
+  \label{eq:Pe}
+\end{equation}
+and the total elastic energy is
+\begin{equation}
+  E_{\mathrm{el}}=\sum_e A_e\,W(\C_e),\qquad
+  \frac{\partial E_{\mathrm{el}}}{\partial\x_a}=\sum_{e\ni a}A_e\,\Pk_e\,\nabla N_a^e .
+  \label{eq:E}
+\end{equation}
+Here \(A_e\) is the reference area of triangle \(e\). Because \(\nabla N^e_a\) is fixed by the
+reference element, \(A_e\) must be the area of that reference element,
+\(A_e=\tfrac12\,|\det[\nabla N^e_2,\nabla N^e_3]|^{-1}\), and not the area of the triangle formed
+by the reference positions of the current vertices: after a mesh reconnection the two differ, and
+using the latter corrupts the energy and the stress of the reconnected triangles.
+
+%=====================================================================
+\section{Periodic cells: kinematics and macroscopic stress}
+\label{sec:pbc}
+%=====================================================================
+
+\subsection{Cell deformation and internal coordinates}
+
+A periodic cell has reference area \(A_0\) and is deformed by a homogeneous macroscopic
+deformation gradient \(\Fb\). Atomic positions are written as
+\begin{equation}
+  \x_a=\Fb\,\w_a ,
+  \label{eq:xw}
+\end{equation}
+where \(\w_a\) are internal (cell) coordinates. A triangle that straddles the cell boundary uses
+periodic images of its vertices, \(\x_a+\Fb\,\T_a^e\), with \(\T^e_a\) a fixed translation by a
+reference period vector. Substituting in \eqref{eq:Fe},
+\begin{equation}
+  \F_e=\Fb\,\G_e,\qquad \G_e=\sum_{a\in e}\big(\w_a+\T^e_a\big)\otimes\nabla N^e_a ,
+  \label{eq:FeG}
+\end{equation}
+where \(\G_e\) does not depend on \(\Fb\). The energy is therefore a function
+\(E_{\mathrm{el}}(\w,\Fb)\), and its partial derivatives at fixed \(\w\) and at fixed \(\Fb\) are
+\begin{align}
+  \frac{\partial E_{\mathrm{el}}}{\partial\w_a}
+    &=\Fb^{\mathsf T}\,\frac{\partial E_{\mathrm{el}}}{\partial\x_a},
+  \label{eq:dEdw}\\
+  \frac{\partial E_{\mathrm{el}}}{\partial\Fb}
+    &=\sum_e A_e\,\Pk_e\,\G_e^{\mathsf T}
+     =\Big(\sum_e A_e\,\Pk_e\,\F_e^{\mathsf T}\Big)\Fb^{-\mathsf T}.
+  \label{eq:dEdF}
+\end{align}
+
+\paragraph{Derivation of \eqref{eq:dEdw} and \eqref{eq:dEdF}.}
+We use components \(i,j,k,m,\alpha\in\{1,2\}\), the convention
+\((\mathbf u\otimes\mathbf v)_{i\alpha}=u_iv_\alpha\) (so \(\mathbf u\otimes\mathbf v=\mathbf u\mathbf v^{\mathsf T}\)),
+and the inner product \(\mathbf A:\mathbf B=\sum_{i,\alpha}A_{i\alpha}B_{i\alpha}=\tr(\mathbf A^{\mathsf T}\mathbf B)\).
+In components, \eqref{eq:xw} and \eqref{eq:FeG} read
+\begin{equation}
+  x_{a,i}=\sum_j\bar F_{ij}\,w_{a,j},\qquad
+  (F_e)_{i\alpha}=\sum_{b\in e}\sum_j\bar F_{ij}\big(w_{b,j}+T^e_{b,j}\big)(\nabla N^e_b)_\alpha
+  =\sum_j\bar F_{ij}\,(G_e)_{j\alpha}.
+  \label{eq:FeGcomp}
+\end{equation}
+The cell enters \(\F_e\) only through the left factor \(\Fb\), the atoms only through \(\G_e\). The
+periodic images are included: their positions \(\Fb(\w_b+\T^e_b)\) also scale with \(\Fb\).
+
+\emph{Nodal forces.} From \eqref{eq:Fe}, \(\partial(F_e)_{k\alpha}/\partial x_{a,i}=\delta_{ki}(\nabla N^e_a)_\alpha\)
+for \(a\in e\), and the chain rule with \((P_e)_{k\alpha}=\partial W/\partial(F_e)_{k\alpha}\) gives the
+force expression in \eqref{eq:E}:
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}
+  =\sum_{e\ni a}A_e\sum_{k,\alpha}(P_e)_{k\alpha}\,\delta_{ki}(\nabla N^e_a)_\alpha
+  =\sum_{e\ni a}A_e\,(\Pk_e\nabla N^e_a)_i .
+\end{equation}
+
+\emph{Derivative with respect to the internal coordinates.} At fixed \(\Fb\), \(w_{a,j}\) enters
+\(E_{\mathrm{el}}\) only through \(\x_a\), with \(\partial x_{a,i}/\partial w_{a,j}=\bar F_{ij}\). Hence
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial w_{a,j}}
+  =\sum_i\frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}\,\bar F_{ij}
+  =\sum_i(\Fb^{\mathsf T})_{ji}\,\frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}
+  =\Big(\Fb^{\mathsf T}\frac{\partial E_{\mathrm{el}}}{\partial\x_a}\Big)_j .
+\end{equation}
+The sum runs over the \emph{first} index of \(\bar F_{ij}\), which is why the transpose appears; this
+is \eqref{eq:dEdw}. Equivalently, a variation \(\delta\w_a\) at fixed \(\Fb\) moves the atom by
+\(\delta\x_a=\Fb\,\delta\w_a\), and
+\[
+  \delta E_{\mathrm{el}}=\Big(\frac{\partial E_{\mathrm{el}}}{\partial\x_a}\Big)^{\mathsf T}\Fb\,\delta\w_a
+  =\Big(\Fb^{\mathsf T}\frac{\partial E_{\mathrm{el}}}{\partial\x_a}\Big)^{\mathsf T}\delta\w_a .
+\]
+The same result
+follows through \(\G_e\): with \(\partial(G_e)_{m\alpha}/\partial w_{a,j}=\delta_{mj}(\nabla N^e_a)_\alpha\),
+\[
+  \frac{\partial E_{\mathrm{el}}}{\partial w_{a,j}}
+  =\sum_{e\ni a}A_e\sum_{i,\alpha}(P_e)_{i\alpha}\,\bar F_{ij}\,(\nabla N^e_a)_\alpha
+  =\sum_i\bar F_{ij}\,\frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}} .
+\]
+
+\emph{Derivative with respect to the cell, first form.} At fixed \(\w\), \(\G_e\) is constant and, from
+\eqref{eq:FeGcomp},
+\begin{equation}
+  \frac{\partial(F_e)_{k\alpha}}{\partial\bar F_{ij}}
+  =\sum_m\delta_{ki}\,\delta_{mj}\,(G_e)_{m\alpha}=\delta_{ki}\,(G_e)_{j\alpha}.
+  \label{eq:dFedFb}
+\end{equation}
+The chain rule over all entries of \(\F_e\) then gives
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial\bar F_{ij}}
+  =\sum_eA_e\sum_{k,\alpha}(P_e)_{k\alpha}\,\delta_{ki}\,(G_e)_{j\alpha}
+  =\sum_eA_e\sum_\alpha(P_e)_{i\alpha}\,(\G_e^{\mathsf T})_{\alpha j}
+  =\Big(\sum_eA_e\,\Pk_e\,\G_e^{\mathsf T}\Big)_{ij}.
+\end{equation}
+Here the sum runs over the \emph{second} index of both \(\Pk_e\) and \(\G_e\), which produces
+\(\G_e^{\mathsf T}\). In matrix form: at fixed \(\w\), \(\delta\F_e=\delta\Fb\,\G_e\), and with the cyclic
+property of the trace,
+\[
+  \delta E_{\mathrm{el}}=\sum_eA_e\,\Pk_e:\delta\F_e
+  =\sum_eA_e\tr\!\big(\Pk_e^{\mathsf T}\,\delta\Fb\,\G_e\big)
+  =\sum_eA_e\tr\!\big(\G_e\Pk_e^{\mathsf T}\,\delta\Fb\big)
+  =\Big(\sum_eA_e\,\Pk_e\G_e^{\mathsf T}\Big):\delta\Fb ,
+\]
+since \((\Pk_e\G_e^{\mathsf T})^{\mathsf T}=\G_e\Pk_e^{\mathsf T}\). This is the first equality in
+\eqref{eq:dEdF}. Note that a variation of \(\Fb\) at fixed \(\w\) moves every atom affinely,
+\(\delta\x_a=\delta\Fb\,\w_a\); this is why \(\partial E_{\mathrm{el}}/\partial\Fb\) is the macroscopic
+stress and does not vanish when the atoms are in equilibrium.
+
+\emph{Second form.} Since \(\det\Fb>0\), \eqref{eq:FeG} gives \(\G_e=\Fb^{-1}\F_e\) and therefore
+\(\G_e^{\mathsf T}=\F_e^{\mathsf T}\Fb^{-\mathsf T}\). The factor \(\Fb^{-\mathsf T}\) is the same for every
+triangle and comes out of the sum:
+\[
+  \frac{\partial E_{\mathrm{el}}}{\partial\Fb}
+  =\sum_eA_e\,\Pk_e\,\F_e^{\mathsf T}\,\Fb^{-\mathsf T}
+  =\Big(\sum_eA_e\,\Pk_e\,\F_e^{\mathsf T}\Big)\Fb^{-\mathsf T}.
+\]
+This form needs only \(\F_e\) and \(\Pk_e\), which each triangle has already computed for its energy and
+forces; \(\G_e\) is never formed.
+
+The matrix \(\mathbf V=\sum_e A_e\Pk_e\F_e^{\mathsf T}\) is the (Kirchhoff) virial of the cell. It
+is accumulated during the same element loop that computes the energy and the nodal forces, so the
+derivative with respect to the cell costs nothing extra.
+
+\subsection{Macroscopic stresses}
+
+The macroscopic nominal and Cauchy stresses are defined by work conjugacy with the cell
+deformation,
+\begin{equation}
+  \Pb=\frac{1}{A_0}\,\frac{\partial E_{\mathrm{el}}}{\partial\Fb}
+     =\frac{1}{A_0}\,\mathbf V\,\Fb^{-\mathsf T},\qquad
+  \sigb=\frac{1}{\bar J}\,\Pb\,\Fb^{\mathsf T}=\frac{\mathbf V}{A_0\,\bar J},
+  \qquad \bar J=\det\Fb .
+  \label{eq:macrostress}
+\end{equation}
+Since \(\Pk_e\F_e^{\mathsf T}=J_e\bm\sigma_e\) and \(A_eJ_e=a_e\) is the current area of the
+triangle, \(\sigb=\sum_e a_e\bm\sigma_e/(A_0\bar J)\) is the current-area average of the element
+Cauchy stresses, provided \(A_0\bar J\) is the current area of the cell. At atomic equilibrium,
+\(\partial E_{\mathrm{el}}/\partial\w=0\), the value of \(\Pb\) does not depend on which variables
+are held fixed while \(\Fb\) is varied (Hill--Mandel condition).
+
+\paragraph{Cell reference area.}
+The work done on the cell per unit change of \(\Fb\) is \(A_0\,\Pb:\mathrm d\Fb\), with \(A_0\) the
+reference area of the \emph{periodic cell}. The triangles tile the current cell, so we compute
+\begin{equation}
+  A_0=\frac{1}{\det\Fb}\sum_e a_e .
+  \label{eq:A0}
+\end{equation}
+This is in general different from \(\sum_e A_e\). For instance, a dislocation dipole inserted in a
+periodic cell adds material half-planes between the two cores, so the summed material reference
+area exceeds the cell area (in one of our test cells, by \(586\) against \(576\)). Using
+\(\sum_eA_e\) in place of \eqref{eq:A0} produces a spurious offset between the prescribed and the
+measured stress.
+
+\subsection{Rotation gauge}
+
+The energy is objective, \(E_{\mathrm{el}}(\w,\mathbf R\Fb)=E_{\mathrm{el}}(\w,\Fb)\) for every
+rotation \(\mathbf R\). Every \(\Fb\) with positive determinant has a unique decomposition
+\(\Fb=\mathbf R\,\Fb_{\triangle}\) with \(\Fb_\triangle\) upper triangular with positive diagonal
+(the QR decomposition), so we fix the gauge
+\begin{equation}
+  \Fb=\begin{pmatrix}\bar F_{11}&\bar F_{12}\\0&\bar F_{22}\end{pmatrix},\qquad
+  \bar F_{11},\bar F_{22}>0 .
+  \label{eq:gauge}
+\end{equation}
+The cell then has three kinematic degrees of freedom \((\bar F_{11},\bar F_{12},\bar F_{22})\),
+conjugate to \((\bar P_{11},\bar P_{12},\bar P_{22})\). The fourth component \(\bar P_{21}\) is not
+an independent unknown: objectivity implies the rotational balance
+\(\Pb\,\Fb^{\mathsf T}=(\Pb\,\Fb^{\mathsf T})^{\mathsf T}\). With
+\((\Pb\Fb^{\mathsf T})_{ij}=\sum_K\bar P_{iK}\bar F_{jK}\) and \(\bar F_{21}=0\), the two off-diagonal
+entries are \((\Pb\Fb^{\mathsf T})_{12}=\bar P_{12}\bar F_{22}\) and
+\((\Pb\Fb^{\mathsf T})_{21}=\bar P_{21}\bar F_{11}+\bar P_{22}\bar F_{12}\), so in the gauge
+\eqref{eq:gauge} the balance reads
+\begin{equation}
+  \bar P_{21}\,\bar F_{11}+\bar P_{22}\,\bar F_{12}=\bar P_{12}\,\bar F_{22}.
+  \label{eq:P21}
+\end{equation}
+(The balance itself follows from objectivity: for an infinitesimal rotation
+\(\mathbf R=\I+\epsilon\mathbf W\), \(\mathbf W^{\mathsf T}=-\mathbf W\),
+\(0=\mathrm dE_{\mathrm{el}}(\w,\mathbf R\Fb)/\mathrm d\epsilon=A_0\Pb:(\mathbf W\Fb)
+=A_0\tr\!\big(\Pb^{\mathsf T}\mathbf W\Fb\big)=A_0\,(\Pb\Fb^{\mathsf T}):\mathbf W\) for every skew
+\(\mathbf W\), i.e.\ \(\Pb\Fb^{\mathsf T}\) is symmetric.)
+
+\begin{proposition}\label{prop:full}
+Let \(\Fb\) satisfy \eqref{eq:gauge} and let \(\Pb\) and \(\Pt\) both satisfy the rotational
+balance, \(\Pb\Fb^{\mathsf T}\) and \(\Pt\Fb^{\mathsf T}\) symmetric. If
+\(\bar P_{ij}=P^{\mathrm t}_{ij}\) for \((ij)\in\{11,12,22\}\), then \(\Pb=\Pt\).
+\end{proposition}
+\begin{proof}
+\(\mathbf D=\Pb-\Pt\) has the single non-zero entry \(D_{21}=d\), and
+\(\mathbf D\Fb^{\mathsf T}\) has the single non-zero entry \((\mathbf D\Fb^{\mathsf T})_{21}=d\,\bar
+F_{11}\). It is symmetric only if \(d\bar F_{11}=0\), i.e.\ \(d=0\) since \(\bar F_{11}>0\).
+\end{proof}
+
+In particular, if the target is a Cauchy stress, \(\Pt=\bar J\sigt\Fb^{-\mathsf T}\), then
+\(\Pt\Fb^{\mathsf T}=\bar J\sigt\) is symmetric, and matching the three free nominal components
+gives the \emph{complete} Cauchy stress \(\sigb=\sigt\), including the component conjugate to the
+gauged-out rotation.
+
+%=====================================================================
+\section{Nominal (Piola) stress control of a periodic cell}
+\label{sec:nominal}
+%=====================================================================
+
+\subsection{Enthalpy}
+
+Let \(\mathcal S\subseteq\{11,12,22\}\) be the set of stress-driven cell components; the others
+are strain-driven (prescribed). For a prescribed nominal stress \(\Pt\) the external work is linear
+in \(\Fb\), the load is dead, and the equilibria are the stationary points of the enthalpy
+\begin{equation}
+  H(\w,\Fb)=E_{\mathrm{el}}(\w,\Fb)-A_0\sum_{(ij)\in\mathcal S}P^{\mathrm t}_{ij}
+  \big(\bar F_{ij}-\delta_{ij}\big).
+  \label{eq:H}
+\end{equation}
+With \eqref{eq:dEdw}--\eqref{eq:macrostress}, the stationarity conditions are
+\begin{align}
+  \frac{\partial H}{\partial\w_a}&=\Fb^{\mathsf T}\,\frac{\partial E_{\mathrm{el}}}{\partial\x_a}=\mathbf 0
+  &&\text{(atomic equilibrium)},\label{eq:eqw}\\
+  \frac{\partial H}{\partial\bar F_{ij}}&=A_0\big(\bar P_{ij}-P^{\mathrm t}_{ij}\big)=0,
+  \quad (ij)\in\mathcal S &&\text{(macroscopic equilibrium)}.\label{eq:eqF}
+\end{align}
+Since the work term is linear, \(\nabla^2H=\nabla^2E_{\mathrm{el}}\) in the joint variables
+\((\w,\Fb_{\mathcal S})\): an equilibrium is stable when the elastic Hessian, with the cell
+components in \(\mathcal S\) free, is positive definite. This is a weaker condition than stability
+at fixed \(\Fb\) (strain control), and the difference is the source of the strain bursts discussed
+in Section~\ref{sec:protocol}.
+
+\subsection{Loading presets}
+
+Table~\ref{tab:presets} lists the loadings implemented. A ``shear'' loading prescribes
+\(P^{\mathrm t}_{12}=\alpha\) with \(P^{\mathrm t}_{11}=P^{\mathrm t}_{22}=0\), all three components
+being free; uniaxial loadings prescribe one normal component. A mixed loading keeps
+\(\bar F_{12}=\alpha\) prescribed and relaxes the two normal components to zero nominal stress.
+An optional zero-stress relaxation of all three components at \(\alpha=0\) removes the residual
+stress of the initial microstructure (e.g.\ of an inserted dipole) before loading.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+Loading & free \(\mathcal S\) & target & conjugate strain \(\varepsilon\)\\
+\midrule
+nominal shear & 11, 12, 22 & \(P_{12}=\alpha\), \(P_{11}=P_{22}=0\) & \(\bar F_{12}-\bar F^{(0)}_{12}\)\\
+nominal uniaxial \(y\) & 11, 12, 22 & \(P_{22}=\alpha\), others 0 & \(\bar F_{22}-\bar F^{(0)}_{22}\)\\
+nominal uniaxial \(x\) & 11, 12, 22 & \(P_{11}=\alpha\), others 0 & \(\bar F_{11}-\bar F^{(0)}_{11}\)\\
+Cauchy shear & 11, 12, 22 & \(\sigma_{12}=\sigma_{21}=\alpha\), \(\sigma_{11}=\sigma_{22}=0\) & \(\bar F_{12}-\bar F^{(0)}_{12}\)\\
+Cauchy uniaxial \(y\) & 11, 12, 22 & \(\sigma_{22}=\alpha\), others 0 & \(\bar F_{22}-\bar F^{(0)}_{22}\)\\
+Cauchy uniaxial \(x\) & 11, 12, 22 & \(\sigma_{11}=\alpha\), others 0 & \(\bar F_{11}-\bar F^{(0)}_{11}\)\\
+mixed & 11, 22 & \(\bar F_{12}=\alpha\), \(P_{11}=P_{22}=0\) & ---\\
+zero-stress relaxation & 11, 12, 22 & \(\Pk=\mathbf 0\) at \(\alpha=0\) & ---\\
+\bottomrule
+\end{tabular}
+\caption{Loadings of the periodic cell. \(\Fb^{(0)}\) is the cell after the initial relaxation
+step, the origin of the strain axis.}
+\label{tab:presets}
+\end{table}
+
+\subsection{Nominal shear is not a pure Cauchy shear}
+
+The nominal and Cauchy shear loadings differ by more than a change of measure. Take
+\(\Pb=\tau\,\mathbf e_1\otimes\mathbf e_2+\bar P_{21}\,\mathbf e_2\otimes\mathbf e_1\) (i.e.
+\(\bar P_{11}=\bar P_{22}=0\), \(\bar P_{12}=\tau\)), with \(\bar P_{21}=\tau\bar F_{22}/\bar F_{11}\)
+from \eqref{eq:P21}. With \(\bar J=\bar F_{11}\bar F_{22}\), \eqref{eq:macrostress} gives
+\begin{equation}
+  \sigb=\frac{\tau}{\bar F_{11}\bar F_{22}}
+  \begin{pmatrix}\bar F_{12}&\bar F_{22}\\ \bar F_{22}&0\end{pmatrix},\qquad
+  \bar\sigma_{12}=\frac{\tau}{\bar F_{11}},\quad
+  \bar\sigma_{11}=\frac{\tau\,\bar F_{12}}{\bar F_{11}\bar F_{22}} .
+  \label{eq:nominalshear}
+\end{equation}
+Under nominal shear the cell therefore carries a normal Cauchy stress
+\(\bar\sigma_{11}\approx\tau\gamma\) that grows with the shear \(\gamma=\bar F_{12}\). At the shear
+strains reached before dislocation nucleation (\(\gamma\sim0.1\)--\(1\)) this is not small, and the
+resolved shear stress differs from the one obtained under a pure shear stress.
+
+%=====================================================================
+\section{Cauchy (true) stress control of a periodic cell}
+\label{sec:cauchy}
+%=====================================================================
+
+\subsection{The Cauchy target is a follower load}
+
+A prescribed Cauchy stress \(\sigt\) corresponds to the deformation-dependent nominal target
+\begin{equation}
+  \Pt(\Fb)=\bar J\,\sigt\,\Fb^{-\mathsf T}.
+  \label{eq:Ptsig}
+\end{equation}
+In the gauge \eqref{eq:gauge}, with
+\(\Fb^{-\mathsf T}=\begin{pmatrix}1/\bar F_{11}&0\\-\bar F_{12}/(\bar F_{11}\bar F_{22})&1/\bar F_{22}\end{pmatrix}\),
+the three loadings of Table~\ref{tab:presets} give the explicit targets
+\begin{align}
+  \sigt=\tau(\mathbf e_1\otimes\mathbf e_2+\mathbf e_2\otimes\mathbf e_1):&\quad
+  P^{\mathrm t}_{11}=-\tau\bar F_{12},\quad P^{\mathrm t}_{12}=\tau\bar F_{11},\quad P^{\mathrm t}_{22}=0,
+  \label{eq:Ptshear}\\
+  \sigt=s\,\mathbf e_2\otimes\mathbf e_2:&\quad
+  P^{\mathrm t}_{11}=0,\quad P^{\mathrm t}_{12}=0,\quad P^{\mathrm t}_{22}=s\,\bar F_{11},
+  \label{eq:Ptyy}\\
+  \sigt=s\,\mathbf e_1\otimes\mathbf e_1:&\quad
+  P^{\mathrm t}_{11}=s\,\bar F_{22},\quad P^{\mathrm t}_{12}=0,\quad P^{\mathrm t}_{22}=0 .
+  \label{eq:Ptxx}
+\end{align}
+
+\paragraph{Derivation.}
+By \eqref{eq:macrostress}, \(\sigb=\bar J^{-1}\Pb\Fb^{\mathsf T}\). Multiplying on the right by
+\(\bar J\,\Fb^{-\mathsf T}\) gives \(\Pb=\bar J\,\sigb\,\Fb^{-\mathsf T}\), so prescribing \(\sigb=\sigt\)
+prescribes the nominal stress \eqref{eq:Ptsig}, which depends on the current cell. In the gauge
+\eqref{eq:gauge}, \(\bar J=\bar F_{11}\bar F_{22}\) and
+\[
+  \Fb^{-1}=\frac{1}{\bar F_{11}\bar F_{22}}\begin{pmatrix}\bar F_{22}&-\bar F_{12}\\0&\bar F_{11}\end{pmatrix},
+  \qquad
+  \bar J\,\Fb^{-\mathsf T}=\begin{pmatrix}\bar F_{22}&0\\-\bar F_{12}&\bar F_{11}\end{pmatrix}
+  \equiv\operatorname{cof}\Fb ,
+\]
+the cofactor matrix. Hence \(\Pt=\sigt\operatorname{cof}\Fb\), which is linear in the cell components.
+For the three loadings,
+\begin{align*}
+  \tau\begin{pmatrix}0&1\\1&0\end{pmatrix}\operatorname{cof}\Fb
+   &=\tau\begin{pmatrix}-\bar F_{12}&\bar F_{11}\\ \bar F_{22}&0\end{pmatrix},\\
+  s\begin{pmatrix}0&0\\0&1\end{pmatrix}\operatorname{cof}\Fb
+   &=s\begin{pmatrix}0&0\\-\bar F_{12}&\bar F_{11}\end{pmatrix},\\
+  s\begin{pmatrix}1&0\\0&0\end{pmatrix}\operatorname{cof}\Fb
+   &=s\begin{pmatrix}\bar F_{22}&0\\0&0\end{pmatrix}.
+\end{align*}
+The \((11),(12),(22)\) entries are \eqref{eq:Ptshear}--\eqref{eq:Ptxx}. The \((21)\) entries
+(\(\tau\bar F_{22}\), \(-s\bar F_{12}\), \(0\)) are not prescribed: they satisfy the rotational balance
+\eqref{eq:P21}, as they must, since \(\Pt\Fb^{\mathsf T}=\bar J\sigt\) is symmetric.
+
+\paragraph{Load stiffness.}
+Ordering the free components as \((11,12,22)\), the derivative \(\mathbb L=\partial\Pt/\partial\Fb\)
+of the targets \eqref{eq:Ptshear}--\eqref{eq:Ptxx} is
+\begin{equation}
+  \mathbb L_{\text{shear}}=\tau\begin{pmatrix}0&-1&0\\1&0&0\\0&0&0\end{pmatrix},\qquad
+  \mathbb L_{yy}=s\begin{pmatrix}0&0&0\\0&0&0\\1&0&0\end{pmatrix},\qquad
+  \mathbb L_{xx}=s\begin{pmatrix}0&0&1\\0&0&0\\0&0&0\end{pmatrix}.
+  \label{eq:Lload}
+\end{equation}
+For instance, \(P^{\mathrm t}_{11}=-\tau\bar F_{12}\) gives the entry \(-\tau\) in row \(11\), column
+\(12\). A load derives from a work potential exactly when \(\mathbb L\) is symmetric (equality of the
+mixed second derivatives of the potential), and none of these is: \(\mathbb L_{\text{shear}}\) is even
+antisymmetric. The hydrostatic target \(\sigt=-p\I\) gives \(\Pt=-p\operatorname{cof}\Fb\),
+\(P^{\mathrm t}_{11}=-p\bar F_{22}\), \(P^{\mathrm t}_{22}=-p\bar F_{11}\), and a symmetric \(\mathbb L\).
+The same matrices give the exterior derivative of the work one-form below,
+\(\mathrm d\omega=A_0\sum_{a<b}(\mathbb L_{ba}-\mathbb L_{ab})\,\mathrm d\bar F_a\wedge\mathrm d\bar F_b\)
+with \(a,b\) running over \((11,12,22)\).
+
+A pure Cauchy shear thus requires a compressive nominal normal stress \(-\tau\bar F_{12}\) on the
+cell, which cancels the normal Cauchy stress of \eqref{eq:nominalshear}. The work one-form
+\(\omega=A_0\sum_{\mathcal S}P^{\mathrm t}_{ij}(\Fb)\,\mathrm d\bar F_{ij}\) is not closed:
+for \eqref{eq:Ptshear}, \(\omega=A_0\tau(-\bar F_{12}\,\mathrm d\bar F_{11}+\bar F_{11}\,\mathrm d\bar F_{12})\)
+and \(\mathrm d\omega=2A_0\tau\,\mathrm d\bar F_{11}\wedge\mathrm d\bar F_{12}\neq0\); likewise
+\(\mathrm d\omega=A_0 s\,\mathrm d\bar F_{11}\wedge\mathrm d\bar F_{22}\) for \eqref{eq:Ptyy} and
+\(-A_0 s\,\mathrm d\bar F_{11}\wedge\mathrm d\bar F_{22}\) for \eqref{eq:Ptxx}. A prescribed
+deviatoric Cauchy stress therefore has no work potential, and the equilibria cannot be obtained by
+minimizing a single enthalpy. (A hydrostatic target \(\sigt=-p\I\) is the exception:
+\(\omega=-pA_0\,\mathrm d\bar J\) is exact.)
+
+\subsection{Fixed-point iteration on the nominal target}
+
+The equilibrium conditions under Cauchy control are \eqref{eq:eqw} together with
+\begin{equation}
+  \bar P_{ij}(\w,\Fb)=P^{\mathrm t}_{ij}(\Fb),\qquad(ij)\in\mathcal S .
+  \label{eq:eqCauchy}
+\end{equation}
+For any frozen value \(\Pt_k\) of the target, \eqref{eq:eqw}--\eqref{eq:eqF} are the stationarity
+conditions of the dead-load enthalpy \eqref{eq:H}. We therefore solve \eqref{eq:eqCauchy} by the
+fixed-point iteration of Algorithm~\ref{alg:cauchy}: freeze the nominal target at the current cell,
+minimize the enthalpy, re-evaluate the target at the relaxed cell, and repeat until the target no
+longer changes. Each pass is warm-started from the previous minimizer, so after the first pass the
+remaining passes are short.
+
+\begin{algorithm}[t]
+\caption{Cauchy stress control of a periodic cell at load level \(\alpha\)}
+\label{alg:cauchy}
+\begin{algorithmic}[1]
+\Require configuration \((\w,\Fb)\) from the predictor; Cauchy target \(\sigt(\alpha)\)
+\State \(\mathrm{tol}\gets10^{-11}+10^{-9}\max_{ij}|\sigma^{\mathrm t}_{ij}|\)
+\For{\(k=1,\dots,60\)}
+  \State \(\Pt_k\gets\det\Fb\;\sigt\,\Fb^{-\mathsf T}\)
+  \State \((\w,\Fb)\gets\arg\min H(\,\cdot\,;\Pt_k)\) \Comment{L-BFGS from the current state, Eq.~\eqref{eq:H}}
+  \State \(\Pt_{k+1}\gets\det\Fb\;\sigt\,\Fb^{-\mathsf T}\)
+  \If{\(\max_{ij}|P^{\mathrm t}_{k+1,ij}-P^{\mathrm t}_{k,ij}|\le\mathrm{tol}\)} \State \Return converged \EndIf
+  \If{a stress-driven \(\bar F_{ij}\) moved by more than \(\Delta F_{\max}\) in this load step}
+     \State \Return limit load \Comment{Section~\ref{sec:limit}}
+  \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Convergence.}
+Linearize about the solution \(\Fb^\ast\). Let \(\mathbb K\) be the relaxed macroscopic tangent of
+the cell, i.e.\ \(\mathrm d\Pb=\mathbb K:\mathrm d\Fb\) with the atoms at equilibrium, restricted to
+the components in \(\mathcal S\). A perturbation \(\delta\Fb_k\) of the cell changes the frozen target
+by \(\delta\Pt_k=\mathbb L:\delta\Fb_k\) with \(\mathbb L=\partial\Pt/\partial\Fb\), and the next
+minimization returns \(\delta\Fb_{k+1}=\mathbb K^{-1}\mathbb L\,\delta\Fb_k\). From
+\eqref{eq:Ptshear}--\eqref{eq:Ptxx}, \(\|\mathbb L\|=O(|\sigt|)\), so the iteration contracts with
+ratio
+\begin{equation}
+  \rho=\|\mathbb K^{-1}\mathbb L\|\sim\frac{|\sigt|}{\mu_{\mathrm{eff}}},
+  \label{eq:rho}
+\end{equation}
+where \(\mu_{\mathrm{eff}}\) is the smallest relaxed modulus of the cell. For stresses well below
+the modulus the target typically settles to the tolerance in about six passes. As the load
+approaches the limit load, \(\mathbb K\) becomes singular, \(\rho\) grows without bound and the
+iteration stops converging; this is detected by the limit-load guard rather than by the pass limit.
+
+\paragraph{Exactness and the measured stress.}
+At convergence, \eqref{eq:eqF} holds with \(\Pt=\bar J\sigt\Fb^{-\mathsf T}\) evaluated at the final
+cell, and Proposition~\ref{prop:full} gives \(\sigb=\sigt\) for all four components. In practice
+the cell Cauchy stress computed from the virial, \(\sigb=\mathbf V/(A_0\bar J)\), matches the target
+to \(\sim10^{-8}\) in the controlled component, and the nominally zero components are of the same
+order.
+
+\paragraph{Comparing states under Cauchy control.}
+The reconnection cascade (Section~\ref{sec:protocol}) accepts a new topology when it lowers the
+enthalpy at fixed load. Under Cauchy control the two states are in equilibrium with different
+nominal targets, \(\Pt_0=\Pt(\Fb_0)\) and \(\Pt_1=\Pt(\Fb_1)\), and there is no potential whose
+difference would measure the work of the load. Comparing \(H(\Fb_1;\Pt_1)\) with \(H(\Fb_0;\Pt_0)\)
+would include the spurious term \(-A_0(\Pt_1-\Pt_0):(\Fb-\I)\). We instead evaluate the work of the
+load with the trapezoid rule, \(A_0\,\tfrac12(\Pt_0+\Pt_1):(\Fb_1-\Fb_0)\), so that
+\begin{equation}
+  \Delta\Pi=E_{\mathrm{el}}(1)-E_{\mathrm{el}}(0)-A_0\,\tfrac12(\Pt_0+\Pt_1):(\Fb_1-\Fb_0)
+  =\Delta H+A_0\,(\Pt_1-\Pt_0):\big(\tfrac12(\Fb_0+\Fb_1)-\I\big),
+  \label{eq:cauchyDPi}
+\end{equation}
+summed over the free components; it reduces to \(\Delta H\) under nominal control. A rejected
+reconnection restores both the cell and the target.
+
+\begin{remark}
+Each pass minimizes the frozen-load enthalpy, so its stability test uses
+\(\nabla^2E_{\mathrm{el}}\) and omits the load stiffness \(-A_0\,\partial\Pt/\partial\Fb\) of the
+follower load. That term is of relative order \(|\sigt|/\mu_{\mathrm{eff}}\), the same small
+parameter as in \eqref{eq:rho}.
+\end{remark}
+
+%=====================================================================
+\section{Numerical treatment of the cell variables}
+\label{sec:numerics}
+%=====================================================================
+
+The unknowns of a stress-controlled relaxation are \(\mathbf z=(\w,\ \sqrt{A_0}\,\bar F_{ij})\)
+for \((ij)\in\mathcal S\). Scaling the cell components by \(\sqrt{A_0}\) gives every unknown the
+dimension of a length, so that the gradient components
+\begin{equation}
+  \frac{\partial H}{\partial(\sqrt{A_0}\,\bar F_{ij})}
+  =\frac{1}{\sqrt{A_0}}\Big(\big[\mathbf V\Fb^{-\mathsf T}\big]_{ij}-A_0P^{\mathrm t}_{ij}\Big)
+  =\sqrt{A_0}\,\big(\bar P_{ij}-P^{\mathrm t}_{ij}\big)
+  \label{eq:gradz}
+\end{equation}
+have the same scaling as the atomic forces. (With \(\zeta_{ij}=\sqrt{A_0}\,\bar F_{ij}\),
+\(\partial H/\partial\zeta_{ij}=A_0^{-1/2}\,\partial H/\partial\bar F_{ij}\); then use \eqref{eq:H},
+\eqref{eq:dEdF} and \(\partial E_{\mathrm{el}}/\partial\Fb=A_0\Pb\) from \eqref{eq:macrostress}.) The
+limited-memory quasi-Newton (L-BFGS) Hessian
+estimate is then well conditioned across the two blocks. Positions are recovered as
+\(\x_a=\Fb\w_a\), and the periodic image translations follow \(\Fb\) in every function evaluation.
+
+Lagrange reduction makes the homogeneous energy bounded and periodic along lattice-invariant shears
+of the cell, while the work term in \eqref{eq:H} grows linearly in \(\bar F_{12}\). For any
+\(\tau\neq0\), \(H\) is therefore unbounded below: all equilibria under stress control are local
+minima, separated from runaway shearing of the cell by the barrier of the energy landscape. To keep
+the line search from extrapolating across that barrier, the step length of the minimizer is
+capped (to \(0.5\) in units of the lattice parameter in \(\mathbf z\)).
+
+When the stiffness preconditioner is selected, the same minimization is carried out in
+preconditioned variables, with the atom--cell stiffness factorized as a bordered sparse Cholesky
+factor. The construction is given in Section~\ref{sec:precond}.
+
+%=====================================================================
+\section{Load stepping, avalanches and the limit load}
+\label{sec:protocol}
+%=====================================================================
+
+\subsection{Schedule and predictor}
+
+The load parameter \(\alpha\) runs through a schedule \(\alpha_0,\alpha_1,\dots\); under stress
+control \(\alpha\) is the prescribed stress component (\(P_{12}\), \(P_{22}\), \(P_{11}\),
+\(\sigma_{12}\), \(\sigma_{22}\) or \(\sigma_{11}\)). At each step a predictor is applied before
+relaxation. Strain-driven cell components follow the schedule from the relaxed initial cell
+\(\Fb^{(0)}\). Stress-driven components are extrapolated from the last two converged cells,
+\begin{equation}
+  \bar F^{\mathrm{pred}}_{ij}=\bar F_{ij}^{(n)}+\frac{\Delta\alpha_{n+1}}{\Delta\alpha_n}
+  \big(\bar F_{ij}^{(n)}-\bar F_{ij}^{(n-1)}\big),
+\end{equation}
+but only when step \(n\) was smooth (no reconnection and no strain burst); otherwise the predictor
+is the last converged cell. The relaxation then follows (Sections~\ref{sec:nominal}--\ref{sec:cauchy}),
+followed by the cascade of Delaunay reconnections of the mesh, each accepted only if it lowers the
+energy functional being minimized, i.e.\ \(H\) under stress control.
+
+\subsection{Initial relaxation at a prescribed shear strain}
+
+A perfect periodic crystal under stress control loads elastically until the limit load, where the
+cell shears away without an intermediate defected state. To start the stress-controlled run from a
+dislocated microstructure, the first step can be performed under \emph{strain} control at a
+non-zero shear \(\bar F_{12}=\gamma_0\), with positional noise, together with the reconnection
+cascade. Beyond the homogeneous instability of the lattice (for the potentials studied here,
+\(\gamma_0\gtrsim0.14\)) and in a sufficiently large cell, this relaxation nucleates a population of
+dislocations. The relaxed shear stress \(\sigma_0\) of that state is then measured, and the stress
+schedule is \(\alpha_k=\sigma_0+k\,\Delta\alpha\), \(k\geq1\), so that the first stress step
+continues from the stress the defected crystal already carries, with no jump in load.
+
+The sign of \(\sigma_0\) is not controlled. Each dislocation that sweeps the cell shears it by about
+\(b/L\), so the plastic strain left by the relaxation comes in coarse increments, and \(\sigma_0\) may
+come out negative. In a \(150\times150\) cell at \(\gamma_0=0.14\) we found \(\sigma_0=-0.0048\), with
+126 dislocations. The loading then starts with reverse loading, during which reverse avalanches
+(\(\Delta\varepsilon<0\)) occur. Alternatively, the defected state is first relaxed to zero stress,
+\(\sigb=\mathbf 0\) in all three components (a stress-controlled relaxation with
+\(\Pt=\mathbf 0\)), and the schedule is \(\alpha_k=k\,\Delta\alpha\). Both choices are available. The
+second gives every run the same starting load, independently of \(\sigma_0\); the zero-stress step is
+not counted as a load step and cannot be flagged as an avalanche.
+
+\subsection{Strain bursts}
+
+Under strain control an avalanche appears as a drop of stress at fixed strain. Under force control
+the stress is fixed and an avalanche appears instead as a burst of the work-conjugate strain
+\(\varepsilon\) (Table~\ref{tab:presets}; for boundary tractions, Eq.~\eqref{eq:epsT} below). Let
+\(\Delta\varepsilon_{\mathrm{el}}/\Delta\alpha_{\mathrm{el}}\) be the secant compliance of the last
+step that showed no burst. Step \(n\) is flagged as an avalanche when
+\begin{equation}
+  \frac{|\Delta\varepsilon_n|-|\Delta\varepsilon^{\mathrm{el}}_n|}{|\Delta\varepsilon^{\mathrm{el}}_n|}
+  \ \ge\ \theta,
+  \qquad
+  \Delta\varepsilon^{\mathrm{el}}_n=\Delta\varepsilon_{\mathrm{el}}\,
+  \frac{\Delta\alpha_n}{\Delta\alpha_{\mathrm{el}}},
+  \label{eq:burst}
+\end{equation}
+and, when remeshing is enabled, the reconnection cascade of the step was accepted and lowered the
+enthalpy below its value after the continuous relaxation. The left-hand side of \eqref{eq:burst}
+is the fractional strain burst, the force-control analogue of the fractional stress drop.
+
+Two measures of the size of an avalanche are available at every flagged step: the strain jump
+\(\Delta\varepsilon_n\), and the enthalpy change of the reconnection cascade at fixed load,
+\(\Delta\Pi_n=H_{\mathrm{after\ cascade}}-H_{\mathrm{before\ cascade}}<0\) (with the correction
+\eqref{eq:cauchyDPi} under Cauchy control). Both are recorded for each load step, together with the
+avalanche flag, so that size distributions can be built from either.
+
+\paragraph{Energy reported.}
+Under force control the functional minimized is \(H=E_{\mathrm{el}}-W_{\mathrm{ext}}\), which
+decreases monotonically along a loading path dominated by the work term. The elastic energy
+\(E_{\mathrm{el}}\) is reported separately: it drops when dislocations annihilate or leave the
+cell and builds up as stress is stored.
+
+\subsection{Limit load}
+\label{sec:limit}
+
+Past the limit load (the yield or Peierls stress of the current microstructure) the dead load has
+no equilibrium, and the relaxation produces a runaway configuration. The step is declared a
+runaway when, within one load step, a stress-driven cell component changes by more than
+\(\Delta F_{\max}=0.5\) (periodic cells), or any atom moves by more than \(0.35\max(L_x,L_y)\)
+(finite specimens, Section~\ref{sec:traction}). The guard is checked after the continuous
+relaxation, in which case the reconnection cascade is skipped, and again after the cascade. When it
+triggers, the configuration, mesh and cell at the start of the step are restored and written as
+the final result, and the limit load is reported as lying in \((\alpha_{n-1},\alpha_n]\).
+
+\subsection{Stability of the relaxed states}
+\label{sec:stability}
+
+Under strain control the cell is fixed and a relaxed state is stable when the atomic stiffness
+\(\mathbf K^{xx}\) is positive definite on the fluctuations (the two rigid translations excluded).
+The code monitors this through the lowest eigenvalues of \(\mathbf K^{xx}\), computed by
+shift-invert Lanczos at selected steps; \(\lambda_{\min}(\mathbf K^{xx})\to0\) announces an
+avalanche, and near a saddle-node \(\lambda_{\min}^2\) is linear in the distance to the critical
+load.
+
+Under stress control the free cell components are unknowns as well, and the stability condition
+is that the Hessian \eqref{eq:Kfull} of the enthalpy be positive definite. With \(\mathbf K^{ww}\)
+positive definite, this holds if and only if the Schur complement \(A_0\,\mathbb K_{\mathrm{eff}}\)
+of \eqref{eq:Keff} is positive definite as well. A relaxed state can therefore lose stability in two
+ways:
+\begin{itemize}
+\item locally, \(\lambda_{\min}(\mathbf K^{ww})\to0\): an atomic mode softens at fixed cell (nucleation
+or depinning). The result is an avalanche, a strain burst after which a new equilibrium exists at
+the same load;
+\item globally, \(\lambda_{\min}(\mathbb K_{\mathrm{eff}})\to0\) while \(\mathbf K^{ww}\) stays positive
+definite: the relaxed cell has no stiffness left along some combination of the free components.
+This is the limit load of Section~\ref{sec:limit}, beyond which no equilibrium exists nearby.
+\end{itemize}
+The fixed-cell eigenvalue \(\lambda_{\min}(\mathbf K^{xx})\) detects only the first. A soft atomic
+mode that couples to the cell strain also lowers \(\mathbb K_{\mathrm{eff}}\), since the relaxation
+term in \eqref{eq:Keff} grows like \(1/\lambda_{\min}(\mathbf K^{ww})\).
+
+\paragraph{Cell stability matrix.}
+At a relaxed state, the free components satisfy \(\mathbf R(\Fb)=\Pb(\Fb)-\Pt(\Fb)=\mathbf 0\) on
+\(\mathcal S\), with the atoms relaxed. Its Jacobian is
+\begin{equation}
+  \mathbf J=\mathbb K_{\mathrm{eff}}-\mathbb L,\qquad
+  \mathbb L=\frac{\partial\Pt}{\partial\Fb}\Big|_{\mathcal S\times\mathcal S},
+  \label{eq:Jcell}
+\end{equation}
+a matrix of size \(|\mathcal S|\le3\). Under nominal control \(\mathbb L=\mathbf 0\) and
+\(\mathbf J=\mathbb K_{\mathrm{eff}}\) is symmetric. Under Cauchy control \(\mathbb L\) is the load
+stiffness of the follower load, of order \(|\sigt|\), and \(\mathbf J\) is not symmetric. In both cases
+the equilibrium branch folds when a real eigenvalue of \(\mathbf J\) crosses zero, and we monitor
+\begin{equation}
+  \lambda_{\mathrm{box}}=\min\operatorname{Re}\operatorname{eig}\mathbf J .
+  \label{eq:lambdabox}
+\end{equation}
+Under Cauchy control \(\det\mathbf J=0\) is also the point where \(\mathbb K_{\mathrm{eff}}^{-1}\mathbb L\)
+has the eigenvalue \(1\), i.e.\ where the fixed-point iteration of Algorithm~\ref{alg:cauchy} stops
+contracting (Eq.~\eqref{eq:rho}). \(\mathbf J\) also gives the slope of the load--strain curve. Write
+the target as \(\Pt(\Fb,\alpha)\), with \(\partial\Pt/\partial\alpha=\mathbf e_r\otimes\mathbf e_c\) for a
+nominal preset controlling \(\bar P_{rc}\) and \(\partial\Pt/\partial\alpha=\bar J\,\bm\Sigma\,\Fb^{-\mathsf T}\)
+for a Cauchy preset with \(\sigt=\alpha\bm\Sigma\) (from \(\Pt=\bar J\sigt\Fb^{-\mathsf T}\), linear in
+\(\alpha\) at fixed \(\Fb\)). Along the equilibrium path \(\Fb(\alpha)\) the residual
+\(\mathbf R(\Fb(\alpha),\alpha)=\Pb(\Fb(\alpha))-\Pt(\Fb(\alpha),\alpha)\) vanishes identically, with
+\(\Pb\) the relaxed stress (atoms at equilibrium). Its total derivative is therefore zero:
+\[
+  \mathbf 0=\frac{\mathrm d\mathbf R}{\mathrm d\alpha}
+  =\Big(\frac{\partial\Pb}{\partial\Fb}-\frac{\partial\Pt}{\partial\Fb}\Big)\frac{\mathrm d\Fb}{\mathrm d\alpha}
+   -\frac{\partial\Pt}{\partial\alpha}
+  =\mathbf J\,\frac{\mathrm d\Fb}{\mathrm d\alpha}-\frac{\partial\Pt}{\partial\alpha},
+\]
+using \(\partial\Pb/\partial\Fb=\mathbb K_{\mathrm{eff}}\) from \eqref{eq:Keff}. Solving for the cell
+rate, and inverting its controlled component,
+\begin{equation}
+  \frac{\mathrm d\Fb}{\mathrm d\alpha}=\mathbf J^{-1}\frac{\partial\Pt}{\partial\alpha},\qquad
+  \frac{\mathrm d\alpha}{\mathrm d\varepsilon}=\Big[\Big(\mathbf J^{-1}\frac{\partial\Pt}{\partial\alpha}\Big)_{rc}\Big]^{-1},
+  \label{eq:pathtangent}
+\end{equation}
+with \(\varepsilon=\bar F_{rc}\) the controlled cell component (Table~\ref{tab:presets}).
+
+\paragraph{Evaluation.}
+Because \(\x=\Fb\w\) is linear in \(\w\), with \(\mathbf D=\Fb\otimes\I_n\) we have
+\(\mathbf K^{ww}=\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D\) and
+\(\mathbf K^{wF}=\mathbf D^{\mathsf T}\mathbf K^{xF}\). Here \(\mathbf K^{xF}\) collects the first terms of
+\eqref{eq:KFw}, \(\sum_eA_e\,\mathbb A_e:(\partial\F_e/\partial\x)\otimes(\partial\F_e/\partial\Fb)\). The
+geometric term of \eqref{eq:KFw} is the atomic force and vanishes at equilibrium (see
+\eqref{eq:KxF}). Since \(\det\Fb\neq0\), \(\mathbf D\) is invertible and
+\((\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D)^{-1}=\mathbf D^{-1}(\mathbf K^{xx})^{-1}\mathbf D^{-\mathsf T}\), so the
+cell kinematics cancel from the relaxation term:
+\[
+  \mathbf K^{Fw}(\mathbf K^{ww})^{-1}\mathbf K^{wF}
+  =(\mathbf K^{xF})^{\mathsf T}\mathbf D\,\mathbf D^{-1}(\mathbf K^{xx})^{-1}\mathbf D^{-\mathsf T}\mathbf D^{\mathsf T}\mathbf K^{xF}
+  =(\mathbf K^{xF})^{\mathsf T}(\mathbf K^{xx})^{-1}\mathbf K^{xF}.
+\]
+Hence
+\begin{equation}
+  A_0\,\mathbb K_{\mathrm{eff}}=\mathbf K^{FF}-(\mathbf K^{xF})^{\mathsf T}(\mathbf K^{xx})^{+}\mathbf K^{xF},
+  \label{eq:KeffX}
+\end{equation}
+which needs one sparse factorization of \(\mathbf K^{xx}\) and \(|\mathcal S|\) solves. The two
+translations span the null space of \(\mathbf K^{xx}\), and the columns of \(\mathbf K^{xF}\) are
+orthogonal to it (the forces on a periodic cell sum to zero). The pseudo-inverse in
+\eqref{eq:KeffX} is therefore obtained exactly by pinning one atom. Unlike the preconditioner of
+Section~\ref{sec:precond}, the element tangents are not projected, and the factorization is an
+\(\mathbf L\mathbf D\mathbf L^{\mathsf T}\) decomposition, valid for indefinite matrices. \(\mathbb L\) is
+the derivative of \(\bar J\sigt\Fb^{-\mathsf T}\) with respect to the free components and is evaluated
+by central differences. Whenever \(\lambda_{\min}(\mathbf K^{xx})\) is computed, the code also
+evaluates \(\lambda_{\mathrm{box}}\), \(\varepsilon\) and \(\mathrm d\alpha/\mathrm d\varepsilon\). The
+refinement rule of the monitor also follows \(\lambda_{\mathrm{box}}\), so the approach
+\(\lambda_{\mathrm{box}}^2\propto\alpha_c-\alpha\) to the limit load is resolved step by step.
+
+\paragraph{Examples.}
+For a perfect \(20\times20\) square cell under nominal shear (\(\Delta\alpha=0.005\), all three
+components free, normal stresses zero), \(\lambda_{\mathrm{box}}\) falls from \(2.18\) at
+\(\alpha=0.25\) to \(0.97\), \(0.59\) and \(0.31\) at \(\alpha=0.300\), \(0.310\) and \(0.315\). The
+runaway guard places the limit load in \((0.315,0.320]\). Extrapolating \(\lambda_{\mathrm{box}}^2\)
+linearly through the last two states gives \(\alpha_c\approx0.317\). On the elastic segments of a
+defected \(40\times40\) cell under Cauchy shear, \(\mathrm d\alpha/\mathrm d\varepsilon\) from
+\eqref{eq:pathtangent} agrees with the secant slope of the logged curve to better than \(1\%\).
+\(\lambda_{\mathrm{box}}\) stays between \(2.1\) and \(3.5\) up to \(\sigma_{xy}=0.118\) (no limit
+load), while the avalanches are announced by \(\lambda_{\min}(\mathbf K^{xx})\).
+
+%=====================================================================
+\section{Finite specimens: boundary tractions and force grips}
+\label{sec:traction}
+%=====================================================================
+
+\subsection{Dead-load tractions}
+
+For a finite specimen with boundary \(\partial\Omega_0\), let \(\Gamma_t\subseteq\partial\Omega_0\)
+carry the nominal traction \(\mathbf t(\alpha)=\alpha\,\mathbf t_0\), measured per unit reference
+length and with fixed direction (dead load). The boundary edges of the reference mesh are the edges
+belonging to exactly one triangle; each carries an outward unit normal \(\mathbf n\), oriented away
+from the opposite vertex of its triangle. For linear elements and a traction constant on the edge,
+the consistent nodal forces are half the edge resultant at each end, so
+\begin{equation}
+  \f_{0,a}=\sum_{\text{edges } (ab)\subset\Gamma_t}\frac{L_{ab}}{2}\,\mathbf t_0(\text{edge}),
+  \label{eq:f0}
+\end{equation}
+with \(L_{ab}\) the reference edge length. Four traction distributions are available:
+\begin{itemize}
+  \item Cartesian: \(\mathbf t_0=(t_x,t_y)\);
+  \item radial outward or inward: \(\mathbf t_0=\pm\mathbf n\) on outer contours and
+        \(\mp\mathbf n\) on hole faces, i.e.\ always away from (toward) the pivot of the contour;
+  \item circumferential: \(\mathbf t_0=\mathbf e_z\times\mathbf r/|\mathbf r|\), with
+        \(\mathbf r\) the vector from the pivot of the contour (the specimen centre, or the centre
+        of the hole) to the edge midpoint (torsion).
+\end{itemize}
+When the loaded region is an edge strip (top, bottom, left, right), only the boundary edges whose
+normal points in the direction of that face (\(\mathbf n\cdot\mathbf d\geq\tfrac12\)) are loaded;
+the short side edges that a thick strip captures near the corners stay traction-free. Since
+\(\mathbf n\) is the reference normal, the radial loading is a dead load, not a follower pressure.
+
+The potential energy is
+\begin{equation}
+  \Pi(\x;\alpha)=E_{\mathrm{el}}(\x)-\alpha\sum_a\f_{0,a}\cdot(\x_a-\X_a),
+  \label{eq:Pi}
+\end{equation}
+summed over the atoms with free degrees of freedom, so that equilibrium of each free atom reads
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial\x_a}=\alpha\,\f_{0,a}.
+\end{equation}
+On atoms with one constrained component (rollers) the constrained component of the gradient is
+masked after the external force has been added, so that the reaction is carried by the support.
+As for the periodic cell, \(\nabla^2\Pi=\nabla^2E_{\mathrm{el}}\) and the stability under dead load is
+that of the elastic Hessian on the free degrees of freedom.
+
+\paragraph{Rigid-body modes and the isostatic anchor.}
+If the specimen has no kinematic boundary condition at all, \(\Pi\) is invariant under the
+rigid-body motions \(\x_a\mapsto\mathbf Q\x_a+\mathbf c\) only if the load is self-equilibrated,
+\begin{equation}
+  \mathbf R=\sum_a\f_{0,a}=\mathbf 0,\qquad
+  M=\sum_a(\X_a-\X_c)\times\f_{0,a}=0 .
+\end{equation}
+Otherwise \(\Pi\) is unbounded below and the problem has no solution; such a load is rejected
+(with tolerances \(|\mathbf R|\le10^{-10}\sum_a|\f_{0,a}|\) and
+\(|M|\le10^{-10}\,\max(L_x,L_y)\sum_a|\f_{0,a}|\)). A self-equilibrated load still leaves the three
+rigid-body modes as zero-energy directions; they are removed by a minimal isostatic anchor: the
+atom closest to the centroid is fixed (\(u_x=u_y=0\)), and the atom on the same lattice row that
+lies farthest from it has \(u_y=0\), which removes the rotation. Because the load is balanced, the
+anchor reactions vanish at equilibrium and the anchor does not perturb the solution.
+
+Supports can also leave some rigid-body modes free. Rollers hold one displacement component, so a
+translation along \(x\) (\(y\)) remains free when no atom has \(u_x\) (\(u_y\)) prescribed. A rotation
+about \((x_0,y_0)\) remains free when every atom with \(u_x\) prescribed lies on the line \(y=y_0\) and
+every atom with \(u_y\) prescribed on \(x=x_0\), for instance a single row of rollers on one edge, or
+a single pinned atom. The load must then have no component along the free modes: zero resultant
+along a free translation, and zero moment about \((x_0,y_0)\) when the rotation is free. Such a
+load is rejected with the same tolerances.
+
+\paragraph{Conjugate strain.}
+The work-conjugate strain of the dead load is
+\begin{equation}
+  \varepsilon=\frac{1}{A_{\mathrm{s}}}\sum_a\f_{0,a}\cdot(\x_a-\X_a),
+  \label{eq:epsT}
+\end{equation}
+where \(A_{\mathrm s}=\sum_e|T_e|\) is the reference solid area. It satisfies
+\(\alpha\,\mathrm d\varepsilon=\mathrm dW_{\mathrm{ext}}/A_{\mathrm s}\), so \((\alpha,\varepsilon)\) is a
+work-conjugate pair. For a rectangle \(L_x\times L_y\) loaded by \(\mathbf t_0=\mathbf e_y\) on the
+top face and \(-\mathbf e_y\) on the bottom face, the external work per unit \(\alpha\) is
+\(L_x(u^{\mathrm{top}}_y-u^{\mathrm{bot}}_y)\) and \(\varepsilon=(u^{\mathrm{top}}_y-u^{\mathrm{bot}}_y)/L_y\)
+reduces to the engineering strain. Strain bursts are detected with \eqref{eq:burst}.
+
+\subsection{Rigid load-controlled grips}
+
+A rigid grip makes all atoms of a region \(\mathcal G\) move together, \(\x_a=\X_a+\U\) for
+\(a\in\mathcal G\), with the common displacement \(\U\) an additional unknown, and applies the total
+force \(\alpha\mathbf F_0\) with \(\mathbf F_0=L_{\mathrm{face}}\,(t_x,t_y)\), \(L_{\mathrm{face}}\)
+being the reference length of the grip's boundary edges facing outward. The potential and the
+equilibrium of the grip are
+\begin{equation}
+  \Pi(\x,\U;\alpha)=E_{\mathrm{el}}(\x,\U)-\alpha\,\mathbf F_0\cdot\U,\qquad
+  \frac{\partial\Pi}{\partial\U}=\sum_{a\in\mathcal G}\frac{\partial E_{\mathrm{el}}}{\partial\x_a}
+  -\alpha\mathbf F_0=\mathbf 0 ,
+\end{equation}
+i.e.\ the resultant of the internal forces on the gripped atoms balances the applied force,
+while the distribution of the load over the grip is whatever keeps the grip rigid. A component of
+\(\U\) that carries no load can either slide freely or be held at its current value. A grip only
+transmits the load, so another kinematic support (clamped, prescribed, affine or roller) is
+required to react it. The conjugate strain is \(\varepsilon=\mathbf F_0\cdot\U/A_{\mathrm s}\).
+
+Compared with distributed dead-load tractions, the grip imposes a uniform displacement of the
+loaded face, as in a mechanical test, and is not sensitive to the local compliance of the face
+near the corners.
+
+\subsection{Predictor}
+
+Pure force control has no affine predictor. The free atoms (and the grip displacements) are
+extrapolated from the last two converged states,
+\(\x^{\mathrm{pred}}=\x^{(n)}+\frac{\Delta\alpha_{n+1}}{\Delta\alpha_n}(\x^{(n)}-\x^{(n-1)})\), when
+step \(n\) was smooth, with roller components extrapolated only along their free direction.
+
+%=====================================================================
+\section{Newton-type alternatives for the periodic cell}
+\label{sec:newton}
+%=====================================================================
+
+The method of Sections~\ref{sec:nominal}--\ref{sec:cauchy} uses first derivatives only: the cell
+components are additional unknowns of an L-BFGS minimization, and the Cauchy target is reached by a
+fixed-point iteration on the nominal target. This section sets out Newton-type alternatives that use
+second derivatives of the energy, and compares them with the present method. Variant C, the
+stiffness-preconditioned minimizer, is implemented and is described in detail in
+Section~\ref{sec:precond}; variant A with the reference tangent was implemented in an earlier
+stress-controlled example of the code. The others are options.
+
+\subsection{Second derivatives of the cell energy}
+
+Let \(\mathbb A_e=\partial^2W/\partial\F\partial\F\) at \(\F_e\), with components
+\(\mathbb A_{e,iJkL}\). From \(\F_e=\Fb\G_e\) (Eq.~\eqref{eq:FeG}) and
+\(\partial\F_e/\partial w_{a,k}=\Fb\,\mathbf e_k\otimes\nabla N^e_a\), the blocks of the Hessian of
+\(E_{\mathrm{el}}(\w,\Fb)\) are
+\begin{align}
+  K^{FF}_{ij,kl}&=\frac{\partial^2E_{\mathrm{el}}}{\partial\bar F_{ij}\,\partial\bar F_{kl}}
+   =\sum_e A_e\,\mathbb A_{e,iJkL}\,G_{e,jJ}\,G_{e,lL},
+  \label{eq:KFF}\\
+  K^{Fw}_{ij,ak}&=\frac{\partial^2E_{\mathrm{el}}}{\partial\bar F_{ij}\,\partial w_{a,k}}
+   =\sum_{e\ni a}A_e\Big(\mathbb A_{e,iJmL}\,\bar F_{mk}\,\nabla N^e_{a,L}\,G_{e,jJ}
+     +P_{e,iJ}\,\delta_{jk}\,\nabla N^e_{a,J}\Big),
+  \label{eq:KFw}\\
+  \mathbf K^{ww}_{ab}&=\frac{\partial^2E_{\mathrm{el}}}{\partial\w_a\,\partial\w_b}
+   =\Fb^{\mathsf T}\,\mathbf K^{xx}_{ab}\,\Fb ,
+  \label{eq:Kww}
+\end{align}
+where \(\mathbf K^{xx}\) is the usual assembled stiffness with respect to positions. The second
+term of \eqref{eq:KFw} is geometric: it comes from the dependence of \(\G_e\) on \(\w\). The
+elastic Hessian with respect to \(\w\) and the free components of \(\Fb\) is the block matrix
+\begin{equation}
+  \mathbf K=\begin{pmatrix}\mathbf K^{ww}&\mathbf K^{wF}\\ \mathbf K^{Fw}&\mathbf K^{FF}\end{pmatrix},
+  \qquad \mathbf K^{wF}=(\mathbf K^{Fw})^{\mathsf T}.
+  \label{eq:Kfull}
+\end{equation}
+
+\paragraph{Derivation of \eqref{eq:KFF}--\eqref{eq:Kww}.}
+Lower-case indices refer to the current frame, upper-case \(J,L\) to the reference frame, and
+repeated indices are summed. By definition \(P_{e,iJ}=\partial W/\partial F_{iJ}\) and
+\(\mathbb A_{e,iJkL}=\partial P_{iJ}/\partial F_{kL}\) at \(\F_e\), so a change of \(\F_e\) changes the
+stress by \(\mathrm dP_{e,iJ}=\mathbb A_{e,iJkL}\,\mathrm dF_{e,kL}\). The tangent has the major symmetry
+\(\mathbb A_{e,iJkL}=\mathbb A_{e,kLiJ}\) (equality of mixed partials of \(W\)). We start from the
+first derivatives, in components (Eqs.~\eqref{eq:dEdF} and \eqref{eq:E}):
+\begin{equation}
+  \frac{\partial E_{\mathrm{el}}}{\partial\bar F_{ij}}=\sum_eA_e\,P_{e,iJ}\,G_{e,jJ},\qquad
+  \frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}=\sum_{e\ni a}A_e\,P_{e,iJ}\,\nabla N^e_{a,J}.
+  \label{eq:firstcomp}
+\end{equation}
+Only two derivatives of the kinematics are needed. At fixed \(\w\), Eq.~\eqref{eq:dFedFb} gives
+\(\partial F_{e,mL}/\partial\bar F_{kl}=\delta_{mk}G_{e,lL}\). At fixed \(\Fb\), from \eqref{eq:FeG},
+\begin{equation}
+  \frac{\partial G_{e,jJ}}{\partial w_{a,k}}=\delta_{jk}\,\nabla N^e_{a,J},\qquad
+  \frac{\partial F_{e,mL}}{\partial w_{a,k}}=\bar F_{mn}\frac{\partial G_{e,nL}}{\partial w_{a,k}}
+  =\bar F_{mk}\,\nabla N^e_{a,L}\qquad(a\in e).
+  \label{eq:dGdw}
+\end{equation}
+
+\emph{\(\mathbf K^{FF}\).} Differentiate the first expression in \eqref{eq:firstcomp} with respect
+to \(\bar F_{kl}\) at fixed \(\w\). Only \(\Pk_e\) changes, because \(\G_e\) depends on \(\w\) alone:
+\[
+  \frac{\partial^2E_{\mathrm{el}}}{\partial\bar F_{ij}\,\partial\bar F_{kl}}
+  =\sum_eA_e\,\frac{\partial P_{e,iJ}}{\partial\bar F_{kl}}\,G_{e,jJ}
+  =\sum_eA_e\,\mathbb A_{e,iJmL}\,\delta_{mk}\,G_{e,lL}\,G_{e,jJ}
+  =\sum_eA_e\,\mathbb A_{e,iJkL}\,G_{e,jJ}\,G_{e,lL},
+\]
+which is \eqref{eq:KFF}. It is symmetric under \((ij)\leftrightarrow(kl)\) by the major symmetry of
+\(\mathbb A_e\).
+
+\emph{\(\mathbf K^{Fw}\).} Differentiate the same expression with respect to \(w_{a,k}\) at fixed
+\(\Fb\). Now both factors depend on the atoms, and the product rule gives two terms:
+\[
+  \frac{\partial^2E_{\mathrm{el}}}{\partial\bar F_{ij}\,\partial w_{a,k}}
+  =\sum_{e\ni a}A_e\Big(\underbrace{\mathbb A_{e,iJmL}\,\bar F_{mk}\,\nabla N^e_{a,L}}_{\partial P_{e,iJ}/\partial w_{a,k}}\,G_{e,jJ}
+   +P_{e,iJ}\,\underbrace{\delta_{jk}\,\nabla N^e_{a,J}}_{\partial G_{e,jJ}/\partial w_{a,k}}\Big),
+\]
+which is \eqref{eq:KFw}. The sum runs over the triangles that contain \(a\), the only ones whose
+\(\G_e\) depends on \(\w_a\). By the second expression in \eqref{eq:firstcomp}, the geometric term is
+\(\delta_{jk}\,\partial E_{\mathrm{el}}/\partial x_{a,i}\), the force on atom \(a\); it vanishes at atomic
+equilibrium. The first term is \(\bar F_{mk}K^{xF}_{am,ij}\) with
+\begin{equation}
+  K^{xF}_{am,ij}=\frac{\partial}{\partial\bar F_{ij}}\Big|_{\w}\frac{\partial E_{\mathrm{el}}}{\partial x_{a,m}}
+  =\sum_{e\ni a}A_e\,\mathbb A_{e,mLiJ}\,\nabla N^e_{a,L}\,G_{e,jJ},
+  \label{eq:KxF}
+\end{equation}
+the change of the nodal forces under an affine change of the cell (obtained by differentiating the
+second expression in \eqref{eq:firstcomp} at fixed \(\w\), and using the major symmetry). With
+\(\mathbf D=\Fb\otimes\I_n\), the map \(\delta\w\mapsto\delta\x=\Fb\,\delta\w\) on all atoms, this reads
+\(\mathbf K^{wF}=\mathbf D^{\mathsf T}\mathbf K^{xF}\) at equilibrium.
+
+\emph{\(\mathbf K^{ww}\).} At fixed \(\Fb\), \(\x_a=\Fb\w_a\) is linear in \(\w\). Differentiating
+\eqref{eq:dEdw} once more,
+\[
+  \frac{\partial^2E_{\mathrm{el}}}{\partial w_{a,j}\,\partial w_{b,l}}
+  =\bar F_{ij}\,\frac{\partial}{\partial w_{b,l}}\frac{\partial E_{\mathrm{el}}}{\partial x_{a,i}}
+  =\bar F_{ij}\,\frac{\partial^2E_{\mathrm{el}}}{\partial x_{a,i}\,\partial x_{b,k}}\,\bar F_{kl}
+  =\big(\Fb^{\mathsf T}\mathbf K^{xx}_{ab}\Fb\big)_{jl},
+\]
+which is \eqref{eq:Kww}. There is no geometric term because the map \(\w\mapsto\x\) is linear; for all
+atoms at once, \(\mathbf K^{ww}=\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D\).
+
+\paragraph{Relaxed and Cauchy--Born tangents.}
+Eliminating the atoms at equilibrium gives the relaxed (effective) tangent of the cell, the Schur
+complement
+\begin{equation}
+  A_0\,\mathbb K_{\mathrm{eff}}=\mathbf K^{FF}-\mathbf K^{Fw}\,(\mathbf K^{ww})^{-1}\,\mathbf K^{wF},
+  \qquad \mathrm d\Pb=\mathbb K_{\mathrm{eff}}:\mathrm d\Fb\ \ \text{at}\ \
+  \partial E_{\mathrm{el}}/\partial\w=\mathbf 0 .
+  \label{eq:Keff}
+\end{equation}
+To derive \eqref{eq:Keff}, follow a family of atomic equilibria \(\w(\Fb)\), on which
+\(\mathbf g(\w,\Fb)=\partial E_{\mathrm{el}}/\partial\w=\mathbf 0\). Differentiating this identity,
+\(\mathbf K^{ww}\,\mathrm d\w+\mathbf K^{wF}\,\mathrm d\Fb=\mathbf 0\), so
+\(\mathrm d\w=-(\mathbf K^{ww})^{-1}\mathbf K^{wF}\,\mathrm d\Fb\). The nominal stress
+\(A_0\Pb=\partial E_{\mathrm{el}}/\partial\Fb\) evaluated on the family changes by
+\[
+  A_0\,\mathrm d\Pb=\mathbf K^{FF}\,\mathrm d\Fb+\mathbf K^{Fw}\,\mathrm d\w
+  =\big(\mathbf K^{FF}-\mathbf K^{Fw}(\mathbf K^{ww})^{-1}\mathbf K^{wF}\big)\,\mathrm d\Fb .
+\]
+The relaxed energy \(E^\ast(\Fb)=E_{\mathrm{el}}(\w(\Fb),\Fb)\) has
+\(\mathrm dE^\ast/\mathrm d\Fb=\partial E_{\mathrm{el}}/\partial\Fb+(\partial E_{\mathrm{el}}/\partial\w)\,
+\mathrm d\w/\mathrm d\Fb=A_0\Pb\) (the second term vanishes at equilibrium; this is the Hill--Mandel
+statement above). Hence \(A_0\mathbb K_{\mathrm{eff}}=\mathrm d^2E^\ast/\mathrm d\Fb^2\) is symmetric. Here
+\((\mathbf K^{ww})^{-1}\) acts on the complement of the two rigid translations of \(\w\), which span the
+null space of \(\mathbf K^{ww}\); the columns of \(\mathbf K^{wF}\) are orthogonal to them because the
+forces on a periodic cell sum to zero for every \(\Fb\).
+\(\mathbf K^{FF}/A_0\) alone is the affine (unrelaxed) tangent. For a homogeneously deformed lattice all
+triangles share the same \(\F_e\), \(\Pk_e\) and \(\mathbb A_e\). A periodic fluctuation \(\delta\w\)
+changes the element gradients by \(\delta\G_e=\sum_{a\in e}\delta\w_a\otimes\nabla N^e_a\), whose
+area-weighted sum vanishes,
+\(\sum_eA_e\,\delta\G_e=\sum_a\delta\w_a\otimes\big(\sum_{e\ni a}A_e\nabla N^e_a\big)=\mathbf 0\): for every
+node of a periodic mesh, \(\sum_{e\ni a}A_e\nabla N^e_a=\mathbf 0\) (the outward normals of the closed
+patch around \(a\) sum to zero). With uniform \(\mathbb A_e\), \(\G_e\) and \(\Pk_e\), both terms of
+\eqref{eq:KFw} contract against this sum, so \(\mathbf K^{Fw}\delta\w=\mathbf 0\), the relaxation term
+vanishes, and \(\mathbb K_{\mathrm{eff}}\) reduces to
+the Cauchy--Born tangent \(\mathbb A(\Fb\F_0)\), the quantity computed by the acoustic-tensor
+routines of the code (\(\F_0\) maps \(\mathbb Z^2\) to the lattice). In a cell with defects, \(\mathbf
+K^{ww}\) is positive definite at a stable equilibrium, so the relaxation term is positive
+semidefinite and
+\begin{equation}
+  \mathbb K_{\mathrm{eff}}\ \preceq\ \mathbf K^{FF}/A_0 :
+  \label{eq:voigt}
+\end{equation}
+the affine tangent is always stiffer than the relaxed one, and the difference grows with the
+defect density. At the limit load \(\mathbb K_{\mathrm{eff}}\) becomes singular.
+
+The acoustic tensor \(Q_{ik}(\mathbf n)=\mathbb C_{ijkl}n_jn_l\) built from the spatial Cauchy--Born
+tangent \(\mathbb C\) gives the local criterion for loss of strong ellipticity of the homogeneous
+lattice, \(\min_{\mathbf n}\det\mathbf Q(\mathbf n)=0\). It approximates the onset of homogeneous
+nucleation in a perfect crystal. The stability of a defected cell under stress control is the
+global condition that \(\mathbf K\) of \eqref{eq:Kfull} be positive definite. Under a Cauchy target
+this condition is modified by the load stiffness \(-A_0\,\mathbb L\),
+\(\mathbb L=\partial\Pt/\partial\Fb\).
+
+\subsection{Variant A: Newton iteration on the cell only (nested)}
+
+The atoms are relaxed at fixed \(\Fb\), and the cell is updated by a Newton step on the macroscopic
+residual \(\mathbf r=\Pb-\Pt(\Fb)\) (components in \(\mathcal S\)):
+\begin{equation}
+  \Fb_{k+1}=\Fb_k-\mathbb T^{-1}:\mathbf r_k ,
+  \label{eq:boxnewton}
+\end{equation}
+followed by an affine map of the atoms by \(\Fb_{k+1}\Fb_k^{-1}\) and a new relaxation. The exact
+Jacobian of \(\mathbf r\) is \(\mathbb J=\mathbb K_{\mathrm{eff}}-\mathbb L\). Linearizing about the
+solution, the error obeys \(\mathbf e_{k+1}=(\mathbb I-\mathbb T^{-1}\mathbb J)\,\mathbf e_k\). The choice of
+\(\mathbb T\) decides the convergence:
+\begin{itemize}
+  \item \(\mathbb T\) = Cauchy--Born tangent at the reference state (\(\C=\I\)), used with an
+    under-relaxation factor of \(0.1\) and a cap of \(0.01\) on the strain correction in the earlier
+    stress-controlled example of the code. The tangent does not follow the state, and the
+    iteration converges only linearly, under strong damping.
+  \item \(\mathbb T\) = Cauchy--Born tangent at the current cell,
+    \(\mathbb A(\Fb_k\F_0)\) with the reduced metric. This is exact for a perfect crystal
+    (quadratic convergence). In a defected cell \eqref{eq:voigt} makes \(\mathbb T\) too stiff: the
+    iteration converges linearly with ratio
+    \(1-\lambda_{\min}(\mathbb T^{-1}\mathbb J)\), which tends to \(1\) as the limit load is
+    approached and \(\mathbb K_{\mathrm{eff}}\to0\).
+  \item \(\mathbb T=\mathbb J\), with \(\mathbb K_{\mathrm{eff}}\) from \eqref{eq:Keff}. The Schur
+    complement needs three solves with \(\mathbf K^{ww}\) (one per free component), which one sparse
+    Cholesky factorization provides. Convergence is quadratic and the Cauchy load stiffness is
+    included, so no separate fixed-point loop is needed.
+\end{itemize}
+In every case the scheme is nested: each Newton step on the cell requires a complete relaxation of
+the atoms. A remeshing cascade inside the loop has no single functional to be accepted against,
+since the cell is updated by a root-finding step and not by minimization.
+
+\subsection{Variant B: full Newton on atoms and cell}
+
+The atoms and the cell are updated together by
+\begin{equation}
+  \begin{pmatrix}\mathbf K^{ww}&\mathbf K^{wF}\\ \mathbf K^{Fw}&\mathbf K^{FF}-A_0\,\mathbb L\end{pmatrix}
+  \begin{pmatrix}\delta\w\\ \delta\Fb\end{pmatrix}
+  =-\begin{pmatrix}\partial E_{\mathrm{el}}/\partial\w\\ A_0(\Pb-\Pt)\end{pmatrix}.
+  \label{eq:fullnewton}
+\end{equation}
+For a nominal target \(\mathbb L=0\), and \eqref{eq:fullnewton} is the Newton step for the enthalpy
+\(H\); for a Cauchy target, the load stiffness makes the matrix non-symmetric, and the follower load
+is treated without an outer loop. Near a stable equilibrium the convergence is quadratic. The
+difficulty is the regime this model is built to study: plastic events occur exactly where \(\mathbf
+K\) loses positive definiteness, and there the Newton step is not a descent direction and may
+converge to a saddle point or to an unloading branch. A robust version needs globalization, for
+example a trust region with a truncated conjugate-gradient inner solver, or a modified
+factorization \(\mathbf K+\mu\I\) with \(\mu\) large enough to make it positive definite. With such
+safeguards the method becomes a damped Newton minimizer of \(H\), and the reconnection cascade can
+again be accepted on \(H\).
+
+\subsection{Variant C: stiffness-preconditioned L-BFGS including the cell}
+\label{sec:precond}
+
+The present minimizer can be given Newton-like steps while keeping descent. This variant is
+implemented and is used whenever the stiffness preconditioner is selected; this subsection
+describes it in full.
+
+\paragraph{Change of variables.}
+Let \(\mathbf z=(\w,\bm\zeta)\), \(\bm\zeta=\sqrt{A_0}\,(\bar F_{ij})_{(ij)\in\mathcal S}\), be the unknowns
+of Section~\ref{sec:numerics}, and let \(\mathbf P=\mathbf R\mathbf R^{\mathsf T}\) be a symmetric
+positive definite matrix. L-BFGS is run, unmodified, on the variables \(\mathbf t\) defined by
+\begin{equation}
+  \mathbf z=\mathbf z_0+\mathbf R^{-\mathsf T}\mathbf t,\qquad
+  \frac{\partial H}{\partial\mathbf t}=\mathbf R^{-1}\frac{\partial H}{\partial\mathbf z},
+  \label{eq:cov}
+\end{equation}
+starting from \(\mathbf t=\mathbf 0\). This is exactly L-BFGS on \(\mathbf z\) with initial inverse
+Hessian \(\mathbf P^{-1}\). If \(\mathbf P\) is close to the Hessian of \(H\), the Hessian in
+\(\mathbf t\) is close to the identity: the first step is a (modified) Newton step, and the number of
+iterations no longer grows with the condition number of the stiffness, which for plain L-BFGS scales
+with the square of the cell size in lattice spacings (the long-wavelength modes). The line search is
+unchanged, so every iterate still lowers \(H\).
+
+\paragraph{The preconditioner.}
+\(\mathbf P\) is the Gauss--Newton part of the Hessian \eqref{eq:Kfull}, built from element tangents
+projected to positive semidefinite form. For each triangle, the eigenvalues of the \(4\times4\)
+tangent \(\mathbb A_e\) (in Voigt-like index pairs \(iJ\)) are clamped at zero, giving \(\mathbb A^+_e\).
+With \(\mathbf J_e=\partial\F_e/\partial(\x,\Fb_{\mathcal S})\), the assembled blocks are
+\begin{align}
+  \mathbf K^{xx}&=\sum_eA_e\,\Big(\frac{\partial\F_e}{\partial\x}\Big)^{\mathsf T}\mathbb A^+_e
+    \frac{\partial\F_e}{\partial\x},\qquad
+  K^{xF}_{a i,(rc)}=\sum_{e\ni a}A_e\,\frac{\partial\F_e}{\partial x_{a,i}}:\mathbb A^+_e:
+    \big(\mathbf e_r\otimes\G_e^{\mathsf T}\mathbf e_c\big),\nonumber\\
+  K^{FF}_{(rc),(sd)}&=\sum_eA_e\,\big(\mathbf e_r\otimes\G_e^{\mathsf T}\mathbf e_c\big):\mathbb A^+_e:
+    \big(\mathbf e_s\otimes\G_e^{\mathsf T}\mathbf e_d\big),
+  \label{eq:Pblocks}
+\end{align}
+where \(\partial\F_e/\partial\bar F_{rc}=\mathbf e_r\otimes\G_e^{\mathsf T}\mathbf e_c\) follows from
+\(\F_e=\Fb\G_e\). The geometric term of \eqref{eq:KFw} and the Cauchy load stiffness
+\(-A_0\mathbb L\) are left out, so \(\mathbf P\) is symmetric and positive semidefinite by
+construction. Since \(\x=\Fb\w\), the atomic block in the unknowns \(\w\) is obtained with
+\(\mathbf D=\Fb\otimes\I_n\) (in the solver layout \([u_1\dots u_n,v_1\dots v_n]\)), and the scaling
+\(\bm\zeta=\sqrt{A_0}\,\Fb_{\mathcal S}\) divides the cell rows by \(\sqrt{A_0}\):
+\begin{equation}
+  \mathbf P=\begin{pmatrix}\mathbf M_{ww}&\mathbf M_{w\zeta}\\ \mathbf M_{\zeta w}&\mathbf M_{\zeta\zeta}\end{pmatrix},\quad
+  \mathbf M_{ww}=\mathbf D^{\mathsf T}\mathbf K^{xx}\mathbf D+s\,\I,\quad
+  \mathbf M_{w\zeta}=\frac{\mathbf D^{\mathsf T}\mathbf K^{xF}}{\sqrt{A_0}},\quad
+  \mathbf M_{\zeta\zeta}=\frac{\mathbf K^{FF}}{A_0}.
+  \label{eq:Pmat}
+\end{equation}
+The shift \(s=10^{-6}\,\overline{\operatorname{diag}\mathbf M_{ww}}\) removes the two rigid translations
+of the periodic cell, which are zero modes of \(\mathbf K^{xx}\) (it is increased a hundredfold
+whenever a factorization fails).
+
+\paragraph{Bordered Cholesky factorization.}
+The atomic block is large and sparse, the cell block has at most three rows. The factor is taken in
+block lower-triangular form,
+\begin{equation}
+  \mathbf R=\begin{pmatrix}\mathbf R_w&\mathbf 0\\ \mathbf B^{\mathsf T}&\mathbf L_S\end{pmatrix},\qquad
+  \mathbf R_w\mathbf R_w^{\mathsf T}=\mathbf M_{ww},\quad
+  \mathbf B=\mathbf R_w^{-1}\mathbf M_{w\zeta},\quad
+  \mathbf L_S\mathbf L_S^{\mathsf T}=\mathbf S=\mathbf M_{\zeta\zeta}-\mathbf B^{\mathsf T}\mathbf B ,
+  \label{eq:bordered}
+\end{equation}
+which satisfies \(\mathbf R\mathbf R^{\mathsf T}=\mathbf P\). \(\mathbf R_w\) is a sparse supernodal
+Cholesky factor with a fill-reducing ordering, computed once per refresh; \(\mathbf B\) requires one
+triangular solve per free cell component; and \(\mathbf S\), the Schur complement of the atoms in
+\(\mathbf P\), is the preconditioner's estimate of the relaxed cell stiffness (the analogue of
+\eqref{eq:Keff}), a dense matrix of size at most \(3\times3\). It is positive semidefinite because
+\(\mathbf P\) is; a small relative shift is added before its dense Cholesky factorization. The two
+operations needed by \eqref{eq:cov} are then
+\begin{align}
+  \mathbf R^{-1}\mathbf g:&\quad
+  \mathbf y_w=\mathbf R_w^{-1}\mathbf g_w,\qquad
+  \mathbf y_\zeta=\mathbf L_S^{-1}\big(\mathbf g_\zeta-\mathbf B^{\mathsf T}\mathbf y_w\big),
+  \label{eq:Rinv}\\
+  \mathbf R^{-\mathsf T}\mathbf t:&\quad
+  \mathbf d_\zeta=\mathbf L_S^{-\mathsf T}\mathbf t_\zeta,\qquad
+  \mathbf d_w=\mathbf R_w^{-\mathsf T}\big(\mathbf t_w-\mathbf B\,\mathbf d_\zeta\big),
+  \label{eq:RinvT}
+\end{align}
+that is, two sparse triangular solves per evaluation of \(H\), plus \(O(nm)\) dense operations
+for the border. The cell is therefore preconditioned through its coupling to all atoms: a change of
+the cell is accompanied, in the preconditioned metric, by the non-affine relaxation of the atoms
+that the stiffness predicts.
+
+\paragraph{Refresh, stalls and termination.}
+\(\mathbf P\) is assembled and factorized at the start of every stress-controlled relaxation, i.e.\
+once per load step under nominal control and once per pass of Algorithm~\ref{alg:cauchy} under
+Cauchy control (or less often, if a reuse interval is set). The symbolic analysis is kept while
+the mesh is unchanged. During an avalanche the configuration moves far from the point where
+\(\mathbf P\) was built, and L-BFGS can stall before reaching the tolerance; \(\mathbf P\) is then
+rebuilt at the current point and the minimization continues (at most three times). The
+relaxation stops when
+\begin{equation}
+  \max\big|\partial H/\partial\mathbf z\big|<\varepsilon_g ,
+\end{equation}
+measured on the unpreconditioned gradient, whose atomic part is the force and whose cell part is
+\(\sqrt{A_0}(\bar P_{ij}-P^{\mathrm t}_{ij})\) by \eqref{eq:gradz}; with \(\varepsilon_g=10^{-6}\) the
+macroscopic stress is matched to \(\varepsilon_g/\sqrt{A_0}\). In the preconditioned variables
+the step-length cap of Section~\ref{sec:numerics} is not used, because the first step is already
+scaled by the stiffness. The limit-load guard of Section~\ref{sec:limit} is unchanged. If a
+factorization fails, the relaxation falls back to plain L-BFGS.
+
+\paragraph{Performance and path dependence.}
+Table~\ref{tab:precond} compares the two solvers on a defected periodic cell of
+\(100\times100\) atoms (square lattice, \(2\times10^4\) triangles), relaxed at
+\(\bar F_{12}=0.14\) with noise and then loaded in Cauchy shear in steps of
+\(\Delta\sigma=0.005\), with the reconnection cascade enabled. Each preconditioned relaxation
+takes between \(0\) and about \(40\) iterations and at most \(\sim0.1\)~s including assembly and
+factorization, so that the remaining cost of an elastic load step is dominated by the
+reconnection trial and the output, not by the solver. Stresses are matched equally well by both
+solvers (\(|\bar\sigma_{12}-\sigma^{\mathrm t}_{12}|\lesssim10^{-8}\), normal components
+\(\lesssim10^{-9}\)).
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{seed 42} & \multicolumn{2}{c}{seed 7}\\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+& plain & preconditioned & plain & preconditioned\\
+\midrule
+total wall time (s) & 119 & 35 & 134 & 51\\
+load steps completed & 8 (limit load) & 10 & 16 & 16\\
+elastic step (s) & 1.9--3.8 & 0.5--0.8 & 1.8--2.8 & 0.5--1.0\\
+step with avalanche (s) & 9--53 & 4--7 & 5--29 & 2--12\\
+\bottomrule
+\end{tabular}
+\caption{Plain and stiffness-preconditioned L-BFGS for Cauchy shear of a defected
+\(100\times100\) periodic cell (same initial state for both solvers within each seed; six
+threads per run).}
+\label{tab:precond}
+\end{table}
+
+The two solvers produce the same states, to the solver tolerance, until the first avalanche.
+During an avalanche they can settle into different metastable states; in the run of seed~42 the
+preconditioned solver reached a lower energy in the fifth reconnection pass of the first stress
+step, and the two dislocation structures differ from there on, with the limit load reached at
+\(\sigma=0.047\) by the plain solver and not before \(0.057\) by the preconditioned one. This
+sensitivity is a property of the avalanche dynamics, not of either solver: any change of the
+minimizer, of its tolerance or of rounding selects among nearby metastable states. Quantities such
+as the limit load and the avalanche statistics should therefore be reported as ensemble averages
+over noise realizations.
+
+\subsection{Variant D: accelerating the Cauchy loop}
+
+Independently of the inner solver, the Cauchy iteration of Algorithm~\ref{alg:cauchy} can be
+written as a root-finding problem for the cell, \(\mathbf r(\Fb)=\Pb(\Fb)-\Pt(\Fb)=0\), with
+\(\Pb(\Fb)\) the relaxed stress. A secant (Broyden) update of \(\mathbb J\) built from the successive
+passes, or Anderson acceleration of the fixed-point map, turns the linear contraction
+\eqref{eq:rho} into superlinear convergence without computing a tangent. Since every pass after the
+first is warm-started and short, the gain is limited to the passes themselves.
+
+\subsection{Comparison}
+
+Table~\ref{tab:newton} compares the variants with the present method (first row).
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{3.0cm}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}p{3.4cm}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{2.2cm}@{}}
+\toprule
+Method & Jacobian used & Convergence & Robust at instabilities & Remesh acceptance\\
+\midrule
+L-BFGS on \((\w,\Fb)\) + fixed point (present) & none (gradient only) &
+  superlinear (inner), linear with ratio \(|\sigt|/\mu_{\mathrm{eff}}\) (outer) &
+  yes: descent with line search & on \(H\)\\
+A: cell Newton, reference CB tangent & \(\mathbb A(\F_0)\) & linear, heavy damping & partly (damping) & no functional\\
+A: cell Newton, current CB tangent & \(\mathbb A(\Fb\F_0)\) & quadratic (perfect crystal); linear, \(\to1\) at limit load (defects) & partly & no functional\\
+A: cell Newton, Schur tangent & \(\mathbb K_{\mathrm{eff}}-\mathbb L\) & quadratic (outer); nested relaxations & no near singular \(\mathbb K_{\mathrm{eff}}\) & no functional\\
+B: full Newton & \(\mathbf K\), \(-A_0\mathbb L\) & quadratic near stable equilibria & only with trust region / shift & on \(H\) if globalized\\
+C: preconditioned L-BFGS (implemented) & \(\mathbf K_+ +s\I\) as preconditioner & near-Newton per iteration, fewer iterations & yes: descent with line search & on \(H\)\\
+D: Broyden / Anderson outer & secant estimate of \(\mathbb J\) & superlinear (outer) & as inner solver & unchanged\\
+\bottomrule
+\end{tabular}
+\caption{Newton-type alternatives for stress control of the periodic cell. CB: Cauchy--Born.
+Variants C and D can be combined with each other and with the present formulation.}
+\label{tab:newton}
+\end{table}
+
+\paragraph{Cost.}
+A sparse Cholesky factorization of the \(2N\times2N\) atomic stiffness of a two-dimensional mesh
+costs \(O(N^{3/2})\) with nested-dissection ordering, against \(O(N)\) for an L-BFGS iteration. The
+bordering by at most three cell components adds three solves with the factor. For variant C the
+balance has been measured (Table~\ref{tab:precond}): on a \(100\times100\) defected cell it is a
+factor of \(2.6\)--\(3.4\) in total run time and \(3\)--\(5\) on elastic steps. For the other
+variants it has not been measured.
+
+\paragraph{Assessment.}
+The Newton variants pay off in the elastic stretches between plastic events, where the energy is
+locally convex and quadratic convergence is available. They give no advantage at the plastic events
+themselves, where the Hessian is indefinite and only a descent method selects the physically
+relevant branch. Variant A with a Cauchy--Born tangent, current or not, is limited by
+\eqref{eq:voigt} in exactly the defected states of interest. Variants C and D keep the present
+formulation, including the energy acceptance of the reconnection cascade and the detection of the
+limit load, and add second-order information only where it is safe to do so.
+
+%=====================================================================
+\section{Summary}
+%=====================================================================
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+& unknowns & functional & equilibrium\\
+\midrule
+PBC, nominal stress & \(\w,\ \bar F_{ij\in\mathcal S}\) & \(E_{\mathrm{el}}-A_0\Pt:(\Fb-\I)\) & \(\bar P_{ij}=P^{\mathrm t}_{ij}\)\\
+PBC, Cauchy stress & \(\w,\ \bar F_{ij\in\mathcal S}\) & frozen-target \(H\), fixed point &
+  \(\bar P_{ij}=[\bar J\sigt\Fb^{-\mathsf T}]_{ij}\Rightarrow\sigb=\sigt\)\\
+boundary traction & free \(\x_a\) & \(E_{\mathrm{el}}-\alpha\sum_a\f_{0,a}\cdot(\x_a-\X_a)\) &
+  \(\partial E_{\mathrm{el}}/\partial\x_a=\alpha\f_{0,a}\)\\
+rigid grip & free \(\x_a\), \(\U\) & \(E_{\mathrm{el}}-\alpha\mathbf F_0\cdot\U\) &
+  \(\sum_{\mathcal G}\partial E_{\mathrm{el}}/\partial\x_a=\alpha\mathbf F_0\)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Nominal stresses and tractions defined per unit reference length are dead loads: they derive from
+a work potential linear in the kinematic unknowns, and equilibria are local minima of an enthalpy
+whose Hessian is the elastic one. A prescribed Cauchy stress is a follower load without a
+potential; it is enforced exactly, in all four components, by iterating the dead-load problem on
+the nominal target \(\bar J\sigt\Fb^{-\mathsf T}\), a contraction with ratio of order
+\(|\sigt|/\mu_{\mathrm{eff}}\) that fails only at the limit load. In all cases avalanches are
+identified as bursts of the work-conjugate strain at fixed load, and the run stops at the limit
+load while keeping the last equilibrium state.
+
+\end{document}

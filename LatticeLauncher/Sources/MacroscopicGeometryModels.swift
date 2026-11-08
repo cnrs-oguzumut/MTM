@@ -181,8 +181,13 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
     case rollerY = "roller_y"
     case prescribed = "prescribed"
     case affine = "affine"
+    case traction = "traction"
+    case forceGrip = "force_grip"
     
     public var id: String { rawValue }
+
+    /// Force-controlled kinds: the load parameter α is a nominal stress, not a strain.
+    public var isForceControl: Bool { self == .traction || self == .forceGrip }
     public var displayName: String {
         switch self {
         case .free: return "Free Surface (Traction-Free)"
@@ -191,6 +196,8 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
         case .rollerY: return "Roller Y (Fix ux = 0, Free uy)"
         case .prescribed: return "Prescribed Grip Δu(α)"
         case .affine: return "Affine Macro-Gradient F(α)"
+        case .traction: return "Dead-Load Traction t = α·t₀ (atoms stay free)"
+        case .forceGrip: return "Rigid Force Grip (flat grip, total force α·t₀·L)"
         }
     }
     public var shortBadge: String {
@@ -201,6 +208,8 @@ public enum BoundaryConditionKindModel: String, CaseIterable, Codable, Identifia
         case .rollerY: return "ROLLER-Y (ux=0)"
         case .prescribed: return "DRIVEN Δu"
         case .affine: return "AFFINE F(α)"
+        case .traction: return "TRACTION t(α)"
+        case .forceGrip: return "FORCE GRIP F(α)"
         }
     }
 }
@@ -220,11 +229,17 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
     public var lock_x: Bool = true
     public var lock_y: Bool = true
     public var affine_mode: String = "simple_shear_x"
+    // Dead-load traction (kind == .traction): "cartesian" uses (tx, ty); "radial_outward" /
+    // "radial_inward" / "circumferential_shear" are unit normal / tangential tractions. α is the nominal stress.
+    public var traction_mode: String = "cartesian"
+    public var tx: Double = 0.0
+    public var ty: Double = 1.0
     
     enum CodingKeys: String, CodingKey {
         case id, region, kind, enabled, thickness_a0
         case box_x_min, box_y_min, box_x_max, box_y_max
         case ux, uy, lock_x, lock_y, affine_mode
+        case traction_mode, tx, ty
     }
 
     public static func snapUnitDirection(_ val: Double) -> Double {
@@ -247,7 +262,10 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
         uy: Double = 1.0,
         lock_x: Bool = true,
         lock_y: Bool = true,
-        affine_mode: String = "simple_shear_x"
+        affine_mode: String = "simple_shear_x",
+        traction_mode: String = "cartesian",
+        tx: Double = 0.0,
+        ty: Double = 1.0
     ) {
         self.id = id
         self.region = region
@@ -271,6 +289,9 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
             self.lock_y = lock_y
         }
         self.affine_mode = affine_mode
+        self.traction_mode = traction_mode
+        self.tx = tx
+        self.ty = ty
     }
 
     public init(from decoder: Decoder) throws {
@@ -289,6 +310,9 @@ public struct BoundaryZoneRuleModel: Codable, Equatable, Identifiable {
         self.lock_x = try c.decodeIfPresent(Bool.self, forKey: .lock_x) ?? (self.kind != .rollerX)
         self.lock_y = try c.decodeIfPresent(Bool.self, forKey: .lock_y) ?? (self.kind != .rollerY)
         self.affine_mode = try c.decodeIfPresent(String.self, forKey: .affine_mode) ?? "simple_shear_x"
+        self.traction_mode = try c.decodeIfPresent(String.self, forKey: .traction_mode) ?? "cartesian"
+        self.tx = try c.decodeIfPresent(Double.self, forKey: .tx) ?? 0.0
+        self.ty = try c.decodeIfPresent(Double.self, forKey: .ty) ?? 1.0
     }
 }
 
@@ -822,7 +846,7 @@ public enum GeometryEngineeringPreset: String, CaseIterable, Identifiable {
     public var subtitle: String {
         switch self {
         case .perfectCrystalSlab:
-            return "Pristine rectangular single crystal without holes or notches; bottom clamped, top driven, left/right traction-free."
+            return "Pristine rectangular single crystal without holes or notches; bottom clamped, top driven in simple shear (+X), left/right traction-free."
         case .plateWithHoleTension:
             return "Central circular void (R=0.16 L), bottom clamped, top pulled (+α Ly), left/right/hole traction-free."
         case .plateWithHoleShear:
@@ -866,10 +890,21 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     public var cutouts: [GeometryCutoutItem] = []
     public var boundary_rules: [BoundaryZoneRuleModel] = [
         BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-        BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
+        BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0),
         BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5, ux: 0.0, uy: 0.0)
-    ]
+    ] {
+        didSet {
+            // Keep Stage 1 linked to the loading rules only while the user hasn't customised it:
+            // it must be empty or still equal (ignoring ids) to the previous loading rules.
+            // Bicrystal runs keep their GB-frame rollers and are never auto-synced to the grips.
+            guard microstructure.mode != .bicrystal else { return }
+            if stage1_boundary_rules.isEmpty ||
+                Self.rulesEquivalent(stage1_boundary_rules, oldValue) {
+                stage1_boundary_rules = boundary_rules
+            }
+        }
+    }
     public var stage1_boundary_rules: [BoundaryZoneRuleModel] = [
         BoundaryZoneRuleModel(region: .top, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
         BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
@@ -878,7 +913,7 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
     ]
     public var indenter: IndenterConfigModel = IndenterConfigModel()
     public var microstructure: MicrostructureConfigModel = MicrostructureConfigModel()
-    public var primary_stress_component: String = "auto"
+    public var primary_stress_component: String = "sigma_xy"
     
     public init() {}
     
@@ -893,11 +928,11 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             cutouts = []
             boundary_rules = [
                 BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.0, ux: 0.0, uy: 0.0),
-                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 0.0, uy: 1.0),
+                BoundaryZoneRuleModel(region: .top, kind: .prescribed, thickness_a0: 2.0, ux: 1.0, uy: 0.0),
                 BoundaryZoneRuleModel(region: .left, kind: .free, thickness_a0: 1.5),
                 BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
             ]
-            primary_stress_component = "sigma_yy"
+            primary_stress_component = "sigma_xy"
             
         case .plateWithHoleTension:
             outer_shape = .rectangle
@@ -1059,19 +1094,155 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             microstructure.theta_min_deg = -25.0
             microstructure.theta_max_deg = +25.0
             microstructure.regenerateSeeds()
+            sanitizeVoronoiSeedsInsideSolid()
             primary_stress_component = "sigma_yy"
+        }
+        
+        // Synchronize Stage 1 (Relaxation) boundary rules with the selected preset
+        switch preset {
+        case .bicrystalTiltTension:
+            resetStage1ToGBFrameRollerBCs(forAngleDeg: microstructure.gb_angle_deg)
+        case .nanoIndentation, .bicrystalIndentation:
+            stage1_boundary_rules = [
+                BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.5, ux: 0.0, uy: 0.0),
+                BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
+                BoundaryZoneRuleModel(region: .right, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
+                BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5)
+            ]
+        default:
+            stage1_boundary_rules = boundary_rules
+        }
+    }
+    
+    /// Half-width of the dogbone cross-section at normalized vertical position yHat in [0, 1].
+    public func dogboneHalfWidth(atYHat yHat: Double) -> Double {
+        let halfGW = 0.5 * min(0.98, max(0.15, dogbone_gauge_width))
+        let halfGL = 0.5 * min(0.90, max(0.10, dogbone_gauge_length))
+        let rf = max(0.02, dogbone_fillet_radius)
+        let dy = abs(yHat - 0.5)
+        if dy <= halfGL {
+            return halfGW
+        } else if dy <= halfGL + rf {
+            let u = dy - halfGL
+            let filletDx = rf - sqrt(max(0.0, rf * rf - u * u))
+            return min(0.5, halfGW + filletDx * ((0.5 - halfGW) / rf))
+        } else {
+            return 0.5
+        }
+    }
+    
+    /// Clamps a candidate normalized point (xHat, yHat) so it lies strictly inside the carved solid domain
+    /// with a safe margin from the outer contour and any interior cutouts.
+    public func clampSeedToSolid(xHat: Double, yHat: Double) -> (x: Double, y: Double) {
+        var cx = min(0.95, max(0.05, xHat))
+        var cy = min(0.95, max(0.05, yHat))
+        let margin = 0.04
+        
+        switch outer_shape {
+        case .rectangle:
+            cx = min(1.0 - margin, max(margin, cx))
+            cy = min(1.0 - margin, max(margin, cy))
+        case .dogbone:
+            cy = min(1.0 - margin, max(margin, cy))
+            let maxHalfW = max(0.04, dogboneHalfWidth(atYHat: cy) - margin)
+            if abs(cx - 0.5) > maxHalfW {
+                // Map proportional offset into the allowed dogbone waist width
+                let sign = cx >= 0.5 ? 1.0 : -1.0
+                let mapped = min(maxHalfW, abs(cx - 0.5) * (maxHalfW / 0.45))
+                cx = 0.5 + sign * max(0.03, mapped)
+            }
+        case .disk:
+            let dx = cx - 0.5
+            let dy = cy - 0.5
+            let r = hypot(dx, dy)
+            let maxR = max(0.05, disk_radius - margin)
+            if r > maxR && r > 1e-9 {
+                let scale = maxR / r
+                cx = 0.5 + dx * scale
+                cy = 0.5 + dy * scale
+            }
+        case .polygon:
+            if outer_polygon.count >= 3 {
+                let pcx = outer_polygon.map(\.x).reduce(0.0, +) / Double(outer_polygon.count)
+                let pcy = outer_polygon.map(\.y).reduce(0.0, +) / Double(outer_polygon.count)
+                let inside = Self.pointInPolygon(x: cx, y: cy, poly: outer_polygon)
+                let edgeDist = Self.distanceToPolygonEdges(x: cx, y: cy, poly: outer_polygon)
+                if !inside || edgeDist < margin {
+                    for step in 1...40 {
+                        let t = Double(step) / 40.0
+                        let tx = cx + t * (pcx - cx)
+                        let ty = cy + t * (pcy - cy)
+                        if Self.pointInPolygon(x: tx, y: ty, poly: outer_polygon) &&
+                           Self.distanceToPolygonEdges(x: tx, y: ty, poly: outer_polygon) >= margin * 0.75 {
+                            cx = tx
+                            cy = ty
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Also push away from any active cutouts
+        if isPointInsideCutout(xHat: cx, yHat: cy, margin: 0.03) || !isPointInsideSolid(xHat: cx, yHat: cy) {
+            var targetX = 0.5
+            var targetY = 0.5
+            if outer_shape == .polygon && outer_polygon.count >= 3 {
+                targetX = outer_polygon.map(\.x).reduce(0.0, +) / Double(outer_polygon.count)
+                targetY = outer_polygon.map(\.y).reduce(0.0, +) / Double(outer_polygon.count)
+            }
+            var found = false
+            for rStep in 1...30 where !found {
+                let rad = Double(rStep) * 0.025
+                for aStep in 0..<24 {
+                    let ang = Double(aStep) * (2.0 * .pi / 24.0)
+                    let tx = cx + rad * cos(ang)
+                    let ty = cy + rad * sin(ang)
+                    if isPointInsideSolid(xHat: tx, yHat: ty) &&
+                       !isPointInsideCutout(xHat: tx, yHat: ty, margin: 0.025) {
+                        cx = tx
+                        cy = ty
+                        found = true
+                        break
+                    }
+                }
+            }
+            if !found && isPointInsideSolid(xHat: targetX, yHat: targetY) {
+                cx = targetX
+                cy = targetY
+            }
+        }
+        return (
+            x: (cx * 1000).rounded() / 1000,
+            y: (cy * 1000).rounded() / 1000
+        )
+    }
+    
+    /// Relocates any Voronoi grain seeds that fall outside the carved outer shape or inside a cutout.
+    public mutating func sanitizeVoronoiSeedsInsideSolid() {
+        guard !microstructure.seeds.isEmpty else { return }
+        for i in microstructure.seeds.indices {
+            let s = microstructure.seeds[i]
+            let clamped = clampSeedToSolid(xHat: s.cx, yHat: s.cy)
+            microstructure.seeds[i].cx = clamped.x
+            microstructure.seeds[i].cy = clamped.y
         }
     }
     
     // MARK: - Live Client-Side Discrete Lattice Masking (Matches C++ MacroscopicGeometry)
     public func isPointInsideCutout(xHat: Double, yHat: Double, margin: Double = 0.0) -> Bool {
-        for c in cutouts where c.enabled {
+        return cutoutIndex(xHat: xHat, yHat: yHat, margin: margin) != nil
+    }
+
+    /// Index of the first enabled cutout containing (xHat, yHat) within `margin` (mirrors C++ findCutoutNear).
+    public func cutoutIndex(xHat: Double, yHat: Double, margin: Double = 0.0) -> Int? {
+        for (ci, c) in cutouts.enumerated() where c.enabled {
             let dx = xHat - c.cx
             let dy = yHat - c.cy
             switch c.type {
             case .circle:
                 let r = c.rx + margin
-                if dx * dx + dy * dy < r * r { return true }
+                if dx * dx + dy * dy < r * r { return ci }
             case .ellipse:
                 let phi = c.rotation_deg * .pi / 180.0
                 let cosP = cos(-phi), sinP = sin(-phi)
@@ -1079,13 +1250,13 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 let ly = sinP * dx + cosP * dy
                 let rx = max(1e-5, c.rx + margin)
                 let ry = max(1e-5, c.ry + margin)
-                if (lx * lx) / (rx * rx) + (ly * ly) / (ry * ry) < 1.0 { return true }
+                if (lx * lx) / (rx * rx) + (ly * ly) / (ry * ry) < 1.0 { return ci }
             case .rectangle:
                 let phi = c.rotation_deg * .pi / 180.0
                 let cosP = cos(-phi), sinP = sin(-phi)
                 let lx = cosP * dx - sinP * dy
                 let ly = sinP * dx + cosP * dy
-                if abs(lx) < c.rx + margin && abs(ly) < c.ry + margin { return true }
+                if abs(lx) < c.rx + margin && abs(ly) < c.ry + margin { return ci }
             case .edgeNotch:
                 let dEff = max(1e-5, c.rx + margin)
                 let wEff = max(1e-5, c.ry + margin)
@@ -1096,9 +1267,9 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 else { u = 1.0 - yHat; v = abs(xHat - c.cx) }
                 if u <= dEff {
                     if c.notch_profile == "u_notch" {
-                        if v < wEff { return true }
+                        if v < wEff { return ci }
                     } else {
-                        if v < wEff * (1.0 - u / dEff) { return true }
+                        if v < wEff * (1.0 - u / dEff) { return ci }
                     }
                 }
             case .preCrack:
@@ -1108,15 +1279,15 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                 let t = len2 > 1e-12 ? min(1.0, max(0.0, ((xHat - ax) * abx + (yHat - ay) * aby) / len2)) : 0.0
                 let px = ax + t * abx, py = ay + t * aby
                 let dist = hypot(xHat - px, yHat - py)
-                if dist < 0.5 * c.thickness + margin { return true }
+                if dist < 0.5 * c.thickness + margin { return ci }
             case .polygon:
-                if Self.pointInPolygon(x: xHat, y: yHat, poly: c.vertices) { return true }
+                if Self.pointInPolygon(x: xHat, y: yHat, poly: c.vertices) { return ci }
                 if margin > 0 && Self.distanceToPolygonEdges(x: xHat, y: yHat, poly: c.vertices) <= margin {
-                    return true
+                    return ci
                 }
             }
         }
-        return false
+        return nil
     }
     
     public func isPointInsideSolid(xHat: Double, yHat: Double) -> Bool {
@@ -1181,6 +1352,105 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         return 1.0
     }
     
+    /// Rule lists are equivalent when every rule matches on its physics (region, kind, enabled,
+    /// affine mode, ux/uy, locks, thickness, box bounds); the UUID `id` is ignored.
+    public static func rulesEquivalent(_ a: [BoundaryZoneRuleModel], _ b: [BoundaryZoneRuleModel]) -> Bool {
+        guard a.count == b.count else { return false }
+        return zip(a, b).allSatisfy { r, q in
+            r.region == q.region && r.kind == q.kind && r.enabled == q.enabled &&
+            r.affine_mode == q.affine_mode && r.ux == q.ux && r.uy == q.uy &&
+            r.lock_x == q.lock_x && r.lock_y == q.lock_y && r.thickness_a0 == q.thickness_a0 &&
+            r.box_x_min == q.box_x_min && r.box_x_max == q.box_x_max &&
+            r.box_y_min == q.box_y_min && r.box_y_max == q.box_y_max &&
+            r.traction_mode == q.traction_mode && r.tx == q.tx && r.ty == q.ty
+        }
+    }
+
+    /// Mirrors the solver's refusal rule for dead loads: with no kinematic support at all, the tractions
+    /// must be self-equilibrated (zero net force and torque). Returns the reason when they are not.
+    /// Approximate (unit edge lengths); the solver's check on the real contour is authoritative.
+    /// Dead loads the supports cannot react: a rigid-body mode the supports leave free (all of them when there
+    /// is none; Roller X holds only u_y, Roller Y only u_x) along which the load has a net force or torque.
+    /// `width` and `height` are the rectangle's size in lattice units, which weight the edge tractions. Returns
+    /// nil when the check needs edge lengths it does not know (non-rectangular outline, hole or box regions);
+    /// the solver then decides.
+    public func tractionBalanceIssue(width lx: Double, height ly: Double) -> String? {
+        let rules = boundary_rules.filter { $0.enabled }
+        let tractions = rules.filter { $0.kind == .traction }
+        let grips = rules.filter { $0.kind == .forceGrip }
+        guard !tractions.isEmpty || !grips.isEmpty else { return nil }
+        let supports = rules.filter { [.fixed, .prescribed, .affine, .rollerX, .rollerY].contains($0.kind) }
+        if supports.isEmpty && !grips.isEmpty {
+            return "A rigid force grip only transmits the load: add a fixed, prescribed or roller boundary to react it (e.g. clamp the opposite edge)."
+        }
+        if supports.contains(where: { [.fixed, .prescribed, .affine].contains($0.kind) }) { return nil }
+        // Rollers only (or nothing): which rigid-body modes are left?
+        let xLocks = supports.filter { $0.kind == .rollerY } // u_x = 0
+        let yLocks = supports.filter { $0.kind == .rollerX } // u_y = 0
+        let holdsX = !xLocks.isEmpty, holdsY = !yLocks.isEmpty
+        // A rotation about (x0, y0) is admissible when every x-lock lies on the line y = y0 and every y-lock on
+        // x = x0, i.e. all x-locks on one horizontal edge and all y-locks on one vertical edge, each a single
+        // atomic row (a band of two or more rows holds the rotation)
+        let singleRow = !(xLocks + yLocks).contains { $0.thickness_a0 >= 1.0 }
+        let xLockRegions = Set(xLocks.map(\.region)), yLockRegions = Set(yLocks.map(\.region))
+        let rotationFree = (singleRow || supports.isEmpty) && (xLockRegions.isEmpty || (xLockRegions.count == 1 && [.top, .bottom].contains(xLockRegions.first!))) &&
+                           (yLockRegions.isEmpty || (yLockRegions.count == 1 && [.left, .right].contains(yLockRegions.first!)))
+        if holdsX && holdsY && !rotationFree { return nil }
+        let x0: Double = yLockRegions.first == .left ? -0.5 * lx : (yLockRegions.first == .right ? 0.5 * lx : 0.0)
+        let y0: Double = xLockRegions.first == .bottom ? -0.5 * ly : (xLockRegions.first == .top ? 0.5 * ly : 0.0)
+
+        var fx = 0.0, fy = 0.0, moment = 0.0, scale = 0.0, rimTorque = false
+        for r in tractions {
+            switch r.traction_mode {
+            case "radial_outward", "radial_inward":
+                continue // normal traction on a closed contour is self-equilibrated
+            case "circumferential_shear", "torsion":
+                rimTorque = true
+                continue
+            default:
+                break
+            }
+            guard outer_shape == .rectangle else { return nil }
+            // Resultant of a uniform traction on the edge and its point of application (centre at the origin)
+            let length: Double, cx: Double, cy: Double
+            switch r.region {
+            case .top: length = lx; cx = 0; cy = 0.5 * ly
+            case .bottom: length = lx; cx = 0; cy = -0.5 * ly
+            case .left: length = ly; cx = -0.5 * lx; cy = 0
+            case .right: length = ly; cx = 0.5 * lx; cy = 0
+            case .outerPerimeter: length = 2 * (lx + ly); cx = 0; cy = 0
+            default: return nil
+            }
+            let Fx = r.tx * length, Fy = r.ty * length
+            fx += Fx; fy += Fy
+            moment += (cx - x0) * Fy - (cy - y0) * Fx
+            scale += hypot(Fx, Fy)
+        }
+        if rimTorque && rotationFree {
+            return "A rim-shear dead load has a net torque and nothing holds the specimen against rotation. Clamp a hole or another boundary."
+        }
+        let tol = 1e-9 * max(scale, 1e-300)
+        if (!holdsX && abs(fx) > tol) || (!holdsY && abs(fy) > tol) {
+            let what = supports.isEmpty ? "with no support" : "along a direction the rollers leave free"
+            return String(format: "Unbalanced dead load (net force ≈ (%.2f, %.2f) per unit α) %@. Add a fixed or roller boundary, or balance the tractions.", fx, fy, what)
+        }
+        if rotationFree && abs(moment) > tol * max(lx, ly) {
+            return String(format: "The dead load has a net torque (≈ %.2f per unit α) and the supports leave the rotation free. Add a support or balance the tractions.", moment)
+        }
+        return nil
+    }
+
+    /// True when Stage 1 follows the loading rules (empty, or equal to them ignoring ids).
+    public var isStage1LinkedToLoading: Bool {
+        if stage1_boundary_rules.isEmpty { return microstructure.mode != .bicrystal }
+        return Self.rulesEquivalent(stage1_boundary_rules, boundary_rules)
+    }
+
+    /// Re-link Stage 1 to the loading rules (the "Same as Loading" action).
+    public mutating func relinkStage1ToLoading() {
+        stage1_boundary_rules = boundary_rules
+    }
+
     /// Returns the Stage 1 (α = 0) relaxation boundary rules (user-editable stage1_boundary_rules)
     public func stage1RelaxationRules() -> [BoundaryZoneRuleModel] {
         if !stage1_boundary_rules.isEmpty {
@@ -1213,6 +1483,171 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         stage1_boundary_rules = Self.defaultStage1RollerRules(forAngleDeg: gbAngleDeg)
     }
 
+    /// Bounding box of the carved outer shape in normalized coordinates (matches C++ domain bounds).
+    public func outerDomainBounds() -> (minX: Double, maxX: Double, minY: Double, maxY: Double) {
+        if outer_shape == .polygon && outer_polygon.count >= 3 {
+            return (outer_polygon.map(\.x).min() ?? 0.0, outer_polygon.map(\.x).max() ?? 1.0,
+                    outer_polygon.map(\.y).min() ?? 0.0, outer_polygon.map(\.y).max() ?? 1.0)
+        } else if outer_shape == .disk {
+            return (max(0.0, 0.5 - disk_radius), min(1.0, 0.5 + disk_radius),
+                    max(0.0, 0.5 - disk_radius), min(1.0, 0.5 + disk_radius))
+        }
+        return (0.0, 1.0, 0.0, 1.0)
+    }
+    
+    /// True if (xHat, yHat) lies inside the boundary zone selected by `rule.region` (same logic as the C++ solver).
+    public func ruleRegionMatches(
+        _ rule: BoundaryZoneRuleModel,
+        xHat: Double,
+        yHat: Double,
+        nx: Int,
+        ny: Int,
+        indenterActive: Bool
+    ) -> Bool {
+        let a0x = 1.0 / Double(max(1, nx - 1))
+        let a0y = 1.0 / Double(max(1, ny - 1))
+        let b = outerDomainBounds()
+        let stripX = max(0.35, rule.thickness_a0) * a0x
+        let stripY = max(0.35, rule.thickness_a0) * a0y
+        let capX = outer_shape == .disk ? max(stripX, 0.075 * disk_radius) : stripX
+        let capY = outer_shape == .disk ? max(stripY, 0.075 * disk_radius) : stripY
+        switch rule.region {
+        case .top:
+            if indenterActive && rule.kind != .free { return false }
+            return yHat >= b.maxY - capY
+        case .bottom: return yHat <= b.minY + capY
+        case .left: return xHat <= b.minX + capX
+        case .right: return xHat >= b.maxX - capX
+        case .outerPerimeter:
+            if outer_shape == .disk {
+                return hypot(xHat - 0.5, yHat - 0.5) >= disk_radius - max(stripX, stripY)
+            } else if outer_shape == .polygon && outer_polygon.count >= 3 {
+                return Self.distanceToPolygonEdges(x: xHat, y: yHat, poly: outer_polygon) <= max(stripX, stripY)
+            } else if outer_shape == .dogbone {
+                let hw = dogboneHalfWidth(atYHat: yHat)
+                return yHat <= stripY || yHat >= 1.0 - stripY || (hw - abs(xHat - 0.5)) <= stripX
+            }
+            return xHat <= b.minX + stripX || xHat >= b.maxX - stripX ||
+                   yHat <= b.minY + stripY || yHat >= b.maxY - stripY
+        case .holeSurfaces:
+            return isPointInsideCutout(xHat: xHat, yHat: yHat, margin: max(stripX, stripY))
+        case .customBox:
+            return xHat >= rule.box_x_min && xHat <= rule.box_x_max &&
+                   yHat >= rule.box_y_min && yHat <= rule.box_y_max
+        }
+    }
+    
+    /// Samples the true outer contour of the carved shape: points on the boundary with outward unit normals
+    /// (normalized coordinates, y up).
+    public func outerContourSamples(perUnitLength: Int = 120) -> [(x: Double, y: Double, nx: Double, ny: Double)] {
+        var out: [(x: Double, y: Double, nx: Double, ny: Double)] = []
+        let density = Double(max(16, perUnitLength))
+        func addSegment(_ ax: Double, _ ay: Double, _ bx: Double, _ by: Double, _ nX: Double, _ nY: Double) {
+            let len = hypot(bx - ax, by - ay)
+            let n = max(2, Int(ceil(len * density)))
+            for k in 0..<n {
+                let t = (Double(k) + 0.5) / Double(n)
+                out.append((ax + t * (bx - ax), ay + t * (by - ay), nX, nY))
+            }
+        }
+        switch outer_shape {
+        case .rectangle:
+            addSegment(0, 0, 1, 0, 0, -1)
+            addSegment(1, 0, 1, 1, 1, 0)
+            addSegment(1, 1, 0, 1, 0, 1)
+            addSegment(0, 1, 0, 0, -1, 0)
+        case .disk:
+            let n = max(48, Int(ceil(2.0 * .pi * disk_radius * density)))
+            for k in 0..<n {
+                let th = 2.0 * .pi * (Double(k) + 0.5) / Double(n)
+                out.append((0.5 + disk_radius * cos(th), 0.5 + disk_radius * sin(th), cos(th), sin(th)))
+            }
+        case .dogbone:
+            addSegment(0, 0, 1, 0, 0, -1)
+            addSegment(1, 1, 0, 1, 0, 1)
+            let n = max(40, Int(density))
+            let h = 1e-4
+            for k in 0..<n {
+                let y = (Double(k) + 0.5) / Double(n)
+                let hw = dogboneHalfWidth(atYHat: y)
+                let dhw = (dogboneHalfWidth(atYHat: min(1.0, y + h)) - dogboneHalfWidth(atYHat: max(0.0, y - h))) / (2.0 * h)
+                let norm = max(1e-9, hypot(1.0, dhw))
+                out.append((0.5 + hw, y, 1.0 / norm, -dhw / norm))
+                out.append((0.5 - hw, y, -1.0 / norm, -dhw / norm))
+            }
+        case .polygon:
+            let p = outer_polygon
+            guard p.count >= 3 else { break }
+            var area2 = 0.0
+            for i in 0..<p.count {
+                let j = (i + 1) % p.count
+                area2 += p[i].x * p[j].y - p[j].x * p[i].y
+            }
+            let ccw = area2 > 0
+            for i in 0..<p.count {
+                let a = p[i], bV = p[(i + 1) % p.count]
+                let dx = bV.x - a.x, dy = bV.y - a.y
+                let len = max(1e-9, hypot(dx, dy))
+                let nX = ccw ? dy / len : -dy / len
+                let nY = ccw ? -dx / len : dx / len
+                addSegment(a.x, a.y, bV.x, bV.y, nX, nY)
+            }
+        }
+        // Drop contour points that fall inside an edge notch / cutout
+        return out.filter { !isPointInsideCutout(xHat: $0.x, yHat: $0.y, margin: 0.0) }
+    }
+    
+    /// Unit-α displacement direction prescribed by an affine perimeter rule at (xHat, yHat).
+    /// Mirrors the C++ kinematics in the raw specimen frame [0, 1]²: center-symmetric modes pivot
+    /// about the box centre only on closed contours (outer rim, hole rims); edge / custom-box rules
+    /// and the shear/uniaxial modes use the bottom-left corner.
+    public func affineDisplacement(mode: String, region: BoundaryRegionSelector, xHat: Double, yHat: Double) -> (ux: Double, uy: Double) {
+        let centredModes: Set<String> = ["biaxial", "radial_outward", "radial_inward", "biaxial_compression",
+                                         "pure_shear", "circumferential_shear", "torsion"]
+        var px = 0.0, py = 0.0
+        if centredModes.contains(mode) {
+            if region == .outerPerimeter {
+                (px, py) = (0.5, 0.5)
+            } else if region == .holeSurfaces {
+                // Each hole rim pivots about its own hole (C++ cutoutPivot)
+                (px, py) = holeRimPivot(xHat: xHat, yHat: yHat)
+            }
+        }
+        let rx = xHat - px, ry = yHat - py
+        switch mode {
+        case "biaxial", "radial_outward": return (rx, ry)
+        case "radial_inward", "biaxial_compression": return (-rx, -ry)
+        case "pure_shear": return (rx, -ry)
+        case "circumferential_shear", "torsion": return (-ry, rx)
+        case "uniaxial_y": return (0.0, yHat)
+        case "uniaxial_x": return (xHat, 0.0)
+        case "simple_shear_y": return (0.0, xHat)
+        default: return (yHat, 0.0) // simple_shear_x
+        }
+    }
+
+    /// Pivot of the hole whose rim contains (xHat, yHat): centre for circle/ellipse/rectangle,
+    /// vertex average for polygons, segment midpoint for pre-cracks; specimen centre otherwise.
+    public func holeRimPivot(xHat: Double, yHat: Double) -> (Double, Double) {
+        let idx = cutoutIndex(xHat: xHat, yHat: yHat, margin: 0.03)
+            ?? cutouts.indices.filter { cutouts[$0].enabled && cutouts[$0].type != .edgeNotch }
+                .min { hypot(cutouts[$0].cx - xHat, cutouts[$0].cy - yHat) < hypot(cutouts[$1].cx - xHat, cutouts[$1].cy - yHat) }
+        guard let i = idx else { return (0.5, 0.5) }
+        let c = cutouts[i]
+        switch c.type {
+        case .circle, .ellipse, .rectangle:
+            return (c.cx, c.cy)
+        case .polygon:
+            guard !c.vertices.isEmpty else { return (c.cx, c.cy) }
+            let n = Double(c.vertices.count)
+            return (c.vertices.map(\.x).reduce(0, +) / n, c.vertices.map(\.y).reduce(0, +) / n)
+        case .preCrack:
+            return (0.5 * (c.x1 + c.x2), 0.5 * (c.y1 + c.y2))
+        case .edgeNotch:
+            return (0.5, 0.5)
+        }
+    }
+
     /// Returns 0 = Free, 1 = Fixed, 2 = Driven, 3 = RollerY (X-locked), 4 = RollerX (Y-locked)
     public func classifyNodeRole(
         xHat: Double,
@@ -1231,66 +1666,8 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         let activeRules = overrideRules ?? boundary_rules
         let indenterActive = overrideIndenterEnabled ?? indenter.enabled
         
-        var domMinX = 0.0, domMaxX = 1.0, domMinY = 0.0, domMaxY = 1.0
-        if outer_shape == .polygon && outer_polygon.count >= 3 {
-            domMinX = outer_polygon.map(\.x).min() ?? 0.0
-            domMaxX = outer_polygon.map(\.x).max() ?? 1.0
-            domMinY = outer_polygon.map(\.y).min() ?? 0.0
-            domMaxY = outer_polygon.map(\.y).max() ?? 1.0
-        } else if outer_shape == .disk {
-            domMinX = max(0.0, 0.5 - disk_radius)
-            domMaxX = min(1.0, 0.5 + disk_radius)
-            domMinY = max(0.0, 0.5 - disk_radius)
-            domMaxY = min(1.0, 0.5 + disk_radius)
-        }
-        
         for rule in activeRules where rule.enabled {
-            let stripX = max(0.35, rule.thickness_a0) * a0x
-            let stripY = max(0.35, rule.thickness_a0) * a0y
-            var matches = false
-            switch rule.region {
-            case .top:
-                if indenterActive && rule.kind != .free {
-                    matches = false
-                } else {
-                    matches = (yHat >= domMaxY - stripY)
-                }
-            case .bottom: matches = (yHat <= domMinY + stripY)
-            case .left: matches = (xHat <= domMinX + stripX)
-            case .right: matches = (xHat >= domMaxX - stripX)
-            case .outerPerimeter:
-                if outer_shape == .disk {
-                    let dist = hypot(xHat - 0.5, yHat - 0.5)
-                    matches = (dist >= disk_radius - max(stripX, stripY))
-                } else if outer_shape == .polygon && outer_polygon.count >= 3 {
-                    let dist = Self.distanceToPolygonEdges(x: xHat, y: yHat, poly: outer_polygon)
-                    matches = (dist <= max(stripX, stripY))
-                } else if outer_shape == .dogbone {
-                    let halfGW = 0.5 * min(0.98, max(0.15, dogbone_gauge_width))
-                    let halfGL = 0.5 * min(0.90, max(0.10, dogbone_gauge_length))
-                    let rf = max(0.02, dogbone_fillet_radius)
-                    let dy = abs(yHat - 0.5)
-                    let halfWAllowed: Double
-                    if dy <= halfGL {
-                        halfWAllowed = halfGW
-                    } else if dy <= halfGL + rf {
-                        let u = dy - halfGL
-                        let filletDx = rf - sqrt(max(0.0, rf * rf - u * u))
-                        halfWAllowed = min(0.5, halfGW + filletDx * ((0.5 - halfGW) / rf))
-                    } else {
-                        halfWAllowed = 0.5
-                    }
-                    matches = (yHat <= stripY || yHat >= 1.0 - stripY || (halfWAllowed - abs(xHat - 0.5)) <= stripX)
-                } else {
-                    matches = (xHat <= domMinX + stripX || xHat >= domMaxX - stripX ||
-                               yHat <= domMinY + stripY || yHat >= domMaxY - stripY)
-                }
-            case .holeSurfaces:
-                matches = isPointInsideCutout(xHat: xHat, yHat: yHat, margin: max(stripX, stripY))
-            case .customBox:
-                matches = (xHat >= rule.box_x_min && xHat <= rule.box_x_max &&
-                           yHat >= rule.box_y_min && yHat <= rule.box_y_max)
-            }
+            let matches = ruleRegionMatches(rule, xHat: xHat, yHat: yHat, nx: nx, ny: ny, indenterActive: indenterActive)
             if matches {
                 switch rule.kind {
                 case .free:
@@ -1309,6 +1686,11 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
                     if rule.lock_y { lockedY = true; drivenY = true }
                 case .affine:
                     lockedX = true; lockedY = true
+                    drivenX = true; drivenY = true
+                case .traction:
+                    break // a load, not a constraint: the atoms stay free
+                case .forceGrip:
+                    lockedX = true; lockedY = true // rigid grip: atoms follow the solved grip displacement
                     drivenX = true; drivenY = true
                 }
             }

@@ -515,6 +515,8 @@ void minimize_energy_with_triangles(
 
     // FLAT storage: [thread0: point0,point1,...] [thread1: point0,point1,...] ...
     static std::vector<Eigen::Vector2d> all_forces_flat;
+    static std::vector<Eigen::Matrix2d> virial_per_thread;
+    const bool want_virial = (userData->virial_out != nullptr);
     static std::vector<int> min_node;
     static std::vector<int> max_node;
     
@@ -529,15 +531,20 @@ void minimize_energy_with_triangles(
         min_node.resize(max_threads, n_points);
         max_node.resize(max_threads, -1);
     }
+    if (want_virial && static_cast<int>(virial_per_thread.size()) < max_threads) {
+        virial_per_thread.resize(max_threads);
+    }
 
     double total_energy = 0.0;
     const size_t n_elem = userData->active_elements.size();
+    int threads_used = 1;
 
     // Single parallel region: parallel element assembly + bounded zeroing + parallel reduction
     #pragma omp parallel reduction(+:total_energy)
     {
         const int tid = omp_get_thread_num();
         const int num_threads = omp_get_num_threads();
+        if (tid == 0) threads_used = num_threads;
         const size_t my_offset = static_cast<size_t>(tid) * n_points;
 
         const size_t e_begin = (static_cast<size_t>(tid) * n_elem) / num_threads;
@@ -564,6 +571,7 @@ void minimize_energy_with_triangles(
         }
 
         // 3. Element energy & force assembly
+        Eigen::Matrix2d virial_acc = Eigen::Matrix2d::Zero();
         for (size_t idx = e_begin; idx < e_end; ++idx) {
             ElementTriangle2D& element = elements[userData->active_elements[idx]];
             
@@ -589,7 +597,9 @@ void minimize_energy_with_triangles(
 
             // Pass pointer to this thread's section of flat array
             element.assemble_forces_flat(P, all_forces_flat.data() + my_offset);
+            if (want_virial) virial_acc += area * P * F.transpose();
         }
+        if (want_virial) virial_per_thread[tid] = virial_acc;
 
         // Synchronize so all threads have assembled forces and published min_node/max_node
         #pragma omp barrier
@@ -613,10 +623,35 @@ void minimize_energy_with_triangles(
 
     func = total_energy;
 
+    if (want_virial) {
+        Eigen::Matrix2d virial = Eigen::Matrix2d::Zero();
+        for (int t = 0; t < threads_used; ++t) virial += virial_per_thread[t];
+        *userData->virial_out = virial;
+    }
+
+    // Element forces on requested non-DOF nodes (rigid force grips)
+    if (userData->force_probe_nodes != nullptr && userData->force_probe_out != nullptr) {
+        const auto& probe = *userData->force_probe_nodes;
+        auto& out = *userData->force_probe_out;
+        out.assign(probe.size(), Eigen::Vector2d::Zero());
+        for (size_t k = 0; k < probe.size(); ++k) {
+            const int p = probe[k];
+            if (p < 0 || p >= n_points) continue;
+            for (int t = 0; t < threads_used; t++) {
+                if (p >= min_node[t] && p <= max_node[t]) out[k] += all_forces_flat[t * n_points + p];
+            }
+        }
+    }
+
     if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->isIndenterActive()) {
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(
             x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
+    }
+    // Dead-load work term -alpha * f0 . (x - X); must precede the roller gradient masking below
+    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasExternalTractionForces()) {
+        func += userData->macro_geom_ptr->accumulateExternalForcePotential(
+            x, userData->interior_mapping, grad, userData->current_alpha);
     }
     if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasPartialDOFConstraints()) {
         userData->macro_geom_ptr->zeroConstrainedComponentGradients(userData->interior_mapping, grad);
@@ -824,6 +859,11 @@ void minimize_energy_with_triangles_noreduction(
         double indenter_energy = userData->macro_geom_ptr->accumulateIndenterPenalty(
             x, userData->interior_mapping, grad, userData->current_alpha);
         func += indenter_energy;
+    }
+    // Dead-load work term -alpha * f0 . (x - X); must precede the roller gradient masking below
+    if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasExternalTractionForces()) {
+        func += userData->macro_geom_ptr->accumulateExternalForcePotential(
+            x, userData->interior_mapping, grad, userData->current_alpha);
     }
     if (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->hasPartialDOFConstraints()) {
         userData->macro_geom_ptr->zeroConstrainedComponentGradients(userData->interior_mapping, grad);

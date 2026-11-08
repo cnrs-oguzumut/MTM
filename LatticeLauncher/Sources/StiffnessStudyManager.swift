@@ -211,6 +211,8 @@ public class StiffnessStudyManager: ObservableObject {
     
     // Initial Lattice Mesh Data
     @Published public var initialMeshData: InitialMeshModel? = nil
+    /// Incremented every time a new initial mesh is loaded (cheap change detection for renderers).
+    @Published public var initialMeshVersion: Int = 0
     @Published public var isGeneratingPreview: Bool = false
     @Published public var geometryJSONPath: String = ""
     
@@ -251,15 +253,18 @@ public class StiffnessStudyManager: ObservableObject {
     }
 
     public func loadInitialMeshJSON(jsonPath: String) {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)) else { return }
-        do {
-            let decoder = JSONDecoder()
-            let decoded = try decoder.decode(InitialMeshModel.self, from: data)
-            DispatchQueue.main.async {
-                self.initialMeshData = decoded
+        // Decode off the main thread: for large crystals (esp. with 3×3 tiling) this JSON is tens of MB.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)) else { return }
+            do {
+                let decoded = try JSONDecoder().decode(InitialMeshModel.self, from: data)
+                DispatchQueue.main.async {
+                    self?.initialMeshData = decoded
+                    self?.initialMeshVersion += 1
+                }
+            } catch {
+                print("Failed to parse initial_lattice.json: \(error)")
             }
-        } catch {
-            print("Failed to parse initial_lattice.json: \(error)")
         }
     }
 

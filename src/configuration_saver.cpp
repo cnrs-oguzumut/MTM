@@ -3,6 +3,7 @@
 #include "../include/reductions/LagrangeReduction.h"
 #include "../include/geometry/DomainDimensions.h"
 #include "../include/geometry/MacroscopicGeometry.h"
+#include "../include/experiments/pbc_stress_control.h"
 #include <cstring>
 #include <cstdint>
 
@@ -589,6 +590,16 @@ void ConfigurationSaver::calculateEnergyAndStress(UserData* userData,
             total_energy += userData->macro_geom_ptr->computeIndenterPenaltyEnergy(
                 points, userData->current_alpha);
         }
+        if (userData != nullptr && userData->macro_geom_ptr != nullptr &&
+            userData->macro_geom_ptr->hasForceControl()) {
+            // Total enthalpy Pi = E_el - W_ext, so remesh acceptance compares the dead-load potential
+            total_energy += userData->macro_geom_ptr->computeExternalForcePotential(
+                points, userData->current_alpha);
+        }
+        if (userData != nullptr && userData->stress_ctrl != nullptr) {
+            // PBC nominal-stress control: H = E_el - A0 Pt : (F_bar - I)
+            total_energy += userData->stress_ctrl->workTerm(F_ext);
+        }
     }
 
 void ConfigurationSaver::logEnergyAndStress(
@@ -629,7 +640,8 @@ void ConfigurationSaver::logEnergyAndStress_v2(
     double post_area,  
     bool shouldRemesh,
     UserData* postUserData,
-    const std::vector<int>* contact_atoms)
+    const std::vector<int>* contact_atoms,
+    const std::vector<std::pair<std::string, double>>* extra_columns)
 {
     static std::ofstream log_file;
     static std::filesystem::path log_directory;
@@ -649,7 +661,11 @@ void ConfigurationSaver::logEnergyAndStress_v2(
                      << "EnergyChange,StressChange,PreArea,PostArea,shouldRemesh,"
                      << "CauchyXX,CauchyXY,CauchyYY,HydrostaticPressure,"
                      << "Piola11,Piola12,Piola22,VonMisesAvg,VonMisesMax,"
-                     << "IndenterLoad,MeanContactPressure,ContactAtoms\n";
+                     << "IndenterLoad,MeanContactPressure,ContactAtoms";
+            if (extra_columns != nullptr) {
+                for (const auto& col : *extra_columns) log_file << "," << col.first;
+            }
+            log_file << "\n";
         }
         
         // Set maximum precision for all subsequent writes
@@ -810,8 +826,11 @@ void ConfigurationSaver::logEnergyAndStress_v2(
              << vm_max << ","
              << indenter_load << ","
              << mean_contact_pressure << ","
-             << num_contact_atoms
-             << "\n";
+             << num_contact_atoms;
+    if (extra_columns != nullptr) {
+        for (const auto& col : *extra_columns) log_file << "," << col.second;
+    }
+    log_file << "\n";
     
     log_file.flush();
 }
@@ -2243,6 +2262,11 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
     file << "enable_remeshing " << (data.enable_remeshing ? 1 : 0) << "\n";
     file << "F_ext " << data.F_ext(0,0) << " " << data.F_ext(0,1) << " " 
                      << data.F_ext(1,0) << " " << data.F_ext(1,1) << "\n";
+    if (data.has_F_stage1) {
+        file << "F_stage1 " << data.F_stage1(0,0) << " " << data.F_stage1(0,1) << " "
+             << data.F_stage1(1,0) << " " << data.F_stage1(1,1) << "\n";
+    }
+    if (data.relaxation_step) file << "relaxation_step 1\n";
 
     file << "NODES " << data.points.size() << "\n";
     for (size_t i = 0; i < data.points.size(); ++i) {
@@ -2267,6 +2291,13 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
              << elem.getReferenceArea() << "\n";
     }
 
+    if (!data.ref_points.empty()) {
+        file << "REF_NODES " << data.ref_points.size() << "\n";
+        for (size_t i = 0; i < data.ref_points.size(); ++i) {
+            file << i << " " << data.ref_points[i].x() << " " << data.ref_points[i].y() << "\n";
+        }
+    }
+
     file.close();
     if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
         std::cout << "[CHECKPOINT] Saved checkpoint to " << filename
@@ -2286,18 +2317,20 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
     std::string line;
     bool reading_nodes = false;
     bool reading_elements = false;
+    bool reading_ref_nodes = false;
     size_t expected_nodes = 0;
     size_t expected_elements = 0;
 
     data.points.clear();
     data.elements.clear();
     data.active_elements.clear();
+    data.ref_points.clear();
 
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') continue;
 
         std::istringstream iss(line);
-        if (!reading_nodes && !reading_elements) {
+        if (!reading_nodes && !reading_elements && !reading_ref_nodes) {
             std::string key;
             if (!(iss >> key)) continue;
 
@@ -2318,6 +2351,18 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
                 double f00, f01, f10, f11;
                 iss >> f00 >> f01 >> f10 >> f11;
                 data.F_ext << f00, f01, f10, f11;
+            }
+            else if (key == "F_stage1") {
+                double f00, f01, f10, f11;
+                if (iss >> f00 >> f01 >> f10 >> f11) {
+                    data.F_stage1 << f00, f01, f10, f11;
+                    data.has_F_stage1 = true;
+                }
+            }
+            else if (key == "relaxation_step") {
+                int r = 0;
+                iss >> r;
+                data.relaxation_step = (r != 0);
             }
             else if (key == "NODES") {
                 iss >> expected_nodes;
@@ -2345,7 +2390,16 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
                 }
                 data.points.emplace_back(x, y, gid, gtheta);
             }
+        } else if (reading_ref_nodes) {
+            size_t idx;
+            double x, y;
+            if (iss >> idx >> x >> y) data.ref_points.emplace_back(x, y);
         } else if (reading_elements) {
+            if (line.rfind("REF_NODES", 0) == 0) {
+                reading_elements = false;
+                reading_ref_nodes = true;
+                continue;
+            }
             size_t elem_idx;
             int n0, n1, n2;
             double tx0, ty0, tx1, ty1, tx2, ty2, ref_area;

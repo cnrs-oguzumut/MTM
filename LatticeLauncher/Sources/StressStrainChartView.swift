@@ -35,11 +35,107 @@ struct StressStrainChartView: View {
     @State private var chartMode: ChartMetricMode = .stress
     @State private var stressComponent: StressComponentType = .primary
     @State private var scaleMode: ChartScaleMode = .autoFit
+    /// x-axis zoom (drag on the chart): lower bound, and upper bound or nil = follow the newest data
+    @State private var xZoomLower: Double? = nil
+    @State private var xZoomUpper: Double? = nil
+    @State private var zoomDragStart: CGFloat? = nil
+    @State private var zoomDragCurrent: CGFloat? = nil
     @State private var showRemeshEvents: Bool = true
     @State private var showYieldLine: Bool = true
     @State private var useInteriorGBGauge: Bool = true
     @State private var showGBSigmaLabels: Bool = true
+    /// Force / stress control: plot against the conjugate strain (bursts show as jumps along x)
+    @State private var plotAgainstConjugateStrain: Bool = true
+    /// Volterra cylinder load: plot against the applied far-field stress σ_xy instead of the load α
+    /// Volterra cylinder load: x axis = applied far-field stress σ_xy, load α (γ or τ), or dislocation position x_d / b
+    enum VolterraXAxis: Hashable { case appliedStress, load, corePosition }
+    @State private var volterraXAxis: VolterraXAxis = .corePosition
+    /// Force / stress control: the logged energy is the enthalpy H = E_el - W_ext; plot E_el unless asked
+    @State private var plotEnthalpy: Bool = false
+    /// PBC stress control: λ_min chart shows the free-cell eigenvalue λ_box (true) or the fixed-cell λ_min(K)
+    @State private var eigenShowsCell: Bool = true
+
+    private var hasElasticEnergy: Bool {
+        runner.curvePoints.contains { $0.elasticEnergy != nil }
+    }
+    private func energyValue(_ pt: StressStrainPoint) -> Double {
+        (hasElasticEnergy && !plotEnthalpy) ? (pt.elasticEnergy ?? pt.postEnergy) : pt.postEnergy
+    }
+    private var energyLabel: String {
+        hasElasticEnergy ? (plotEnthalpy ? "Enthalpy H = E_el − W_ext" : "Elastic Energy E_el") : "Internal Energy (E)"
+    }
+
+    /// The run logged a conjugate strain (dead load, force grip or PBC stress control)
+    private var hasConjugateStrain: Bool {
+        runner.curvePoints.contains { $0.effectiveStrain != 0 }
+    }
+    /// Volterra cylinder load run: the log carries the core glide x_c − x₀
+    private var hasCoreShift: Bool {
+        runner.curvePoints.contains { $0.coreShift != nil }
+    }
+    private var conjugateStrainAxis: Bool {
+        // Core glide is always plotted against the load α (γ or τ)
+        hasConjugateStrain && plotAgainstConjugateStrain && chartMode != .eigenvalue && chartMode != .gbEnergy
+            && !(chartMode == .stress && stressComponent == .coreShift)
+    }
+    /// Volterra cylinder load: the log carries the ring's applied stress and the core before remeshing
+    private var hasAppliedStress: Bool {
+        runner.curvePoints.contains { $0.appliedSigmaXY != nil }
+    }
+    private var hasCoreShiftRelaxed: Bool {
+        runner.curvePoints.contains { $0.coreShiftRelaxed != nil }
+    }
+    private var volterraAxisActive: Bool {
+        hasAppliedStress && chartMode != .eigenvalue && chartMode != .gbEnergy
+    }
+    private var appliedStressAxis: Bool { volterraAxisActive && volterraXAxis == .appliedStress }
+    /// Dislocation position x_d / b (core glide in Burgers vectors), as in Fig. 8 of the MTM cylinder paper
+    private var corePositionAxis: Bool { volterraAxisActive && volterraXAxis == .corePosition }
+    /// x coordinate of a curve point: the load parameter α, the conjugate strain ε under force control, or the
+    /// applied far-field stress in a Volterra cylinder load
+    private func xValue(_ pt: StressStrainPoint) -> Double {
+        if corePositionAxis { return (pt.coreShift ?? 0.0) / max(pt.burgers ?? 1.0, 1e-12) }
+        if appliedStressAxis { return pt.appliedSigmaXY ?? pt.alpha }
+        return conjugateStrainAxis ? pt.effectiveStrain : pt.alpha
+    }
+    private var xAxisLabel: String {
+        corePositionAxis ? "Dislocation Position (x_d / b)"
+            : (appliedStressAxis ? "Applied Stress (σ_xy)" : (conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)"))
+    }
+
+    /// PBC stress control: the eigen log carries the free-cell stability λ_box and the strain
+    private var hasCellEigen: Bool {
+        runner.eigenPoints.contains { $0.lambdaBox != nil }
+    }
+    private var showCellEigen: Bool { hasCellEigen && eigenShowsCell }
+    private var eigenStrainAxis: Bool {
+        runner.eigenPoints.contains { $0.strain != nil } && plotAgainstConjugateStrain
+    }
+    private func eigenX(_ pt: EigenPoint) -> Double {
+        eigenStrainAxis ? (pt.strain ?? pt.alpha) : pt.alpha
+    }
+    private func eigenY(_ pt: EigenPoint) -> Double? {
+        showCellEigen ? pt.lambdaBox : pt.lambdaMin
+    }
+    private func eigenUnstable(_ pt: EigenPoint) -> Bool {
+        showCellEigen ? pt.isCellUnstable : pt.isUnstable
+    }
+    private var eigenXLabel: String {
+        eigenStrainAxis ? "Conjugate Strain (ε)" : (hasConjugateStrain ? "Load (α)" : "Shear Strain (α)")
+    }
+    private var eigenYLabel: String {
+        showCellEigen ? "Cell Eigenvalue (λ_box)" : "Smallest Eigenvalue (λ_min)"
+    }
     
+    /// Torsion runs report the rim torque T = Σ r × f as their primary quantity.
+    private var primaryIsTorque: Bool {
+        guard let g = runner.activeConfig?.geometryConfig else { return false }
+        if g.primary_stress_component == "torque" { return true }
+        return g.primary_stress_component == "auto" && g.boundary_rules.contains {
+            $0.enabled && $0.kind == .affine && ($0.affine_mode == "circumferential_shear" || $0.affine_mode == "torsion")
+        }
+    }
+
     private func stressValue(for pt: StressStrainPoint) -> Double {
         pt.value(for: stressComponent)
     }
@@ -67,6 +163,26 @@ struct StressStrainChartView: View {
         runner.curvePoints.filter { $0.iteration > 0 && $0.shouldRemesh }
     }
     
+    // MARK: - x-axis zoom
+
+    private var isXZoomed: Bool { xZoomLower != nil && chartMode != .gbEnergy }
+    /// Largest x of all data in the current mode (not only the visible part)
+    private var dataXMax: Double? {
+        chartMode == .eigenvalue
+            ? runner.eigenPoints.filter { eigenY($0) != nil }.map { eigenX($0) }.max()
+            : runner.curvePoints.map { xValue($0) }.max()
+    }
+    private func inXZoom(_ x: Double) -> Bool {
+        guard isXZoomed, let lo = xZoomLower else { return true }
+        return x >= lo && (xZoomUpper.map { x <= $0 } ?? true)
+    }
+    private func resetXZoom() {
+        xZoomLower = nil
+        xZoomUpper = nil
+        zoomDragStart = nil
+        zoomDragCurrent = nil
+    }
+
     // MARK: - Dynamic Clever Domain Calculations
     
     private var activeAlphas: [Double] {
@@ -74,9 +190,9 @@ struct StressStrainChartView: View {
             return displayGBPoints.map(\.misorientationDeg)
         }
         if chartMode == .eigenvalue && !runner.eigenPoints.isEmpty {
-            return runner.eigenPoints.map(\.alpha)
+            return displayEigenPoints.map { eigenX($0) }
         }
-        return runner.curvePoints.map(\.alpha)
+        return runner.curvePoints.map { xValue($0) }
     }
     
     private var xDomain: ClosedRange<Double> {
@@ -94,6 +210,12 @@ struct StressStrainChartView: View {
             return lo < hi ? lo...hi : 0.0...60.0
         }
         
+        if isXZoomed, let lo = xZoomLower {
+            let hi = xZoomUpper ?? max(dataXMax ?? lo, lo)
+            let span = max(hi - lo, 1e-9)
+            return lo...(hi + (xZoomUpper == nil ? span * 0.05 : 0.0))
+        }
+
         let alphas = activeAlphas
         let firstAlpha = alphas.first ?? (runner.activeConfig?.alphaStart ?? 0.14)
         
@@ -112,6 +234,13 @@ struct StressStrainChartView: View {
         let minA = alphas.min() ?? firstAlpha
         let maxA = alphas.max() ?? (minA + 0.001)
         let span = maxA - minA
+
+        // Conjugate-strain axis: the schedule (α_start → α_end) is a load range, not a strain range
+        if conjugateStrainAxis {
+            let effectiveSpan = max(0.0008, span)
+            let lo = scaleMode == .autoFit ? minA - effectiveSpan * 0.025 : min(0.0, minA)
+            return lo...(maxA + effectiveSpan * 0.065)
+        }
         
         switch scaleMode {
         case .autoFit:
@@ -151,7 +280,8 @@ struct StressStrainChartView: View {
             
         case .stress:
             guard !runner.curvePoints.isEmpty else { return 0.0...0.05 }
-            let vals = runner.curvePoints.map { stressValue(for: $0) }
+            let zoomed = runner.curvePoints.filter { inXZoom(xValue($0)) }
+            let vals = (zoomed.isEmpty ? runner.curvePoints : zoomed).map { stressValue(for: $0) }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.01
             let span = maxY - minY
@@ -179,7 +309,8 @@ struct StressStrainChartView: View {
             
         case .energy:
             guard !runner.curvePoints.isEmpty else { return 0.0...100.0 }
-            let vals = runner.curvePoints.map(\.postEnergy)
+            let zoomed = runner.curvePoints.filter { inXZoom(xValue($0)) }
+            let vals = (zoomed.isEmpty ? runner.curvePoints : zoomed).map { energyValue($0) }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.01
             let span = maxY - minY
@@ -201,8 +332,9 @@ struct StressStrainChartView: View {
             return yMin <= yMax ? yMin...yMax : (minY - 0.1)...(maxY + 0.1)
             
         case .eigenvalue:
-            guard !runner.eigenPoints.isEmpty else { return -0.05...0.5 }
-            let vals = runner.eigenPoints.map(\.lambdaMin)
+            let zoomedEig = runner.eigenPoints.filter { inXZoom(eigenX($0)) }
+            let vals = (zoomedEig.isEmpty ? runner.eigenPoints : zoomedEig).compactMap { eigenY($0) }
+            guard !vals.isEmpty else { return -0.05...0.5 }
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.1
             let span = max(maxY - minY, 1e-5)
@@ -301,6 +433,24 @@ struct StressStrainChartView: View {
                             Text(StressComponentType.meanContactPressure.rawValue).tag(StressComponentType.meanContactPressure)
                             Text(StressComponentType.contactAtoms.rawValue).tag(StressComponentType.contactAtoms)
                         }
+                        Section(header: Text("Force / Stress Control")) {
+                            Text(StressComponentType.effectiveStrain.rawValue).tag(StressComponentType.effectiveStrain)
+                        }
+                        if hasCoreShift {
+                            Section(header: Text("Dislocation Core (Volterra Load)")) {
+                                Text(StressComponentType.appliedSigmaXY.rawValue).tag(StressComponentType.appliedSigmaXY)
+                                Text(StressComponentType.coreShift.rawValue).tag(StressComponentType.coreShift)
+                            }
+                        }
+                    }
+                    .onChange(of: hasCoreShift, initial: true) { _, present in
+                        // Volterra load run: open on the shear stress inside the free region (Cauchy σ_xy, averaged
+                        // over the free disc) against the dislocation position, as in Fig. 8a; fall back when the
+                        // columns go away
+                        if present && stressComponent == .primary { stressComponent = .cauchyXY }
+                        if !present && (stressComponent == .coreShift || stressComponent == .appliedSigmaXY) {
+                            stressComponent = .primary
+                        }
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
@@ -320,6 +470,16 @@ struct StressStrainChartView: View {
                 .controlSize(.small)
                 .fixedSize()
                 .help(scaleMode.tooltip)
+
+                if isXZoomed {
+                    Button(action: resetXZoom) {
+                        Label("Zoom", systemImage: "xmark.circle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help("Showing a zoomed x range (drag on the chart to choose it). Click, or double-click the chart, to show all points.")
+                }
                 
                 Divider()
                     .frame(height: 14)
@@ -397,14 +557,15 @@ struct StressStrainChartView: View {
                             .cornerRadius(4)
                             .lineLimit(1)
                             .fixedSize()
-                        } else if chartMode == .eigenvalue, let lastEig = runner.eigenPoints.last {
+                        } else if chartMode == .eigenvalue, let lastEig = runner.eigenPoints.last(where: { eigenY($0) != nil }),
+                                  let lastY = eigenY(lastEig) {
                             HStack(spacing: 4) {
                                 Circle()
-                                    .fill(lastEig.isUnstable ? Color.red : Color.green)
+                                    .fill(eigenUnstable(lastEig) ? Color.red : Color.green)
                                     .frame(width: 6, height: 6)
-                                Text("λ_min: \(String(format: "%.4e", lastEig.lambdaMin))")
+                                Text("\(showCellEigen ? "λ_box" : "λ_min"): \(String(format: "%.4e", lastY))")
                                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundColor(lastEig.isUnstable ? .red : .green)
+                                    .foregroundColor(eigenUnstable(lastEig) ? .red : .green)
                             }
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -434,6 +595,56 @@ struct StressStrainChartView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 
+                // Force / stress control: energy = elastic E_el or enthalpy H
+                if hasElasticEnergy && chartMode == .energy {
+                    Picker("", selection: $plotEnthalpy) {
+                        Text("E_el").tag(false)
+                        Text("H").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 90)
+                    .help("Under force or stress control the logged energy is the enthalpy H = E_el − W_ext, dominated by the load term; E_el is the stored elastic energy.")
+                }
+                // PBC stress control: λ_min chart = free cell (λ_box) or fixed cell (λ_min of K)
+                if hasCellEigen && chartMode == .eigenvalue {
+                    Picker("", selection: $eigenShowsCell) {
+                        Text("Cell").tag(true)
+                        Text("Atoms").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 110)
+                    .help("Under stress control the cell is free. Cell: lowest eigenvalue λ_box of the relaxed cell stiffness (with the Cauchy load stiffness); it reaches 0 at the limit load. Atoms: λ_min of the atomic stiffness K at fixed cell, the strain-control criterion.")
+                }
+                // Volterra cylinder load: x-axis = applied far-field stress or load α (γ or τ)
+                if hasAppliedStress && chartMode != .gbEnergy && chartMode != .eigenvalue {
+                    Picker("", selection: $volterraXAxis) {
+                        Text("x: x_d").tag(VolterraXAxis.corePosition)
+                        Text("x: σ").tag(VolterraXAxis.appliedStress)
+                        Text("x: α").tag(VolterraXAxis.load)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Volterra cylinder load: x axis = dislocation position x_d / b (with Cauchy Shear σ_xy, the average over the free disc, as y this is σ̄₁₂(x_d) as in Fig. 8a), the far-field shear stress σ_xy applied by the frozen ring, or the load α (γ or τ).")
+                }
+                // Force / stress control: x-axis = load α or conjugate strain ε
+                if (hasConjugateStrain && chartMode != .gbEnergy && chartMode != .eigenvalue) ||
+                    (chartMode == .eigenvalue && runner.eigenPoints.contains { $0.strain != nil }) {
+                    Picker("", selection: $plotAgainstConjugateStrain) {
+                        Text("x: ε").tag(true)
+                        Text("x: α").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 96)
+                    .help("Under force or stress control α is the applied load; plot against the conjugate strain ε to see strain bursts as jumps along x.")
+                }
                 // Active Strain Range Badge
                 if chartMode != .gbEnergy, let firstA = runner.curvePoints.first?.alpha, let lastA = runner.curvePoints.last?.alpha {
                     Text("α: [\(String(format: "%.3f", firstA)) → \(String(format: "%.3f", lastA))]")
@@ -619,30 +830,33 @@ struct StressStrainChartView: View {
                             }
                         
                         ForEach(displayEigenPoints) { pt in
-                            LineMark(
-                                x: .value("Shear Strain (α)", pt.alpha),
-                                y: .value("Smallest Eigenvalue (λ_min)", pt.lambdaMin)
-                            )
-                            .foregroundStyle(Color.teal)
-                            .interpolationMethod(.linear)
-                            
-                            PointMark(
-                                x: .value("Shear Strain (α)", pt.alpha),
-                                y: .value("Smallest Eigenvalue (λ_min)", pt.lambdaMin)
-                            )
-                            .symbol(Circle())
-                            .symbolSize(pt.isUnstable ? 55 : 32)
-                            .foregroundStyle(pt.isUnstable ? Color.red : Color.teal)
+                            if let yVal = eigenY(pt) {
+                                LineMark(
+                                    x: .value(eigenXLabel, eigenX(pt)),
+                                    y: .value(eigenYLabel, yVal)
+                                )
+                                .foregroundStyle(Color.teal)
+                                .interpolationMethod(.linear)
+                                
+                                PointMark(
+                                    x: .value(eigenXLabel, eigenX(pt)),
+                                    y: .value(eigenYLabel, yVal)
+                                )
+                                .symbol(Circle())
+                                .symbolSize(eigenUnstable(pt) ? 55 : 32)
+                                .foregroundStyle(eigenUnstable(pt) ? Color.red : Color.teal)
+                            }
                         }
                         
-                        if let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha) {
-                            RuleMark(x: .value("Selected α", eigPt.alpha))
+                        if let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha),
+                           let selY = eigenY(eigPt) {
+                            RuleMark(x: .value("Selected α", eigenX(eigPt)))
                                 .foregroundStyle(Color.secondary.opacity(0.4))
                                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
                             
                             PointMark(
-                                x: .value("Selected α", eigPt.alpha),
-                                y: .value("Smallest Eigenvalue (λ_min)", eigPt.lambdaMin)
+                                x: .value("Selected α", eigenX(eigPt)),
+                                y: .value(eigenYLabel, selY)
                             )
                             .symbolSize(85)
                             .foregroundStyle(Color.cyan)
@@ -650,18 +864,19 @@ struct StressStrainChartView: View {
                     } else {
                         // 1. Primary Stress / Energy Line Mark (+ PointMark when sparse)
                         ForEach(displayCurvePoints) { pt in
-                            let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
-                            let yLabel = chartMode == .stress ? stressComponent.rawValue : "Internal Energy (E)"
+                            let yVal = chartMode == .stress ? stressValue(for: pt) : energyValue(pt)
+                            let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : energyLabel
                             LineMark(
-                                x: .value("Shear Strain (α)", pt.alpha),
-                                y: .value(yLabel, yVal)
+                                x: .value(xAxisLabel, xValue(pt)),
+                                y: .value(yLabel, yVal),
+                                series: .value("Curve", "main")
                             )
                             .foregroundStyle(chartMode == .stress ? Color.blue : Color.purple)
                             .interpolationMethod(.linear)
                             
                             if runner.curvePoints.count <= 50 {
                                 PointMark(
-                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    x: .value(xAxisLabel, xValue(pt)),
                                     y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle())
@@ -670,13 +885,29 @@ struct StressStrainChartView: View {
                             }
                         }
                         
+                        // 1b. Volterra cylinder load: core glide before remeshing (dashed)
+                        if chartMode == .stress && stressComponent == .coreShift && hasCoreShiftRelaxed {
+                            ForEach(displayCurvePoints) { pt in
+                                if let yRelaxed = pt.coreShiftRelaxed {
+                                    LineMark(
+                                        x: .value(xAxisLabel, xValue(pt)),
+                                        y: .value(stressComponent.rawValue, yRelaxed),
+                                        series: .value("Curve", "before remesh")
+                                    )
+                                    .foregroundStyle(Color.orange)
+                                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+                                    .interpolationMethod(.linear)
+                                }
+                            }
+                        }
+
                         // 2. Plasticity / Remesh Events Overlay
                         if showRemeshEvents {
                             ForEach(displayRemeshEvents) { pt in
-                                let yVal = chartMode == .stress ? stressValue(for: pt) : pt.postEnergy
-                                let yLabel = chartMode == .stress ? stressComponent.rawValue : "Internal Energy (E)"
+                                let yVal = chartMode == .stress ? stressValue(for: pt) : energyValue(pt)
+                                let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : energyLabel
                                 PointMark(
-                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    x: .value(xAxisLabel, xValue(pt)),
                                     y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle())
@@ -684,7 +915,7 @@ struct StressStrainChartView: View {
                                 .foregroundStyle(Color.red)
                                 
                                 PointMark(
-                                    x: .value("Shear Strain (α)", pt.alpha),
+                                    x: .value(xAxisLabel, xValue(pt)),
                                     y: .value(yLabel, yVal)
                                 )
                                 .symbol(Circle().strokeBorder(lineWidth: 1.5))
@@ -695,7 +926,8 @@ struct StressStrainChartView: View {
                         
                         // 3. Peak / Yield Stress Guide Line
                         let peakVal = currentPeakStress
-                        if showYieldLine && chartMode == .stress && peakVal > 0 {
+                        // (not for the core glide, where a "peak" line has no meaning)
+                        if showYieldLine && chartMode == .stress && stressComponent != .coreShift && peakVal > 0 {
                             let lastStress = runner.curvePoints.last.map { stressValue(for: $0) } ?? 0.0
                             let peakY = lastStress < 0 ? -peakVal : peakVal
                             RuleMark(
@@ -714,13 +946,13 @@ struct StressStrainChartView: View {
                         
                         // 4. Hover Cursor / Selection Indicator
                         if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
-                            RuleMark(x: .value("Selected α", pt.alpha))
+                            RuleMark(x: .value("Selected α", xValue(pt)))
                                 .foregroundStyle(Color.secondary.opacity(0.4))
                                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
                             
                             PointMark(
-                                x: .value("Selected α", pt.alpha),
-                                y: .value("Value", chartMode == .stress ? stressValue(for: pt) : pt.postEnergy)
+                                x: .value("Selected α", xValue(pt)),
+                                y: .value("Value", chartMode == .stress ? stressValue(for: pt) : energyValue(pt))
                             )
                             .symbolSize(80)
                             .foregroundStyle(Color.cyan)
@@ -729,6 +961,23 @@ struct StressStrainChartView: View {
                 }
                 .chartXScale(domain: xDomain)
                 .chartYScale(domain: yDomain)
+                // Volterra load: legend for the before-remesh curve (on the plot, so the toolbar stays one row)
+                .overlay(alignment: .topLeading) {
+                    if chartMode == .stress && stressComponent == .coreShift && hasCoreShiftRelaxed {
+                        Text("solid: final · dashed: before remesh")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(BlueHour.controlSurface.opacity(0.85))
+                            .cornerRadius(4)
+                            .padding(6)
+                            .allowsHitTesting(false)
+                            .help("Core glide after each step (solid) and after the fixed-mesh relaxation, before that step's remeshing (dashed). A jump only on the solid curve came from the reconnection; a jump on the dashed curve is an instability of the lattice energy.")
+                    }
+                }
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 7)) { value in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
@@ -772,8 +1021,44 @@ struct StressStrainChartView: View {
                                     selectedAlpha = nil
                                 }
                             }
+                            // Drag across the chart to zoom the x axis; double-click to show all points
+                            .gesture(
+                                DragGesture(minimumDistance: 6)
+                                    .onChanged { value in
+                                        guard chartMode != .gbEnergy else { return }
+                                        zoomDragStart = value.startLocation.x
+                                        zoomDragCurrent = value.location.x
+                                    }
+                                    .onEnded { value in
+                                        defer { zoomDragStart = nil; zoomDragCurrent = nil }
+                                        guard chartMode != .gbEnergy,
+                                              let a: Double = proxy.value(atX: value.startLocation.x),
+                                              let b: Double = proxy.value(atX: value.location.x),
+                                              abs(value.location.x - value.startLocation.x) > 6 else { return }
+                                        let lo = min(a, b), hi = max(a, b)
+                                        // A selection that reaches the newest point keeps following the live data
+                                        let follow = (dataXMax.map { hi >= $0 } ?? true)
+                                        xZoomLower = lo
+                                        xZoomUpper = follow ? nil : hi
+                                    }
+                            )
+                            .onTapGesture(count: 2) { resetXZoom() }
+                        if let s0 = zoomDragStart, let s1 = zoomDragCurrent {
+                            Rectangle()
+                                .fill(BlueHour.accent.opacity(0.15))
+                                .overlay(Rectangle().stroke(BlueHour.accent.opacity(0.6), lineWidth: 1))
+                                .frame(width: abs(s1 - s0), height: geo.size.height)
+                                .position(x: (s0 + s1) / 2, y: geo.size.height / 2)
+                                .allowsHitTesting(false)
+                        }
                     }
                 }
+                .help("Drag across the chart to zoom the x axis; double-click to show all points.")
+                .onChange(of: chartMode) { _, _ in resetXZoom() }
+                .onChange(of: plotAgainstConjugateStrain) { _, _ in resetXZoom() }
+                .onChange(of: volterraXAxis) { _, _ in resetXZoom() }
+                .onChange(of: scaleMode) { _, _ in resetXZoom() }
+                .onChange(of: runner.outputDirectory) { _, _ in resetXZoom() }
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
                 .padding(.bottom, 8)
@@ -831,8 +1116,22 @@ struct StressStrainChartView: View {
                     HStack(spacing: 18) {
                         Text("Step: \(eigPt.iteration)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text("Strain α: \(String(format: "%.6f", eigPt.alpha))")
+                        Text("\(hasConjugateStrain ? "Load" : "Strain") α: \(String(format: "%.6f", eigPt.alpha))")
                             .font(.system(size: 11, design: .monospaced))
+                        if let eps = eigPt.strain {
+                            Text("ε: \(String(format: "%.6f", eps))")
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                        if let lb = eigPt.lambdaBox {
+                            Text("λ_box: \(String(format: "%.4e", lb))")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(eigPt.isCellUnstable ? .red : .teal)
+                        }
+                        if let tan = eigPt.boxTangent {
+                            Text("dα/dε: \(String(format: "%.4g", tan))")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
                         Text("λ₁ (min): \(String(format: "%.6e", eigPt.lambdaMin))")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundColor(eigPt.isUnstable ? .red : .teal)
@@ -854,14 +1153,14 @@ struct StressStrainChartView: View {
                     let curStress = stressValue(for: pt)
                     let stressTitle: String = {
                         if stressComponent == .primary {
-                            return isIndentation ? "Load P" : "Stress σ"
+                            return isIndentation ? "Load P" : (primaryIsTorque ? "Torque T" : "Stress σ")
                         }
                         return stressComponent.shortLabel
                     }()
                     HStack(spacing: 18) {
                         Text("Step: \(pt.iteration)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text(isIndentation ? "Depth δ: \(String(format: "%.4f", pt.alpha))" : "Strain α: \(String(format: "%.6f", pt.alpha))")
+                        Text(isIndentation ? "Depth δ: \(String(format: "%.4f", pt.alpha))" : (hasConjugateStrain ? "Load α: \(String(format: "%.6f", pt.alpha))  Strain ε: \(String(format: "%.6f", pt.effectiveStrain))" : "Strain α: \(String(format: "%.6f", pt.alpha))"))
                             .font(.system(size: 11, design: .monospaced))
                         Text("\(stressTitle): \(String(format: "%.6f", curStress))")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -871,7 +1170,8 @@ struct StressStrainChartView: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.orange)
                         }
-                        Text("Energy E: \(String(format: "%.6e", pt.postEnergy))")
+                        Text(pt.elasticEnergy.map { "E_el: \(String(format: "%.6e", $0))  H: \(String(format: "%.6e", pt.postEnergy))" }
+                             ?? "Energy E: \(String(format: "%.6e", pt.postEnergy))")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.purple)
                         if pt.shouldRemesh && pt.iteration > 0 {
@@ -901,7 +1201,7 @@ struct StressStrainChartView: View {
     }
     
     private var displayCurvePoints: [StressStrainPoint] {
-        let pts = runner.curvePoints
+        let pts = isXZoomed ? runner.curvePoints.filter { inXZoom(xValue($0)) } : runner.curvePoints
         guard pts.count > 1000 else { return pts }
         let stride = max(1, pts.count / 800)
         var sampled: [StressStrainPoint] = []
@@ -916,7 +1216,7 @@ struct StressStrainChartView: View {
     }
     
     private var displayRemeshEvents: [StressStrainPoint] {
-        let events = remeshEvents
+        let events = isXZoomed ? remeshEvents.filter { inXZoom(xValue($0)) } : remeshEvents
         guard events.count > 400 else { return events }
         let stride = max(1, events.count / 300)
         var sampled: [StressStrainPoint] = []
@@ -927,7 +1227,7 @@ struct StressStrainChartView: View {
     }
     
     private var displayEigenPoints: [EigenPoint] {
-        let pts = runner.eigenPoints
+        let pts = isXZoomed ? runner.eigenPoints.filter { inXZoom(eigenX($0)) } : runner.eigenPoints
         guard pts.count > 1000 else { return pts }
         let stride = max(1, pts.count / 800)
         var sampled: [EigenPoint] = []
@@ -942,12 +1242,13 @@ struct StressStrainChartView: View {
     
     private func findClosestPoint(to alpha: Double) -> StressStrainPoint? {
         guard !runner.curvePoints.isEmpty else { return nil }
-        return runner.curvePoints.min(by: { abs($0.alpha - alpha) < abs($1.alpha - alpha) })
+        return runner.curvePoints.min(by: { abs(xValue($0) - alpha) < abs(xValue($1) - alpha) })
     }
     
     private func findClosestEigenPoint(to alpha: Double) -> EigenPoint? {
         guard !runner.eigenPoints.isEmpty else { return nil }
-        return runner.eigenPoints.min(by: { abs($0.alpha - alpha) < abs($1.alpha - alpha) })
+        return runner.eigenPoints.filter { eigenY($0) != nil }
+            .min(by: { abs(eigenX($0) - alpha) < abs(eigenX($1) - alpha) })
     }
     
     private func findClosestGBPoint(to angle: Double) -> GBEnergyPoint? {

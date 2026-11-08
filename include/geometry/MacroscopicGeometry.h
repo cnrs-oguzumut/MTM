@@ -10,6 +10,7 @@
 #include "DomainDimensions.h"
 
 struct UserData;
+class ElementTriangle2D;
 
 enum class OuterDomainShapeType {
     Rectangle = 0,
@@ -118,7 +119,9 @@ enum class BoundaryConditionKind {
     PrescribedDisplacement = 2, // Driven u(alpha) = alpha * (ux * L_ref, uy * L_ref)
     AffineDeformation = 3,      // Driven x(alpha) = F(alpha) * X_0
     RollerX = 4,                // Free ux, Fixed uy = 0 (horizontal slide / normal volume relaxation)
-    RollerY = 5                 // Fixed ux = 0, Free uy (vertical slide)
+    RollerY = 5,                // Fixed ux = 0, Free uy (vertical slide)
+    PrescribedTraction = 6,     // Dead-load nominal traction t(alpha) = alpha * t0 on the outer contour atoms (DOFs stay free)
+    RigidForceGrip = 7          // Rigid grip x = X + U with total force alpha * (tx, ty) * L_face; U is solved for
 };
 
 struct BoundaryZoneRule {
@@ -146,6 +149,12 @@ struct BoundaryZoneRule {
 
     // Affine mode: "simple_shear_x", "simple_shear_y", "uniaxial_y", "uniaxial_x", "pure_shear", "biaxial"
     std::string affine_mode = "simple_shear_x";
+
+    // PrescribedTraction: "cartesian" (t0 = (tx, ty)), "radial_outward" / "radial_inward" (unit normal
+    // traction away from / toward the contour's pivot), "circumferential_shear" (unit tangential traction)
+    std::string traction_mode = "cartesian";
+    double tx = 0.0;
+    double ty = 1.0;
 };
 
 enum class MicrostructureMode {
@@ -283,6 +292,11 @@ struct MacroscopicGeometryConfig {
 
     // Test if a physical point (x, y) is inside any active cutout (expanded by optional margin)
     bool isPointNearCutout(double x, double y, double margin_phys) const;
+    // Index of the first enabled cutout within margin_phys of (x, y), or -1
+    int findCutoutNear(double x, double y, double margin_phys) const;
+    // Physical pivot of a cutout: centre (circle/ellipse/rectangle), vertex average (polygon),
+    // segment midpoint (pre-crack); the specimen centre for edge notches or idx = -1
+    Eigen::Vector2d cutoutPivot(int idx) const;
 
     // Test if a triangle (p0, p1, p2) in reference/initial space should be rejected
     // (centroid or edge midpoint outside solid, or edge crosses a pre-crack slit)
@@ -302,6 +316,67 @@ struct MacroscopicGeometryConfig {
     //   4 = Y-Constrained / X-Free (RollerX or partial Y lock: ux free, uy(alpha) prescribed/0)
     mutable std::vector<int> cached_node_bc_role;
     mutable bool has_partial_dof_constraints = false;
+    // Nodes driven by a torsion (circumferential_shear) rule follow an exact rigid rotation
+    // x = X_c + R(alpha) (X - X_c) about their pivot instead of the linearized X + alpha * v.
+    mutable std::vector<char> cached_node_rotation_driven;
+    mutable std::vector<Eigen::Vector2d> cached_node_rotation_pivot;
+    bool hasTorsionDrivenNodes() const;
+    // Torque exerted on the torsion-driven rim nodes, T = sum (x - X_c) x f (z-component)
+    double computeRimTorque(const UserData* userData, const std::vector<Point2D>& current_points) const;
+
+    // Dead-load tractions (PrescribedTraction rules). Membership is set by buildBoundaryDOFs; nodal
+    // reference forces f0 are assembled from boundary-edge shares by finalizeBoundaryTractions once
+    // the reference mesh exists. External work potential: -alpha * sum_i f0_i . (x_i - X_i).
+    mutable std::vector<std::vector<char>> cached_traction_membership; // [rule][node]
+    mutable std::vector<int> cached_traction_rule_index;               // rule index into boundary_rules
+    mutable std::vector<Eigen::Vector2d> cached_node_ext_force_unit;   // f0_i (zero when not loaded)
+    mutable std::vector<Eigen::Vector2d> cached_node_ext_force_ref;    // X_i used by the work term
+    mutable bool has_external_tractions = false;
+    mutable bool traction_anchor_active = false;
+    mutable double cached_reference_solid_area = 0.0;
+    bool hasTractionRules() const;
+    bool hasExternalTractionForces() const { return enabled && has_external_tractions; }
+
+    // Rigid force grips (RigidForceGrip rules): all gripped atoms share one displacement U, solved for
+    // inside relax_configuration with Pi = E_el - alpha * F0 . U. A loaded component of U is always free;
+    // an unloaded one is held at its current value when lock_x / lock_y is set, else it slides freely.
+    struct ForceGrip {
+        int rule_index = -1;
+        std::vector<int> nodes;
+        Eigen::Vector2d F0 = Eigen::Vector2d::Zero(); // total force per unit alpha, (tx, ty) * L_face
+        bool free_x = true;
+        bool free_y = true;
+        double face_length = 0.0;
+    };
+    mutable std::vector<ForceGrip> cached_force_grips;
+    mutable std::vector<int> cached_node_grip; // grip index per node, or -1
+    bool hasForceGrips() const { return enabled && !cached_force_grips.empty(); }
+    bool hasForceControl() const { return hasExternalTractionForces() || hasForceGrips(); }
+    bool isGripNode(size_t node) const {
+        return node < cached_node_grip.size() && cached_node_grip[node] >= 0;
+    }
+    // U of grip g, read from its first atom: x - X (X = reference used by the work terms)
+    Eigen::Vector2d gripDisplacement(int g, const std::vector<Point2D>& points) const;
+    void setGripPositions(int g, const Eigen::Vector2d& U, std::vector<Point2D>& points) const;
+    // Assemble f0 from the reference mesh; checks force/torque balance. Returns false when the load
+    // is unbalanced and nothing but the isostatic anchor holds the specimen (run must be refused).
+    bool finalizeBoundaryTractions(const std::vector<Point2D>& reference_points,
+                                   const std::vector<ElementTriangle2D>& elements) const;
+    double computeExternalForcePotential(const std::vector<Point2D>& points, double alpha) const;
+    double accumulateExternalForcePotential(const alglib::real_1d_array& x,
+                                            const std::vector<std::pair<int, int>>& interior_mapping,
+                                            alglib::real_1d_array& grad,
+                                            double alpha) const;
+    // Work-conjugate strain of the dead load: sum_i f0_i . (x_i - X_i) / A_solid
+    double computeTractionConjugateStrain(const std::vector<Point2D>& points) const;
+    // Limit-load guard for force control: largest nodal displacement since the start of the load step
+    mutable std::vector<Eigen::Vector2d> runaway_reference_points;
+    mutable double runaway_limit = 0.0; // <= 0: guard off (strain control)
+    void setRunawayReference(const std::vector<Point2D>& points, double limit) const;
+    double maxDisplacementSinceStepStart(const std::vector<Point2D>& points) const;
+    bool exceedsRunawayLimit(const std::vector<Point2D>& points) const {
+        return runaway_limit > 0.0 && maxDisplacementSinceStepStart(points) > runaway_limit;
+    }
 
     bool hasPartialDOFConstraints() const { return enabled && has_partial_dof_constraints; }
     bool isNodeXConstrained(int node_idx) const {
