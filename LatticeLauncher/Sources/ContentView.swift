@@ -1065,10 +1065,16 @@ struct SidebarControlsView: View {
                             Toggle("Export Full Mesh (Unclipped VTK)", isOn: $config.exportFullMesh)
                                 .font(.caption)
                             
+                            // Acts only on the unloaded cylinder; under a load the simulator ignores it (the
+                            // average-stress control below takes that role)
                             Toggle("Relax Macroscopic Stress to Zero (Full Cauchy)", isOn: $config.relaxMacroStress)
                                 .font(.caption)
+                                .disabled(config.cylinderLoadMode != .none)
+                                .help(config.cylinderLoadMode != .none
+                                      ? "Only for Load = None. Under a load, use \"Control average stress inside R_free\"."
+                                      : "Relax the average stress inside R_free to zero after the core relaxation.")
                             
-                            if config.relaxMacroStress {
+                            if config.relaxMacroStress && config.cylinderLoadMode == .none {
                                 HStack {
                                     Text("Stress Tolerance (max |σ|):")
                                         .font(.caption)

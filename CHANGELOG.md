@@ -16,6 +16,7 @@
 - When the residual stops decreasing, a residual below 1 % of one load step's stress change is accepted. This
   covers the noise floor of `--potential-mode=2`, which would otherwise spend 40 relaxations per step.
 - The GUI no longer shows the "Remesh after each load step" toggle; `--cyl-step-remesh` stays a CLI flag.
+- In the GUI, "Relax Macroscopic Stress to Zero (Full Cauchy)" is disabled when a cylinder load is active (`Load != None`), and `--relax-stress=1` is only passed for unloaded cylinder relaxations.
 - With remeshing, each load point (and the zero-load state) alternates the remeshing loop and the stress
   control until the mesh no longer changes, at most 5 rounds, with a warning otherwise. Before, the stress was
   restored once after the remeshing, which could leave a state that needed another reconnection. After a

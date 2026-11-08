@@ -312,7 +312,7 @@ public class SimulationConfig: ObservableObject {
         let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed && !isPeriodicDislocs) ? "_fixed" : ""
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
         let rotTag = useRotation ? ((boundaryCondition == .fixed || geometryConfig.enabled || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
-        let relaxTag = (mode == .volterra && relaxMacroStress) ? "_relax" : ""
+        let relaxTag = (mode == .volterra && relaxMacroStress && cylinderLoadMode == .none) ? "_relax" : ""
         let cylLoadTag = (mode == .volterra && cylinderLoadMode != .none)
             ? "_load_\(cylinderLoadMode.rawValue)\(cylinderLoadEnd < 0 ? "_rev" : "")" : ""
         let dipoleTag = (mode == .volterra && dipoleEnabled) ? "_dipole\(dipoleDx)x\(dipoleDy)" : ""
@@ -395,7 +395,7 @@ public class SimulationConfig: ObservableObject {
         if mode == .volterra {
             args.append(String(format: "--r-free=%.2f", rFree))
             args.append(exportFullMesh ? "--full-mesh" : "--circle")
-            if relaxMacroStress {
+            if relaxMacroStress && cylinderLoadMode == .none {
                 args.append("--relax-stress=1")
                 args.append(String(format: "--stress-tol=%.1e", stressTol))
                 args.append("--max-macro-iters=\(maxMacroIters)")
