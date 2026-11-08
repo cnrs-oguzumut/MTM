@@ -1264,6 +1264,9 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy, stress_tensor, true);
   double pre_stress = stress_tensor(0, 1);
   double pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
+  // Free-region values of the unrelaxed state, for the load log: the VTK export below overwrites
+  // pre_energy / pre_stress with whole-crystal values when the full mesh is exported
+  const double pre_energy_free = pre_energy, pre_stress_free = pre_stress;
 
   std::cout << "State 0 (Unrelaxed Volterra): Energy = " << pre_energy
             << ", Stress_12 = " << pre_stress << std::endl;
@@ -1680,10 +1683,14 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                                                           : "strain control: F12 = gamma on the ring")
               << ") : " << alphas.size() << " steps to " << load.alpha_end << " ===" << std::endl;
 
-    // Row 0: the relaxed state, no load
+    // Row 0: the relaxed state, no load. Energies and stress over the free region, as in the later rows
+    // (the VTK export of the relaxed state overwrote post_energy with the whole-crystal value)
     StabilityMonitor monitor;
-    log_row(0, 0.0, pre_energy, pre_stress, post_energy, stress_tensor, false, Fb_prev, core_ref0, false);
-    monitor.end_of_step(0, 0.0, post_stress, userData, false, elements, active_elements, relaxed_file_id);
+    double e_relaxed = 0.0;
+    Eigen::Matrix2d sig_relaxed = Eigen::Matrix2d::Zero();
+    ConfigurationSaver::calculateEnergyAndStress(&userData, e_relaxed, sig_relaxed, true);
+    log_row(0, 0.0, pre_energy_free, pre_stress_free, e_relaxed, sig_relaxed, false, Fb_prev, core_ref0, false);
+    monitor.end_of_step(0, 0.0, sig_relaxed(0, 1), userData, false, elements, active_elements, relaxed_file_id);
 
     int file_id = relaxed_file_id + 1;
     int first_jump = -1;
