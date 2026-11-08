@@ -1105,6 +1105,9 @@ struct SidebarControlsView: View {
                                         .font(.caption)
                                     DoubleField(title: "1e-4", value: $config.cylinderLoadStep, width: 75, minValue: 1e-8)
                                 }
+                                Toggle("Remesh after each load step", isOn: $config.cylinderStepRemesh)
+                                    .font(.caption)
+                                    .help("On: each step's relaxation is followed by a Delaunay reconnection when it lowers the energy. Off: the initial mesh is kept, so the core moves only through the lattice energy at fixed connectivity. The log records the core both before and after remeshing (CoreShiftRelaxed, JumpBeforeRemesh).")
                                 Text(config.cylinderLoadMode == .strain
                                      ? "Strain control shears the frozen ring by γ = α from 0 to End (zero normal stress); the core relaxes at each step and the first core jump gives the critical stress. With remeshing on, that jump can coincide with a mesh reconnection rather than an elastic instability; compare a run without remeshing. A negative End loads in reverse."
                                      : "Stress control applies a far-field Cauchy stress (0, τ, 0) on the frozen ring, τ = α from 0 to End. (τ₊ − τ₋)/2 from a forward (End > 0) and a reverse (End < 0) run removes a constant internal stress, but not the ring's pull back toward the centre, which raises |τ| both ways: repeat for two or three R_free (ring ≥ 3 a) and extrapolate. With remeshing on, the jump can coincide with a mesh reconnection; compare a run without remeshing.")

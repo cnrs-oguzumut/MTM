@@ -20,6 +20,10 @@ struct CylinderLoadOptions {
   double alpha_end = 0.0;
   double step = 0.0;
   int save_vtk_every = 50;
+  // Remesh after each load step's relaxation (when remeshing is on). false keeps the initial mesh (the
+  // Delaunay mesh of the dislocated crystal) for the whole load: the core can then move only through the
+  // lattice energy at fixed connectivity, which isolates an elastic instability from a mesh reconnection.
+  bool step_remesh = true;
   // Dipole: +b and -b cores separated by dipole_dx lattice spacings along x and dipole_dy rows along y
   // (both 0: a single dislocation)
   int dipole_dx = 0;

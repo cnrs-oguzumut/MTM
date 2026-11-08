@@ -1650,7 +1650,8 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
 
     auto log_row = [&](int iter, double alpha, double e_pre, double s_pre, double e_post,
                        const Eigen::Matrix2d &sig_avg, bool changes, const Eigen::Matrix2d &Fb,
-                       const std::vector<Eigen::Vector2d> &core_ref, bool jump) {
+                       const std::vector<Eigen::Vector2d> &core_ref, bool jump,
+                       const std::vector<Eigen::Vector2d> &core_relaxed, bool jump_relaxed) {
       std::vector<std::pair<std::string, double>> cols = {
           {"AppliedSigmaXY", cb_stress(Fb)(0, 1)}, {"Fbar11", Fb(0, 0)}, {"Fbar12", Fb(0, 1)},
           {"Fbar22", Fb(1, 1)}, {"Core1X", core_ref[0].x()}, {"Core1Y", core_ref[0].y()}};
@@ -1661,6 +1662,11 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       cols.push_back({"CoreShift", core_ref[0].x() - core_ref0[0].x()});
       if (core_ref.size() > 1) cols.push_back({"Core2Shift", core_ref[1].x() - core_ref0[1].x()});
       cols.push_back({"CoreJump", jump ? 1.0 : 0.0});
+      // The same after the fixed-connectivity relaxation, before any remeshing of the step: a jump there is
+      // an instability of the lattice energy; a jump only after the remesh came from the reconnection
+      cols.push_back({"CoreShiftRelaxed", core_relaxed[0].x() - core_ref0[0].x()});
+      if (core_relaxed.size() > 1) cols.push_back({"Core2ShiftRelaxed", core_relaxed[1].x() - core_ref0[1].x()});
+      cols.push_back({"JumpBeforeRemesh", jump_relaxed ? 1.0 : 0.0});
       const double area = ConfigurationSaver::calculateTotalArea2D(&userData);
       ConfigurationSaver::logEnergyAndStress_v2(iter, alpha, e_pre, s_pre, e_post, sig_avg(0, 1), area, area,
                                                 changes, &userData, nullptr, &cols);
@@ -1679,6 +1685,10 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       ConfigurationSaver::writeToVTK(vis.points, vis.elements, &vis, fid, true, std::vector<int>(), alpha);
     };
 
+    if (enable_remeshing && !load.step_remesh) {
+      std::cout << "[Cylinder Load] Remeshing during the load is off (--cyl-step-remesh=0): the initial mesh is kept."
+                << std::endl;
+    }
     std::cout << "\n=== CYLINDER LOAD (" << (stress_mode ? "stress control: Cauchy-Born sigma_xy = tau on the ring"
                                                           : "strain control: F12 = gamma on the ring")
               << ") : " << alphas.size() << " steps to " << load.alpha_end << " ===" << std::endl;
@@ -1689,7 +1699,8 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     double e_relaxed = 0.0;
     Eigen::Matrix2d sig_relaxed = Eigen::Matrix2d::Zero();
     ConfigurationSaver::calculateEnergyAndStress(&userData, e_relaxed, sig_relaxed, true);
-    log_row(0, 0.0, pre_energy_free, pre_stress_free, e_relaxed, sig_relaxed, false, Fb_prev, core_ref0, false);
+    log_row(0, 0.0, pre_energy_free, pre_stress_free, e_relaxed, sig_relaxed, false, Fb_prev, core_ref0, false,
+            core_ref0, false);
     monitor.end_of_step(0, 0.0, sig_relaxed(0, 1), userData, false, elements, active_elements, relaxed_file_id);
 
     int file_id = relaxed_file_id + 1;
@@ -1728,8 +1739,14 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       relaxation_begin_step(step);
       relax_configuration(x, &userData, 13);
       map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+      // Cores after the fixed-connectivity relaxation, before any remeshing
+      bool lost_relaxed = false;
+      const std::vector<Eigen::Vector2d> core_relaxed = find_cores(core_ref_prev, Fb, lost_relaxed);
+      bool jump_relaxed = false;
+      for (size_t q = 0; q < core_relaxed.size(); ++q)
+        if ((core_relaxed[q] - core_ref_prev[q]).norm() > 0.5 * a) jump_relaxed = true;
       int has_changes = 0;
-      if (enable_remeshing) {
+      if (enable_remeshing && load.step_remesh) {
         perform_remeshing_loop_reduction(x, &userData, std::vector<int>(), std::vector<int>(), F_ext, dndx, offsets,
                                          original_domain_map, translation_map, domain_dims_point, has_changes, 50,
                                          element_area, pbc, true);
@@ -1754,13 +1771,19 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
         alpha_at_jump = alpha;
       }
 
-      log_row(step, alpha, e_pre, sg_pre(0, 1), e_post, sg_post, has_changes > 0, Fb, core_ref, jump);
+      log_row(step, alpha, e_pre, sg_pre(0, 1), e_post, sg_post, has_changes > 0, Fb, core_ref, jump, core_relaxed,
+              jump_relaxed);
       std::cout << std::defaultfloat << std::setprecision(8) << "[Cylinder Load] step " << step << " "
                 << (stress_mode ? "tau" : "gamma") << " = " << alpha << " | applied sigma_xy = "
                 << cb_stress(Fb)(0, 1) << " | average sigma_xy = " << sg_post(0, 1) << " | core glide = "
                 << (core_ref[0].x() - core_ref0[0].x()) / a << " a";
       if (core_ref.size() > 1) std::cout << ", " << (core_ref[1].x() - core_ref0[1].x()) / a << " a";
-      std::cout << (has_changes > 0 ? " | remeshed" : "") << (jump ? "  << CORE JUMP" : "") << std::endl;
+      if (has_changes > 0) {
+        std::cout << " | remeshed (before: " << (core_relaxed[0].x() - core_ref0[0].x()) / a << " a)";
+      }
+      std::cout << (jump ? (jump_relaxed ? "  << CORE JUMP (in the relaxation)" : "  << CORE JUMP (after remeshing)")
+                         : "")
+                << std::endl;
 
       if (jump || (load.save_vtk_every > 0 && step % load.save_vtk_every == 0) || k + 1 == alphas.size() ||
           near_ring) {

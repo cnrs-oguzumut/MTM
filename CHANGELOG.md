@@ -2,6 +2,21 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — cylinder load diagnostic: jump in the relaxation, or after remeshing?
+- `--cyl-step-remesh=0` keeps the initial mesh (the Delaunay mesh of the dislocated crystal) for the whole
+  load, so the core moves only through the lattice energy at fixed connectivity. The GUI has a "Remesh after
+  each load step" switch.
+- The load log adds the core position after the fixed-connectivity relaxation, before any remeshing of the
+  step (`CoreShiftRelaxed`, `Core2ShiftRelaxed`), and `JumpBeforeRemesh`. The console marks each jump "in the
+  relaxation" or "after remeshing".
+- Triangular, β = 4, R_free = 30, under stress control:
+  - With remeshing, the jump at τ = 0.01124 happens only after the remesh: before it the core was at 0.534a,
+    still in its valley.
+  - Keeping the initial mesh, the core shifts smoothly past 0.53a (1.59a at τ = 0.0148). It becomes unstable
+    in the relaxation at τ ∈ (0.015, 0.0152], with the core mode's eigenvalue falling from 0.021 to 0.010
+    just before, and glides about 18a.
+  - So remeshing pre-empts the elastic instability of the fixed mesh.
+
 ### Added — load loop and dipole option for the dislocation cylinder (Peierls stress)
 - `--volterra` (single dislocation in a cylinder, analytic field frozen outside R_free) gains a load loop:
   - `--cyl-load=strain` shears the frozen ring by F₁₂ = γ (F₁₁, F₂₂ such that its Cauchy–Born normal stress

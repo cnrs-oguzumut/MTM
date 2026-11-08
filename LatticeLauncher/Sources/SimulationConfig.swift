@@ -143,6 +143,8 @@ public class SimulationConfig: ObservableObject {
     /// End of the α schedule (γ or τ); a negative end loads in reverse
     @Published public var cylinderLoadEnd: Double = 0.01
     @Published public var cylinderLoadStep: Double = 1e-4
+    /// Remesh after each load step (with remeshing on); off keeps the initial mesh for the whole load
+    @Published public var cylinderStepRemesh: Bool = true
     /// Place a second, opposite dislocation (−b) at (dipoleDx, dipoleDy) lattice steps from the first
     @Published public var dipoleEnabled: Bool = false
     @Published public var dipoleDx: Int = 10
@@ -399,6 +401,7 @@ public class SimulationConfig: ObservableObject {
                 args.append("--alpha-start=0.000000")
                 args.append(String(format: "--alpha-end=%.6f", cylinderLoadEnd))
                 args.append(String(format: "--step-size=%.8f", max(1e-8, abs(cylinderLoadStep))))
+                if !cylinderStepRemesh { args.append("--cyl-step-remesh=0") }
             }
             if dipoleEnabled {
                 args.append("--dipole-dx=\(dipoleDx)")
