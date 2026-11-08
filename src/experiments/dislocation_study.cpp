@@ -1802,6 +1802,32 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       }
       return control_average_on(alpha, Fb, step, unknowns, J_avg);
     };
+    // Remeshing at a load point. With average-stress control, a reconnection changes the average stress, and
+    // restoring it moves the ring and relaxes the core again at fixed connectivity, which can call for another
+    // reconnection: alternate the remeshing loop and the stress control until the mesh no longer changes.
+    // `control` re-establishes the targets with a fresh Cauchy-Born Jacobian (the reconnection changed the
+    // tangent). Returns 1 if the mesh changed.
+    auto remesh_until_stable = [&](int step, const std::function<void()> &control) {
+      int changed = 0;
+      const int max_rounds = 5;
+      for (int round = 0; round < max_rounds; ++round) {
+        int round_changes = 0;
+        perform_remeshing_loop_reduction(x, &userData, std::vector<int>(), std::vector<int>(), F_ext, dndx, offsets,
+                                         original_domain_map, translation_map, domain_dims_point, round_changes, 50,
+                                         element_area, pbc, true);
+        map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+        for (auto &el : elements) el.setExternalDeformation(F_ext);
+        if (round_changes == 0) break;
+        changed = 1;
+        if (!avg_ctrl) break; // the ring is prescribed: the remeshing loop's relaxation is final
+        control();
+        if (round == max_rounds - 1)
+          std::cout << "[Cylinder Load] WARNING: step " << step << ": the mesh still changed after " << max_rounds
+                    << " rounds of remeshing and stress control." << std::endl;
+      }
+      return changed;
+    };
+
     int zero_load_file = -1;
     if (avg_ctrl && !lost0) {
       // Zero load: remove the average residual stress of the core, in all three components (sigma_xy = 0 also
@@ -1809,6 +1835,11 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       const std::vector<int> all_comps = {0, 1, 2};
       Eigen::MatrixXd J0 = cb_jacobian(Fb_prev, all_comps);
       control_average_on(0.0, Fb_prev, 0, all_comps, J0);
+      if (enable_remeshing && load.step_remesh)
+        remesh_until_stable(0, [&]() {
+          J0 = cb_jacobian(Fb_prev, all_comps);
+          control_average_on(0.0, Fb_prev, 0, all_comps, J0);
+        });
       bool ok_cb = false;
       Fcb_prev = solve_ring_F(0.0, Eigen::Matrix2d::Identity(), ok_cb);
       if (!ok_cb) {
@@ -1886,14 +1917,11 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       for (size_t q = 0; q < core_relaxed.size(); ++q)
         if ((core_relaxed[q] - core_ref_prev[q]).norm() > 0.5 * a) jump_relaxed = true;
       int has_changes = 0;
-      if (enable_remeshing && load.step_remesh) {
-        perform_remeshing_loop_reduction(x, &userData, std::vector<int>(), std::vector<int>(), F_ext, dndx, offsets,
-                                         original_domain_map, translation_map, domain_dims_point, has_changes, 50,
-                                         element_area, pbc, true);
-        map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
-        for (auto &el : elements) el.setExternalDeformation(F_ext);
-        if (avg_ctrl && has_changes > 0) control_average(alpha, Fb, step);
-      }
+      if (enable_remeshing && load.step_remesh)
+        has_changes = remesh_until_stable(step, [&]() {
+          have_J_avg = false;
+          control_average(alpha, Fb, step);
+        });
 
       double e_post = 0.0;
       Eigen::Matrix2d sg_post = Eigen::Matrix2d::Zero();

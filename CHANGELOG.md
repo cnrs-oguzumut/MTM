@@ -16,6 +16,10 @@
 - When the residual stops decreasing, a residual below 1 % of one load step's stress change is accepted. This
   covers the noise floor of `--potential-mode=2`, which would otherwise spend 40 relaxations per step.
 - The GUI no longer shows the "Remesh after each load step" toggle; `--cyl-step-remesh` stays a CLI flag.
+- With remeshing, each load point (and the zero-load state) alternates the remeshing loop and the stress
+  control until the mesh no longer changes, at most 5 rounds, with a warning otherwise. Before, the stress was
+  restored once after the remeshing, which could leave a state that needed another reconnection. After a
+  reconnection, the iteration restarts from the Cauchy–Born Jacobian instead of the previous estimate.
 
 ### Fixed — cylinder load stopped at the first step with --potential-mode=2
 - The ring's deformation is found by Newton iteration to a stress residual of 1e-11. The polynomial
