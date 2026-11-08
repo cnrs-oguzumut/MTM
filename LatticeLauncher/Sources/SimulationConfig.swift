@@ -143,13 +143,13 @@ public class SimulationConfig: ObservableObject {
     /// End of the α schedule (γ or τ); a negative end loads in reverse
     @Published public var cylinderLoadEnd: Double = 0.01
     @Published public var cylinderLoadStep: Double = 1e-4
-    /// Remesh after each load step (with remeshing on); off keeps the initial mesh for the whole load
-    @Published public var cylinderStepRemesh: Bool = true
     /// Load cycle: forward until the core has glided this many b, then back to its start (0 = off)
     @Published public var cylinderCycleB: Double = 2.0
-    /// Normal stresses σ_xx, σ_yy of the ring (Cauchy–Born), applied at the first load step
+    /// Normal stresses σ_xx, σ_yy (average inside R_free when cylinderAverageStress is on, otherwise Cauchy–Born on the ring)
     @Published public var cylinderSigmaXX: Double = 0.0
     @Published public var cylinderSigmaYY: Double = 0.0
+    /// Control the average stress inside R_free at each step (and at zero load) by iterating F̄ on the ring
+    @Published public var cylinderAverageStress: Bool = true
     /// Place a second, opposite dislocation (−b) at (dipoleDx, dipoleDy) lattice steps from the first
     @Published public var dipoleEnabled: Bool = false
     @Published public var dipoleDx: Int = 10
@@ -406,10 +406,10 @@ public class SimulationConfig: ObservableObject {
                 args.append("--alpha-start=0.000000")
                 args.append(String(format: "--alpha-end=%.6f", cylinderLoadEnd))
                 args.append(String(format: "--step-size=%.8f", max(1e-8, abs(cylinderLoadStep))))
-                if !cylinderStepRemesh { args.append("--cyl-step-remesh=0") }
                 if cylinderCycleB > 0 { args.append(String(format: "--cyl-cycle=%g", cylinderCycleB)) }
                 if cylinderSigmaXX != 0 { args.append(String(format: "--cyl-sxx=%.8g", cylinderSigmaXX)) }
                 if cylinderSigmaYY != 0 { args.append(String(format: "--cyl-syy=%.8g", cylinderSigmaYY)) }
+                if cylinderAverageStress { args.append("--cyl-avg-stress=1") }
             }
             if dipoleEnabled {
                 args.append("--dipole-dx=\(dipoleDx)")

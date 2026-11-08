@@ -2,6 +2,21 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — cylinder load: control of the average stress inside R_free
+- `--cyl-avg-stress=1` (GUI: "Control average stress inside R_free", on by default) adjusts the ring's
+  deformation F̄ until the stress averaged over the free region hits its targets:
+  - σ̄_xx = σ_xx, σ̄_yy = σ_yy (zero by default);
+  - under stress control, also σ̄_xy = τ;
+  - under strain control, F12 stays the load.
+  It uses Broyden iteration started from the Cauchy–Born Jacobian, relaxing the core at each update. Without
+  the flag, only the ring's Cauchy–Born stress is prescribed, as before.
+- Before loading, the core's average residual stress is removed in all three components, also under strain
+  control, so γ is measured from a stress-free state. That state is saved as its own VTK file; the relaxed
+  state's file (with its coordination data) is kept.
+- When the residual stops decreasing, a residual below 1 % of one load step's stress change is accepted. This
+  covers the noise floor of `--potential-mode=2`, which would otherwise spend 40 relaxations per step.
+- The GUI no longer shows the "Remesh after each load step" toggle; `--cyl-step-remesh` stays a CLI flag.
+
 ### Fixed — cylinder load stopped at the first step with --potential-mode=2
 - The ring's deformation is found by Newton iteration to a stress residual of 1e-11. The polynomial
   Lennard-Jones of mode 2 has a rounding-noise floor of about 1e-10, so the solve never converged and the

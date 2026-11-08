@@ -31,6 +31,12 @@ struct CylinderLoadOptions {
   // first load step)
   double sigma_xx = 0.0;
   double sigma_yy = 0.0;
+  // Control the average stress inside the free region (the Cauchy columns of the log) instead of the ring's
+  // Cauchy-Born stress: each step iterates the ring's F_bar, relaxing the core each time, until the averages
+  // (sigma_xx, sigma_xy, sigma_yy) hit their targets (stress mode: (sigma_xx, tau, sigma_yy); strain mode:
+  // F12 = gamma, (sigma_xx, sigma_yy)). The zero-load state is corrected the same way, which removes the
+  // average residual stress of the core.
+  bool average_stress = false;
   // Dipole: +b and -b cores separated by dipole_dx lattice spacings along x and dipole_dy rows along y
   // (both 0: a single dislocation)
   int dipole_dx = 0;

@@ -312,6 +312,8 @@ int main(int argc, char **argv) {
       mode = "volterra";
     } else if (arg.rfind("--cyl-load=", 0) == 0) {
       cylinder_load.mode = arg.substr(11);
+    } else if (arg.rfind("--cyl-avg-stress=", 0) == 0) {
+      cylinder_load.average_stress = std::stoi(arg.substr(17)) != 0;
     } else if (arg.rfind("--cyl-cycle=", 0) == 0) {
       cylinder_load.cycle_b = std::stod(arg.substr(12));
     } else if (arg.rfind("--cyl-sxx=", 0) == 0) {

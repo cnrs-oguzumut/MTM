@@ -1123,13 +1123,17 @@ struct SidebarControlsView: View {
                                         .font(.caption)
                                     DoubleField(title: "0", value: $config.cylinderSigmaYY, width: 60)
                                 }
-                                .help("Normal stresses of the ring's far-field (Cauchy–Born) stress, applied at the first load step, e.g. σ_yy = −0.1 for the hard-core case of Fig. 8e.")
-                                Toggle("Remesh after each load step", isOn: $config.cylinderStepRemesh)
+                                .help("Target normal stresses (σ_xx, σ_yy) at every step (and at zero load when average-stress control is on), e.g. σ_yy = −0.1 for the hard-core case of Fig. 8e.")
+                                Toggle("Control average stress inside R_free", isOn: $config.cylinderAverageStress)
                                     .font(.caption)
-                                    .help("On: each step's relaxation is followed by a Delaunay reconnection when it lowers the energy. Off: the initial mesh is kept, so the core moves only through the lattice energy at fixed connectivity. The log records the core both before and after remeshing (CoreShiftRelaxed, JumpBeforeRemesh).")
+                                    .help("On (as in the MTM cylinder paper): each step adjusts the ring deformation F̄ and re-relaxes until the average stress inside R_free matches the targets — (σ̄_xx, σ̄_xy, σ̄_yy) = (σ_xx, τ, σ_yy) in stress mode, or F̄₁₂ = γ with (σ̄_xx, σ̄_yy) = (σ_xx, σ_yy) in strain mode — including the zero-load starting state. Off: applies the Cauchy–Born far-field stress on the frozen ring in a single pass.")
                                 Text(config.cylinderLoadMode == .strain
-                                     ? "Strain control shears the frozen ring by γ = α from 0 to End (zero normal stress); the core relaxes at each step and the first core jump gives the critical stress. With remeshing on, that jump can coincide with a mesh reconnection rather than an elastic instability; compare a run without remeshing. A negative End loads in reverse."
-                                     : "Stress control applies a far-field Cauchy stress (0, τ, 0) on the frozen ring, τ = α from 0 to End. (τ₊ − τ₋)/2 from a forward (End > 0) and a reverse (End < 0) run removes a constant internal stress, but not the ring's pull back toward the centre, which raises |τ| both ways: repeat for two or three R_free (ring ≥ 3 a) and extrapolate. With remeshing on, the jump can coincide with a mesh reconnection; compare a run without remeshing.")
+                                     ? (config.cylinderAverageStress
+                                         ? "Strain control prescribes F̄₁₂ = γ = α on the ring while adjusting (F̄₁₁, F̄₂₂) at each step so the average normal stresses (σ̄_xx, σ̄_yy) inside R_free match their targets (including at γ = 0). A negative End loads in reverse."
+                                         : "Strain control shears the frozen ring by γ = α from 0 to End (Cauchy–Born normal stress on the ring); the core relaxes at each step and the first core jump gives the critical stress. A negative End loads in reverse.")
+                                     : (config.cylinderAverageStress
+                                         ? "Stress control adjusts the ring deformation F̄ at each step (and at τ = 0) so the average Cauchy stress inside R_free equals (σ_xx, τ, σ_yy), removing the core's initial residual stress as in the paper. A negative End loads in reverse."
+                                         : "Stress control applies a far-field Cauchy–Born stress (σ_xx, τ, σ_yy) on the frozen ring, τ = α from 0 to End. A negative End loads in reverse."))
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)

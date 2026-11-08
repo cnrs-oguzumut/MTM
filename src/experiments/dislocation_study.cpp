@@ -1344,9 +1344,9 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
 
   // Step 2: Full Cauchy Tensor Macro-Stress Relaxation (if relax_macro_stress is enabled)
   Eigen::Matrix2d F_bar = F_ext; // Starts at Identity
-  if (relax_macro_stress && load.loading()) {
-    std::cout << "[Cylinder Load] WARNING: --relax-stress is not combined with loading; the load starts from "
-                 "F_bar = I (zero far-field stress)." << std::endl;
+  if (relax_macro_stress && load.loading() && !load.average_stress) {
+    std::cout << "[Cylinder Load] WARNING: --relax-stress is not combined with loading (use --cyl-avg-stress=1 to "
+                 "control the average stress inside R_free); the load starts from F_bar = I." << std::endl;
   }
   if (relax_macro_stress && !load.loading()) {
     std::cout << "\n========================================================" << std::endl;
@@ -1641,7 +1641,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     std::vector<Eigen::Vector2d> guess0;
     for (const auto &cs : cores) guess0.push_back(cs.pos);
     bool lost0 = false;
-    const std::vector<Eigen::Vector2d> core_ref0 = find_cores(guess0, Eigen::Matrix2d::Identity(), lost0);
+    std::vector<Eigen::Vector2d> core_ref0 = find_cores(guess0, Eigen::Matrix2d::Identity(), lost0);
     if (lost0) {
       std::cout << "[Cylinder Load] A core is not found on its glide plane in the relaxed state (a dipole whose "
                    "cores attract more strongly than the lattice holds them annihilates during the relaxation; "
@@ -1693,9 +1693,136 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       std::cout << "[Cylinder Load] Remeshing during the load is off (--cyl-step-remesh=0): the initial mesh is kept."
                 << std::endl;
     }
-    std::cout << "\n=== CYLINDER LOAD (" << (stress_mode ? "stress control: Cauchy-Born sigma_xy = tau on the ring"
-                                                          : "strain control: F12 = gamma on the ring")
+    const bool avg_ctrl = load.average_stress;
+    std::cout << "\n=== CYLINDER LOAD ("
+              << (stress_mode
+                      ? (avg_ctrl ? "stress control: average sigma_xy = tau inside R_free"
+                                  : "stress control: Cauchy-Born sigma_xy = tau on the ring")
+                      : (avg_ctrl ? "strain control: F12 = gamma on the ring, average normal stress inside R_free"
+                                  : "strain control: F12 = gamma on the ring"))
               << ") : " << alphas.size() << " steps to " << load.alpha_end << " ===" << std::endl;
+
+    // ---- Average-stress control (--cyl-avg-stress) ----
+    Eigen::Matrix2d Fcb_prev = Fb_prev; // Cauchy-Born ring deformation of the previous load
+    Eigen::MatrixXd J_avg;              // Broyden estimate of d(average stress) / d(F_bar), kept across steps
+    bool have_J_avg = false;
+    // Ring at F_new (exact), free atoms mapped from F_old as the predictor
+    auto place_ring = [&](const Eigen::Matrix2d &F_new, const Eigen::Matrix2d &F_old) {
+      const Eigen::Matrix2d dFm = F_new * F_old.inverse();
+      for (size_t j = 0; j < square_points.size(); ++j) {
+        if (full_mapping[j].second < 0) {
+          square_points[j].coord = c + F_new * (ring_positions[j].coord - c);
+        } else {
+          square_points[j].coord = c + dFm * (square_points[j].coord - c);
+        }
+      }
+      F_ext = F_new;
+      for (auto &el : elements) el.setExternalDeformation(F_ext);
+      map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
+    };
+    auto relax_now = [&](int step) {
+      userData.third_condition_flag = false;
+      relaxation_begin_step(step);
+      relax_configuration(x, &userData, 13);
+      map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+    };
+    // Average stress over the free region minus its targets, on the components `comps` (k = 0, 1, 2:
+    // xx, xy, yy; the xy target is alpha)
+    auto average_residual = [&](double alpha, const std::vector<int> &comps) {
+      double e = 0.0;
+      Eigen::Matrix2d sg = Eigen::Matrix2d::Zero();
+      ConfigurationSaver::calculateEnergyAndStress(&userData, e, sg, true);
+      Eigen::VectorXd r(comps.size());
+      for (size_t q = 0; q < comps.size(); ++q) {
+        const int k = comps[q];
+        const double target = (k == 0) ? load.sigma_xx : (k == 2 ? load.sigma_yy : alpha);
+        r(q) = sg(comp_r[k], comp_c[k]) - target;
+      }
+      return r;
+    };
+    // Cauchy-Born Jacobian d(sigma)/d(F_bar) on `comps`, the starting estimate for the Broyden iteration
+    auto cb_jacobian = [&](const Eigen::Matrix2d &Fb, const std::vector<int> &comps) {
+      Eigen::MatrixXd J(comps.size(), comps.size());
+      const double h = 1e-7;
+      for (size_t q = 0; q < comps.size(); ++q) {
+        Eigen::Matrix2d Fp = Fb, Fm = Fb;
+        Fp(comp_r[comps[q]], comp_c[comps[q]]) += h;
+        Fm(comp_r[comps[q]], comp_c[comps[q]]) -= h;
+        const Eigen::Matrix2d dS = (cb_stress(Fp) - cb_stress(Fm)) / (2.0 * h);
+        for (size_t p2 = 0; p2 < comps.size(); ++p2) J(p2, q) = dS(comp_r[comps[p2]], comp_c[comps[p2]]);
+      }
+      return J;
+    };
+    // Starting from the relaxed state at Fb, iterate the components `comps` of Fb (Broyden on J) until the
+    // free-region average stress hits its targets. Converged at tol; when the residual stops decreasing (the
+    // relaxation's noise floor, e.g. with --potential-mode=2) a residual below 1 % of the stress change of one
+    // load step is accepted.
+    auto control_average_on = [&](double alpha, Eigen::Matrix2d &Fb, int step, const std::vector<int> &comps,
+                                  Eigen::MatrixXd &J) {
+      const double tol = 1e-8 + 1e-6 * std::max({std::abs(stress_mode ? alpha : 0.0), std::abs(load.sigma_xx),
+                                                 std::abs(load.sigma_yy)});
+      const double step_stress = dstep * (stress_mode ? 1.0 : J.cwiseAbs().maxCoeff());
+      const double floor_ok = std::max(tol, 1e-2 * step_stress);
+      Eigen::VectorXd r = average_residual(alpha, comps);
+      double best = r.cwiseAbs().maxCoeff();
+      int stalled = 0;
+      for (int it = 0; it < 40; ++it) {
+        const double rmax = r.cwiseAbs().maxCoeff();
+        if (rmax < tol || (stalled >= 4 && rmax < floor_ok)) return true;
+        Eigen::VectorXd dz = J.fullPivLu().solve(-r);
+        const double m = dz.cwiseAbs().maxCoeff();
+        if (m > 0.01) dz *= 0.01 / m;
+        Eigen::Matrix2d F_new = Fb;
+        for (size_t q = 0; q < comps.size(); ++q) F_new(comp_r[comps[q]], comp_c[comps[q]]) += dz(q);
+        place_ring(F_new, Fb);
+        Fb = F_new;
+        relax_now(step);
+        const Eigen::VectorXd r_new = average_residual(alpha, comps);
+        const double dd = dz.squaredNorm();
+        if (dd > 0.0) J += ((r_new - r) - J * dz) * dz.transpose() / dd;
+        r = r_new;
+        const double rnew = r.cwiseAbs().maxCoeff();
+        if (rnew < 0.9 * best) {
+          best = rnew;
+          stalled = 0;
+        } else {
+          ++stalled;
+        }
+      }
+      if (r.cwiseAbs().maxCoeff() < floor_ok) return true;
+      std::cout << "[Cylinder Load] WARNING: the average stress did not reach its target at alpha = " << alpha
+                << " (residual " << r.cwiseAbs().maxCoeff() << ")." << std::endl;
+      return false;
+    };
+    // Load steps: the controlled components of the load mode, with a Broyden Jacobian kept across steps
+    auto control_average = [&](double alpha, Eigen::Matrix2d &Fb, int step) {
+      if (!have_J_avg) {
+        J_avg = cb_jacobian(Fb, unknowns);
+        have_J_avg = true;
+      }
+      return control_average_on(alpha, Fb, step, unknowns, J_avg);
+    };
+    int zero_load_file = -1;
+    if (avg_ctrl && !lost0) {
+      // Zero load: remove the average residual stress of the core, in all three components (sigma_xy = 0 also
+      // under strain control, whose gamma is then measured from this state); normal targets applied from here
+      const std::vector<int> all_comps = {0, 1, 2};
+      Eigen::MatrixXd J0 = cb_jacobian(Fb_prev, all_comps);
+      control_average_on(0.0, Fb_prev, 0, all_comps, J0);
+      bool ok_cb = false;
+      Fcb_prev = solve_ring_F(0.0, Eigen::Matrix2d::Identity(), ok_cb);
+      if (!ok_cb) {
+        std::cout << "[Cylinder Load] WARNING: no Cauchy-Born ring deformation for the zero-load targets; the "
+                     "predictor of the first step starts from F_bar = I." << std::endl;
+        Fcb_prev = Eigen::Matrix2d::Identity();
+      }
+      core_ref0 = find_cores(core_ref0, Fb_prev, lost0);
+      core_ref_prev = core_ref0;
+      zero_load_file = relaxed_file_id + 1; // the relaxed state keeps its own file
+      save_vtk(zero_load_file, 0.0);
+      std::cout << "[Cylinder Load] Average stress inside R_free controlled: zero-load state at F_bar = ["
+                << Fb_prev(0, 0) << ", " << Fb_prev(0, 1) << "; 0, " << Fb_prev(1, 1) << "]" << std::endl;
+    }
 
     // Row 0: the relaxed state, no load. Energies and stress over the free region, as in the later rows
     // (the VTK export of the relaxed state overwrote post_energy with the whole-crystal value)
@@ -1707,7 +1834,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
             core_ref0, false);
     monitor.end_of_step(0, 0.0, sig_relaxed(0, 1), userData, false, elements, active_elements, relaxed_file_id);
 
-    int file_id = relaxed_file_id + 1;
+    int file_id = (zero_load_file >= 0 ? zero_load_file : relaxed_file_id) + 1;
     int first_jump = -1;
     double alpha_prev = 0.0, alpha_before_jump = 0.0, alpha_at_jump = 0.0;
     // Load cycle: forward until the first core has glided cycle_b b, then back until it returns to its start
@@ -1734,24 +1861,15 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       }
       const int step = static_cast<int>(k) + 1;
       bool ok = false;
-      const Eigen::Matrix2d Fb = solve_ring_F(alpha, Fb_prev, ok);
+      const Eigen::Matrix2d Fcb = solve_ring_F(alpha, Fcb_prev, ok);
       if (!ok) {
         std::cerr << "[Cylinder Load] Could not find the ring deformation for alpha = " << alpha
                   << " (beyond the homogeneous instability of the lattice?). Stopping." << std::endl;
         break;
       }
-      // Ring: exact; free atoms: incremental map as the predictor
-      const Eigen::Matrix2d dF = Fb * Fb_prev.inverse();
-      for (size_t j = 0; j < square_points.size(); ++j) {
-        if (full_mapping[j].second < 0) {
-          square_points[j].coord = c + Fb * (ring_positions[j].coord - c);
-        } else {
-          square_points[j].coord = c + dF * (square_points[j].coord - c);
-        }
-      }
-      F_ext = Fb;
-      for (auto &el : elements) el.setExternalDeformation(F_ext);
-      map_points_to_solver_array(x, square_points, interior_mapping, n_vars);
+      // Ring deformation: Cauchy-Born; with average-stress control, shifted by the previous step's correction
+      Eigen::Matrix2d Fb = avg_ctrl ? Eigen::Matrix2d(Fcb + (Fb_prev - Fcb_prev)) : Fcb;
+      place_ring(Fb, Fb_prev);
 
       double e_pre = 0.0;
       Eigen::Matrix2d sg_pre = Eigen::Matrix2d::Zero();
@@ -1759,10 +1877,8 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       const std::vector<ElementTriangle2D> step_start_elements = elements;
       const std::vector<size_t> step_start_active = active_elements;
 
-      userData.third_condition_flag = false;
-      relaxation_begin_step(step);
-      relax_configuration(x, &userData, 13);
-      map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+      relax_now(step);
+      if (avg_ctrl) control_average(alpha, Fb, step);
       // Cores after the fixed-connectivity relaxation, before any remeshing
       bool lost_relaxed = false;
       const std::vector<Eigen::Vector2d> core_relaxed = find_cores(core_ref_prev, Fb, lost_relaxed);
@@ -1776,6 +1892,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                                          element_area, pbc, true);
         map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
         for (auto &el : elements) el.setExternalDeformation(F_ext);
+        if (avg_ctrl && has_changes > 0) control_average(alpha, Fb, step);
       }
 
       double e_post = 0.0;
@@ -1828,6 +1945,7 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                           file_id - 1);
 
       Fb_prev = Fb;
+      Fcb_prev = Fcb;
       core_ref_prev = core_ref;
       alpha_prev = alpha;
       if (cycle_done) {
