@@ -29,6 +29,28 @@ public enum ChartScaleMode: String, CaseIterable, Identifiable {
     }
 }
 
+public enum ChartPointSymbol: String, CaseIterable, Identifiable {
+    case circle = "● Circle"
+    case square = "■ Square"
+    case diamond = "◆ Diamond"
+    case triangle = "▲ Triangle"
+    case cross = "✕ Cross"
+    case plus = "+ Plus"
+    
+    public var id: String { rawValue }
+    
+    public var chartSymbol: BasicChartSymbolShape {
+        switch self {
+        case .circle: return .circle
+        case .square: return .square
+        case .diamond: return .diamond
+        case .triangle: return .triangle
+        case .cross: return .cross
+        case .plus: return .plus
+        }
+    }
+}
+
 struct StressStrainChartView: View {
     @EnvironmentObject var runner: ProcessRunner
     @State private var selectedAlpha: Double?
@@ -44,6 +66,20 @@ struct StressStrainChartView: View {
     @State private var showYieldLine: Bool = true
     @State private var useInteriorGBGauge: Bool = true
     @State private var showGBSigmaLabels: Bool = true
+    // Line & Point appearance controls
+    @State private var showLine: Bool = true
+    @State private var showPoints: Bool = false
+    @State private var lineWidth: Double = 2.0
+    @State private var pointSize: Double = 5.0
+    @State private var pointSymbol: ChartPointSymbol = .circle
+    @State private var stressLineColor: Color = .blue
+    @State private var stressPointColor: Color = .blue
+    @State private var energyLineColor: Color = .purple
+    @State private var energyPointColor: Color = .purple
+    @State private var eigenLineColor: Color = .teal
+    @State private var eigenPointColor: Color = .teal
+    @State private var gbLineColor: Color = .green
+    @State private var gbPointColor: Color = .green
     /// Force / stress control: plot against the conjugate strain (bursts show as jumps along x)
     @State private var plotAgainstConjugateStrain: Bool = true
     /// Volterra cylinder load: plot against the applied far-field stress σ_xy instead of the load α
@@ -389,6 +425,213 @@ struct StressStrainChartView: View {
         }
     }
     
+    // MARK: - Line & Point Style Helpers
+    
+    private var currentLineColor: Color {
+        switch chartMode {
+        case .stress: return stressLineColor
+        case .energy: return energyLineColor
+        case .eigenvalue: return eigenLineColor
+        case .gbEnergy: return gbLineColor
+        }
+    }
+    
+    private var currentPointColor: Color {
+        switch chartMode {
+        case .stress: return stressPointColor
+        case .energy: return energyPointColor
+        case .eigenvalue: return eigenPointColor
+        case .gbEnergy: return gbPointColor
+        }
+    }
+    
+    private var activeLineColorBinding: Binding<Color> {
+        Binding(
+            get: { currentLineColor },
+            set: { newColor in
+                switch chartMode {
+                case .stress: stressLineColor = newColor
+                case .energy: energyLineColor = newColor
+                case .eigenvalue: eigenLineColor = newColor
+                case .gbEnergy: gbLineColor = newColor
+                }
+                if !showLine { showLine = true }
+            }
+        )
+    }
+    
+    private var activePointColorBinding: Binding<Color> {
+        Binding(
+            get: { currentPointColor },
+            set: { newColor in
+                switch chartMode {
+                case .stress: stressPointColor = newColor
+                case .energy: energyPointColor = newColor
+                case .eigenvalue: eigenPointColor = newColor
+                case .gbEnergy: gbPointColor = newColor
+                }
+                if !showPoints { showPoints = true }
+            }
+        )
+    }
+    
+    private var lineToggleBinding: Binding<Bool> {
+        Binding(
+            get: { showLine },
+            set: { newValue in
+                showLine = newValue
+                if !newValue && !showPoints {
+                    showPoints = true
+                }
+            }
+        )
+    }
+    
+    private var pointsToggleBinding: Binding<Bool> {
+        Binding(
+            get: { showPoints },
+            set: { newValue in
+                showPoints = newValue
+                if !newValue && !showLine {
+                    showLine = true
+                }
+            }
+        )
+    }
+    
+    private var pointSymbolArea: CGFloat {
+        CGFloat(pointSize * pointSize)
+    }
+    
+    private func resetPlotStyle() {
+        showLine = true
+        showPoints = false
+        lineWidth = 2.0
+        pointSize = 5.0
+        pointSymbol = .circle
+        stressLineColor = .blue
+        stressPointColor = .blue
+        energyLineColor = .purple
+        energyPointColor = .purple
+        eigenLineColor = .teal
+        eigenPointColor = .teal
+        gbLineColor = .green
+        gbPointColor = .green
+    }
+    
+    @ViewBuilder
+    private var plotStyleBar: some View {
+        HStack(spacing: 10) {
+            // Line controls: toggle + color + width slider
+            HStack(spacing: 6) {
+                Toggle("Line", isOn: lineToggleBinding)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .font(.system(size: 11, weight: .semibold))
+                    .help("Show or hide the connecting curve line")
+                
+                ColorPicker("", selection: activeLineColorBinding, supportsOpacity: true)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 24)
+                    .help("Line color for the current chart mode")
+                
+                HStack(spacing: 4) {
+                    Text("Width")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Slider(
+                        value: Binding(
+                            get: { lineWidth },
+                            set: { v in
+                                lineWidth = v
+                                if !showLine { showLine = true }
+                            }
+                        ),
+                        in: 0.5...6.0,
+                        step: 0.25
+                    )
+                    .controlSize(.mini)
+                    .frame(width: 68)
+                    .help("Line thickness (0.5 pt – 6.0 pt)")
+                    Text(String(format: "%.2g pt", lineWidth))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .frame(width: 34, alignment: .leading)
+                }
+                .opacity(showLine ? 1.0 : 0.45)
+            }
+            
+            Divider()
+                .frame(height: 14)
+            
+            // Point controls: toggle + color + size slider + symbol picker
+            HStack(spacing: 6) {
+                Toggle("Points", isOn: pointsToggleBinding)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .font(.system(size: 11, weight: .semibold))
+                    .help("Show or hide data point markers on the curve")
+                
+                ColorPicker("", selection: activePointColorBinding, supportsOpacity: true)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 24)
+                    .help("Point marker color for the current chart mode")
+                
+                HStack(spacing: 4) {
+                    Text("Size")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Slider(
+                        value: Binding(
+                            get: { pointSize },
+                            set: { v in
+                                pointSize = v
+                                if !showPoints { showPoints = true }
+                            }
+                        ),
+                        in: 2.0...14.0,
+                        step: 0.5
+                    )
+                    .controlSize(.mini)
+                    .frame(width: 68)
+                    .help("Point marker diameter (2 pt – 14 pt)")
+                    Text(String(format: "%.2g pt", pointSize))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .frame(width: 34, alignment: .leading)
+                }
+                .opacity(showPoints ? 1.0 : 0.45)
+                
+                Picker("", selection: $pointSymbol) {
+                    ForEach(ChartPointSymbol.allCases) { sym in
+                        Text(sym.rawValue).tag(sym)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.mini)
+                .frame(width: 86)
+                .opacity(showPoints ? 1.0 : 0.45)
+                .help("Point marker shape")
+            }
+            
+            Button(action: resetPlotStyle) {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("Reset line & point colors, sizes, and symbols to defaults")
+            
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(BlueHour.controlSurface.opacity(0.65))
+    }
+
     // MARK: - View Body
     
     var body: some View {
@@ -710,6 +953,8 @@ struct StressStrainChartView: View {
             .background(BlueHour.controlSurface.opacity(0.85))
             
             Divider()
+            plotStyleBar
+            Divider()
             
             // Main Chart Canvas
             if chartMode == .gbEnergy && displayGBPoints.isEmpty {
@@ -767,28 +1012,33 @@ struct StressStrainChartView: View {
                     if chartMode == .gbEnergy {
                         ForEach(displayGBPoints) { pt in
                             let yVal = gbEnergyValue(for: pt)
-                            LineMark(
-                                x: .value("Misorientation Δθ (°)", pt.misorientationDeg),
-                                y: .value("Grain Boundary Energy γ_GB", yVal)
-                            )
-                            .foregroundStyle(Color.green)
-                            .interpolationMethod(.linear)
+                            if showLine {
+                                LineMark(
+                                    x: .value("Misorientation Δθ (°)", pt.misorientationDeg),
+                                    y: .value("Grain Boundary Energy γ_GB", yVal)
+                                )
+                                .foregroundStyle(currentLineColor)
+                                .lineStyle(StrokeStyle(lineWidth: lineWidth))
+                                .interpolationMethod(.linear)
+                            }
                             
-                            PointMark(
-                                x: .value("Misorientation Δθ (°)", pt.misorientationDeg),
-                                y: .value("Grain Boundary Energy γ_GB", yVal)
-                            )
-                            .symbol(Circle())
-                            .symbolSize(displayGBPoints.count > 25 ? 36 : 52)
-                            .foregroundStyle(Color.green)
-                            .annotation(position: .top) {
-                                let isMajorCusp = (pt.sigma > 1 && pt.sigma <= 17)
-                                if showGBSigmaLabels && (displayGBPoints.count <= 22 || isMajorCusp) {
-                                    Text(pt.sigma > 0
-                                         ? String(format: "Σ%d (%.1f°)", pt.sigma, pt.misorientationDeg)
-                                         : String(format: "%.1f°", pt.misorientationDeg))
-                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                        .foregroundColor(.secondary)
+                            if showPoints {
+                                PointMark(
+                                    x: .value("Misorientation Δθ (°)", pt.misorientationDeg),
+                                    y: .value("Grain Boundary Energy γ_GB", yVal)
+                                )
+                                .symbol(pointSymbol.chartSymbol)
+                                .symbolSize(pointSymbolArea)
+                                .foregroundStyle(currentPointColor)
+                                .annotation(position: .top) {
+                                    let isMajorCusp = (pt.sigma > 1 && pt.sigma <= 17)
+                                    if showGBSigmaLabels && (displayGBPoints.count <= 22 || isMajorCusp) {
+                                        Text(pt.sigma > 0
+                                             ? String(format: "Σ%d (%.1f°)", pt.sigma, pt.misorientationDeg)
+                                             : String(format: "%.1f°", pt.misorientationDeg))
+                                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                    }
                                 }
                             }
                         }
@@ -831,20 +1081,25 @@ struct StressStrainChartView: View {
                         
                         ForEach(displayEigenPoints) { pt in
                             if let yVal = eigenY(pt) {
-                                LineMark(
-                                    x: .value(eigenXLabel, eigenX(pt)),
-                                    y: .value(eigenYLabel, yVal)
-                                )
-                                .foregroundStyle(Color.teal)
-                                .interpolationMethod(.linear)
+                                if showLine {
+                                    LineMark(
+                                        x: .value(eigenXLabel, eigenX(pt)),
+                                        y: .value(eigenYLabel, yVal)
+                                    )
+                                    .foregroundStyle(currentLineColor)
+                                    .lineStyle(StrokeStyle(lineWidth: lineWidth))
+                                    .interpolationMethod(.linear)
+                                }
                                 
-                                PointMark(
-                                    x: .value(eigenXLabel, eigenX(pt)),
-                                    y: .value(eigenYLabel, yVal)
-                                )
-                                .symbol(Circle())
-                                .symbolSize(eigenUnstable(pt) ? 55 : 32)
-                                .foregroundStyle(eigenUnstable(pt) ? Color.red : Color.teal)
+                                if showPoints {
+                                    PointMark(
+                                        x: .value(eigenXLabel, eigenX(pt)),
+                                        y: .value(eigenYLabel, yVal)
+                                    )
+                                    .symbol(pointSymbol.chartSymbol)
+                                    .symbolSize(eigenUnstable(pt) ? max(pointSymbolArea * 1.4, 55) : pointSymbolArea)
+                                    .foregroundStyle(eigenUnstable(pt) ? Color.red : currentPointColor)
+                                }
                             }
                         }
                         
@@ -862,26 +1117,29 @@ struct StressStrainChartView: View {
                             .foregroundStyle(Color.cyan)
                         }
                     } else {
-                        // 1. Primary Stress / Energy Line Mark (+ PointMark when sparse)
+                        // 1. Primary Stress / Energy Line Mark & PointMark
                         ForEach(displayCurvePoints) { pt in
                             let yVal = chartMode == .stress ? stressValue(for: pt) : energyValue(pt)
                             let yLabel = chartMode == .stress ? ((stressComponent == .primary && primaryIsTorque) ? "Rim Torque T" : stressComponent.rawValue) : energyLabel
-                            LineMark(
-                                x: .value(xAxisLabel, xValue(pt)),
-                                y: .value(yLabel, yVal),
-                                series: .value("Curve", "main")
-                            )
-                            .foregroundStyle(chartMode == .stress ? Color.blue : Color.purple)
-                            .interpolationMethod(.linear)
+                            if showLine {
+                                LineMark(
+                                    x: .value(xAxisLabel, xValue(pt)),
+                                    y: .value(yLabel, yVal),
+                                    series: .value("Curve", "main")
+                                )
+                                .foregroundStyle(currentLineColor)
+                                .lineStyle(StrokeStyle(lineWidth: lineWidth))
+                                .interpolationMethod(.linear)
+                            }
                             
-                            if runner.curvePoints.count <= 50 {
+                            if showPoints {
                                 PointMark(
                                     x: .value(xAxisLabel, xValue(pt)),
                                     y: .value(yLabel, yVal)
                                 )
-                                .symbol(Circle())
-                                .symbolSize(30)
-                                .foregroundStyle(chartMode == .stress ? Color.blue : Color.purple)
+                                .symbol(pointSymbol.chartSymbol)
+                                .symbolSize(pointSymbolArea)
+                                .foregroundStyle(currentPointColor)
                             }
                         }
                         

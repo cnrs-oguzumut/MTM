@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import UniformTypeIdentifiers
 
 /// Built-in viewer for the solver's `.vtk` snapshots (Results & Plots → Snapshots).
@@ -12,6 +13,11 @@ struct VTKSnapshotViewer: View {
     @State private var showNodes = false
     @State private var approvedNodeCount: Int? = nil
     @State private var fitToken = 0
+    @State private var zoomInToken = 0
+    @State private var zoomOutToken = 0
+    @State private var boxZoomActive = false
+    @State private var zoomScale: Float = 1.0
+    @State private var marqueeRect: CGRect? = nil
     @State private var hoverInfo: (triangle: Int, value: Float?)? = nil
     @State private var playing = false
     @State private var followLive = true
@@ -145,9 +151,42 @@ struct VTKSnapshotViewer: View {
             Spacer()
             Toggle("Edges", isOn: $showEdges).toggleStyle(.checkbox).controlSize(.small)
             GuardedNodesToggle(isOn: $showNodes, nodeCount: nodeCount).toggleStyle(.checkbox).controlSize(.small)
-            Button(action: { fitToken += 1 }) { Image(systemName: "arrow.up.left.and.down.right.magnifyingglass") }
+            Divider().frame(height: 16)
+            HStack(spacing: 4) {
+                Button(action: { boxZoomActive.toggle() }) {
+                    Image(systemName: "plus.viewfinder")
+                        .foregroundColor(boxZoomActive ? .accentColor : BlueHour.ice)
+                }
                 .controlSize(.small)
-                .help("Fit to view (or double-click the mesh)")
+                .help("Zoom to Box: drag a rectangle on the snapshot to zoom in (or hold Shift + drag)")
+                
+                Button(action: { zoomOutToken += 1 }) {
+                    Image(systemName: "minus.magnifyingglass")
+                }
+                .controlSize(.small)
+                .help("Zoom out (or scroll / right-drag)")
+                
+                Button(action: { fitToken += 1 }) {
+                    Text(String(format: "%.0f%%", max(10, min(25000, zoomScale * 100))))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .frame(minWidth: 38)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Current zoom level (click to reset to 100%)")
+                
+                Button(action: { zoomInToken += 1 }) {
+                    Image(systemName: "plus.magnifyingglass")
+                }
+                .controlSize(.small)
+                .help("Zoom in (or scroll / right-drag)")
+                
+                Button(action: { boxZoomActive = false; fitToken += 1 }) {
+                    Image(systemName: "arrow.up.left.and.down.right.magnifyingglass")
+                }
+                .controlSize(.small)
+                .help("Reset camera / Fit to view (or double-click the mesh)")
+            }
         }
         .padding(.horizontal, 12)
         .frame(height: 32)
@@ -180,23 +219,62 @@ struct VTKSnapshotViewer: View {
     // MARK: Canvas
     
     private var canvas: some View {
-        ZStack {
+        ZStack(alignment: .topLeading) {
             MetalMeshView(
                 geometry: model.frame?.geometry,
                 values: model.currentField == nil ? nil : model.values,
                 appearance: appearance,
                 fitToken: fitToken,
+                zoomInToken: zoomInToken,
+                zoomOutToken: zoomOutToken,
+                boxZoomActive: boxZoomActive,
                 onHover: { p in
                     if let p = p { hoverInfo = model.probe(p) } else { hoverInfo = nil }
+                },
+                onZoomChange: { z in
+                    zoomScale = z
+                },
+                onBoxZoomChange: { rect in
+                    marqueeRect = rect
+                },
+                onBoxZoomComplete: {
+                    boxZoomActive = false
                 }
             )
             
+            if let r = marqueeRect, r.width > 1, r.height > 1 {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.16))
+                    Rectangle()
+                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                        .foregroundColor(.accentColor)
+                }
+                .frame(width: r.width, height: r.height)
+                .position(x: r.midX, y: r.midY)
+                .allowsHitTesting(false)
+            }
+            
             if model.frame == nil {
                 placeholder
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             
             VStack {
-                if nodesAutoHidden && model.frame != nil {
+                if boxZoomActive && model.frame != nil {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus.viewfinder")
+                        Text("Drag a rectangle to zoom in")
+                        Button("Cancel") { boxZoomActive = false }
+                            .buttonStyle(.link)
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(BlueHour.ice)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 8)
+                } else if nodesAutoHidden && model.frame != nil {
                     NodesHiddenNote(nodeCount: nodeCount) {
                         approvedNodeCount = nodeCount
                         showNodes = true
@@ -211,6 +289,7 @@ struct VTKSnapshotViewer: View {
                 }
                 .padding(10)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(BlueHour.canvasBackground)

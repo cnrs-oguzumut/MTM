@@ -6,21 +6,48 @@ import MetalKit
 
 /// GPU mesh renderer. Geometry is uploaded once; pan / zoom / colour-range changes only update uniforms.
 /// Redraws only when something changes (no continuous render loop).
-/// Interaction: drag = pan, scroll wheel / pinch = zoom (around cursor), trackpad scroll = pan, double-click = fit.
+/// Interaction: scroll / pinch / right-drag = zoom (around cursor), left-drag = pan, Shift+drag (or box mode) = zoom to box, double-click = fit.
 public struct MetalMeshView: NSViewRepresentable {
     public var geometry: MeshGeometry?
     public var values: MeshValues?
     public var appearance: MeshAppearance
     /// Increment to request "fit to view".
     public var fitToken: Int = 0
+    /// Increment to step zoom in/out around the view centre.
+    public var zoomInToken: Int = 0
+    public var zoomOutToken: Int = 0
+    /// When true, left-dragging draws a ParaView-style zoom box.
+    public var boxZoomActive: Bool = false
     public var onHover: ((SIMD2<Float>?) -> Void)? = nil
+    public var onZoomChange: ((Float) -> Void)? = nil
+    /// Reports marquee rectangle in top-left (SwiftUI) view coordinates while dragging a zoom box.
+    public var onBoxZoomChange: ((CGRect?) -> Void)? = nil
+    public var onBoxZoomComplete: (() -> Void)? = nil
     
-    public init(geometry: MeshGeometry?, values: MeshValues?, appearance: MeshAppearance, fitToken: Int = 0, onHover: ((SIMD2<Float>?) -> Void)? = nil) {
+    public init(
+        geometry: MeshGeometry?,
+        values: MeshValues?,
+        appearance: MeshAppearance,
+        fitToken: Int = 0,
+        zoomInToken: Int = 0,
+        zoomOutToken: Int = 0,
+        boxZoomActive: Bool = false,
+        onHover: ((SIMD2<Float>?) -> Void)? = nil,
+        onZoomChange: ((Float) -> Void)? = nil,
+        onBoxZoomChange: ((CGRect?) -> Void)? = nil,
+        onBoxZoomComplete: (() -> Void)? = nil
+    ) {
         self.geometry = geometry
         self.values = values
         self.appearance = appearance
         self.fitToken = fitToken
+        self.zoomInToken = zoomInToken
+        self.zoomOutToken = zoomOutToken
+        self.boxZoomActive = boxZoomActive
         self.onHover = onHover
+        self.onZoomChange = onZoomChange
+        self.onBoxZoomChange = onBoxZoomChange
+        self.onBoxZoomComplete = onBoxZoomComplete
     }
     
     public func makeCoordinator() -> MeshRenderer { MeshRenderer() }
@@ -46,7 +73,20 @@ public struct MetalMeshView: NSViewRepresentable {
     public func updateNSView(_ nsView: NSView, context: Context) {
         let r = context.coordinator
         r.onHover = onHover
-        r.update(geometry: geometry, values: values, appearance: appearance, fitToken: fitToken)
+        r.onZoomChange = onZoomChange
+        r.onBoxZoomChange = onBoxZoomChange
+        r.onBoxZoomComplete = onBoxZoomComplete
+        if let v = nsView as? InteractiveMTKView {
+            v.boxZoomActive = boxZoomActive
+        }
+        r.update(
+            geometry: geometry,
+            values: values,
+            appearance: appearance,
+            fitToken: fitToken,
+            zoomInToken: zoomInToken,
+            zoomOutToken: zoomOutToken
+        )
     }
 }
 
@@ -54,7 +94,11 @@ public struct MetalMeshView: NSViewRepresentable {
 
 final class InteractiveMTKView: MTKView {
     weak var renderer: MeshRenderer?
+    var boxZoomActive: Bool = false
     private var lastDrag: CGPoint?
+    private var rightDragAnchor: CGPoint?
+    private var lastRightY: CGFloat?
+    private var boxStart: CGPoint?
     private var tracking: NSTrackingArea?
     
     override var acceptsFirstResponder: Bool { true }
@@ -70,25 +114,105 @@ final class InteractiveMTKView: MTKView {
     
     private func local(_ e: NSEvent) -> CGPoint { convert(e.locationInWindow, from: nil) }
     
-    override func mouseDown(with e: NSEvent) {
-        if e.clickCount == 2 { renderer?.fit(); return }
-        lastDrag = local(e)
+    private func swiftUIRect(from a: CGPoint, to b: CGPoint) -> CGRect {
+        let minX = min(a.x, b.x)
+        let maxX = max(a.x, b.x)
+        let minY = min(a.y, b.y)
+        let maxY = max(a.y, b.y)
+        let h = bounds.height
+        return CGRect(x: minX, y: h - maxY, width: maxX - minX, height: maxY - minY)
     }
+    
+    override func mouseDown(with e: NSEvent) {
+        if e.clickCount == 2 {
+            boxStart = nil
+            renderer?.onBoxZoomChange?(nil)
+            renderer?.fit()
+            return
+        }
+        let p = local(e)
+        if e.modifierFlags.contains(.control) {
+            rightDragAnchor = p
+            lastRightY = p.y
+            return
+        }
+        if boxZoomActive || e.modifierFlags.contains(.shift) {
+            boxStart = p
+            renderer?.onBoxZoomChange?(CGRect(x: p.x, y: bounds.height - p.y, width: 0, height: 0))
+            return
+        }
+        lastDrag = p
+    }
+    
     override func mouseDragged(with e: NSEvent) {
         let p = local(e)
+        if let anchor = rightDragAnchor, let ly = lastRightY {
+            let dy = Float(p.y - ly) * 0.015
+            renderer?.zoom(by: exp(dy), around: anchor)
+            lastRightY = p.y
+            return
+        }
+        if let start = boxStart {
+            renderer?.onBoxZoomChange?(swiftUIRect(from: start, to: p))
+            return
+        }
         if let l = lastDrag { renderer?.pan(dx: Float(p.x - l.x), dy: Float(p.y - l.y)) }
         lastDrag = p
     }
-    override func mouseUp(with e: NSEvent) { lastDrag = nil }
+    
+    override func mouseUp(with e: NSEvent) {
+        let p = local(e)
+        if let start = boxStart {
+            boxStart = nil
+            renderer?.onBoxZoomChange?(nil)
+            let rect = CGRect(
+                x: min(start.x, p.x),
+                y: min(start.y, p.y),
+                width: abs(p.x - start.x),
+                height: abs(p.y - start.y)
+            )
+            if rect.width >= 6 && rect.height >= 6 {
+                renderer?.zoomToViewRect(rect)
+                renderer?.onBoxZoomComplete?()
+            }
+            return
+        }
+        lastDrag = nil
+        rightDragAnchor = nil
+        lastRightY = nil
+    }
+    
+    override func rightMouseDown(with e: NSEvent) {
+        let p = local(e)
+        rightDragAnchor = p
+        lastRightY = p.y
+    }
+    
+    override func rightMouseDragged(with e: NSEvent) {
+        let p = local(e)
+        if let anchor = rightDragAnchor, let ly = lastRightY {
+            let dy = Float(p.y - ly) * 0.015
+            renderer?.zoom(by: exp(dy), around: anchor)
+            lastRightY = p.y
+        }
+    }
+    
+    override func rightMouseUp(with e: NSEvent) {
+        rightDragAnchor = nil
+        lastRightY = nil
+    }
+    
     override func mouseMoved(with e: NSEvent) { renderer?.hover(at: local(e)) }
     override func mouseExited(with e: NSEvent) { renderer?.onHover?(nil) }
     
     override func scrollWheel(with e: NSEvent) {
-        if e.hasPreciseScrollingDeltas && !e.modifierFlags.contains(.command) {
-            // Trackpad two-finger scroll → pan (⌘ + scroll → zoom)
+        if e.modifierFlags.contains(.option) {
+            // Option + scroll → pan
             renderer?.pan(dx: Float(e.scrollingDeltaX), dy: Float(-e.scrollingDeltaY))
         } else {
-            let dy = e.hasPreciseScrollingDeltas ? e.scrollingDeltaY * 0.01 : e.scrollingDeltaY * 0.1
+            // ParaView-style scroll wheel / two-finger trackpad scroll → zoom around cursor
+            let dy = e.hasPreciseScrollingDeltas ? e.scrollingDeltaY * 0.012 : e.scrollingDeltaY * 0.12
+            guard abs(dy) > 1e-6 else { return }
             renderer?.zoom(by: Float(exp(dy)), around: local(e))
         }
     }
@@ -112,6 +236,9 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
     
     weak var view: MTKView?
     var onHover: ((SIMD2<Float>?) -> Void)?
+    var onZoomChange: ((Float) -> Void)?
+    var onBoxZoomChange: ((CGRect?) -> Void)?
+    var onBoxZoomComplete: (() -> Void)?
     let sampleCount = 4
     
     private var device: MTLDevice!
@@ -133,6 +260,8 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
     private var valuesVersion: Int?
     private var appearance = MeshAppearance()
     private var fitToken = -1
+    private var zoomInToken = 0
+    private var zoomOutToken = 0
     private var bounds: (min: SIMD2<Float>, max: SIMD2<Float>) = (.zero, SIMD2(1, 1))
     
     // View transform: world point shown at the view centre, and points-per-world-unit.
@@ -179,7 +308,14 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
     
     // MARK: Updates from SwiftUI
     
-    func update(geometry: MeshGeometry?, values: MeshValues?, appearance newAppearance: MeshAppearance, fitToken newFit: Int) {
+    func update(
+        geometry: MeshGeometry?,
+        values: MeshValues?,
+        appearance newAppearance: MeshAppearance,
+        fitToken newFit: Int,
+        zoomInToken newZoomIn: Int = 0,
+        zoomOutToken newZoomOut: Int = 0
+    ) {
         var dirty = false
         if geometry?.id != geometryID {
             geometryID = geometry?.id
@@ -198,6 +334,16 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
         }
         if newAppearance != appearance { appearance = newAppearance; dirty = true }
         if newFit != fitToken { fitToken = newFit; needsFit = true; dirty = true }
+        if newZoomIn != zoomInToken {
+            zoomInToken = newZoomIn
+            let s = viewSize
+            zoom(by: 1.35, around: CGPoint(x: CGFloat(s.x * 0.5), y: CGFloat(s.y * 0.5)))
+        }
+        if newZoomOut != zoomOutToken {
+            zoomOutToken = newZoomOut
+            let s = viewSize
+            zoom(by: 1.0 / 1.35, around: CGPoint(x: CGFloat(s.x * 0.5), y: CGFloat(s.y * 0.5)))
+        }
         if dirty { view?.needsDisplay = true }
     }
     
@@ -240,13 +386,25 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
         return SIMD2(Float(max(1, v.bounds.width)), Float(max(1, v.bounds.height)))
     }
     
-    func fit() {
+    private var fitZoomValue: Float {
         let size = viewSize
         let ext = simd_max(bounds.max - bounds.min, SIMD2(1e-6, 1e-6))
-        zoom = min(size.x / ext.x, size.y / ext.y) * 0.92
+        return max(1e-6, min(size.x / ext.x, size.y / ext.y) * 0.92)
+    }
+    
+    private func notifyZoom() {
+        let rel = zoom / fitZoomValue
+        DispatchQueue.main.async { [weak self] in
+            self?.onZoomChange?(rel)
+        }
+    }
+    
+    func fit() {
+        zoom = fitZoomValue
         center = (bounds.min + bounds.max) * 0.5
         needsFit = false
         view?.needsDisplay = true
+        notifyZoom()
     }
     
     func pan(dx: Float, dy: Float) {
@@ -259,11 +417,28 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
         let size = viewSize
         let offset = SIMD2(Float(p.x), Float(p.y)) - size * 0.5
         let world = center + offset / zoom
-        let ext = max(1e-6, simd_reduce_max(bounds.max - bounds.min))
-        let minZoom = min(size.x, size.y) / (ext * 20), maxZoom = min(size.x, size.y) * 4
+        let fz = fitZoomValue
+        let minZoom = fz * 0.1
+        let maxZoom = fz * 250.0
         zoom = min(maxZoom, max(minZoom, zoom * factor))
         center = world - offset / zoom
         view?.needsDisplay = true
+        notifyZoom()
+    }
+    
+    func zoomToViewRect(_ r: CGRect) {
+        let size = viewSize
+        guard r.width >= 6, r.height >= 6 else { return }
+        let mid = SIMD2(Float(r.midX), Float(r.midY))
+        let offset = mid - size * 0.5
+        let newCenter = center + offset / zoom
+        let factor = min(size.x / Float(r.width), size.y / Float(r.height)) * 0.95
+        let fz = fitZoomValue
+        zoom = min(fz * 250.0, max(fz * 0.1, zoom * factor))
+        center = newCenter
+        needsFit = false
+        view?.needsDisplay = true
+        notifyZoom()
     }
     
     func hover(at p: CGPoint) {
