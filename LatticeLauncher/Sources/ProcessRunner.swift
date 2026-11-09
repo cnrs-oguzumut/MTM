@@ -87,6 +87,7 @@ public class ProcessRunner: ObservableObject {
     private var sweepSavedBaseNy: Int = 100
     private var pendingOutputChunks: [String] = []
     private var isOutputFlushScheduled: Bool = false
+    private var lastDislocationProfileKey: String = ""
     
     public init() {
         self.pollGBEnergyCSV()
@@ -107,6 +108,7 @@ public class ProcessRunner: ObservableObject {
         avalancheCount = 0
         currentConjugateStrain = nil
         dislocationData = nil
+        lastDislocationProfileKey = ""
     }
     
     public func loadExistingIfAvailable(dir: String) {
@@ -891,7 +893,9 @@ public class ProcessRunner: ObservableObject {
                let content = try? String(contentsOfFile: sumPath, encoding: .utf8) {
                 for line in content.components(separatedBy: .newlines) {
                     if let pt = parseGBEnergyLine(line) {
-                        self.currentGBEnergy = pt
+                        if self.currentGBEnergy != pt {
+                            self.currentGBEnergy = pt
+                        }
                         break
                     }
                 }
@@ -925,7 +929,7 @@ public class ProcessRunner: ObservableObject {
                 break
             }
         }
-        if !foundPoints && !isSweepRunning {
+        if !foundPoints && !isSweepRunning && !self.gbEnergyPoints.isEmpty {
             self.gbEnergyPoints = []
         }
     }
@@ -1007,50 +1011,63 @@ public class ProcessRunner: ObservableObject {
     }
     
     public func pollDislocationProfiles(dir: String? = nil) {
-        let fm = FileManager.default
-        var pathsToTry: [String] = []
-        if let d = dir, !d.isEmpty {
-            pathsToTry.append("\(d)/dislocation_profiles.json")
-        }
-        if !outputDirectory.isEmpty {
-            pathsToTry.append("\(outputDirectory)/dislocation_profiles.json")
-        }
-        if let target = activeConfig?.targetDirectory, !target.isEmpty {
-            pathsToTry.append("\(target)/dislocation_profiles.json")
-        }
-        
-        let root = SimulationConfig.detectProjectRoot()
-        pathsToTry.append("\(root)/dislocation_profiles.json")
-        
-        // Also scan for recent run_volterra_* directories in project root
-        if let contents = try? fm.contentsOfDirectory(atPath: root) {
-            let sorted = contents.filter { $0.hasPrefix("run_volterra") }.compactMap { sub -> (path: String, date: Date)? in
-                let fullPath = "\(root)/\(sub)/dislocation_profiles.json"
-                if let attr = try? fm.attributesOfItem(atPath: fullPath),
-                   let date = attr[.modificationDate] as? Date {
-                    return (fullPath, date)
-                }
-                return nil
-            }.sorted { $0.date > $1.date }
-            
-            for item in sorted {
-                pathsToTry.append(item.path)
+        let outDir = outputDirectory
+        let targetDir = activeConfig?.targetDirectory ?? ""
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let fm = FileManager.default
+            var pathsToTry: [String] = []
+            if let d = dir, !d.isEmpty {
+                pathsToTry.append("\(d)/dislocation_profiles.json")
             }
-        }
-        
-        pathsToTry.append("\(fm.currentDirectoryPath)/dislocation_profiles.json")
-        
-        for jsonPath in pathsToTry where !jsonPath.isEmpty {
-            guard fm.fileExists(atPath: jsonPath),
-                  let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)) else { continue }
-            do {
-                let decoded = try JSONDecoder().decode(DislocationProfileJSONRoot.self, from: data)
-                DispatchQueue.main.async {
-                    self.dislocationData = decoded
+            if !outDir.isEmpty {
+                pathsToTry.append("\(outDir)/dislocation_profiles.json")
+            }
+            if !targetDir.isEmpty {
+                pathsToTry.append("\(targetDir)/dislocation_profiles.json")
+            }
+            
+            let root = SimulationConfig.detectProjectRoot()
+            pathsToTry.append("\(root)/dislocation_profiles.json")
+            
+            // Also scan for recent run_volterra_* directories in project root
+            if let contents = try? fm.contentsOfDirectory(atPath: root) {
+                let sorted = contents.filter { $0.hasPrefix("run_volterra") }.compactMap { sub -> (path: String, date: Date)? in
+                    let fullPath = "\(root)/\(sub)/dislocation_profiles.json"
+                    if let attr = try? fm.attributesOfItem(atPath: fullPath),
+                       let date = attr[.modificationDate] as? Date {
+                        return (fullPath, date)
+                    }
+                    return nil
+                }.sorted { $0.date > $1.date }
+                
+                for item in sorted {
+                    pathsToTry.append(item.path)
                 }
-                return
-            } catch {
-                print("Error decoding dislocation_profiles.json at \(jsonPath): \(error)")
+            }
+            
+            pathsToTry.append("\(fm.currentDirectoryPath)/dislocation_profiles.json")
+            
+            for jsonPath in pathsToTry where !jsonPath.isEmpty {
+                guard fm.fileExists(atPath: jsonPath),
+                      let attr = try? fm.attributesOfItem(atPath: jsonPath) else { continue }
+                let modTime = (attr[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                let size = (attr[.size] as? NSNumber)?.int64Value ?? 0
+                let cacheKey = "\(jsonPath)|\(modTime)|\(size)"
+                if cacheKey == self.lastDislocationProfileKey {
+                    return
+                }
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)) else { continue }
+                do {
+                    let decoded = try JSONDecoder().decode(DislocationProfileJSONRoot.self, from: data)
+                    self.lastDislocationProfileKey = cacheKey
+                    DispatchQueue.main.async {
+                        self.dislocationData = decoded
+                    }
+                    return
+                } catch {
+                    print("Error decoding dislocation_profiles.json at \(jsonPath): \(error)")
+                }
             }
         }
     }

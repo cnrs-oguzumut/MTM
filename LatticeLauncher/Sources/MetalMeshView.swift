@@ -267,6 +267,7 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
     // View transform: world point shown at the view centre, and points-per-world-unit.
     private var center = SIMD2<Float>(0.5, 0.5)
     private var zoom: Float = 100
+    private var lastReportedZoomPct: Int = -1
     private var needsFit = true
     
     func setup(device: MTLDevice) -> Bool {
@@ -355,16 +356,8 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
         }
         triBuffer = makeBuffer(g.triPositions)
         triCount = g.triPositions.count
-        var edges = [SIMD2<Float>]()
-        edges.reserveCapacity(triCount * 2)
-        var t = 0
-        while t + 2 < g.triPositions.count {
-            let a = g.triPositions[t], b = g.triPositions[t + 1], c = g.triPositions[t + 2]
-            edges.append(contentsOf: [a, b, b, c, c, a])
-            t += 3
-        }
-        edgeBuffer = makeBuffer(edges)
-        edgeCount = edges.count
+        edgeBuffer = makeBuffer(g.edgePositions)
+        edgeCount = g.edgePositions.count
         nodeBuffer = makeBuffer(g.nodePositions)
         nodeCount = g.nodePositions.count
         nodeColorBuffer = (g.nodeColors?.count == g.nodePositions.count) ? makeBuffer(g.nodeColors!) : nil
@@ -394,6 +387,9 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
     
     private func notifyZoom() {
         let rel = zoom / fitZoomValue
+        let pct = Int(round(rel * 100))
+        guard pct != lastReportedZoomPct else { return }
+        lastReportedZoomPct = pct
         DispatchQueue.main.async { [weak self] in
             self?.onZoomChange?(rel)
         }

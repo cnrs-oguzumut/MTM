@@ -76,29 +76,42 @@ public enum MeshColormap: String, CaseIterable, Identifiable {
 public struct MeshGeometry {
     public let id = UUID()
     public var triPositions: [SIMD2<Float>]
+    public var edgePositions: [SIMD2<Float>]
     public var nodePositions: [SIMD2<Float>] = []
     /// Optional per-node colours (same count as `nodePositions`).
     public var nodeColors: [SIMD4<Float>]? = nil
     /// Line segments as point pairs (domain borders etc.).
     public var outlineSegments: [SIMD2<Float>] = []
+    public let bounds: (min: SIMD2<Float>, max: SIMD2<Float>)
     
     public var triangleCount: Int { triPositions.count / 3 }
     public var nodeCount: Int { nodePositions.count }
-    
-    public var bounds: (min: SIMD2<Float>, max: SIMD2<Float>) {
-        let all = triPositions.isEmpty ? (nodePositions.isEmpty ? outlineSegments : nodePositions) : triPositions
-        guard var lo = all.first else { return (.zero, SIMD2(1, 1)) }
-        var hi = lo
-        for p in all { lo = simd_min(lo, p); hi = simd_max(hi, p) }
-        for p in outlineSegments { lo = simd_min(lo, p); hi = simd_max(hi, p) }
-        return (lo, hi)
-    }
     
     public init(triPositions: [SIMD2<Float>], nodePositions: [SIMD2<Float>] = [], nodeColors: [SIMD4<Float>]? = nil, outlineSegments: [SIMD2<Float>] = []) {
         self.triPositions = triPositions
         self.nodePositions = nodePositions
         self.nodeColors = nodeColors
         self.outlineSegments = outlineSegments
+        
+        var edges = [SIMD2<Float>]()
+        edges.reserveCapacity(triPositions.count * 2)
+        var t = 0
+        while t + 2 < triPositions.count {
+            let a = triPositions[t], b = triPositions[t + 1], c = triPositions[t + 2]
+            edges.append(contentsOf: [a, b, b, c, c, a])
+            t += 3
+        }
+        self.edgePositions = edges
+        
+        let all = triPositions.isEmpty ? (nodePositions.isEmpty ? outlineSegments : nodePositions) : triPositions
+        if var lo = all.first {
+            var hi = lo
+            for p in all { lo = simd_min(lo, p); hi = simd_max(hi, p) }
+            for p in outlineSegments { lo = simd_min(lo, p); hi = simd_max(hi, p) }
+            self.bounds = (lo, hi)
+        } else {
+            self.bounds = (.zero, SIMD2(1, 1))
+        }
     }
     
     public init(dataset: VTKDataset) {

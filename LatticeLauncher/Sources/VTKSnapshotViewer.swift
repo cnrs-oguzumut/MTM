@@ -229,7 +229,10 @@ struct VTKSnapshotViewer: View {
                 zoomOutToken: zoomOutToken,
                 boxZoomActive: boxZoomActive,
                 onHover: { p in
-                    if let p = p { hoverInfo = model.probe(p) } else { hoverInfo = nil }
+                    let newInfo = p.flatMap { model.probe($0) }
+                    if newInfo?.triangle != hoverInfo?.triangle {
+                        hoverInfo = newInfo
+                    }
                 },
                 onZoomChange: { z in
                     zoomScale = z

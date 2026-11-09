@@ -1054,19 +1054,6 @@ struct StressStrainChartView: View {
                             .symbolSize(105)
                             .foregroundStyle(Color.orange)
                         }
-                        
-                        if let selAngle = selectedAlpha, let gbPt = findClosestGBPoint(to: selAngle) {
-                            RuleMark(x: .value("Selected Δθ", gbPt.misorientationDeg))
-                                .foregroundStyle(Color.secondary.opacity(0.4))
-                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
-                            
-                            PointMark(
-                                x: .value("Selected Δθ", gbPt.misorientationDeg),
-                                y: .value("γ_GB", gbEnergyValue(for: gbPt))
-                            )
-                            .symbolSize(90)
-                            .foregroundStyle(Color.cyan)
-                        }
                     } else if chartMode == .eigenvalue {
                         // Zero-eigenvalue stability threshold line
                         RuleMark(y: .value("Stability Threshold", 0.0))
@@ -1101,20 +1088,6 @@ struct StressStrainChartView: View {
                                     .foregroundStyle(eigenUnstable(pt) ? Color.red : currentPointColor)
                                 }
                             }
-                        }
-                        
-                        if let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha),
-                           let selY = eigenY(eigPt) {
-                            RuleMark(x: .value("Selected α", eigenX(eigPt)))
-                                .foregroundStyle(Color.secondary.opacity(0.4))
-                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
-                            
-                            PointMark(
-                                x: .value("Selected α", eigenX(eigPt)),
-                                y: .value(eigenYLabel, selY)
-                            )
-                            .symbolSize(85)
-                            .foregroundStyle(Color.cyan)
                         }
                     } else {
                         // 1. Primary Stress / Energy Line Mark & PointMark
@@ -1201,20 +1174,6 @@ struct StressStrainChartView: View {
                                     .background(BlueHour.windowBackground.opacity(0.8))
                             }
                         }
-                        
-                        // 4. Hover Cursor / Selection Indicator
-                        if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
-                            RuleMark(x: .value("Selected α", xValue(pt)))
-                                .foregroundStyle(Color.secondary.opacity(0.4))
-                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
-                            
-                            PointMark(
-                                x: .value("Selected α", xValue(pt)),
-                                y: .value("Value", chartMode == .stress ? stressValue(for: pt) : energyValue(pt))
-                            )
-                            .symbolSize(80)
-                            .foregroundStyle(Color.cyan)
-                        }
                     }
                 }
                 .chartXScale(domain: xDomain)
@@ -1266,17 +1225,33 @@ struct StressStrainChartView: View {
                 }
                 .chartOverlay { proxy in
                     GeometryReader { geo in
+                        let plotFrame = proxy.plotFrame.map { geo[$0] } ?? CGRect(origin: .zero, size: geo.size)
                         Rectangle()
                             .fill(Color.clear)
                             .contentShape(Rectangle())
                             .onContinuousHover { phase in
                                 switch phase {
                                 case .active(let location):
-                                    if let x: Double = proxy.value(atX: location.x) {
-                                        selectedAlpha = x
+                                    let relX = location.x - plotFrame.origin.x
+                                    if let rawX: Double = proxy.value(atX: relX) {
+                                        let snapped: Double? = {
+                                            switch chartMode {
+                                            case .gbEnergy:
+                                                return findClosestGBPoint(to: rawX)?.misorientationDeg
+                                            case .eigenvalue:
+                                                return findClosestEigenPoint(to: rawX).map { eigenX($0) }
+                                            default:
+                                                return findClosestPoint(to: rawX).map { xValue($0) }
+                                            }
+                                        }()
+                                        if selectedAlpha != snapped {
+                                            selectedAlpha = snapped
+                                        }
                                     }
                                 case .ended:
-                                    selectedAlpha = nil
+                                    if selectedAlpha != nil {
+                                        selectedAlpha = nil
+                                    }
                                 }
                             }
                             // Drag across the chart to zoom the x axis; double-click to show all points
@@ -1290,8 +1265,8 @@ struct StressStrainChartView: View {
                                     .onEnded { value in
                                         defer { zoomDragStart = nil; zoomDragCurrent = nil }
                                         guard chartMode != .gbEnergy,
-                                              let a: Double = proxy.value(atX: value.startLocation.x),
-                                              let b: Double = proxy.value(atX: value.location.x),
+                                              let a: Double = proxy.value(atX: value.startLocation.x - plotFrame.origin.x),
+                                              let b: Double = proxy.value(atX: value.location.x - plotFrame.origin.x),
                                               abs(value.location.x - value.startLocation.x) > 6 else { return }
                                         let lo = min(a, b), hi = max(a, b)
                                         // A selection that reaches the newest point keeps following the live data
@@ -1301,6 +1276,32 @@ struct StressStrainChartView: View {
                                     }
                             )
                             .onTapGesture(count: 2) { resetXZoom() }
+                        
+                        // Lightweight hover cursor rendered in the overlay (avoids rebuilding Chart marks on hover)
+                        if let selX = selectedAlpha,
+                           let hovered = hoveredCoordinates(for: selX),
+                           let px = proxy.position(forX: hovered.x),
+                           let py = proxy.position(forY: hovered.y) {
+                            let screenX = plotFrame.origin.x + px
+                            let screenY = plotFrame.origin.y + py
+                            if screenX >= plotFrame.minX && screenX <= plotFrame.maxX {
+                                Path { path in
+                                    path.move(to: CGPoint(x: screenX, y: plotFrame.minY))
+                                    path.addLine(to: CGPoint(x: screenX, y: plotFrame.maxY))
+                                }
+                                .stroke(Color.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                                .allowsHitTesting(false)
+                                
+                                if screenY >= plotFrame.minY && screenY <= plotFrame.maxY {
+                                    Circle()
+                                        .fill(Color.cyan)
+                                        .frame(width: 9, height: 9)
+                                        .position(x: screenX, y: screenY)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                        }
+                        
                         if let s0 = zoomDragStart, let s1 = zoomDragCurrent {
                             Rectangle()
                                 .fill(BlueHour.accent.opacity(0.15))
@@ -1458,12 +1459,28 @@ struct StressStrainChartView: View {
         }
     }
     
+    private func hoveredCoordinates(for selX: Double) -> (x: Double, y: Double)? {
+        switch chartMode {
+        case .gbEnergy:
+            guard let pt = findClosestGBPoint(to: selX) else { return nil }
+            return (pt.misorientationDeg, gbEnergyValue(for: pt))
+        case .eigenvalue:
+            guard let pt = findClosestEigenPoint(to: selX), let y = eigenY(pt) else { return nil }
+            return (eigenX(pt), y)
+        default:
+            guard let pt = findClosestPoint(to: selX) else { return nil }
+            let y = chartMode == .stress ? stressValue(for: pt) : energyValue(pt)
+            return (xValue(pt), y)
+        }
+    }
+    
     private var displayCurvePoints: [StressStrainPoint] {
         let pts = isXZoomed ? runner.curvePoints.filter { inXZoom(xValue($0)) } : runner.curvePoints
-        guard pts.count > 1000 else { return pts }
-        let stride = max(1, pts.count / 800)
+        let maxPoints = showPoints ? 450 : 800
+        guard pts.count > maxPoints else { return pts }
+        let stride = max(1, pts.count / maxPoints)
         var sampled: [StressStrainPoint] = []
-        sampled.reserveCapacity(800 + 2)
+        sampled.reserveCapacity(maxPoints + 2)
         for i in Swift.stride(from: 0, to: pts.count, by: stride) {
             sampled.append(pts[i])
         }
