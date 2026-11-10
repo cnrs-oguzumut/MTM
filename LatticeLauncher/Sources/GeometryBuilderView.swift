@@ -321,7 +321,7 @@ public struct GeometryBuilderView: View {
                 .background(BlueHour.pillSurface, in: Capsule())
                 .overlay(Capsule().strokeBorder(BlueHour.border, lineWidth: 1))
                 
-                // Active boundary regime and loading (status; edited in step 2, Shape & BCs)
+                // Active boundary regime and loading (status; edited in step 3, Shape & BCs)
                 HStack(spacing: 5) {
                     Circle()
                         .fill(config.isEffectivePeriodicPBC ? Color(red: 0.45, green: 0.92, blue: 0.62) : Color(red: 0.31, green: 0.85, blue: 0.78))
@@ -334,7 +334,7 @@ public struct GeometryBuilderView: View {
                 .padding(.vertical, 4)
                 .background(BlueHour.pillSurface, in: Capsule())
                 .overlay(Capsule().strokeBorder(config.isEffectivePeriodicPBC ? Color.green.opacity(0.4) : BlueHour.border, lineWidth: 1))
-                .help("Boundary regime and loading: change them in step 2, Shape & BCs.")
+                .help("Boundary regime and loading: change them in step 3, Shape & BCs.")
                 
                 HelpPopoverButton(
                     title: "Macroscopic Geometry & BC Studio",

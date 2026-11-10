@@ -24,6 +24,11 @@ private:
     Eigen::Matrix2d F; // Deformation gradient
     Eigen::Matrix2d C; // Right Cauchy-Green deformation tensor
     Eigen::Matrix2d F_external; // External deformation gradient
+    Eigen::Matrix2d F_plastic; // Cumulative plastic deformation gradient F_p^(m) in grain-aligned frame
+    Eigen::Matrix2d Q_orient; // Discrete reference-cell orientation matrix locked at Delaunay creation
+    bool has_q_orient; // Whether Q_orient has been locked for this triangle
+    double cumulative_plastic_slip; // Monotonic Frobenius slip path length sum ||Delta F_p - I||_F
+    int remesh_generation; // Number of topological flips this element's history has undergone
     
     // Reduced DOF support
     const std::vector<Point2D>* reference_points_ptr; // Pointer to reference mesh
@@ -80,6 +85,25 @@ public:
     const Eigen::Matrix2d& getDeformationGradient() const;
     const Eigen::Matrix2d& getMetricTensor() const;
     bool isInitialized() const;
+
+    // Plasticity memory accessors (Hybrid Option A + B: F_tot = F_m ... F_1 = F_e * F_p)
+    const Eigen::Matrix2d& getPlasticDeformationGradient() const { return F_plastic; }
+    void setPlasticDeformationGradient(const Eigen::Matrix2d& Fp) { F_plastic = Fp; }
+    const Eigen::Matrix2d& getQOrient() const { return Q_orient; }
+    void setQOrient(const Eigen::Matrix2d& Q) { Q_orient = Q; has_q_orient = true; }
+    bool hasQOrient() const { return has_q_orient; }
+    void clearQOrient() { Q_orient.setIdentity(); has_q_orient = false; }
+    double getCumulativePlasticSlip() const { return cumulative_plastic_slip; }
+    void setCumulativePlasticSlip(double slip) { cumulative_plastic_slip = slip; }
+    int getRemeshGeneration() const { return remesh_generation; }
+    void setRemeshGeneration(int gen) { remesh_generation = gen; }
+    void resetPlasticMemory() {
+        F_plastic.setIdentity();
+        Q_orient.setIdentity();
+        has_q_orient = false;
+        cumulative_plastic_slip = 0.0;
+        remesh_generation = 0;
+    }
     
     // Shape derivatives calculation
     double calculate_shape_derivatives(const std::vector<Point2D>& reference_points);

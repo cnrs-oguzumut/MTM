@@ -42,7 +42,7 @@ namespace {
         return R_theta;
     }
 
-    inline Eigen::Matrix2d computeAlignedDeformationGradient(
+    inline Eigen::Matrix2d computeAlignmentMatrixInternal(
         const Eigen::Matrix2d& F,
         double theta_rad = g_reference_rotation_rad)
     {
@@ -56,7 +56,7 @@ namespace {
         // so raw F differs across up/down triangles and cyclic CCW vertex orderings by 60-degree rotations
         // R(k * 60 deg), k in {0..5}. Choose k that minimises ||F * R(k * 60 deg)^T - R_theta||_F.
         if (reference_frame() == ReferenceFrame::Triangular) {
-            Eigen::Matrix2d best_F = F;
+            Eigen::Matrix2d best_Q = Eigen::Matrix2d::Identity();
             double min_dist_sq = 0.0;
             bool has_best = false;
             for (int k = 0; k < 6; ++k) {
@@ -71,16 +71,17 @@ namespace {
                 if (!has_best || dist_sq < min_dist_sq) {
                     has_best = true;
                     min_dist_sq = dist_sq;
-                    best_F = F_cand;
+                    best_Q = Rk_T;
                 }
             }
-            return best_F;
+            return best_Q;
         }
 
-        // Target sits at the midpoint (F12 = 1/4) of the Lagrange fundamental domain
-        // between the square phase (F12 = 0) and triangular phase (F12 = +1/2).
+        // Target sits at the unstressed square crystal I (with a tiny 1e-6 tie-breaker
+        // for the exact degenerate boundary F12 = +/- 0.5), matching the symmetric
+        // Delaunay fundamental domain (-0.5, +0.5) under both positive and negative shear.
         Eigen::Matrix2d B_target;
-        B_target << 1.0, 0.25,
+        B_target << 1.0, 1e-6,
                     0.0, 1.0;
         const Eigen::Matrix2d F_target = R_theta * B_target;
 
@@ -104,23 +105,31 @@ namespace {
         R_syms[3] <<  0.0,  1.0,
                      -1.0,  0.0;
 
-        Eigen::Matrix2d best_F = F;
+        Eigen::Matrix2d best_Q = Eigen::Matrix2d::Identity();
         double min_dist_sq = 0.0;
         bool has_best = false;
 
         for (int p = 0; p < 3; ++p) {
             const Eigen::Matrix2d F_perm = F * M_perms[p];
             for (int r = 0; r < 4; ++r) {
+                const Eigen::Matrix2d Q_cand = M_perms[p] * R_syms[r].transpose();
                 const Eigen::Matrix2d F_cand = F_perm * R_syms[r].transpose();
                 const double dist_sq = (F_cand - F_target).squaredNorm();
                 if (!has_best || dist_sq < min_dist_sq) {
                     has_best = true;
                     min_dist_sq = dist_sq;
-                    best_F = F_cand;
+                    best_Q = Q_cand;
                 }
             }
         }
-        return best_F;
+        return best_Q;
+    }
+
+    inline Eigen::Matrix2d computeAlignedDeformationGradient(
+        const Eigen::Matrix2d& F,
+        double theta_rad = g_reference_rotation_rad)
+    {
+        return F * computeAlignmentMatrixInternal(F, theta_rad);
     }
 }
 
@@ -135,6 +144,49 @@ double ConfigurationSaver::getReferenceRotationDeg() {
 
 Eigen::Matrix2d ConfigurationSaver::alignDeformationGradient(const Eigen::Matrix2d& F, double theta_rad) {
     return computeAlignedDeformationGradient(F, theta_rad);
+}
+
+Eigen::Matrix2d ConfigurationSaver::computeAlignmentMatrix(const Eigen::Matrix2d& F, double theta_rad) {
+    return computeAlignmentMatrixInternal(F, theta_rad);
+}
+
+Eigen::Matrix2d ConfigurationSaver::computeElementGrainAlignedElasticF(
+    const ElementTriangle2D& element,
+    const std::vector<Point2D>& points,
+    int* out_grain_id,
+    double* out_theta_rad)
+{
+    const int n_pts = static_cast<int>(points.size());
+    const int n0 = element.getNodeIndex(0);
+    const int n1 = element.getNodeIndex(1);
+    const int n2 = element.getNodeIndex(2);
+    const int g0 = (n0 >= 0 && n0 < n_pts) ? points[n0].grain_id : 0;
+    const int g1 = (n1 >= 0 && n1 < n_pts) ? points[n1].grain_id : 0;
+    const int g2 = (n2 >= 0 && n2 < n_pts) ? points[n2].grain_id : 0;
+    int elem_grain_id = g0;
+    double elem_theta_deg = (n0 >= 0 && n0 < n_pts) ? points[n0].grain_theta_deg : g_reference_rotation_deg;
+    if (g0 == g1 || g0 == g2) {
+        elem_grain_id = g0;
+        elem_theta_deg = (n0 >= 0 && n0 < n_pts) ? points[n0].grain_theta_deg : g_reference_rotation_deg;
+    } else if (g1 == g2) {
+        elem_grain_id = g1;
+        elem_theta_deg = (n1 >= 0 && n1 < n_pts) ? points[n1].grain_theta_deg : g_reference_rotation_deg;
+    }
+    if (std::abs(elem_theta_deg) < 1e-12 && std::abs(g_reference_rotation_deg) > 1e-12 && elem_grain_id == 0) {
+        elem_theta_deg = g_reference_rotation_deg;
+    }
+    const double elem_theta_rad = elem_theta_deg * M_PI / 180.0;
+    if (out_grain_id != nullptr) *out_grain_id = elem_grain_id;
+    if (out_theta_rad != nullptr) *out_theta_rad = elem_theta_rad;
+
+    Eigen::Matrix2d R_grain;
+    R_grain << std::cos(elem_theta_rad), -std::sin(elem_theta_rad),
+               std::sin(elem_theta_rad),  std::cos(elem_theta_rad);
+
+    const Eigen::Matrix2d Q =
+        computeAlignmentMatrixInternal(element.getDeformationGradient(), elem_theta_rad);
+    const Eigen::Matrix2d F_aligned = element.getDeformationGradient() * Q;
+    return R_grain.transpose() * F_aligned;
 }
 
 void ConfigurationSaver::ensureDirectoryExists(const std::string& directory) {
@@ -980,11 +1032,16 @@ void ConfigurationSaver::writeToVTKFile(
     std::vector<int> element_grain_ids;
     std::vector<double> element_rotation_angle_deg;
     std::vector<Eigen::Matrix2d> element_f_aligned_tensors;
+    std::vector<Eigen::Matrix2d> element_f_total_tensors;
+    std::vector<Eigen::Matrix2d> element_f_plastic_tensors;
+    std::vector<double> element_plastic_slip_values;
+    std::vector<double> element_plastic_strain_mag_values;
     
     // Initialize nodal value arrays
     std::vector<double> nodal_energy(extended_point_count, 0.0);
     std::vector<double> atom_energy(original_points_count, 0.0);
     std::vector<double> atom_area(original_points_count, 0.0);
+    std::vector<double> atom_plastic_slip_weighted(original_points_count, 0.0);
     std::vector<double> nodal_projected_stress(extended_point_count, 0.0);
     std::vector<double> nodal_von_mises(extended_point_count, 0.0);
     std::vector<double> nodal_hydrostatic_pressure(extended_point_count, 0.0);
@@ -1036,12 +1093,25 @@ void ConfigurationSaver::writeToVTKFile(
         R_grain << std::cos(elem_theta_rad), -std::sin(elem_theta_rad),
                    std::sin(elem_theta_rad),  std::cos(elem_theta_rad);
 
-        // Calculate element quantities from aligned deformation gradient relative to this grain's reference angle
-        const Eigen::Matrix2d F = computeAlignedDeformationGradient(
-            element.getDeformationGradient(), elem_theta_rad);
+        // Calculate element quantities from aligned elastic deformation gradient relative to this grain's reference angle
+        const Eigen::Matrix2d F =
+            computeAlignedDeformationGradient(element.getDeformationGradient(), elem_theta_rad);
         const Eigen::Matrix2d F_grain_rel = R_grain.transpose() * F;
+        const Eigen::Matrix2d F_tot = element.hasQOrient()
+            ? Eigen::Matrix2d(R_grain.transpose() * element.getDeformationGradient() * element.getQOrient())
+            : Eigen::Matrix2d(F_grain_rel * element.getPlasticDeformationGradient());
+        Eigen::Matrix2d F_p = element.getPlasticDeformationGradient();
+        if (element.hasQOrient() && std::abs(F_grain_rel.determinant()) > 1e-12) {
+            F_p = F_grain_rel.inverse() * F_tot;
+        }
+        const double elem_plastic_strain_mag = (F_p - Eigen::Matrix2d::Identity()).norm();
+        const double elem_plastic_slip = std::max(element.getCumulativePlasticSlip(), elem_plastic_strain_mag);
         element_grain_ids.push_back(elem_grain_id);
         element_f_aligned_tensors.push_back(F_grain_rel);
+        element_f_total_tensors.push_back(F_tot);
+        element_f_plastic_tensors.push_back(F_p);
+        element_plastic_slip_values.push_back(elem_plastic_slip);
+        element_plastic_strain_mag_values.push_back(elem_plastic_strain_mag);
 
         // Extract polar rotation angle relative to the grain's reference frame
         Eigen::JacobiSVD<Eigen::Matrix2d> svd(F_grain_rel, Eigen::ComputeFullU | Eigen::ComputeFullV);
@@ -1114,6 +1184,7 @@ void ConfigurationSaver::writeToVTKFile(
             if (original_idx >= 0 && original_idx < original_points_count) {
                 atom_energy[original_idx] += element_energy / 3.0;  // Divide by 3 nodes across the physical atom
                 atom_area[original_idx] += element_area / 3.0;      // Voronoi / dual area for this atom
+                atom_plastic_slip_weighted[original_idx] += elem_plastic_slip * (element_area / 3.0);
             }
             nodal_projected_stress[extended_idx] += stress_value;
             nodal_von_mises[extended_idx] += von_mises;
@@ -1369,13 +1440,93 @@ void ConfigurationSaver::writeToVTKFile(
         elem_f_buf.push_back(0.0f);
         elem_f_buf.push_back(0.0f);
         elem_f_buf.push_back(0.0f);
-        elem_f_buf.push_back(1.0f);
+        elem_f_buf.push_back(vtk_swap_float(1.0f));
     }
     file.write(reinterpret_cast<const char*>(elem_f_buf.data()), elem_f_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element Total Deformation Gradient Tensor F_tot = F_m ... F_1 = F_e * F_p (in grain reference frame)
+    file << "TENSORS ElementF_Total float\n";
+    std::vector<float> elem_f_tot_buf;
+    elem_f_tot_buf.reserve(element_f_total_tensors.size() * 9);
+    for (const auto& F_tot : element_f_total_tensors) {
+        elem_f_tot_buf.push_back(vtk_swap_float(static_cast<float>(F_tot(0, 0))));
+        elem_f_tot_buf.push_back(vtk_swap_float(static_cast<float>(F_tot(0, 1))));
+        elem_f_tot_buf.push_back(0.0f);
+        elem_f_tot_buf.push_back(vtk_swap_float(static_cast<float>(F_tot(1, 0))));
+        elem_f_tot_buf.push_back(vtk_swap_float(static_cast<float>(F_tot(1, 1))));
+        elem_f_tot_buf.push_back(0.0f);
+        elem_f_tot_buf.push_back(0.0f);
+        elem_f_tot_buf.push_back(0.0f);
+        elem_f_tot_buf.push_back(vtk_swap_float(1.0f));
+    }
+    file.write(reinterpret_cast<const char*>(elem_f_tot_buf.data()), elem_f_tot_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element Cumulative Plastic Deformation Gradient Tensor F_p (in grain reference frame)
+    file << "TENSORS ElementF_Plastic float\n";
+    std::vector<float> elem_f_p_buf;
+    elem_f_p_buf.reserve(element_f_plastic_tensors.size() * 9);
+    for (const auto& F_p : element_f_plastic_tensors) {
+        elem_f_p_buf.push_back(vtk_swap_float(static_cast<float>(F_p(0, 0))));
+        elem_f_p_buf.push_back(vtk_swap_float(static_cast<float>(F_p(0, 1))));
+        elem_f_p_buf.push_back(0.0f);
+        elem_f_p_buf.push_back(vtk_swap_float(static_cast<float>(F_p(1, 0))));
+        elem_f_p_buf.push_back(vtk_swap_float(static_cast<float>(F_p(1, 1))));
+        elem_f_p_buf.push_back(0.0f);
+        elem_f_p_buf.push_back(0.0f);
+        elem_f_p_buf.push_back(0.0f);
+        elem_f_p_buf.push_back(vtk_swap_float(1.0f));
+    }
+    file.write(reinterpret_cast<const char*>(elem_f_p_buf.data()), elem_f_p_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element Cumulative Plastic Slip (monotonic path-dependent Frobenius slip norm)
+    file << "SCALARS ElementPlasticSlip float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_pslip_buf;
+    elem_pslip_buf.reserve(element_plastic_slip_values.size());
+    for (double val : element_plastic_slip_values) {
+        elem_pslip_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_pslip_buf.data()), elem_pslip_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element Net Plastic Strain Magnitude ||F_p - I||_F
+    file << "SCALARS ElementPlasticStrainMag float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_pmag_buf;
+    elem_pmag_buf.reserve(element_plastic_strain_mag_values.size());
+    for (double val : element_plastic_strain_mag_values) {
+        elem_pmag_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_pmag_buf.data()), elem_pmag_buf.size() * sizeof(float));
     file << "\n";
     
     // --- Write Point Data (Per-Node Values) ---
     file << "\nPOINT_DATA " << extended_point_count << "\n";
+
+    // Nodal Cumulative Plastic Slip (Voronoi-area weighted; preserves Point2D backup on crack lips)
+    {
+        std::vector<float> nodal_pslip_buf(extended_point_count, vtk_swap_float(0.0f));
+        for (const auto& entry : node_map) {
+            int original_idx = entry.first.index;
+            int extended_idx = entry.second;
+            if (original_idx >= 0 && original_idx < original_points_count &&
+                extended_idx >= 0 && extended_idx < extended_point_count) {
+                double a_node = atom_area[original_idx];
+                double slip_val = (a_node > 1e-12)
+                    ? std::max(atom_plastic_slip_weighted[original_idx] / a_node,
+                               points[original_idx].cumulative_plastic_slip)
+                    : points[original_idx].cumulative_plastic_slip;
+                nodal_pslip_buf[extended_idx] = vtk_swap_float(static_cast<float>(slip_val));
+            }
+        }
+        file << "SCALARS NodalPlasticSlip float 1\n";
+        file << "LOOKUP_TABLE default\n";
+        file.write(reinterpret_cast<const char*>(nodal_pslip_buf.data()), nodal_pslip_buf.size() * sizeof(float));
+        file << "\n";
+    }
 
     // Nodal Grain ID & Reference Grain Angle
     {
@@ -2148,8 +2299,11 @@ void ConfigurationSaver::saveElements(const std::vector<ElementTriangle2D>& elem
             elem_file << trans.x() << " " << trans.y() << " ";
         }
         
-        // Reference area
-        elem_file << elem.getReferenceArea() << "\n";
+        // Reference area + plasticity memory (Fp11 Fp12 Fp21 Fp22 cumulative_plastic_slip)
+        const Eigen::Matrix2d& Fp = elem.getPlasticDeformationGradient();
+        elem_file << elem.getReferenceArea() << " "
+                  << Fp(0, 0) << " " << Fp(0, 1) << " " << Fp(1, 0) << " " << Fp(1, 1) << " "
+                  << elem.getCumulativePlasticSlip() << "\n";
     }
     
     elem_file.close();
@@ -2224,6 +2378,16 @@ ConfigurationSaver::loadElements(int iteration,
             elem.set_shape_derivatives(dndx);
             elem.set_reference_mesh(reference_points);
             elem.setReferenceArea(ref_area);
+
+            double fp00 = 1.0, fp01 = 0.0, fp10 = 0.0, fp11 = 1.0, pslip = 0.0;
+            if (iss >> fp00 >> fp01 >> fp10 >> fp11) {
+                Eigen::Matrix2d Fp;
+                Fp << fp00, fp01, fp10, fp11;
+                elem.setPlasticDeformationGradient(Fp);
+                if (iss >> pslip) {
+                    elem.setCumulativePlasticSlip(pslip);
+                }
+            }
             
             // Ensure elements vector is large enough
             while (elements.size() <= elem_idx) {
@@ -2302,8 +2466,14 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
 
     file << "NODES " << data.points.size() << "\n";
     for (size_t i = 0; i < data.points.size(); ++i) {
-        file << i << " " << data.points[i].coord.x() << " " << data.points[i].coord.y()
-             << " " << data.points[i].grain_id << " " << data.points[i].grain_theta_deg << "\n";
+        const auto& pt = data.points[i];
+        file << i << " " << pt.coord.x() << " " << pt.coord.y()
+             << " " << pt.grain_id << " " << pt.grain_theta_deg
+             << " " << pt.cumulative_plastic_slip
+             << " " << pt.F_plastic_node(0, 0) << " " << pt.F_plastic_node(0, 1)
+             << " " << pt.F_plastic_node(1, 0) << " " << pt.F_plastic_node(1, 1)
+             << " " << pt.F_total_node(0, 0) << " " << pt.F_total_node(0, 1)
+             << " " << pt.F_total_node(1, 0) << " " << pt.F_total_node(1, 1) << "\n";
     }
 
     file << "ELEMENTS " << data.active_elements.size() << "\n";
@@ -2313,6 +2483,8 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
         Eigen::Vector2d t0 = elem.getTranslation(0);
         Eigen::Vector2d t1 = elem.getTranslation(1);
         Eigen::Vector2d t2 = elem.getTranslation(2);
+        const Eigen::Matrix2d& Fp = elem.getPlasticDeformationGradient();
+        const Eigen::Matrix2d& Q = elem.getQOrient();
         file << elem_idx << " "
              << elem.getNodeIndex(0) << " "
              << elem.getNodeIndex(1) << " "
@@ -2320,7 +2492,12 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
              << t0.x() << " " << t0.y() << " "
              << t1.x() << " " << t1.y() << " "
              << t2.x() << " " << t2.y() << " "
-             << elem.getReferenceArea() << "\n";
+             << elem.getReferenceArea() << " "
+             << Fp(0, 0) << " " << Fp(0, 1) << " " << Fp(1, 0) << " " << Fp(1, 1) << " "
+             << elem.getCumulativePlasticSlip() << " "
+             << elem.getRemeshGeneration() << " "
+             << Q(0, 0) << " " << Q(0, 1) << " " << Q(1, 0) << " " << Q(1, 1) << " "
+             << (elem.hasQOrient() ? 1 : 0) << "\n";
     }
 
     if (!data.ref_points.empty()) {
@@ -2435,7 +2612,20 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
                     gid = 0;
                     gtheta = 0.0;
                 }
-                data.points.emplace_back(x, y, gid, gtheta);
+                Point2D pt(x, y, gid, gtheta);
+                double pslip = 0.0;
+                if (iss >> pslip) {
+                    pt.cumulative_plastic_slip = pslip;
+                    double fp00 = 1.0, fp01 = 0.0, fp10 = 0.0, fp11 = 1.0;
+                    if (iss >> fp00 >> fp01 >> fp10 >> fp11) {
+                        pt.F_plastic_node << fp00, fp01, fp10, fp11;
+                        double ft00 = 1.0, ft01 = 0.0, ft10 = 0.0, ft11 = 1.0;
+                        if (iss >> ft00 >> ft01 >> ft10 >> ft11) {
+                            pt.F_total_node << ft00, ft01, ft10, ft11;
+                        }
+                    }
+                }
+                data.points.push_back(pt);
             }
         } else if (reading_ref_nodes) {
             size_t idx;
@@ -2460,6 +2650,29 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
                 elem.setTranslation(2, Eigen::Vector2d(tx2, ty2));
                 elem.set_shape_derivatives(dndx);
                 elem.setReferenceArea(ref_area);
+
+                double fp00 = 1.0, fp01 = 0.0, fp10 = 0.0, fp11 = 1.0, pslip = 0.0;
+                int rgen = 0;
+                if (iss >> fp00 >> fp01 >> fp10 >> fp11) {
+                    Eigen::Matrix2d Fp;
+                    Fp << fp00, fp01, fp10, fp11;
+                    elem.setPlasticDeformationGradient(Fp);
+                    if (iss >> pslip) {
+                        elem.setCumulativePlasticSlip(pslip);
+                        if (iss >> rgen) {
+                            elem.setRemeshGeneration(rgen);
+                            double q00 = 1.0, q01 = 0.0, q10 = 0.0, q11 = 1.0;
+                            int has_q = 0;
+                            if (iss >> q00 >> q01 >> q10 >> q11 >> has_q) {
+                                if (has_q != 0) {
+                                    Eigen::Matrix2d Q;
+                                    Q << q00, q01, q10, q11;
+                                    elem.setQOrient(Q);
+                                }
+                            }
+                        }
+                    }
+                }
 
                 while (data.elements.size() <= elem_idx) {
                     data.elements.push_back(ElementTriangle2D());

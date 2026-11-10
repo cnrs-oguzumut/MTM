@@ -196,9 +196,29 @@ public class SimulationConfig: ObservableObject {
     
     // 3b. Staircase Shift Schedule (Shift mode)
     @Published public var shiftAmplitude: Double = 2.0
-    @Published public var shiftHorizontalSteps: Int = 2
-    @Published public var shiftVerticalSteps: Int = 2
+    @Published public var shiftStepSize: Double = 0.02
     @Published public var shiftPerturbMesh: Bool = false
+
+    public var shiftTotalSteps: Int {
+        let amp = max(0.0, shiftAmplitude)
+        let du = max(1e-6, abs(shiftStepSize))
+        var hLevel = 0.0
+        var vLevel = 0.0
+        var count = 0
+        while hLevel < amp - 1e-12 || vLevel < amp - 1e-12 {
+            if hLevel < amp - 1e-12 {
+                let nextH = min(amp, hLevel + 1.0)
+                count += max(1, Int(ceil((nextH - hLevel) / du - 1e-9)))
+                hLevel = nextH
+            }
+            if vLevel < amp - 1e-12 {
+                let nextV = min(amp, vLevel + 1.0)
+                count += max(1, Int(ceil((nextV - vLevel) / du - 1e-9)))
+                vLevel = nextV
+            }
+        }
+        return count
+    }
     
     // Rotated Lattice & CSL inputs
     @Published public var useRotation: Bool = false
@@ -329,7 +349,7 @@ public class SimulationConfig: ObservableObject {
         let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? (isPeriodicDislocs ? "_pbc_dislocs_\(2 * geometryConfig.microstructure.dislocation_pair_count)D" : "_\(geometryConfig.preset_name)") : ""
         if mode == .shift {
             let pertTag = shiftPerturbMesh ? "_pert" : ""
-            return String(format: "run_shift_%dx%d_amp%.1f_%@%@%@%@%@%@", nx, ny, shiftAmplitude, remeshTag, pertTag, latTag, potTag, triRefTag, rotTag)
+            return String(format: "run_shift_%dx%d_amp%g_du%g_%@%@%@%@%@%@", nx, ny, shiftAmplitude, abs(shiftStepSize), remeshTag, pertTag, latTag, potTag, triRefTag, rotTag)
         }
         return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(triRefTag)\(rotTag)\(relaxTag)\(dipoleTag)\(cylLoadTag)"
     }
@@ -431,9 +451,8 @@ public class SimulationConfig: ObservableObject {
                 args.append("--dipole-dy=\(dipoleDy)")
             }
         } else if mode == .shift {
-            args.append(String(format: "--shift-amplitude=%.4f", shiftAmplitude))
-            args.append("--shift-h-steps=\(shiftHorizontalSteps)")
-            args.append("--shift-v-steps=\(shiftVerticalSteps)")
+            args.append(String(format: "--shift-amplitude=%.6f", shiftAmplitude))
+            args.append(String(format: "--shift-step-size=%.6f", max(1e-6, abs(shiftStepSize))))
             args.append("--shift-perturb=\(shiftPerturbMesh ? 1 : 0)")
         } else if activeProtocol == .relaxOnly || activeProtocol == .sweepMisorientation {
             args.append("--alpha-start=0.000000")
@@ -612,7 +631,8 @@ public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
             .radialExpansionOutward,
             .radialCompressionInward,
             .affineShearBox,
-            .nanoindentation
+            .nanoindentation,
+            .staircaseShift
         ]
     }
     
@@ -650,7 +670,7 @@ public enum ActiveMechanicalLoading: String, CaseIterable, Identifiable {
         case .nanoindentation: return "Rigid tip pressing into top free surface • Measures Load P(δ)"
         case .staircaseShift: return "Alternating horizontal & vertical block shifts"
         case .volterraDislocation: return "Single edge dislocation inside cylindrical R_free"
-        case .customRegional: return "User-defined regional boundary rules in Step 2"
+        case .customRegional: return "User-defined regional boundary rules in Step 3"
         }
     }
     
@@ -1137,7 +1157,7 @@ public extension SimulationConfig {
             return "Fixed Cylinder (R=\(Int(rFree))a₀) • \(core)\(load)"
         }
         if mode == .shift {
-            return "Staircase BCs • Block Shift (A=\(String(format: "%.1f", shiftAmplitude))a₀)"
+            return "Staircase BCs • End Shift \(String(format: "%g", shiftAmplitude)) a₀ (du = \(String(format: "%g", abs(shiftStepSize))) a₀)"
         }
         if protocolMode == .sweepMisorientation {
             return "\(activeBoundaryRegime.shortBadge) • Δθ Misorientation Sweep (\(sweepCSLCandidates.count) runs)"

@@ -1,0 +1,257 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,positioning,shapes.geometric}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=blue!60!black,urlcolor=blue!60!black]{hyperref}
+
+\setlength{\emergencystretch}{3em}
+\setlength{\parskip}{4pt}
+
+\definecolor{atomblue}{RGB}{41,128,185}
+\definecolor{defectred}{RGB}{211,47,47}
+\definecolor{okgreen}{RGB}{46,125,50}
+\definecolor{boxbg}{RGB}{245,248,252}
+\definecolor{boxframe}{RGB}{180,200,225}
+\definecolor{warnbg}{RGB}{255,248,235}
+\definecolor{warnframe}{RGB}{225,180,100}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\T}{^{\mathsf T}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\newenvironment{keyidea}[1][Key Physical Idea]{%
+  \par\medskip\noindent
+  \begin{tikzpicture}
+    \node[draw=boxframe,fill=boxbg,rounded corners=4pt,inner sep=10pt,text width=\dimexpr\textwidth-22pt\relax] (box) \bgroup
+    \textbf{\textcolor{blue!60!black}{#1.}}\par\smallskip
+}{%
+    \egroup;
+  \end{tikzpicture}\par\medskip
+}
+
+\newenvironment{cautionbox}[1][Implementation Subtlety]{%
+  \par\medskip\noindent
+  \begin{tikzpicture}
+    \node[draw=warnframe,fill=warnbg,rounded corners=4pt,inner sep=10pt,text width=\dimexpr\textwidth-22pt\relax] (box) \bgroup
+    \textbf{\textcolor{orange!75!black}{#1.}}\par\smallskip
+}{%
+    \egroup;
+  \end{tikzpicture}\par\medskip
+}
+
+\title{\textbf{Plasticity Memory Across Delaunay Remeshing}\\[6pt]
+\large Architectural Choices and Implementation of the Hybrid Multiplicative Chain $\mathbf{F}_{\text{tot}} = \mathbf{F}_m \cdots \mathbf{F}_2 \mathbf{F}_1 = \mathbf{F}_e \, \mathbf{F}_p$}
+\author{MTM Lattice-Triangulation Documentation}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+In Mesoscopic Tensorial Model (MTM) simulations with adaptive CGAL Delaunay remeshing, every accepted topological reconnection replaces distorted triangles by newly triangulated cells whose local reference configuration is reset to the canonical parent triangle ($\mathbf{X}_{\text{ref}}$). While the periodic strain-energy density $W(\mathbf{C}_{\text{red}})$, the metric reduction, and the Cauchy stress $\boldsymbol{\sigma}$ depend only on the \emph{elastic} lattice distortion $\mathbf{F}_e$ and are strictly preserved by this reset, any memory of \emph{cumulative plastic slip} ($\mathbf{F}_p$) and \emph{total material deformation} ($\mathbf{F}_{\text{tot}} = \mathbf{F}_e \, \mathbf{F}_p$) is lost if elements do not carry history across remeshing passes. This document reviews all four architectural choices for preserving plasticity memory across remeshing and fracture---(A) Element-to-Element Multiplicative Chain, (B) Atom-Carried Nodal Chain, (C) Initial-Mesh $\mathcal{T}_0$ Telescoping, and (D) the \textbf{Hybrid Element--Nodal Multiplicative Chain ($\mathbf{F}_m \cdots \mathbf{F}_1$)}---and details the mathematical formulation and C++ implementation of the Hybrid Option A+B architecture in the MTM codebase.
+\end{abstract}
+
+\tableofcontents
+
+% ============================================================================
+\section{Why Remeshing Erases Plastic History and Why $\mathbf{F}_e$ Must Stay Unchanged}
+% ============================================================================
+
+Consider a 2D crystal undergoing a sequence of loading steps and Delaunay remeshing cascades:
+\begin{equation}
+  \mathcal{T}_0 \xrightarrow{\;\mathbf{F}_1\;} \mathcal{T}_1 \xrightarrow{\;\mathbf{F}_2\;} \mathcal{T}_2 \xrightarrow{\;\cdots\;} \mathcal{T}_{m-1} \xrightarrow{\;\mathbf{F}_m\;} \mathcal{T}_m.
+\end{equation}
+Whenever CGAL rebuilds the triangulation in \code{AdaptiveMesher::generateMesh}, every triangle $e \in \mathcal{T}_m$ is constructed fresh with the canonical parent reference derivatives (\code{manual\_shape\_derivative = dndx}):
+\begin{equation}
+  \mathbf{X}_{\text{ref}} =
+  \begin{bmatrix} h & 0 \\ 0 & h \end{bmatrix} \quad (\text{square}), \qquad
+  \mathbf{X}_{\text{ref}} =
+  \begin{bmatrix} a_0 & a_0/2 \\ 0 & \frac{\sqrt{3}}{2}a_0 \end{bmatrix} \quad (\text{triangular}).
+\end{equation}
+Consequently, when an elementary diagonal flip replaces a sheared triangle ($F_{12} \approx 1$) by a newly connected neighbor pair whose edges once again have unit lattice length, the raw element deformation gradient $\mathbf{F} = \mathbf{E}\,\mathbf{X}_{\text{ref}}^{-1}$ and its grain-aligned counterpart $\mathbf{F}_{\text{aligned}}$ drop back to $\mathbf{I}$.
+
+\begin{keyidea}[Kr\"oner--Lee Multiplicative Decomposition in MTM]
+In finite-strain crystal plasticity, the total deformation gradient $\mathbf{F}_{\text{tot}}$ decomposes multiplicatively into an \emph{elastic lattice distortion} $\mathbf{F}_e$ and a \emph{plastic lattice-invariant slip} $\mathbf{F}_p$:
+\begin{equation}
+  \boxed{\mathbf{F}_{\text{tot}} = \mathbf{F}_e \, \mathbf{F}_p, \qquad \det \mathbf{F}_p = 1.}
+  \label{eq:kroner_lee}
+\end{equation}
+In MTM:
+\begin{itemize}[nosep]
+  \item \textbf{What the current code computes after remeshing IS the elastic part $\mathbf{F}_e$}:
+    \begin{equation}
+      \mathbf{F}_e = \mathbf{R}_{\text{grain}}\T\,\mathbf{F}\,\mathbf{Q}_{\text{orient}}.
+    \end{equation}
+    All constitutive quantities---Lagrange metric reduction $\mathbf{C}_{\text{red}}$, strain energy $W(\mathbf{C}_{\text{red}})$, L-BFGS nodal forces, Cauchy stress $\boldsymbol{\sigma}$, and aligned First Piola--Kirchhoff stress $\mathbf{P}_{\text{aligned}}$---must continue to use $\mathbf{F}_e$ so that a plastically slipped perfect crystal returns to zero stress and zero energy.
+  \item \textbf{What remeshing forgets is the plastic part $\mathbf{F}_p$}: the cumulative lattice-invariant shear ($\mathbf{F}_p \in \mathrm{SL}(2,\Z)$ away from defect cores) accumulated across all prior remesh flips $1, \dots, m$.
+\end{itemize}
+\end{keyidea}
+
+% ============================================================================
+\section{Comparison of the Four Architectural Choices}
+% ============================================================================
+
+To retain $\mathbf{F}_{\text{tot}}$ and $\mathbf{F}_p$ across arbitrary sequences of Delaunay edge flips, dislocation avalanches, crack opening, and crack healing, four architectures can be formulated:
+
+\subsection{Option A: Element-to-Element Multiplicative Chain ($\mathbf{F}_{\text{tot}} = \mathbf{F}_m \cdots \mathbf{F}_1$)}
+
+Each element $e \in \mathcal{T}_{m-1}$ stores its cumulative plastic tensor $\mathbf{F}_p^{(m-1)}(e)$ (initialized to $\mathbf{I}$ at $m=0$). When a remesh pass occurs at fixed atomic positions $\mathbf{x}^{\text{frozen}}$ (immediately before the post-remesh L-BFGS relaxation):
+\begin{enumerate}[nosep]
+  \item For every old triangle $e_{\text{old}} \in \mathcal{T}_{m-1}$, its pre-flip total deformation gradient is frozen:
+    \begin{equation}
+      \mathbf{F}_{\text{tot}}^{\text{before}}(e_{\text{old}}) = \mathbf{F}_e^{\text{old, frozen}}(e_{\text{old}}) \, \mathbf{F}_p^{(m-1)}(e_{\text{old}}).
+    \end{equation}
+  \item For every new triangle $e_{\text{new}} \in \mathcal{T}_m$, its immediate post-flip elastic deformation gradient at the same frozen atomic positions is $\mathbf{F}_e^{\text{new, frozen}}(e_{\text{new}})$.
+  \item Because the atomic coordinates $\mathbf{x}^{\text{frozen}}$ have not moved during the topological flip, the total material deformation gradient over the domain occupied by $e_{\text{new}}$ must be continuous across the flip:
+    \begin{equation}
+      \mathbf{F}_{\text{tot}}^{\text{after}}(e_{\text{new}}) = \mathbf{F}_{\text{tot}}^{\text{before}}(e_{\text{new}})
+      \quad\Longrightarrow\quad
+      \mathbf{F}_e^{\text{new, frozen}}(e_{\text{new}}) \, \mathbf{F}_p^{(m)}(e_{\text{new}}) = \overline{\mathbf{F}}_{\text{tot}}^{\text{before}}(e_{\text{new}}),
+    \end{equation}
+    which uniquely determines the updated plastic deformation gradient:
+    \begin{equation}
+      \boxed{\mathbf{F}_p^{(m)}(e_{\text{new}}) = \bigl(\mathbf{F}_e^{\text{new, frozen}}(e_{\text{new}})\bigr)^{-1} \, \overline{\mathbf{F}}_{\text{tot}}^{\text{before}}(e_{\text{new}}).}
+      \label{eq:Fp_update}
+    \end{equation}
+\end{enumerate}
+\textbf{Pros:} Exact $\mathbf{F}_m \cdots \mathbf{F}_1$ structure; zero numerical diffusion on unflipped triangles; exact on flipped quads; survives arbitrary crack opening because surviving bulk elements only query local overlap. \\
+\textbf{Limitation alone:} If a crack or void opens (destroying elements) and later closes/heals, the newly created healing element has no overlapping old element in $\mathcal{T}_{m-1}$ from which to inherit $\mathbf{F}_p^{(m-1)}$.
+
+\subsection{Option B: Atom-Carried (Nodal) Multiplicative Chain}
+
+Each atom $i \in \{1, \dots, N\}$ carries $\mathbf{F}_p(i)$ and $\gamma_p(i)$. Before a remesh pass, nodal values are updated from adjacent elements; after the remesh pass, new triangles reconstruct $\mathbf{F}_p$ from their 3 vertices. \\
+\textbf{Pros:} Atoms are never destroyed when cracks open, so plastic history automatically survives on fracture surfaces and across crack healing. \\
+\textbf{Cons if used as primary transfer:} Projecting element $\to$ node $\to$ element on every remesh pass acts as a discrete Laplacian smoothing filter, diffusing sharp single-atomic-plane slip bands into $3$--$5$ layer bands over multiple remesh passes.
+
+\subsection{Option C: Initial-Mesh $\mathcal{T}_0$ Telescoping}
+
+Store the initial connectivity $\mathcal{T}_0$ and initial reference coordinates $\{\mathbf{X}_i^{(0)}\}$, and evaluate $\mathbf{F}_{\text{tot}}(e_0) = (\partial \mathbf{x} / \partial \mathbf{X}^{(0)})\big|_{e_0}$ directly on $\mathcal{T}_0$. \\
+\textbf{Pros:} Algebraically telescopes $\mathbf{F}_m \cdots \mathbf{F}_1$ with zero projection cost. \\
+\textbf{Fatal flaw under fracture or large slip:} Initial triangles $e_0 \in \mathcal{T}_0$ whose 3 original vertices are later separated by a crack or a macro-slip band span across empty space and exhibit artificial giant shear or inverted determinants ($\det \mathbf{F}_{\text{tot}} \le 0$).
+
+\subsection{Option D (Selected): Hybrid Option A + B ($\mathbf{F}_m \cdots \mathbf{F}_1$ with Nodal Backup)}
+
+Combines Option A as the \textbf{primary element-to-element multiplicative chain} (with exact cavity partitioning so unflipped triangles suffer zero diffusion) and Option B as a \textbf{persistent nodal memory bank on \code{Point2D}} (so fracture surfaces and healed elements retain full plastic history).
+
+\begin{table}[h!]
+\centering
+\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Capability / Criterion} & \textbf{Option A} & \textbf{Option B} & \textbf{Option C} & \textbf{Hybrid A + B} \\
+\midrule
+Sharpness of atomic slip bands & Exact (0 diffusion) & Diffuses ($O(h)$) & Exact & \textbf{Exact (0 diffusion)} \\
+Multi-avalanche intersections & Exact & Smoothed & Exact & \textbf{Exact} \\
+Crack / void opening (\code{max\_edge\_length}) & Exact & Exact & Breaks ($\det \le 0$) & \textbf{Exact} \\
+Plastic wake on fracture surfaces & Lost on deleted tris & Preserved on atoms & Broken across crack & \textbf{Preserved on atoms} \\
+Crack closure / healing & Resets to $\mathbf{I}$ & Restored from atoms & Exact if same atoms & \textbf{Restored from atoms} \\
+Checkpoint restart (\code{.chk}) & Supported & Supported & Needs $\mathcal{T}_0$ file & \textbf{Supported} \\
+\bottomrule
+\end{tabular}%
+}
+\caption{Summary comparison of the four plasticity-memory architectures.}
+\end{table}
+
+% ============================================================================
+\section{Mathematical Formulation of the Hybrid Option A + B Pipeline}
+% ============================================================================
+
+\subsection{Why Locking $\mathbf{Q}_{\text{orient}}$ at Triangle Creation Is Essential}
+
+A crucial subtlety arises from the interaction between the 12-candidate alignment search in \code{computeAlignedDeformationGradient} (see \code{docs/aligned\_deformation\_gradient.pdf}) and the discrete plastic slip of a square lattice. Recall that for the square lattice, the 12 orientation candidates $\mathbf{Q}_{p,r} = \mathbf{M}_p \mathbf{R}_r\T \in \mathrm{SL}(2,\Z)$ include the combination $(p=1, r=1)$:
+\begin{equation}
+  \mathbf{M}_1 \mathbf{R}_1\T =
+  \begin{bmatrix} -1 & -1 \\ 1 & 0 \end{bmatrix}
+  \begin{bmatrix} 0 & 1 \\ -1 & 0 \end{bmatrix}
+  =
+  \begin{bmatrix} 1 & -1 \\ 0 & 1 \end{bmatrix}.
+\end{equation}
+Notice that $\begin{psmallmatrix} 1 & -1 \\ 0 & 1 \end{psmallmatrix}$ is \textbf{itself a unit simple-shear lattice slip}! If $\mathbf{Q}_{\text{orient}}$ were re-evaluated dynamically at every strain step using the target $\mathbf{B}_{\text{target}} = \begin{psmallmatrix} 1 & 1/4 \\ 0 & 1 \end{psmallmatrix}$, then as soon as a triangle is sheared past $F_{12} > 0.75$ \emph{before} remeshing, the alignment search would jump from $(p=0, r=0)$ to $(p=1, r=1)$, subtracting $1$ from $F_{12}$ before any Delaunay flip has occurred. Then, when the Delaunay flip subsequently occurs at $F_{12} \approx 1$, both $\mathbf{F}_e^{\text{old, frozen}}$ and $\mathbf{F}_e^{\text{new, frozen}}$ would report $F_{12} \approx 0$, and the plastic slip would be missed!
+
+\begin{cautionbox}[Exact Multiplicative Chain Accumulator $\mathbf{Q}_{\text{orient}}^{(m)} = \mathbf{F}_{\text{accum}}^{(m)}$]
+When a triangle $e \in \mathcal{T}_0$ is created at $t=0$ in \code{AdaptiveMesher::generateMesh}, its discrete parent-cell orientation matrix $\mathbf{Q}_{\text{orient}}^{(0)}(e) \in \mathrm{SL}(2,\R)$ is initialized to the unstressed crystal alignment matrix (\code{ElementTriangle2D::setQOrient}). At every subsequent remeshing pass $m \ge 1$ (occurring at frozen coordinates $\mathbf{X}^{(m-1)}$), each reconnected triangle $e_{\text{new}} \in \mathcal{T}_m \setminus \mathcal{T}_{m-1}$ updates its reference-to-initial chain accumulator:
+\begin{equation}
+  \mathbf{Q}_{\text{orient}}^{(m)}(e_{\text{new}}) = \bigl(\mathbf{F}^{\text{raw}}(e_{\text{new}}, \mathbf{X}^{(m-1)})\bigr)^{-1} \, \mathbf{R}_{\text{grain}} \, \overline{\mathbf{F}}_{\text{tot}}^{\text{before}}(e_{\text{new}}).
+\end{equation}
+For any subsequent atomic configuration $\mathbf{x}$ (including after L-BFGS avalanche relaxation on $\mathcal{T}_m$), the total deformation gradient, elastic deformation gradient, and plastic deformation gradient are given by:
+\begin{align}
+  \mathbf{F}_{\text{tot}}(e, \mathbf{x}) &= \mathbf{R}_{\text{grain}}\T \, \mathbf{F}^{\text{raw}}(e, \mathbf{x}) \, \mathbf{Q}_{\text{orient}}^{(m)}(e) = \mathbf{F}_m(\mathbf{x}) \, \mathbf{F}_{m-1} \cdots \mathbf{F}_1, \\
+  \mathbf{F}_e(e, \mathbf{x}) &= \mathbf{R}_{\text{grain}}\T \, \mathbf{F}^{\text{raw}}(e, \mathbf{x}) \, \mathbf{Q}_{\text{align}}\bigl(\mathbf{F}^{\text{raw}}(e, \mathbf{x}),\, \theta_{\text{grain}}\bigr), \\
+  \mathbf{F}_p(e, \mathbf{x}) &= \bigl(\mathbf{F}_e(e, \mathbf{x})\bigr)^{-1} \, \mathbf{F}_{\text{tot}}(e, \mathbf{x}).
+\end{align}
+Because $\mathbf{F}^{\text{raw}}(e, \mathbf{x}) \bigl(\mathbf{F}^{\text{raw}}(e, \mathbf{X}^{(m-1)})\bigr)^{-1} = \partial \mathbf{x} / \partial \mathbf{X}^{(m-1)} = \mathbf{F}_m(\mathbf{x})$ is a pure physical-space deformation gradient independent of CGAL's vertex ordering $(v_0,v_1,v_2)$, this formulation captures both internal lattice-well transitions and multi-pass Delaunay reconnection cascades without branch ambiguity.
+\end{cautionbox}
+
+\subsection{Four-Case Cavity-Partitioned Transfer Algorithm}
+
+When a trial Delaunay remeshing pass is accepted inside \code{perform\_remeshing\_loop\_reduction} or \code{perform\_remeshing\_loop}, \code{transferPlasticityMemoryHybrid} executes at the frozen atomic coordinates $\mathbf{x}^{\text{frozen}}$:
+
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Pre-Remesh Freeze \& Nodal Backup:}
+    For every active old triangle $e_{\text{old}} \in \mathcal{T}_{m-1}$, evaluate
+    \begin{equation}
+      \mathbf{F}_e^{\text{old, frozen}}(e_{\text{old}}), \qquad
+      \mathbf{F}_{\text{tot}}^{\text{before}}(e_{\text{old}}) = \mathbf{F}_e^{\text{old, frozen}}(e_{\text{old}}) \, \mathbf{F}_p^{(m-1)}(e_{\text{old}}).
+    \end{equation}
+    Build a hash table mapping each sorted canonical vertex triple $(i < j < k)$ to its index in $\mathcal{T}_{m-1}$.
+
+  \item \textbf{Partition into Unchanged Mesh ($\mathcal{T}_{m-1} \cap \mathcal{T}_m$) vs.\ Replaced Cavity ($\mathcal{T}_{m-1} \setminus \mathcal{T}_m$):}
+    Every old triangle whose sorted vertex triple $(i < j < k)$ also exists in $\mathcal{T}_m$ is marked as \emph{surviving}; the remaining old triangles form the \emph{replaced cavity} $\mathcal{C}_{\text{old}} = \mathcal{T}_{m-1} \setminus \mathcal{T}_m$.
+
+  \item \textbf{Four Topological Cases for Each New Triangle $e_{\text{new}} \in \mathcal{T}_m$:}
+    \begin{itemize}[nosep]
+      \item \textbf{Case 1 — Unchanged Triangle ($e_{\text{new}} \in \mathcal{T}_{m-1} \cap \mathcal{T}_m$):}
+        Copy $\mathbf{F}_p^{(m-1)}$, $\gamma_p^{(m-1)}$, and \code{remesh\_generation} bit-for-bit from $e_{\text{old}}$. Also project $\mathbf{Q}_{\text{orient}}(e_{\text{old}})$ across any cyclic relabelling of $(v_0,v_1,v_2)$ by CGAL:
+        \begin{equation}
+          \mathbf{Q}_{\text{orient}}(e_{\text{new}}) = \mathbf{F}_{\text{new}}^{-1}\,\mathbf{F}_{\text{old}}\,\mathbf{Q}_{\text{orient}}(e_{\text{old}}),
+        \end{equation}
+        so that $\mathbf{F}_e$ is strictly identical before and after the remesh call on every unflipped triangle.
+
+      \item \textbf{Case 2 — Flipped / Reconnected Cavity Triangle ($e_{\text{new}} \in \mathcal{T}_m \setminus \mathcal{T}_{m-1}$):}
+        Compute the exact 2D polygon intersection area $A_{\cap}(e_{\text{new}}, e_{\text{old}}) = \mathrm{Area}(\Omega(e_{\text{new}}) \cap \Omega(e_{\text{old}}))$ against all old cavity triangles $e_{\text{old}} \in \mathcal{C}_{\text{old}}$ using the Sutherland--Hodgman clipping algorithm (converting periodic minimum-image edge vectors to anchored 2D coordinates). With weights $w_{e_{\text{old}}} = A_{\cap}(e_{\text{new}}, e_{\text{old}}) / \sum_{e' \in \mathcal{C}_{\text{old}}} A_{\cap}(e_{\text{new}}, e')$:
+        \begin{align}
+          \overline{\mathbf{F}}_{\text{tot}}^{\text{before}}(e_{\text{new}}) &= \sum_{e_{\text{old}} \in \mathcal{C}_{\text{old}}} w_{e_{\text{old}}} \, \mathbf{F}_{\text{tot}}^{\text{before}}(e_{\text{old}}), \\
+          \mathbf{F}_p^{(m)}(e_{\text{new}}) &= \bigl(\mathbf{F}_e^{\text{new, frozen}}(e_{\text{new}})\bigr)^{-1} \, \overline{\mathbf{F}}_{\text{tot}}^{\text{before}}(e_{\text{new}}).
+        \end{align}
+        If $\det \mathbf{F}_p^{(m)} > 0$, enforce plastic incompressibility ($\det \mathbf{F}_p = 1$) via unimodular projection $\mathbf{F}_p^{(m)} \leftarrow (\det \mathbf{F}_p^{(m)})^{-1/2} \mathbf{F}_p^{(m)}$. Increment cumulative plastic slip by the incremental step norm:
+        \begin{equation}
+          \Delta\mathbf{F}_p = \mathbf{F}_p^{(m)}(e_{\text{new}}) \, \bigl(\overline{\mathbf{F}}_p^{(m-1)}(e_{\text{new}})\bigr)^{-1}, \qquad
+          \gamma_p^{(m)}(e_{\text{new}}) = \overline{\gamma}_p^{(m-1)}(e_{\text{new}}) + \|\Delta\mathbf{F}_p - \mathbf{I}\|_F.
+        \end{equation}
+
+      \item \textbf{Case 3 — Destroyed Element (Crack / Void Opening):}
+        Old triangles in $\mathcal{C}_{\text{old}}$ that were culled by \code{max\_edge\_length} or domain boundaries deposit their final $\mathbf{F}_p^{(m-1)}$ and $\gamma_p^{(m-1)}$ onto their three boundary atoms in \code{Point2D}, preserving the plastic wake along the newly created fracture surfaces.
+
+      \item \textbf{Case 4 — Healed Element (Crack Closure):}
+        If $A_{\text{overlap}} < 10^{-12} A(e_{\text{new}})$, reconstruct $\overline{\mathbf{F}}_p^{(m-1)}$ and $\overline{\gamma}_p^{(m-1)}$ from the three vertex nodal backups $\frac{1}{3}\sum_{a=0}^2 \mathbf{F}_p^{\text{node}}(v_a)$ on \code{Point2D}.
+    \end{itemize}
+\end{enumerate}
+
+% ============================================================================
+\section{Exported VTK Fields and Diagnostic Quantities}
+% ============================================================================
+
+In \code{ConfigurationSaver::writeToVTKFile}, every VTK snapshot (both standard \code{configuration\_XXXXX.vtk} and surgery files \code{\_1\_before\_remesh.vtk}, \code{\_2\_after\_remesh.vtk}, \code{\_3\_relaxed\_after\_remesh.vtk}) exports the complete Kr\"oner--Lee decomposition:
+\begin{itemize}[nosep]
+  \item \code{ElementF\_Aligned} (\code{TENSORS}): Elastic lattice distortion $\mathbf{F}_e$ (returns to $\approx \mathbf{I}$ after a plastic slip).
+  \item \code{ElementF\_Plastic} (\code{TENSORS}): Cumulative plastic deformation gradient $\mathbf{F}_p = \mathbf{F}_m^{\text{slip}} \cdots \mathbf{F}_1^{\text{slip}}$.
+  \item \code{ElementF\_Total} (\code{TENSORS}): Total deformation gradient $\mathbf{F}_{\text{tot}} = \mathbf{F}_e \, \mathbf{F}_p$ (continuous across remeshing passes).
+  \item \code{ElementPlasticSlip} (\code{SCALARS}): Monotonic path-integrated plastic slip $\gamma_p = \sum_{k=1}^m \|\Delta\mathbf{F}_p^{(k)} - \mathbf{I}\|_F$.
+  \item \code{ElementPlasticStrainMag} (\code{SCALARS}): Frobenius norm $\|\mathbf{F}_p - \mathbf{I}\|_F = \sqrt{(F_{p,11}-1)^2 + F_{p,12}^2 + F_{p,21}^2 + (F_{p,22}-1)^2}$ of the net cumulative plastic distortion.
+  \item \code{NodalPlasticSlip} (\code{SCALARS} on \code{POINT\_DATA}): Atom-carried cumulative plastic slip $\gamma_p^{\text{node}}$, preserving the plastic wake on crack faces even after elements are destroyed.
+\end{itemize}
+
+\end{document}

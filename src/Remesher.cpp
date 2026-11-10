@@ -5,6 +5,7 @@
 #include "../include/mesh/ElementTriangle2D.h"
 #include "../include/mesh/MeshGenerator.h"
 #include "../include/mesh/Triangle.h"
+#include "../include/output/configuration_saver.h"
 
 namespace {
 const MacroscopicGeometryConfig* g_active_geometry_filter = nullptr;
@@ -246,6 +247,10 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
 
       // Calculate deformation gradient with current positions
       element.calculate_deformation_gradient(x);
+      // Lock the element's discrete reference-cell orientation Q_orient at its Delaunay birth
+      double elem_theta_rad = 0.0;
+      ConfigurationSaver::computeElementGrainAlignedElasticF(element, square_points, nullptr, &elem_theta_rad);
+      element.setQOrient(ConfigurationSaver::computeAlignmentMatrix(element.getDeformationGradient(), elem_theta_rad));
       // Material area = the reference element's (F is measured against it), not the triangle's
       // current area, which a pre-displaced mesh (dislocations, grain boundaries) would distort
       element.setReferenceArea(ElementTriangle2D::referenceElementArea(*manual_shape_derivative));

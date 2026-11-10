@@ -14,6 +14,10 @@ public:
     Eigen::Vector2d coord;
     int grain_id = 0;
     double grain_theta_deg = 0.0;
+    // Hybrid Option A + B nodal plasticity memory backup (survives element destruction / crack opening)
+    Eigen::Matrix2d F_plastic_node = Eigen::Matrix2d::Identity();
+    Eigen::Matrix2d F_total_node = Eigen::Matrix2d::Identity();
+    double cumulative_plastic_slip = 0.0;
     
     Point2D() : coord(0.0, 0.0), grain_id(0), grain_theta_deg(0.0) {}
     Point2D(double x, double y, int gid = 0, double gtheta = 0.0)

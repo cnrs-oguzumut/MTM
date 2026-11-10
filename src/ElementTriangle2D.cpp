@@ -9,6 +9,9 @@ ElementTriangle2D::ElementTriangle2D() :
     use_external_deformation(false),
     shape_derivatives_calculated(false),
     use_manual_shape_derivatives(false),  // NEW: Initialize the flag
+    has_q_orient(false),
+    cumulative_plastic_slip(0.0),
+    remesh_generation(0),
     reference_points_ptr(nullptr),
     dof_mapping(nullptr) {
     
@@ -20,6 +23,8 @@ ElementTriangle2D::ElementTriangle2D() :
     F.setIdentity();
     C.setIdentity();
     F_external.setIdentity();
+    F_plastic.setIdentity();
+    Q_orient.setIdentity();
 }
 
 // Reference configuration methods

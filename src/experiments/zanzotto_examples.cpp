@@ -2092,6 +2092,20 @@ void example_1_conti_zanzotto_loading(
       if (is_periodic_dislocs) {
         if (macro_geom.microstructure.reanchor_ref_after_relax) {
           square_points_ref = square_points;
+          for (auto &pt : square_points) {
+            pt.F_plastic_node.setIdentity();
+            pt.F_total_node.setIdentity();
+            pt.cumulative_plastic_slip = 0.0;
+          }
+          for (auto &elem : elements) {
+            elem.resetPlasticMemory();
+            elem.clearQOrient();
+            elem.setExternalDeformation(F_ext);
+            elem.calculate_deformation_gradient(square_points);
+            double elem_theta_rad = 0.0;
+            ConfigurationSaver::computeElementGrainAlignedElasticF(elem, square_points, nullptr, &elem_theta_rad);
+            elem.setQOrient(ConfigurationSaver::computeAlignmentMatrix(elem.getDeformationGradient(), elem_theta_rad));
+          }
         }
         std::cout << "[Stage 2/2] Handover complete: Periodic dislocations equilibrated in full 2D PBCs at alpha = 0; starting homogeneous periodic simple shear F_ext(alpha)..." << std::endl;
       } else if (stage1_pre_relax_active) {
@@ -2099,6 +2113,20 @@ void example_1_conti_zanzotto_loading(
         if (macro_geom.microstructure.reanchor_ref_after_relax) {
           square_points_ref = square_points;
           reanchor_frame_bounds(square_points_ref);
+          for (auto &pt : square_points) {
+            pt.F_plastic_node.setIdentity();
+            pt.F_total_node.setIdentity();
+            pt.cumulative_plastic_slip = 0.0;
+          }
+          for (auto &elem : elements) {
+            elem.resetPlasticMemory();
+            elem.clearQOrient();
+            elem.setExternalDeformation(F_ext);
+            elem.calculate_deformation_gradient(square_points);
+            double elem_theta_rad = 0.0;
+            ConfigurationSaver::computeElementGrainAlignedElasticF(elem, square_points, nullptr, &elem_theta_rad);
+            elem.setQOrient(ConfigurationSaver::computeAlignmentMatrix(elem.getDeformationGradient(), elem_theta_rad));
+          }
         } else if (macro_geom.isIndenterActive()) {
           macro_geom.setupIndenterBounds(optimal_lattice_parameter, &square_points);
         }

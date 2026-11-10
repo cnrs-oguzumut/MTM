@@ -70,6 +70,12 @@ public:
     };
 
     static Eigen::Matrix2d alignDeformationGradient(const Eigen::Matrix2d& F, double theta_rad = 0.0);
+    static Eigen::Matrix2d computeAlignmentMatrix(const Eigen::Matrix2d& F, double theta_rad = 0.0);
+    static Eigen::Matrix2d computeElementGrainAlignedElasticF(
+        const ElementTriangle2D& element,
+        const std::vector<Point2D>& points,
+        int* out_grain_id = nullptr,
+        double* out_theta_rad = nullptr);
 
     static void saveCheckpoint(const std::string& filename, const CheckpointData& data);
     static bool loadCheckpoint(const std::string& filename, CheckpointData& data,

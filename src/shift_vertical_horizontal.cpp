@@ -157,7 +157,10 @@ void shift_vertical_horizontal(
     int potential_mode = 3,
     bool use_rotation = false,
     double rotation_angle = 0.0,
-    bool save_triangle_data = false) {
+    bool save_triangle_data = false,
+    double stage_amplitude_lattice_spacings = 1.0,
+    int save_vtk_every = 1,
+    double step_size_a0 = 0.0) {
   if (nx <= 0 || ny <= 0) {
     std::cerr << "Error: nx and ny must be positive integers." << std::endl;
     exit(EXIT_FAILURE);
@@ -374,35 +377,41 @@ void shift_vertical_horizontal(
 
   horizontal_steps = std::max(1, horizontal_steps);
   vertical_steps = std::max(1, vertical_steps);
+  const double stage_amp = std::max(1e-6, stage_amplitude_lattice_spacings);
 
   std::vector<std::pair<double, double>> load_path;
   double horizontal_level = 0.0;
   double vertical_level = 0.0;
-  while (horizontal_level < amplitude_lattice_spacings ||
-         vertical_level < amplitude_lattice_spacings) {
-    if (horizontal_level < amplitude_lattice_spacings) {
+  while (horizontal_level < amplitude_lattice_spacings - 1e-12 ||
+         vertical_level < amplitude_lattice_spacings - 1e-12) {
+    if (horizontal_level < amplitude_lattice_spacings - 1e-12) {
       double next_horizontal_level =
-          std::min(amplitude_lattice_spacings, horizontal_level + 1.0);
-      for (int step = 1; step <= horizontal_steps; ++step) {
+          std::min(amplitude_lattice_spacings, horizontal_level + stage_amp);
+      const double delta_h = next_horizontal_level - horizontal_level;
+      int n_sub = (step_size_a0 > 1e-9)
+          ? std::max(1, static_cast<int>(std::ceil(delta_h / step_size_a0 - 1e-9)))
+          : std::max(1, static_cast<int>(std::llround(horizontal_steps * delta_h / stage_amp)));
+      for (int step = 1; step <= n_sub; ++step) {
         double alpha = static_cast<double>(step) /
-                       static_cast<double>(horizontal_steps);
-        double h_level =
-            horizontal_level +
-            alpha * (next_horizontal_level - horizontal_level);
+                       static_cast<double>(n_sub);
+        double h_level = horizontal_level + alpha * delta_h;
         load_path.push_back({h_level * lattice_constant,
                              vertical_level * lattice_constant});
       }
       horizontal_level = next_horizontal_level;
     }
 
-    if (vertical_level < amplitude_lattice_spacings) {
+    if (vertical_level < amplitude_lattice_spacings - 1e-12) {
       double next_vertical_level =
-          std::min(amplitude_lattice_spacings, vertical_level + 1.0);
-      for (int step = 1; step <= vertical_steps; ++step) {
+          std::min(amplitude_lattice_spacings, vertical_level + stage_amp);
+      const double delta_v = next_vertical_level - vertical_level;
+      int n_sub = (step_size_a0 > 1e-9)
+          ? std::max(1, static_cast<int>(std::ceil(delta_v / step_size_a0 - 1e-9)))
+          : std::max(1, static_cast<int>(std::llround(vertical_steps * delta_v / stage_amp)));
+      for (int step = 1; step <= n_sub; ++step) {
         double alpha = static_cast<double>(step) /
-                       static_cast<double>(vertical_steps);
-        double v_level =
-            vertical_level + alpha * (next_vertical_level - vertical_level);
+                       static_cast<double>(n_sub);
+        double v_level = vertical_level + alpha * delta_v;
         load_path.push_back({horizontal_level * lattice_constant,
                              v_level * lattice_constant});
       }
@@ -474,8 +483,9 @@ void shift_vertical_horizontal(
                                            num_dislocations_unloaded_post);
 
     ConfigurationSaver::logEnergyAndStress_v2(
-        file_id, saving_value, unloaded_energy, unloaded_stress,
-        unloaded_energy, unloaded_stress, unloaded_area, unloaded_area, false);
+        0, saving_value, unloaded_energy, unloaded_stress,
+        unloaded_energy, unloaded_stress, unloaded_area, unloaded_area, false,
+        &unloadedUserData);
 
     std::cout << "Saved unloaded configuration as file id " << file_id
               << std::endl;
@@ -528,32 +538,10 @@ void shift_vertical_horizontal(
     double saving_value =
         (horizontal_displacement + vertical_displacement) / lattice_constant;
 
-    UserData preOptUserData(square_points, elements, calculator, potential_func,
-                            potential_func_der, zero, optimal_lattice_parameter,
-                            F_ext, interior_mapping, full_mapping,
-                            active_elements, plasticity, &potential_func_sder);
-    runInSubdirectory("pre_relaxation", [&]() {
-      ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
-          &preOptUserData, file_id, pre_energy, pre_stress, true);
-      if (save_triangle_data) {
-        ConfigurationSaver::saveTriangleData(&preOptUserData, file_id,
-                                             domain_dims, offsets, full_mapping);
-        ConfigurationSaver::saveElements(elements, active_elements, file_id);
-      }
-
-      auto [num_dislocations_pre, coordination_pre] =
-          DefectAnalysis::analyzeDefectsInReferenceConfig(
-              &preOptUserData, file_id, dndx, offsets, original_domain_map,
-              translation_map, domain_dims_point, element_area, pbc, true);
-      ConfigurationSaver::writeToVTK(
-          preOptUserData.points, preOptUserData.elements, &preOptUserData,
-          file_id, true, coordination_pre, saving_value);
-      ConfigurationSaver::logDislocationData(saving_value,
-                                             num_dislocations_pre);
-    });
-
     NeighborAnalyzer analyzer(NeighborAnalyzer::SearchType::K_NEAREST);
     std::vector<Point2D> points_before_copy = square_points;
+    auto elements_before_copy = elements;
+    auto active_elements_before_copy = active_elements;
     analyzer.setKNearestSearch(4);
     analyzer.setDebugMode(false);
     auto neighbors_before = analyzer.buildNeighbors(points_before_copy);
@@ -587,8 +575,11 @@ void shift_vertical_horizontal(
           elements.size(), 0, "initial continuous relaxation converged");
     }
 
-    bool shouldRemesh =
-        remeshing_enabled && (post_energy < post_energy_previous || step == 0);
+    bool shouldRemesh = remeshing_enabled;
+    if (const char *gate = std::getenv("MTM_REMESH_GATE")) {
+      if (std::string(gate) == "energy")
+        shouldRemesh = remeshing_enabled && (post_energy < post_energy_previous || step == 0);
+    }
 
     int hasChanges = 0;
     if (shouldRemesh) {
@@ -624,31 +615,62 @@ void shift_vertical_horizontal(
       }
     }
 
+    const bool should_save_vtk =
+        (hasChanges > 0) || (step == 0) || (step + 1 == total_steps) ||
+        (save_vtk_every > 0 && ((step + 1) % save_vtk_every == 0));
+
     UserData postOptUserData(square_points, elements, calculator,
                              potential_func, potential_func_der, zero,
                              optimal_lattice_parameter, F_ext, interior_mapping,
                              full_mapping, active_elements, plasticity,
                              &potential_func_sder);
-    ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
-        &postOptUserData, file_id, post_energy, post_stress, true);
-    if (save_triangle_data) {
-      ConfigurationSaver::saveTriangleData(&postOptUserData, file_id,
-                                           domain_dims, offsets, full_mapping);
-      ConfigurationSaver::saveElements(elements, active_elements, file_id);
+    if (should_save_vtk) {
+      UserData preOptUserData(points_before_copy, elements_before_copy, calculator,
+                              potential_func, potential_func_der, zero,
+                              optimal_lattice_parameter, F_ext, interior_mapping,
+                              full_mapping, active_elements_before_copy, plasticity,
+                              &potential_func_sder);
+      runInSubdirectory("pre_relaxation", [&]() {
+        ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+            &preOptUserData, file_id, pre_energy, pre_stress, true);
+        if (save_triangle_data) {
+          ConfigurationSaver::saveTriangleData(&preOptUserData, file_id,
+                                               domain_dims, offsets, full_mapping);
+          ConfigurationSaver::saveElements(elements_before_copy, active_elements_before_copy, file_id);
+        }
+
+        auto [num_dislocations_pre, coordination_pre] =
+            DefectAnalysis::analyzeDefectsInReferenceConfig(
+                &preOptUserData, file_id, dndx, offsets, original_domain_map,
+                translation_map, domain_dims_point, element_area, pbc, true);
+        ConfigurationSaver::writeToVTK(
+            preOptUserData.points, preOptUserData.elements, &preOptUserData,
+            file_id, true, coordination_pre, saving_value);
+        ConfigurationSaver::logDislocationData(saving_value,
+                                               num_dislocations_pre);
+      });
+
+      ConfigurationSaver::saveConfigurationWithStressAndEnergy2D(
+          &postOptUserData, file_id, post_energy, post_stress, true);
+      if (save_triangle_data) {
+        ConfigurationSaver::saveTriangleData(&postOptUserData, file_id,
+                                             domain_dims, offsets, full_mapping);
+        ConfigurationSaver::saveElements(elements, active_elements, file_id);
+      }
+
+      auto [num_dislocations_post, coordination_post] =
+          DefectAnalysis::analyzeDefectsInReferenceConfig(
+              &postOptUserData, file_id, dndx, offsets, original_domain_map,
+              translation_map, domain_dims_point, element_area, pbc, true);
+      ConfigurationSaver::writeToVTK(
+          postOptUserData.points, postOptUserData.elements, &postOptUserData,
+          file_id, true, coordination_post, saving_value);
+      ConfigurationSaver::logDislocationData(saving_value, num_dislocations_post);
     }
 
-    auto [num_dislocations_post, coordination_post] =
-        DefectAnalysis::analyzeDefectsInReferenceConfig(
-            &postOptUserData, file_id, dndx, offsets, original_domain_map,
-            translation_map, domain_dims_point, element_area, pbc, true);
-    ConfigurationSaver::writeToVTK(
-        postOptUserData.points, postOptUserData.elements, &postOptUserData,
-        file_id, true, coordination_post, saving_value);
-    ConfigurationSaver::logDislocationData(saving_value, num_dislocations_post);
-
     ConfigurationSaver::logEnergyAndStress_v2(
-        file_id, saving_value, pre_energy, pre_stress, post_energy, post_stress,
-        pre_area, post_area, (hasChanges > 0));
+        step + 1, saving_value, pre_energy, pre_stress, post_energy, post_stress,
+        pre_area, post_area, (hasChanges > 0), &postOptUserData);
 
     std::cout << "Step " << step << " | alpha = " << saving_value
               << " | horizontal_shift = " << horizontal_displacement
@@ -656,7 +678,9 @@ void shift_vertical_horizontal(
               << " | E = " << post_energy << " | sigma = " << post_stress
               << std::endl;
 
-    file_counter++;
+    if (should_save_vtk) {
+      file_counter++;
+    }
     post_energy_previous = post_energy;
   }
 }
@@ -674,13 +698,17 @@ void run_shift_staircase_simulation(
     int potential_mode,
     bool use_rotation,
     double rotation_angle,
-    bool save_triangle_data) {
+    bool save_triangle_data,
+    double stage_amplitude_lattice_spacings,
+    int save_vtk_every,
+    double step_size_a0) {
   shift_vertical_horizontal(
       caller_id, nx, ny, horizontal_steps, vertical_steps,
       ShiftBoundaryTest::LeftBottomPositive, amplitude_lattice_spacings,
       remeshing_enabled, perturb_initial_triangulation,
       lattice_type, potential_mode, use_rotation, rotation_angle,
-      save_triangle_data);
+      save_triangle_data, stage_amplitude_lattice_spacings, save_vtk_every,
+      step_size_a0);
 }
 
 void run_final_shift_tests(

@@ -129,8 +129,10 @@ int main(int argc, char **argv) {
 
   // Shift / Staircase flags
   double shift_amplitude = 2.0;
-  int shift_h_steps = 2;
-  int shift_v_steps = 2;
+  double shift_stage_amplitude = 1.0;
+  double shift_step_size = 0.0;
+  int shift_h_steps = 20;
+  int shift_v_steps = 20;
   bool shift_perturb = false;
 
   // Scan all arguments for flags
@@ -410,6 +412,10 @@ int main(int argc, char **argv) {
       shift_perturb = (std::abs(triangulation_perturbation) > 0.0);
     } else if (arg.rfind("--shift-amplitude=", 0) == 0) {
       shift_amplitude = std::stod(arg.substr(18));
+    } else if (arg.rfind("--shift-stage-amplitude=", 0) == 0) {
+      shift_stage_amplitude = std::stod(arg.substr(24));
+    } else if (arg.rfind("--shift-step-size=", 0) == 0) {
+      shift_step_size = std::stod(arg.substr(18));
     } else if (arg.rfind("--shift-h-steps=", 0) == 0) {
       shift_h_steps = std::stoi(arg.substr(16));
     } else if (arg.rfind("--shift-v-steps=", 0) == 0) {
@@ -525,10 +531,15 @@ int main(int argc, char **argv) {
   if (mode == "shift" || mode == "staircase") {
     std::cout << "\n>>> Running staircase shifting simulation with nx=" << nx
               << ", ny=" << ny
-              << ", amplitude=" << shift_amplitude
-              << ", h_steps=" << shift_h_steps
-              << ", v_steps=" << shift_v_steps
-              << ", remesh=" << (enable_remeshing ? "enabled" : "disabled")
+              << ", amplitude=" << shift_amplitude;
+    if (shift_step_size > 0.0) {
+      std::cout << ", step_size=" << shift_step_size << " a0";
+    } else {
+      std::cout << ", stage_amplitude=" << shift_stage_amplitude
+                << ", h_steps=" << shift_h_steps
+                << ", v_steps=" << shift_v_steps;
+    }
+    std::cout << ", remesh=" << (enable_remeshing ? "enabled" : "disabled")
               << ", perturb=" << (shift_perturb ? "enabled" : "disabled")
               << ", lattice=" << lattice_type
               << ", potential_mode=" << potential_mode
@@ -537,7 +548,8 @@ int main(int argc, char **argv) {
     run_shift_staircase_simulation(
         0, nx, ny, shift_h_steps, shift_v_steps, shift_amplitude,
         enable_remeshing, shift_perturb, lattice_type, potential_mode,
-        stiffness_use_rotation, stiffness_rotation_angle, save_triangle_data);
+        stiffness_use_rotation, stiffness_rotation_angle, save_triangle_data,
+        shift_stage_amplitude, save_vtk_every, shift_step_size);
     return 0;
   }
   if (mode == "final_shift") {

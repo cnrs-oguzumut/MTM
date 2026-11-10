@@ -21,6 +21,20 @@ bool hasConnectivityChanged(const std::vector<ElementTriangle2D> &old_elements,
                             const std::vector<size_t> &old_active,
                             const std::vector<size_t> &new_active);
 
+// Hybrid Option A + B plasticity memory transfer across Delaunay remeshing (T_{m-1} -> T_m)
+// at frozen atomic coordinates `points`:
+//   - Case 1 (Unchanged triangle): copies F_p and cumulative_plastic_slip bit-for-bit (0 diffusion).
+//   - Case 2 (Flipped quad / cavity triangle): L2 overlap-area transfer on the replaced cavity
+//     T_{m-1} \ T_m, locking in F_p^(m) = (F_e^{new,frozen})^{-1} * F_tot^{before}.
+//   - Case 3 (Destroyed element / crack opening): filtered out without polluting intact bank elements,
+//     while crack-lip atoms preserve their nodal F_plastic_node and cumulative_plastic_slip.
+//   - Case 4 (Healed / bridged element): reconstructs F_tot^{before} from the 3 vertices' Point2D backup.
+void transferPlasticityMemoryHybrid(
+    std::vector<ElementTriangle2D> &old_elements,
+    std::vector<ElementTriangle2D> &new_elements,
+    std::vector<Point2D> &points,
+    const Eigen::Matrix2d &F_ext);
+
 std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     alglib::real_1d_array &x, const UserData *userData,
     const std::vector<int> &contact_atoms,

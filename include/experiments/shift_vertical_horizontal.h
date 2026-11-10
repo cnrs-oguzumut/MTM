@@ -13,7 +13,10 @@ void run_shift_staircase_simulation(
     int potential_mode = 3,
     bool use_rotation = false,
     double rotation_angle = 0.0,
-    bool save_triangle_data = false);
+    bool save_triangle_data = false,
+    double stage_amplitude_lattice_spacings = 1.0,
+    int save_vtk_every = 1,
+    double step_size_a0 = 0.0);
 
 void run_final_shift_tests(
     int nx, int ny, int horizontal_steps = 2,

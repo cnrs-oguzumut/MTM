@@ -70,6 +70,422 @@ static int countTopologyChanges(const std::vector<ElementTriangle2D> &old_elemen
   return static_cast<int>((diff.size() + 1) / 2);
 }
 
+namespace {
+
+struct PeriodicCornerKey {
+  int node = -1;
+  long long tx_q = 0;
+  long long ty_q = 0;
+
+  bool operator<(const PeriodicCornerKey &o) const {
+    if (node != o.node) return node < o.node;
+    if (tx_q != o.tx_q) return tx_q < o.tx_q;
+    return ty_q < o.ty_q;
+  }
+  bool operator==(const PeriodicCornerKey &o) const {
+    return node == o.node && tx_q == o.tx_q && ty_q == o.ty_q;
+  }
+};
+
+struct CanonicalTriKey {
+  std::array<PeriodicCornerKey, 3> corners;
+
+  bool operator<(const CanonicalTriKey &o) const {
+    return corners < o.corners;
+  }
+};
+
+inline CanonicalTriKey makeCanonicalTriKey(const ElementTriangle2D &el) {
+  std::array<PeriodicCornerKey, 3> c;
+  for (int a = 0; a < 3; ++a) {
+    const Eigen::Vector2d t = el.getTranslation(a);
+    c[a].node = el.getNodeIndex(a);
+    c[a].tx_q = static_cast<long long>(std::llround(t.x() * 1e4));
+    c[a].ty_q = static_cast<long long>(std::llround(t.y() * 1e4));
+  }
+  std::sort(c.begin(), c.end());
+  // Subtract corner 0's periodic translation so a uniform lattice shift of all 3 corners produces the same key
+  const long long tx0 = c[0].tx_q;
+  const long long ty0 = c[0].ty_q;
+  for (int a = 0; a < 3; ++a) {
+    c[a].tx_q -= tx0;
+    c[a].ty_q -= ty0;
+  }
+  return CanonicalTriKey{c};
+}
+
+// Exact 2D polygon intersection area of two triangles A and B using Sutherland-Hodgman clipping
+inline double triangleIntersectionArea2D(const std::array<Eigen::Vector2d, 3> &triA,
+                                         const std::array<Eigen::Vector2d, 3> &triB_in) {
+  std::array<Eigen::Vector2d, 3> B = triB_in;
+  const double crossB = (B[1].x() - B[0].x()) * (B[2].y() - B[0].y()) -
+                        (B[1].y() - B[0].y()) * (B[2].x() - B[0].x());
+  if (std::abs(crossB) < 1e-14) return 0.0;
+  if (crossB < 0.0) std::swap(B[1], B[2]); // Ensure B is CCW
+
+  std::array<Eigen::Vector2d, 10> poly;
+  int n_poly = 3;
+  for (int i = 0; i < 3; ++i) poly[i] = triA[i];
+  const double crossA = (poly[1].x() - poly[0].x()) * (poly[2].y() - poly[0].y()) -
+                        (poly[1].y() - poly[0].y()) * (poly[2].x() - poly[0].x());
+  if (std::abs(crossA) < 1e-14) return 0.0;
+  if (crossA < 0.0) std::swap(poly[1], poly[2]);
+
+  for (int e = 0; e < 3; ++e) {
+    const Eigen::Vector2d &E0 = B[e];
+    const Eigen::Vector2d &E1 = B[(e + 1) % 3];
+    const Eigen::Vector2d edge = E1 - E0;
+
+    std::array<Eigen::Vector2d, 10> next_poly;
+    int n_next = 0;
+    for (int i = 0; i < n_poly; ++i) {
+      const Eigen::Vector2d &P = poly[i];
+      const Eigen::Vector2d &Q = poly[(i + 1) % n_poly];
+      const double dP = edge.x() * (P.y() - E0.y()) - edge.y() * (P.x() - E0.x());
+      const double dQ = edge.x() * (Q.y() - E0.y()) - edge.y() * (Q.x() - E0.x());
+      const bool inP = (dP >= -1e-12);
+      const bool inQ = (dQ >= -1e-12);
+
+      if (inP && inQ) {
+        if (n_next < 10) next_poly[n_next++] = Q;
+      } else if (inP && !inQ) {
+        const double denom = dP - dQ;
+        const double t = (std::abs(denom) > 1e-15) ? (dP / denom) : 0.5;
+        if (n_next < 10) next_poly[n_next++] = P + t * (Q - P);
+      } else if (!inP && inQ) {
+        const double denom = dP - dQ;
+        const double t = (std::abs(denom) > 1e-15) ? (dP / denom) : 0.5;
+        if (n_next < 10) next_poly[n_next++] = P + t * (Q - P);
+        if (n_next < 10) next_poly[n_next++] = Q;
+      }
+    }
+    n_poly = n_next;
+    poly = next_poly;
+    if (n_poly < 3) return 0.0;
+  }
+
+  double area2 = 0.0;
+  for (int i = 1; i + 1 < n_poly; ++i) {
+    const Eigen::Vector2d u = poly[i] - poly[0];
+    const Eigen::Vector2d v = poly[i + 1] - poly[0];
+    area2 += u.x() * v.y() - u.y() * v.x();
+  }
+  return 0.5 * std::abs(area2);
+}
+
+} // namespace
+
+void transferPlasticityMemoryHybrid(
+    std::vector<ElementTriangle2D> &old_elements,
+    std::vector<ElementTriangle2D> &new_elements,
+    std::vector<Point2D> &points,
+    const Eigen::Matrix2d &F_ext) {
+  const int n_pts = static_cast<int>(points.size());
+  const size_t n_old = old_elements.size();
+  const size_t n_new = new_elements.size();
+  if (n_old == 0 || n_new == 0 || n_pts == 0) return;
+
+  // Step 1: Evaluate pre-flip total deformation gradients on T_{m-1} at frozen coordinates `points`
+  std::vector<Eigen::Matrix2d> old_F_e(n_old, Eigen::Matrix2d::Identity());
+  std::vector<Eigen::Matrix2d> old_F_tot(n_old, Eigen::Matrix2d::Identity());
+  std::vector<std::array<Eigen::Vector2d, 3>> old_deformed_verts(n_old);
+  std::map<CanonicalTriKey, size_t> old_tri_map;
+
+  std::vector<Eigen::Matrix2d> node_F_tot_sum(n_pts, Eigen::Matrix2d::Zero());
+  std::vector<Eigen::Matrix2d> node_F_p_sum(n_pts, Eigen::Matrix2d::Zero());
+  std::vector<double> node_slip_sum(n_pts, 0.0);
+  std::vector<double> node_weight_sum(n_pts, 0.0);
+
+  for (size_t e = 0; e < n_old; ++e) {
+    auto &el = old_elements[e];
+    if (!el.isInitialized()) continue;
+
+    el.setExternalDeformation(F_ext);
+    el.calculate_deformation_gradient(points);
+    double theta_rad = 0.0;
+    const Eigen::Matrix2d Fe = ConfigurationSaver::computeElementGrainAlignedElasticF(el, points, nullptr, &theta_rad);
+    Eigen::Matrix2d R_grain;
+    R_grain << std::cos(theta_rad), -std::sin(theta_rad),
+               std::sin(theta_rad),  std::cos(theta_rad);
+    if (!el.hasQOrient()) {
+      el.setQOrient(ConfigurationSaver::computeAlignmentMatrix(el.getDeformationGradient(), theta_rad));
+    }
+    const Eigen::Matrix2d Ftot = R_grain.transpose() * el.getDeformationGradient() * el.getQOrient();
+    Eigen::Matrix2d Fp = el.getPlasticDeformationGradient();
+    if (std::abs(Fe.determinant()) > 1e-12) {
+      Fp = Fe.inverse() * Ftot;
+    }
+    el.setPlasticDeformationGradient(Fp);
+    el.setCumulativePlasticSlip(
+        std::max(el.getCumulativePlasticSlip(), (Fp - Eigen::Matrix2d::Identity()).norm()));
+    old_F_e[e] = Fe;
+    old_F_tot[e] = Ftot;
+
+    for (int a = 0; a < 3; ++a) {
+      const int nid = el.getNodeIndex(a);
+      old_deformed_verts[e][a] =
+          ((nid >= 0 && nid < n_pts) ? points[nid].coord : Eigen::Vector2d::Zero()) +
+          el.getEffectiveTranslation(a);
+    }
+
+    old_tri_map[makeCanonicalTriKey(el)] = e;
+
+    const double w_area = std::max(1e-12, el.getReferenceArea()) / 3.0;
+    const double slip = el.getCumulativePlasticSlip();
+    for (int a = 0; a < 3; ++a) {
+      const int nid = el.getNodeIndex(a);
+      if (nid >= 0 && nid < n_pts) {
+        node_F_tot_sum[nid] += w_area * Ftot;
+        node_F_p_sum[nid] += w_area * Fp;
+        node_slip_sum[nid] += w_area * slip;
+        node_weight_sum[nid] += w_area;
+      }
+    }
+  }
+
+  // Update nodal backup on Point2D (isolated/crack-surface atoms with weight == 0 keep their prior backup)
+  for (int i = 0; i < n_pts; ++i) {
+    if (node_weight_sum[i] > 1e-12) {
+      points[i].F_total_node = node_F_tot_sum[i] / node_weight_sum[i];
+      points[i].F_plastic_node = node_F_p_sum[i] / node_weight_sum[i];
+      points[i].cumulative_plastic_slip =
+          std::max(points[i].cumulative_plastic_slip, node_slip_sum[i] / node_weight_sum[i]);
+    }
+  }
+
+  // Step 2: Partition T_{m-1} into surviving (Case 1) vs replaced cavity triangles T_{m-1} \ T_m
+  std::vector<bool> old_survived(n_old, false);
+  std::vector<long> new_matched_old(n_new, -1);
+  for (size_t e_new = 0; e_new < n_new; ++e_new) {
+    if (!new_elements[e_new].isInitialized()) continue;
+    auto it = old_tri_map.find(makeCanonicalTriKey(new_elements[e_new]));
+    if (it != old_tri_map.end()) {
+      new_matched_old[e_new] = static_cast<long>(it->second);
+      old_survived[it->second] = true;
+    }
+  }
+
+  std::vector<std::vector<size_t>> node_to_cavity_old(n_pts);
+  for (size_t e_old = 0; e_old < n_old; ++e_old) {
+    if (!old_elements[e_old].isInitialized() || old_survived[e_old]) continue;
+    for (int a = 0; a < 3; ++a) {
+      const int nid = old_elements[e_old].getNodeIndex(a);
+      if (nid >= 0 && nid < n_pts) {
+        node_to_cavity_old[nid].push_back(e_old);
+      }
+    }
+  }
+
+  // Step 3: Transfer plasticity memory to each triangle in T_m
+  std::fill(node_F_p_sum.begin(), node_F_p_sum.end(), Eigen::Matrix2d::Zero());
+  std::fill(node_slip_sum.begin(), node_slip_sum.end(), 0.0);
+  std::fill(node_weight_sum.begin(), node_weight_sum.end(), 0.0);
+
+  for (size_t e_new = 0; e_new < n_new; ++e_new) {
+    auto &new_el = new_elements[e_new];
+    if (!new_el.isInitialized()) continue;
+
+    new_el.setExternalDeformation(F_ext);
+    new_el.calculate_deformation_gradient(points);
+
+    const long matched_old_idx = new_matched_old[e_new];
+    if (matched_old_idx >= 0) {
+      // === CASE 1: Unchanged Triangle (Bit-for-Bit Copy, Zero Numerical Diffusion) ===
+      const auto &old_el = old_elements[static_cast<size_t>(matched_old_idx)];
+      new_el.setPlasticDeformationGradient(old_el.getPlasticDeformationGradient());
+      new_el.setCumulativePlasticSlip(old_el.getCumulativePlasticSlip());
+      new_el.setRemeshGeneration(old_el.getRemeshGeneration());
+
+      if (old_el.hasQOrient() &&
+          new_el.getNodeIndex(0) == old_el.getNodeIndex(0) &&
+          new_el.getNodeIndex(1) == old_el.getNodeIndex(1) &&
+          new_el.getNodeIndex(2) == old_el.getNodeIndex(2)) {
+        new_el.setQOrient(old_el.getQOrient());
+      } else if (old_el.hasQOrient() &&
+                 std::abs(new_el.getDeformationGradient().determinant()) > 1e-12) {
+        const Eigen::Matrix2d F_al_old = old_el.getDeformationGradient() * old_el.getQOrient();
+        new_el.setQOrient(new_el.getDeformationGradient().inverse() * F_al_old);
+      } else {
+        double theta_rad = 0.0;
+        ConfigurationSaver::computeElementGrainAlignedElasticF(new_el, points, nullptr, &theta_rad);
+        new_el.setQOrient(ConfigurationSaver::computeAlignmentMatrix(new_el.getDeformationGradient(), theta_rad));
+      }
+    } else {
+      // === CASE 2 (Flipped Cavity Triangle) or CASE 4 (Healed / Bridged Element) ===
+      double theta_rad = 0.0;
+      const Eigen::Matrix2d Fe_new =
+          ConfigurationSaver::computeElementGrainAlignedElasticF(new_el, points, nullptr, &theta_rad);
+      Eigen::Matrix2d R_grain_new;
+      R_grain_new << std::cos(theta_rad), -std::sin(theta_rad),
+                     std::sin(theta_rad),  std::cos(theta_rad);
+
+      std::array<Eigen::Vector2d, 3> tri_new_verts;
+      for (int a = 0; a < 3; ++a) {
+        const int nid = new_el.getNodeIndex(a);
+        tri_new_verts[a] =
+            ((nid >= 0 && nid < n_pts) ? points[nid].coord : Eigen::Vector2d::Zero()) +
+            new_el.getEffectiveTranslation(a);
+      }
+
+      // Collect unique candidate old cavity triangles touching any vertex of new_el
+      std::vector<size_t> cand_old;
+      for (int a = 0; a < 3; ++a) {
+        const int nid = new_el.getNodeIndex(a);
+        if (nid >= 0 && nid < n_pts) {
+          for (size_t old_idx : node_to_cavity_old[nid]) {
+            if (std::find(cand_old.begin(), cand_old.end(), old_idx) == cand_old.end()) {
+              cand_old.push_back(old_idx);
+            }
+          }
+        }
+      }
+
+      Eigen::Matrix2d F_tot_before = Eigen::Matrix2d::Zero();
+      Eigen::Matrix2d F_p_before = Eigen::Matrix2d::Zero();
+      double slip_before = 0.0;
+      double total_overlap_w = 0.0;
+      int max_old_gen = 0;
+
+      // Primary Case 2 transfer: exact 2D polygon intersection area on the replaced cavity T_{m-1} \ T_m
+      for (size_t old_idx : cand_old) {
+        const auto &old_el = old_elements[old_idx];
+        // Align old triangle's periodic image with new_el via a shared vertex
+        Eigen::Vector2d shift = Eigen::Vector2d::Zero();
+        for (int a = 0; a < 3; ++a) {
+          bool found_shared = false;
+          for (int b = 0; b < 3; ++b) {
+            if (new_el.getNodeIndex(a) == old_el.getNodeIndex(b)) {
+              shift = tri_new_verts[a] - old_deformed_verts[old_idx][b];
+              found_shared = true;
+              break;
+            }
+          }
+          if (found_shared) break;
+        }
+        std::array<Eigen::Vector2d, 3> tri_old_shifted = {
+            old_deformed_verts[old_idx][0] + shift,
+            old_deformed_verts[old_idx][1] + shift,
+            old_deformed_verts[old_idx][2] + shift};
+
+        const double overlap_area = triangleIntersectionArea2D(tri_new_verts, tri_old_shifted);
+        if (overlap_area > 1e-10) {
+          F_tot_before += overlap_area * old_F_tot[old_idx];
+          F_p_before += overlap_area * old_el.getPlasticDeformationGradient();
+          slip_before += overlap_area * old_el.getCumulativePlasticSlip();
+          total_overlap_w += overlap_area;
+          max_old_gen = std::max(max_old_gen, old_el.getRemeshGeneration());
+        }
+      }
+
+      // Secondary Case 2 fallback: cavity triangles sharing >= 2 vertices (an edge) with new_el
+      if (total_overlap_w <= 1e-10) {
+        for (size_t old_idx : cand_old) {
+          const auto &old_el = old_elements[old_idx];
+          int shared = 0;
+          for (int a = 0; a < 3; ++a) {
+            for (int b = 0; b < 3; ++b) {
+              if (new_el.getNodeIndex(a) == old_el.getNodeIndex(b)) {
+                ++shared;
+                break;
+              }
+            }
+          }
+          if (shared >= 2) {
+            const double w = std::max(1e-12, old_el.getReferenceArea());
+            F_tot_before += w * old_F_tot[old_idx];
+            F_p_before += w * old_el.getPlasticDeformationGradient();
+            slip_before += w * old_el.getCumulativePlasticSlip();
+            total_overlap_w += w;
+            max_old_gen = std::max(max_old_gen, old_el.getRemeshGeneration());
+          }
+        }
+      }
+
+      if (total_overlap_w > 1e-10) {
+        F_tot_before /= total_overlap_w;
+        F_p_before /= total_overlap_w;
+        slip_before /= total_overlap_w;
+
+        // Lock in the multiplicative chain accumulator Q_orient^(m) so that
+        // R_grain^T * F_raw(x) * Q_orient^(m) = F_m(x) * F_{m-1} ... F_1
+        if (std::abs(new_el.getDeformationGradient().determinant()) > 1e-12) {
+          new_el.setQOrient(new_el.getDeformationGradient().inverse() * R_grain_new * F_tot_before);
+        } else {
+          new_el.setQOrient(ConfigurationSaver::computeAlignmentMatrix(new_el.getDeformationGradient(), theta_rad));
+        }
+
+        // Lock in new plastic memory matrix: F_p^(m) = (F_e^{new,frozen})^{-1} * F_tot^{before}
+        Eigen::Matrix2d Fp_new = F_p_before;
+        if (std::abs(Fe_new.determinant()) > 1e-12) {
+          Fp_new = Fe_new.inverse() * F_tot_before;
+        }
+        Eigen::Matrix2d Delta_Fp = Eigen::Matrix2d::Identity();
+        if (std::abs(F_p_before.determinant()) > 1e-12) {
+          Delta_Fp = Fp_new * F_p_before.inverse();
+        }
+        const double d_slip = (Delta_Fp - Eigen::Matrix2d::Identity()).norm();
+
+        new_el.setPlasticDeformationGradient(Fp_new);
+        new_el.setCumulativePlasticSlip(slip_before + d_slip);
+        new_el.setRemeshGeneration(max_old_gen + 1);
+      } else {
+        // === CASE 4: Newly Healed / Bridged Element (Inherit from 3 Surface Atoms' Nodal Backup) ===
+        F_p_before.setZero();
+        slip_before = 0.0;
+        int valid_nodes = 0;
+        bool has_unslipped_isolated_corner = false;
+        for (int a = 0; a < 3; ++a) {
+          const int nid = new_el.getNodeIndex(a);
+          if (nid >= 0 && nid < n_pts) {
+            if (node_weight_sum[nid] <= 1e-12 && points[nid].cumulative_plastic_slip <= 1e-12) {
+              has_unslipped_isolated_corner = true;
+            }
+            F_p_before += points[nid].F_plastic_node;
+            slip_before += points[nid].cumulative_plastic_slip;
+            ++valid_nodes;
+          }
+        }
+        if (valid_nodes > 0 && !has_unslipped_isolated_corner) {
+          F_p_before /= static_cast<double>(valid_nodes);
+          slip_before /= static_cast<double>(valid_nodes);
+        } else {
+          F_p_before.setIdentity();
+          slip_before = 0.0;
+        }
+
+        F_tot_before = Fe_new * F_p_before;
+        if (std::abs(new_el.getDeformationGradient().determinant()) > 1e-12) {
+          new_el.setQOrient(new_el.getDeformationGradient().inverse() * R_grain_new * F_tot_before);
+        } else {
+          new_el.setQOrient(ConfigurationSaver::computeAlignmentMatrix(new_el.getDeformationGradient(), theta_rad));
+        }
+        new_el.setPlasticDeformationGradient(F_p_before);
+        new_el.setCumulativePlasticSlip(slip_before);
+        new_el.setRemeshGeneration(max_old_gen);
+      }
+    }
+
+    const double w_area = std::max(1e-12, new_el.getReferenceArea()) / 3.0;
+    for (int a = 0; a < 3; ++a) {
+      const int nid = new_el.getNodeIndex(a);
+      if (nid >= 0 && nid < n_pts) {
+        node_F_p_sum[nid] += w_area * new_el.getPlasticDeformationGradient();
+        node_slip_sum[nid] += w_area * new_el.getCumulativePlasticSlip();
+        node_weight_sum[nid] += w_area;
+      }
+    }
+  }
+
+  // Step 4: Refresh nodal plastic memory on Point2D from T_m (preserving crack-lip atoms' memory)
+  for (int i = 0; i < n_pts; ++i) {
+    if (node_weight_sum[i] > 1e-12) {
+      points[i].F_plastic_node = node_F_p_sum[i] / node_weight_sum[i];
+      points[i].cumulative_plastic_slip =
+          std::max(points[i].cumulative_plastic_slip, node_slip_sum[i] / node_weight_sum[i]);
+    }
+  }
+}
+
 std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     alglib::real_1d_array &x, const UserData *userData,
     const std::vector<int> &contact_atoms,
@@ -205,6 +621,9 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
       break;
     }
     visited_topologies.insert(current_topo_key);
+
+    // === HYBRID OPTION A + B: TRANSFER PLASTICITY MEMORY (F_tot = F_m ... F_1 = F_e * F_p) ===
+    transferPlasticityMemoryHybrid(old_elements, elements, square_points, F_ext);
 
     UserData newUserData(square_points, elements, userData->calculator,
                          potential_func, potential_func_der, zero,
@@ -1289,6 +1708,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
 
     // 1. Save original state
     alglib::real_1d_array original_x = x;
+    std::vector<ElementTriangle2D> old_elements = elements;
     // auto m3_before = analyzeElementReduction(elements, square_points,
     // &userData);
 
@@ -1307,6 +1727,7 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
       element.setReferenceArea(
           reference_area); // or interior_mapping depending on needs
     }
+    transferPlasticityMemoryHybrid(old_elements, elements, square_points, F_ext);
 
     // It is called to find the number of nodes inside elements that touch the
     // boundary This is requited in mesh filtering auto [interior_mapping_dummy,

@@ -62,32 +62,32 @@ enum ResultsSubView: String { case curves, snapshots }
 /// The four steps of the unified left setup inspector.
 enum SetupInspectorStep: String, CaseIterable, Identifiable {
     case crystal
-    case shapeAndBCs
     case protocolAndSchedule
+    case shapeAndBCs
     case solver
     
     var id: String { rawValue }
     var shortTitle: String {
         switch self {
         case .crystal: return "1 Crystal"
-        case .shapeAndBCs: return "2 Shape & BCs"
-        case .protocolAndSchedule: return "3 Protocol"
+        case .protocolAndSchedule: return "2 Protocol"
+        case .shapeAndBCs: return "3 Shape & BCs"
         case .solver: return "4 Solver"
         }
     }
     var icon: String {
         switch self {
         case .crystal: return "atom"
-        case .shapeAndBCs: return "skew"
         case .protocolAndSchedule: return "slider.horizontal.below.square.filled.and.square"
+        case .shapeAndBCs: return "skew"
         case .solver: return "gearshape.2"
         }
     }
     var helpText: String {
         switch self {
         case .crystal: return "Size, lattice, potential, grains & dislocations"
-        case .shapeAndBCs: return "Specimen shape, holes, boundary conditions & indenter"
         case .protocolAndSchedule: return "Loading mode, noise, remeshing & strain schedule"
+        case .shapeAndBCs: return "Specimen shape, holes, boundary conditions & indenter"
         case .solver: return "Preconditioner, eigenvalues, output & threads"
         }
     }
@@ -671,11 +671,20 @@ struct SidebarControlsView: View {
                             )
                         }
                         crystalOrientationCard
+                    case .protocolAndSchedule:
+                        loadingModeCard
+                        protocolScheduleCard
                     case .shapeAndBCs:
-                        if config.mode == .volterra || config.mode == .shift {
+                        if config.mode == .volterra {
                             stepNotApplicableNote(
-                                "Shape & boundary conditions are fixed by the selected loading mode (\(config.mode.displayName)). Switch the loading mode in step 3 to carve a custom specimen."
+                                "Shape & boundary conditions are fixed by the selected loading mode (\(config.mode.displayName)). Switch the loading mode in step 2 to carve a custom specimen."
                             )
+                        } else if config.mode == .shift {
+                            boundaryAndLoadingSelectorCard
+                            stepNotApplicableNote(
+                                "Staircase Shift uses fixed support along the left & bottom edges with alternating horizontal (upper-left) and vertical (lower-right) block shifts configured in 2 Protocol."
+                            )
+                            protocolScheduleCard
                         } else {
                             boundaryAndLoadingSelectorCard
                             specimenShapeCard
@@ -689,9 +698,6 @@ struct SidebarControlsView: View {
                                 )
                             }
                         }
-                    case .protocolAndSchedule:
-                        loadingModeCard
-                        protocolScheduleCard
                     case .solver:
                         if uiComplexityMode == .guided {
                             stepNotApplicableNote(
@@ -1824,26 +1830,31 @@ struct SidebarControlsView: View {
     private var protocolScheduleCard: some View {
                 // 5. Loading Schedule
                 if config.mode == .shift {
-                    GroupBox(label: Label("Staircase Shift Schedule", systemImage: "stairs")) {
+                    GroupBox(label: Label("Loading Schedule", systemImage: "stairs")) {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
-                                Text("Shift Amplitude (in a₀):")
+                                Text("End shift (in a₀):")
                                     .font(.subheadline)
                                 Spacer()
-                                DoubleField(title: "2.0", value: $config.shiftAmplitude, width: 80)
+                                DoubleField(title: "2.0", value: $config.shiftAmplitude, width: 80, minValue: 0.001, maxValue: 50.0)
                             }
                             HStack {
-                                Text("Horizontal Steps (per a₀):")
+                                Text("Step size |du| (in a₀):")
                                     .font(.subheadline)
                                 Spacer()
-                                IntField(title: "2", value: $config.shiftHorizontalSteps, width: 80)
+                                DoubleField(title: "0.02", value: $config.shiftStepSize, width: 80, minValue: 0.0001, maxValue: 5.0)
                             }
+                            Divider()
                             HStack {
-                                Text("Vertical Steps (per a₀):")
+                                Text("Save VTK every N steps:")
                                     .font(.subheadline)
                                 Spacer()
-                                IntField(title: "2", value: $config.shiftVerticalSteps, width: 80)
+                                IntField(title: "50", value: $config.saveVTKInterval, width: 70)
                             }
+                            Text("Shifts horizontally then vertically in steps of \(String(format: "%g", abs(config.shiftStepSize))) a₀ (\(config.shiftTotalSteps) steps total).")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(8)
                     }

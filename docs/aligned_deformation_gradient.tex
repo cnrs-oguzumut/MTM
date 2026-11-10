@@ -39,16 +39,16 @@
 }
 
 \title{\textbf{Computing the Aligned Deformation Gradient $\mathbf{F}_{\text{aligned}}$}\\[6pt]
-\large Removing Arbitrary Mesh-Triangulation Orientations in First Piola--Kirchhoff and Projected Stress Post-Processing}
+\large Removing Arbitrary Mesh-Triangulation Orientations in First Piola--Kirchhoff and Projected Stress Post-Processing for Square and Triangular Lattices}
 \author{MTM Lattice-Triangulation Documentation}
-\date{October 2026}
+\date{November 2026}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
 \noindent
-In a 2D triangulated crystal mesh, each triangular element's raw deformation gradient $\mathbf{F}$ is defined relative to a single fixed canonical right-angled reference triangle. Because a unit cell consists of both lower-left ($\triangle$) and upper-right ($\triangledown$) triangles, and because CGAL Delaunay triangulation assigns counterclockwise vertex indices $(v_0, v_1, v_2)$ starting from an arbitrary corner, the raw deformation gradient $\mathbf{F}$ contains an arbitrary discrete reference-space transformation $\mathbf{N}^{-1} \in SL(2,\Z)$ on the right. While the metric tensor $\mathbf{C} = \mathbf{F}\T\mathbf{F}$ (after Lagrange reduction), the strain energy $W(\mathbf{C}_{\text{red}})$, and the Cauchy stress $\boldsymbol{\sigma}$ are strictly invariant under $\mathbf{N} \in SL(2,\Z)$, the First Piola--Kirchhoff stress $\mathbf{P} = \partial W / \partial \mathbf{F}$ and the Projected Stress $\tau = \mathbf{m}\cdot(\mathbf{P}\mathbf{n})$ Carry an explicit reference-space index and therefore flip sign or swap columns between neighboring triangles. This document explains how $\mathbf{F}_{\text{aligned}} = \mathbf{F}\mathbf{N}$ is computed and how the entire post-processing stress pipeline follows directly from $\mathbf{F}_{\text{aligned}}$ without altering any downstream formulas.
+In a 2D triangulated crystal mesh, each triangular element's raw deformation gradient $\mathbf{F}$ is defined relative to a single fixed canonical parent triangle. Because a unit cell consists of both lower-left/up ($\triangle$) and upper-right/down ($\triangledown$) triangles, and because CGAL Delaunay triangulation assigns counterclockwise vertex indices $(v_0, v_1, v_2)$ starting from an arbitrary corner, the raw deformation gradient $\mathbf{F}$ contains an arbitrary discrete reference-space transformation on the right. While the metric tensor $\mathbf{C} = \mathbf{F}\T\mathbf{F}$ (after Lagrange reduction), the strain energy $W(\mathbf{C}_{\text{red}})$, and the Cauchy stress $\boldsymbol{\sigma}$ are strictly invariant, the First Piola--Kirchhoff stress $\mathbf{P} = \partial W / \partial \mathbf{F}$ and the Projected Stress $\tau = \mathbf{m}\cdot(\mathbf{P}\mathbf{n})$ carry an explicit reference-space index and therefore flip sign or rotate columns between neighboring triangles. This document explains separately how $\mathbf{F}_{\text{aligned}}$ is formulated for the \textbf{Square Lattice} and for the \textbf{Triangular (Hexagonal) Lattice} (both in the $\Z^2$ square reference frame and in the native equilateral reference frame), and how the entire post-processing stress pipeline follows directly from $\mathbf{F}_{\text{aligned}}$ without altering any downstream formulas.
 \end{abstract}
 
 \tableofcontents
@@ -57,41 +57,50 @@ In a 2D triangulated crystal mesh, each triangular element's raw deformation gra
 \section{Why the Raw Deformation Gradient $\mathbf{F}$ Depends on Triangle Labelling}
 % ============================================================================
 
-Let a triangular element have current deformed vertex positions $\mathbf{x}_0, \mathbf{x}_1, \mathbf{x}_2 \in \R^2$ ordered counterclockwise ($\det[\mathbf{x}_1-\mathbf{x}_0,\;\mathbf{x}_2-\mathbf{x}_0] > 0$). In the MTM code (\code{ElementTriangle2D::calculate\_deformation\_gradient}), every element is mapped from the \textbf{same canonical right-angled reference triangle} with edge matrix
-\begin{equation}
-  \mathbf{X}_{\text{ref}} =
-  \begin{pmatrix}
-    a_0 & 0 \\
-    0 & a_0
-  \end{pmatrix},
-  \qquad
-  \mathbf{X}_{\text{ref}}^{-1} = \frac{1}{a_0}
-  \begin{pmatrix}
-    1 & 0 \\
-    0 & 1
-  \end{pmatrix}.
-\end{equation}
-Denoting the two deformed edge vectors emanating from vertex $v_0$ by
+Let a triangular element have current deformed vertex positions $\mathbf{x}_0, \mathbf{x}_1, \mathbf{x}_2 \in \R^2$ ordered counterclockwise ($\det[\mathbf{x}_1-\mathbf{x}_0,\;\mathbf{x}_2-\mathbf{x}_0] > 0$). Denoting the two deformed edge vectors emanating from vertex $v_0$ by
 \begin{equation}
   \mathbf{e}_1 = \mathbf{x}_1 - \mathbf{x}_0, \qquad
   \mathbf{e}_2 = \mathbf{x}_2 - \mathbf{x}_0, \qquad
   \mathbf{E} = \begin{bmatrix} \mathbf{e}_1 & \mathbf{e}_2 \end{bmatrix} \in \R^{2\times 2},
 \end{equation}
-the raw element deformation gradient is computed as
+and the reference edge matrix of the canonical parent triangle by $\mathbf{X}_{\text{ref}} = [\mathbf{E}_{1,\text{ref}},\; \mathbf{E}_{2,\text{ref}}]$, the raw element deformation gradient computed in \code{ElementTriangle2D::calculate\_deformation\_gradient} is
 \begin{equation}
-  \mathbf{F} = \frac{1}{a_0}\,\mathbf{E}\,\mathbf{X}_{\text{ref}}^{-1}
-  \qquad\text{(equal to $\mathbf{E}$ when normalized by $a_0=1$).}
+  \mathbf{F} = \mathbf{E}\,\mathbf{X}_{\text{ref}}^{-1}.
   \label{eq:raw_F}
 \end{equation}
+In a finite-element mesh with dynamic Delaunay remeshing (\code{MeshGenerator::createTrianglesFromPoints} in \code{src/MeshGenerator.cpp}), triangles are destroyed and re-created during plastic avalanches, so individual triangles do not store their own initial node coordinates; every triangle is compared against the \textbf{single canonical parent triangle} $\mathbf{X}_{\text{ref}}$ via the fixed shape-derivative matrix $\texttt{dndx}$.
 
-Two purely geometric ambiguities enter Eq.~\eqref{eq:raw_F} before any physical elastic deformation occurs:
-
-\subsection{Ambiguity 1: The 4 Discrete $90^\circ$ Half-Cell Orientations ($\mathbf{R}_0, \mathbf{R}_1, \mathbf{R}_2, \mathbf{R}_3$)}
-In a finite-element mesh with dynamic Delaunay remeshing, triangles are destroyed and re-created during plastic avalanches, so individual triangles do not store their own initial node coordinates. Instead, every triangle in the mesh is compared against the \textbf{single bottom-left template triangle} $p_1=(0,0),\; p_2=(a_0,0),\; p_3=(0,a_0)$ via the fixed shape-derivative matrix $\texttt{dndx}$.
-
-However, a unit square $[0,1]\times[0,1]$ has four corners and can be split along either diagonal ($\backslash$ or $/$) into four possible right-angled half-cell triangles whose $90^\circ$ corner sits at $(0,0)$, $(1,0)$, $(1,1)$, or $(0,1)$. Even when the origin $v_0$ is placed directly at the $90^\circ$ corner of each triangle, walking counterclockwise produces four different raw deformation gradients rotated by $0^\circ, 90^\circ, 180^\circ, 270^\circ$:
+After CGAL constructs the Delaunay triangulation, \code{MeshGenerator::createTrianglesFromPoints} does \textbf{not} keep CGAL's raw vertex order. Instead, it explicitly reorders each triangle's three vertices $(v_0, v_1, v_2)$ in two steps:
 \begin{enumerate}[noitemsep]
-  \item \textbf{Bottom-left triangle} ($90^\circ$ corner at $v_0=(0,0) \to (1,0) \to (0,1)$, rotation $0^\circ$):
+  \item \textbf{\code{reorderForMaxAngle(v0, v1, v2)}}: Loops over all three corners of the triangle, computes the interior angle at each corner from the dot product of the two outgoing edges, and places the vertex with the \textbf{largest interior angle} first as \code{ordered[0]} ($v_0$). (If all angles are strictly acute, $< 75^\circ$, and the triangle is an isosceles grain-boundary kite with two equal legs, it places the apex between the two equal legs at \code{ordered[0]}.)
+  \item \textbf{Counterclockwise (\code{cross\_product > 0}) enforcement}: Keeps \code{ordered[0]} first and orders the remaining two vertices as $(\code{ordered[0]}, \code{ordered[1]}, \code{ordered[2]})$ or $(\code{ordered[0]}, \code{ordered[2]}, \code{ordered[1]})$ so that $\det[\mathbf{e}_1, \mathbf{e}_2] > 0$.
+\end{enumerate}
+How this vertex-ordering rule interacts with the mesh triangles depends on whether the crystal is a \textbf{square lattice} or a \textbf{triangular (hexagonal) lattice}.
+
+% ============================================================================
+\section{Case 1: The Square Lattice}
+% ============================================================================
+
+In a square lattice, the canonical reference triangle is the bottom-left right-isosceles triangle with legs of length $h = a_0$ (or $h=1$ in normalized units):
+\begin{equation}
+  \mathbf{X}_{\text{ref}}^{\text{sq}} =
+  \begin{pmatrix}
+    h & 0 \\
+    0 & h
+  \end{pmatrix},
+  \qquad
+  (\mathbf{X}_{\text{ref}}^{\text{sq}})^{-1} = \frac{1}{h}
+  \begin{pmatrix}
+    1 & 0 \\
+    0 & 1
+  \end{pmatrix}.
+\end{equation}
+Two discrete geometric ambiguities enter the raw deformation gradient $\mathbf{F} = \frac{1}{h}\mathbf{E}$ before any elastic deformation occurs:
+
+\subsection{Square Ambiguity 1: The 4 Discrete $90^\circ$ Half-Cell Orientations ($\mathbf{R}_0, \mathbf{R}_1, \mathbf{R}_2, \mathbf{R}_3$)}
+A unit square $[0,1]\times[0,1]$ has four corners and can be split along either diagonal ($\backslash$ or $/$) into four possible right-angled half-cell triangles whose $90^\circ$ corner sits at $(0,0)$, $(1,0)$, $(1,1)$, or $(0,1)$. Even when `reorderForMaxAngle` places the origin $v_0$ directly at the $90^\circ$ corner of each triangle, walking counterclockwise produces four different raw deformation gradients rotated by $0^\circ, 90^\circ, 180^\circ, 270^\circ$:
+\begin{enumerate}[noitemsep]
+  \item \textbf{Bottom-left triangle ($\triangle$)} ($90^\circ$ corner at $v_0=(0,0) \to (1,0) \to (0,1)$, rotation $0^\circ$):
   \begin{equation}
     \mathbf{e}_1 = \begin{pmatrix} 1 \\ 0 \end{pmatrix}, \quad
     \mathbf{e}_2 = \begin{pmatrix} 0 \\ 1 \end{pmatrix}
@@ -105,12 +114,12 @@ However, a unit square $[0,1]\times[0,1]$ has four corners and can be split alon
     \quad\Longrightarrow\quad
     \mathbf{F} = \begin{pmatrix} 0 & -1 \\ 1 & 0 \end{pmatrix} = \mathbf{R}_1.
   \end{equation}
-  \item \textbf{Top-right triangle} ($90^\circ$ corner at $v_0=(1,1) \to (0,1) \to (1,0)$, rotation $180^\circ$):
+  \item \textbf{Top-right triangle ($\triangledown$)} ($90^\circ$ corner at $v_0=(1,1) \to (0,1) \to (1,0)$, rotation $180^\circ$):
   \begin{equation}
     \mathbf{e}_1 = \begin{pmatrix} -1 \\ 0 \end{pmatrix}, \quad
     \mathbf{e}_2 = \begin{pmatrix} 0 \\ -1 \end{pmatrix}
     \quad\Longrightarrow\quad
-    \mathbf{F} = \begin{pmatrix} -1 & 0 \\ 0 & -1 \end{pmatrix} = \mathbf{R}_2.
+    \mathbf{F} = \begin{pmatrix} -1 & 0 \\ 0 & -1 \end{pmatrix} = \mathbf{R}_2 = -\mathbf{I}.
   \end{equation}
   \item \textbf{Top-left triangle} ($90^\circ$ corner at $v_0=(0,1) \to (0,0) \to (1,1)$, rotation $270^\circ$):
   \begin{equation}
@@ -177,12 +186,12 @@ Right-multiplying $\mathbf{F}$ by $\mathbf{R}_r\T$ ($r \in \{0,1,2,3\}$) rotates
     \node[align=center, font=\footnotesize] at (0.55,-0.75) {\textbf{$270^\circ$ ($\mathbf{R}_3$): Top-Left}\\$v_0=(0,1)$\\[2pt]$\mathbf{F} = \begin{pmatrix} 0 & 1 \\ -1 & 0 \end{pmatrix}$};
   \end{scope}
 \end{tikzpicture}
-\caption{\textbf{What the 4 discrete rotations $\mathbf{R}_r$ do:} A unit square $[0,1]\times[0,1]$ (dashed outline) can contain four different right-angled triangle orientations depending on which half of the square the triangle occupies and which diagonal ($\backslash$ or $/$) splits the cell. Right-multiplying by $\mathbf{R}_r\T$ rotates all four orientations back to $+\mathbf{I}$.}
+\caption{\textbf{Square Lattice --- What the 4 discrete rotations $\mathbf{R}_r$ do:} A unit square $[0,1]\times[0,1]$ (dashed outline) can contain four different right-angled triangle orientations depending on which half of the square the triangle occupies and which diagonal ($\backslash$ or $/$) splits the cell. Right-multiplying by $\mathbf{R}_r\T$ rotates all four orientations back to $+\mathbf{I}$.}
 \label{fig:four_rotations}
 \end{figure}
 
-\subsection{Ambiguity 2: The 3 Cyclic Counterclockwise Vertex Shifts in CGAL ($\mathbf{M}_0, \mathbf{M}_1, \mathbf{M}_2$)}
-Now consider a \textbf{single fixed triangle} in space---for example, the bottom-left triangle with corners at $(0,0)$, $(1,0)$, and $(0,1)$. When CGAL builds or remeshes the Delaunay triangulation, any of the triangle's three corners may be listed first as $v_0$, provided $(v_0, v_1, v_2)$ remains counterclockwise. Cycling which corner is chosen as the origin $v_0$ transforms the edge matrix $\mathbf{E} = [\mathbf{e}_1, \mathbf{e}_2]$ by right-multiplication with a unimodular matrix $\mathbf{M}_p \in SL(2,\Z)$:
+\subsection{Square Ambiguity 2: The 3 Cyclic Counterclockwise Vertex Shifts ($\mathbf{M}_0, \mathbf{M}_1, \mathbf{M}_2$)}
+In an undeformed or weakly deformed square lattice ($90^\circ, 45^\circ, 45^\circ$ triangles), \code{reorderForMaxAngle} deterministically places $v_0$ at the $90^\circ$ corner, so $\mathbf{M}_0 = \mathbf{I}$ is already selected. However, when a triangle is strongly sheared or plastically slipped (for instance, near a dislocation core, across a grain boundary, or when remeshing occurs after finite shear has opened one of the original $45^\circ$ corners into an obtuse angle $> 90^\circ$), \code{reorderForMaxAngle} places that obtuse corner at $v_0$ instead of the original lattice corner. Cycling which of the three corners is chosen as the origin $v_0$ (while keeping $(v_0, v_1, v_2)$ counterclockwise) transforms the edge matrix $\mathbf{E} = [\mathbf{e}_1, \mathbf{e}_2]$ by right-multiplication with a unimodular matrix $\mathbf{M}_p \in SL(2,\Z)$:
 \begin{enumerate}[noitemsep]
   \item \textbf{No shift ($\mathbf{M}_0$)}, origin at $v_0=(0,0) \to v_1=(1,0) \to v_2=(0,1)$:
   \begin{equation}
@@ -246,20 +255,166 @@ Note that $\det\mathbf{M}_0 = \det\mathbf{M}_1 = \det\mathbf{M}_2 = +1$, and $\m
     \node[align=center, font=\footnotesize] at (0.6,-0.75) {\textbf{2 cyclic shifts ($\mathbf{M}_2$)}\\Origin at $v_0''=(0,1)$\\[2pt]$\mathbf{F} = \begin{pmatrix} 0 & 1 \\ -1 & -1 \end{pmatrix}$};
   \end{scope}
 \end{tikzpicture}
-\caption{\textbf{What the 3 cyclic shifts $\mathbf{M}_p$ do:} All three panels show the \textbf{exact same physical triangle} with vertices at $(0,0)$, $(1,0)$, and $(0,1)$. Depending on which of the 3 corners CGAL lists first as $v_0$, the two edge vectors emanating from that corner change according to $\mathbf{M}_0$, $\mathbf{M}_1$, or $\mathbf{M}_2$. Multiplying on the right by $\mathbf{M}_p$ shifts the local origin $v_0$ back to the $90^\circ$ corner $(0,0)$.}
+\caption{\textbf{Square Lattice --- What the 3 cyclic shifts $\mathbf{M}_p$ do:} All three panels show the \textbf{exact same physical triangle} with vertices at $(0,0)$, $(1,0)$, and $(0,1)$. Depending on which of the 3 corners CGAL lists first as $v_0$, the two edge vectors emanating from that corner change according to $\mathbf{M}_0$, $\mathbf{M}_1$, or $\mathbf{M}_2$. Multiplying on the right by $\mathbf{M}_p$ shifts the local origin $v_0$ back to the $90^\circ$ corner $(0,0)$.}
 \label{fig:tri_orientations}
 \end{figure}
 
 % ============================================================================
-\section{Single Unified Formula for Computing $\mathbf{F}_{\text{aligned}}$}
+\section{Case 2: The Triangular (Hexagonal) Lattice}
 % ============================================================================
 
-Because a crystal in the Zanzotto potential can contain both square and triangular (hexagonal) phases simultaneously (as well as heavily sheared dislocation cores), we use a \textbf{single unified formula} for every element without branching on lattice type.
+In a triangular (hexagonal) lattice with nearest-neighbor spacing $a_0$, every unit rhombus consists of an ``up'' equilateral triangle ($\triangle$) and a ``down'' equilateral triangle ($\triangledown$). Unlike the square lattice (where each right triangle has a unique $90^\circ$ corner that \code{reorderForMaxAngle} can identify at zero strain), \textbf{all three interior angles of an equilateral triangle are equal to $60^\circ$}. Consequently, floating-point roundoff or tiny elastic perturbations cause \code{reorderForMaxAngle} to pick \textbf{any of the 3 vertices} as $v_0$ even in a nearly undeformed crystal!
+
+Combined with the two triangle types ($\triangle$ and $\triangledown$), the counterclockwise pair of edge vectors $(\mathbf{e}_1, \mathbf{e}_2)$ emanating from $v_0$ can take \textbf{6 discrete orientations} rotated by multiples of $60^\circ$:
+\begin{equation}
+  \mathbf{E}^{(k)} = \mathbf{R}(k \cdot 60^\circ)\,\mathbf{E}^{(0)}, \qquad k \in \{0, 1, 2, 3, 4, 5\},
+\end{equation}
+where $k \in \{0, 2, 4\}$ ($0^\circ, 120^\circ, 240^\circ$) are the 3 cyclic vertex orderings of an ``up'' triangle ($\triangle$) and $k \in \{3, 5, 1\}$ ($180^\circ, 300^\circ, 60^\circ$) are the 3 cyclic vertex orderings of a ``down'' triangle ($\triangledown$).
+
+\begin{keyidea}[Why Does the Square Lattice Need $4 \times 3 = 12$ Tests, Instead of $6 \times 3 = 18$ in the Triangular Lattice?]
+At first sight, since a square has $4$ orientations ($90^\circ$ steps) and $3$ cyclic vertex orderings ($4 \times 3 = 12$ tests), one might expect a triangular lattice with $6$ orientations ($60^\circ$ steps) and $3$ cyclic vertex orderings to require $6 \times 3 = 18$ tests. The reason it requires only \textbf{6} (and why the $18$ products repeat those $6$ matrices three times each) is geometric:
+\begin{itemize}[noitemsep]
+  \item \textbf{In the Square Lattice ($4 \times 3 = 12$):} A half-square right triangle has \textbf{one $90^\circ$ corner and two $45^\circ$ corners} (two legs of length $a_0$ and one hypotenuse of length $\sqrt{2}a_0$). Because the triangle is \emph{not} equilateral, cycling its 3 vertices ($\mathbf{M}_0, \mathbf{M}_1, \mathbf{M}_2$) moves $v_0$ from the $90^\circ$ corner to a $45^\circ$ corner---which is \textbf{not a rigid rotation} of the triangle! Thus the $4$ rigid $90^\circ$ rotations of the right triangle ($\mathbf{R}_0, \mathbf{R}_1, \mathbf{R}_2, \mathbf{R}_3$) and the $3$ cyclic vertex shifts ($\mathbf{M}_0, \mathbf{M}_1, \mathbf{M}_2$) are completely independent, giving $4 \times 3 = 12$ distinct matrices.
+  \item \textbf{In the Triangular Lattice ($2 \times 3 = 6$):} A unit $60^\circ$ rhombus contains only \textbf{2 equilateral triangles}: one ``up'' ($\triangle$, $0^\circ$) and one ``down'' ($\triangledown$, $180^\circ$). Because all 3 corners of an equilateral triangle have the exact same $60^\circ$ angle and side length $a_0$, \textbf{cycling the 3 vertices ($\mathbf{M}_0, \mathbf{M}_1, \mathbf{M}_2$) is already a rigid rotation by $0^\circ, 120^\circ, 240^\circ$}:
+  \begin{equation*}
+    \mathbf{X}_{\text{ref}}^{\text{tri}}\,\mathbf{M}_p\,(\mathbf{X}_{\text{ref}}^{\text{tri}})^{-1} = \mathbf{R}(p \cdot 120^\circ), \qquad p \in \{0, 1, 2\}.
+  \end{equation*}
+  Combining the \textbf{2 triangle types} ($\triangle$ at $0^\circ$ and $\triangledown$ at $180^\circ$) with the \textbf{3 cyclic vertex orderings} ($0^\circ, 120^\circ, 240^\circ$) produces the $2 \times 3 = 6$ orientations ($0^\circ, 60^\circ, 120^\circ, 180^\circ, 240^\circ, 300^\circ$). If you multiply all $6$ rotations $\mathbf{R}(k\cdot 60^\circ)$ by the $3$ cyclic vertex shifts $\mathbf{R}(p\cdot 120^\circ)$, you get $\mathbf{R}((k + 2p)\cdot 60^\circ)$, which simply permutes the same $6$ matrices three times ($18 / 3 = 6$).
+\end{itemize}
+\end{keyidea}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.65, >=Stealth]
+  % Define 60 deg coords
+  \pgfmathsetmacro{\L}{1.25}
+  \pgfmathsetmacro{\H}{1.25*0.8660254}
+
+  % Panel 1: Up triangle, k=0 (0 deg)
+  \begin{scope}[xshift=0cm]
+    \fill[atomblue!12] (0,0) -- (\L,0) -- (0.5*\L,\H) -- cycle;
+    \draw[thick, gray] (\L,0) -- (0.5*\L,\H);
+    \draw[thick, atomblue!80!black, ->] (0,0) -- (\L,0) node[midway, below=2pt] {$\mathbf{e}_1$};
+    \draw[thick, atomblue!80!black, ->] (0,0) -- (0.5*\L,\H) node[midway, above left=0pt] {$\mathbf{e}_2$};
+    \fill[atomblue] (0,0) circle (2.2pt) node[below left=1pt, font=\scriptsize] {$v_0$};
+    \fill[atomblue] (\L,0) circle (1.8pt) node[below right=1pt, font=\scriptsize] {$v_1$};
+    \fill[atomblue] (0.5*\L,\H) circle (1.8pt) node[above=1pt, font=\scriptsize] {$v_2$};
+    \node[align=center, font=\footnotesize] at (0.5*\L,-0.65) {\textbf{$\triangle$ ($k=0$, $0^\circ$)}\\$\mathbf{M}_0,\; +\mathbf{I}$};
+  \end{scope}
+
+  % Panel 2: Up triangle, k=2 (120 deg)
+  \begin{scope}[xshift=2.25cm]
+    \fill[atomblue!12] (0,0) -- (\L,0) -- (0.5*\L,\H) -- cycle;
+    \draw[thick, gray] (0,0) -- (0.5*\L,\H);
+    \draw[thick, okgreen!80!black, ->] (\L,0) -- (0.5*\L,\H) node[midway, above right=0pt] {$\mathbf{e}_1$};
+    \draw[thick, okgreen!80!black, ->] (\L,0) -- (0,0) node[midway, below=2pt] {$\mathbf{e}_2$};
+    \fill[okgreen!80!black] (\L,0) circle (2.2pt) node[below right=1pt, font=\scriptsize] {$v_0$};
+    \fill[okgreen!80!black] (0.5*\L,\H) circle (1.8pt) node[above=1pt, font=\scriptsize] {$v_1$};
+    \fill[okgreen!80!black] (0,0) circle (1.8pt) node[below left=1pt, font=\scriptsize] {$v_2$};
+    \node[align=center, font=\footnotesize] at (0.5*\L,-0.65) {\textbf{$\triangle$ ($k=2$, $120^\circ$)}\\$\mathbf{M}_1,\; +\mathbf{I}$};
+  \end{scope}
+
+  % Panel 3: Up triangle, k=4 (240 deg)
+  \begin{scope}[xshift=4.5cm]
+    \fill[atomblue!12] (0,0) -- (\L,0) -- (0.5*\L,\H) -- cycle;
+    \draw[thick, gray] (0,0) -- (\L,0);
+    \draw[thick, defectred, ->] (0.5*\L,\H) -- (0,0) node[midway, above left=0pt] {$\mathbf{e}_1$};
+    \draw[thick, defectred, ->] (0.5*\L,\H) -- (\L,0) node[midway, above right=0pt] {$\mathbf{e}_2$};
+    \fill[defectred] (0.5*\L,\H) circle (2.2pt) node[above=1pt, font=\scriptsize] {$v_0$};
+    \fill[defectred] (0,0) circle (1.8pt) node[below left=1pt, font=\scriptsize] {$v_1$};
+    \fill[defectred] (\L,0) circle (1.8pt) node[below right=1pt, font=\scriptsize] {$v_2$};
+    \node[align=center, font=\footnotesize] at (0.5*\L,-0.65) {\textbf{$\triangle$ ($k=4$, $240^\circ$)}\\$\mathbf{M}_2,\; +\mathbf{I}$};
+  \end{scope}
+
+  % Panel 4: Down triangle, k=3 (180 deg)
+  \begin{scope}[xshift=6.75cm]
+    \fill[orange!15] (0.5*\L,\H) -- (1.5*\L,\H) -- (\L,0) -- cycle;
+    \draw[thick, gray] (0.5*\L,\H) -- (\L,0);
+    \draw[thick, orange!85!black, ->] (1.5*\L,\H) -- (0.5*\L,\H) node[midway, above=2pt] {$\mathbf{e}_1$};
+    \draw[thick, orange!85!black, ->] (1.5*\L,\H) -- (\L,0) node[midway, below right=0pt] {$\mathbf{e}_2$};
+    \fill[orange!85!black] (1.5*\L,\H) circle (2.2pt) node[above right=1pt, font=\scriptsize] {$v_0$};
+    \fill[orange!85!black] (0.5*\L,\H) circle (1.8pt) node[above left=1pt, font=\scriptsize] {$v_1$};
+    \fill[orange!85!black] (\L,0) circle (1.8pt) node[below=1pt, font=\scriptsize] {$v_2$};
+    \node[align=center, font=\footnotesize] at (\L,-0.65) {\textbf{$\triangledown$ ($k=3$, $180^\circ$)}\\$\mathbf{M}_0,\; -\mathbf{I}$};
+  \end{scope}
+\end{tikzpicture}
+\caption{\textbf{Triangular Lattice --- Why raw $\mathbf{F}$ rotates by multiples of $60^\circ$:} Because all interior angles are $60^\circ$, CGAL can pick any of the 3 corners of an ``up'' triangle $\triangle$ ($0^\circ, 120^\circ, 240^\circ$) or any of the 3 corners of a ``down'' triangle $\triangledown$ ($180^\circ, 300^\circ, 60^\circ$) as $v_0$.}
+\label{fig:triangular_6_orientations}
+\end{figure}
+
+In the MTM codebase (\code{ReferenceFrame.h} and \code{ReferenceFrame.cpp}), the triangular lattice can be run in two reference-frame modes, and \code{computeAlignedDeformationGradient} in \code{configuration\_saver.cpp} handles both:
+
+\subsection{Mode 2A: Triangular Lattice in the $\Z^2$ Square Reference Frame (\code{ReferenceFrame::SquareZ2}, default \code{--triangular-reference=0})}
+In the default $\Z^2$ reference frame, the canonical parent element remains the square right-isosceles triangle $\mathbf{X}_{\text{ref}}^{\text{sq}} = h\,\mathbf{I}$ with $h = a_0 / (4/3)^{1/4}$ so that the unit-cell area is normalized to $1$. Under the hexagonal mapping
+\begin{equation}
+  \mathbf{F}_{\text{hex}} = \left(\frac{4}{3}\right)^{1/4}
+  \begin{pmatrix}
+    1 & 1/2 \\
+    0 & \sqrt{3}/2
+  \end{pmatrix},
+  \qquad
+  \mathbf{C}_{\text{ref}} = \mathbf{F}_{\text{hex}}\T \mathbf{F}_{\text{hex}}
+  = \frac{2}{\sqrt{3}}
+  \begin{pmatrix}
+    1 & 1/2 \\
+    1/2 & 1
+  \end{pmatrix},
+\end{equation}
+the unit square $[0,h]\times[0,h]$ shears into a $60^\circ$ rhombus consisting of:
+\begin{itemize}[noitemsep]
+  \item The \textbf{lower-left half-square $\hat{\mathcal{T}}_+$ ($\mathbf{R}_0 = +\mathbf{I}$)}, which maps to the ``up'' equilateral triangle ($\triangle$).
+  \item The \textbf{upper-right half-square $\hat{\mathcal{T}}_-$ ($\mathbf{R}_2 = -\mathbf{I}$)}, which maps to the ``down'' equilateral triangle ($\triangledown$).
+\end{itemize}
+Consequently, for any triangle in an undeformed triangular lattice (rotated by $\theta_0$), its raw deformation gradient measured against $\mathbf{X}_{\text{ref}}^{\text{sq}}$ is
+\begin{equation}
+  \mathbf{F} = \pm\,\mathbf{R}(\theta_0)\,\mathbf{F}_{\text{hex}}\,\mathbf{M}_p^{-1},
+  \qquad p \in \{0, 1, 2\},
+\end{equation}
+where $+1$ ($\mathbf{R}_0$) corresponds to $\triangle$ and $-1$ ($\mathbf{R}_2$) corresponds to $\triangledown$. Multiplying on the right by $\mathbf{M}_p\,\mathbf{R}_r\T$ with $r \in \{0, 2\}$ (so $\mathbf{R}_r\T = \pm\mathbf{I}$) immediately restores $\mathbf{F}\,\mathbf{M}_p\,\mathbf{R}_r\T = +\mathbf{R}(\theta_0)\,\mathbf{F}_{\text{hex}}$ for every single $\triangle$ and $\triangledown$ triangle in the mesh! (Note that $r \in \{1, 3\}$ corresponds to pairing the two $60^\circ$ edges with a $90^\circ$ rotation of the square reference axes, which flips the sign of $F_{12}$ to the obtuse $-1/2$ well.)
+
+\subsection{Mode 2B: Triangular Lattice in the Native Equilateral Reference Frame (\code{ReferenceFrame::Triangular}, \code{--triangular-reference=1})}
+When \code{--triangular-reference=1} is enabled, the canonical parent triangle in \code{make\_reference\_setup} is the equilateral triangle with vertices $p_1=(0,0)$, $p_2=(a_0,0)$, $p_3=(\tfrac{1}{2}a_0, \tfrac{\sqrt{3}}{2}a_0)$:
+\begin{equation}
+  \mathbf{X}_{\text{ref}}^{\text{tri}} = a_0
+  \begin{pmatrix}
+    1 & 1/2 \\
+    0 & \sqrt{3}/2
+  \end{pmatrix},
+  \qquad
+  \mathbf{C}_{\text{ref}} = \mathbf{I},
+  \qquad
+  \mathbf{F}_0 = \mathbf{I}.
+\end{equation}
+Because the reference triangle $\mathbf{X}_{\text{ref}}^{\text{tri}}$ is itself equilateral, the 3 cyclic CCW vertex shifts $\mathbf{M}_p$ and the $\triangle / \triangledown$ sign flip $\pm\mathbf{I}$ conjugate into \textbf{exact $60^\circ$ orthogonal rotations} in the equilateral reference frame:
+\begin{equation}
+  \pm\,\mathbf{X}_{\text{ref}}^{\text{tri}}\,\mathbf{M}_p\,(\mathbf{X}_{\text{ref}}^{\text{tri}})^{-1}
+  = \mathbf{R}(k \cdot 60^\circ)
+  = \begin{pmatrix}
+    \cos(k\pi/3) & -\sin(k\pi/3) \\
+    \sin(k\pi/3) & \cos(k\pi/3)
+  \end{pmatrix},
+  \qquad k \in \{0, 1, 2, 3, 4, 5\}.
+\end{equation}
+Therefore, in \code{ReferenceFrame::Triangular}, the raw deformation gradient of an undeformed element is $\mathbf{F} = \mathbf{R}(\theta_0)\,\mathbf{R}(k \cdot 60^\circ)$, and aligning $\mathbf{F}$ simply tests the 6 hexagonal rotations $k \in \{0, 1, 2, 3, 4, 5\}$:
+\begin{equation}
+  \boxed{
+  \mathbf{F}_{\text{aligned}}^{\text{(TriRef)}}
+  = \operatorname*{arg\,min}_{k \in \{0,1,2,3,4,5\}}
+  \left\| \mathbf{F}\,\mathbf{R}(k \cdot 60^\circ)\T - \mathbf{R}(\theta_0) \right\|_F^2.
+  }
+  \label{eq:f_aligned_tri_ref}
+\end{equation}
+
+% ============================================================================
+\section{Unified Formula in $\Z^2$ Reference Mode and Summary Comparison}
+% ============================================================================
+
+In the default $\Z^2$ square-reference mode (\code{ReferenceFrame::SquareZ2}), a crystal in the Zanzotto potential can contain both square and triangular (hexagonal) phases simultaneously (as well as heavily sheared dislocation cores). We therefore use a \textbf{single unified formula} in \code{ReferenceFrame::SquareZ2} that aligns both square and triangular lattices without branching on lattice type.
 
 In the Lagrange fundamental domain $0 \le 2\,C_{12} \le C_{11} \le C_{22}$:
 \begin{itemize}[noitemsep]
   \item The \textbf{square phase} sits at the left boundary $F_{12} = 0$: $\mathbf{F}_{\text{sq}} = \begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix}$.
-  \item The \textbf{triangular (hexagonal) phase} sits at the right boundary $F_{12} = +\tfrac{1}{2}a_0$: $\mathbf{F}_{\text{tri}} = a_0\begin{pmatrix} 1 & +1/2 \\ 0 & \sqrt{3}/2 \end{pmatrix}$.
+  \item The \textbf{triangular (hexagonal) phase} sits at the right boundary $F_{12} = +\tfrac{1}{2}s_0$: $\mathbf{F}_{\text{hex}} = s_0\begin{pmatrix} 1 & +1/2 \\ 0 & \sqrt{3}/2 \end{pmatrix}$.
 \end{itemize}
 By placing the target reference matrix $\mathbf{F}_{\text{target}}$ at the \textbf{midpoint} ($F_{12} = 1/4$) of the fundamental domain between the square and triangular wells,
 \begin{equation}
@@ -275,7 +430,7 @@ By placing the target reference matrix $\mathbf{F}_{\text{target}}$ at the \text
     \sin\theta_0 & \cos\theta_0
   \end{pmatrix},
 \end{equation}
-both the square phase ($F_{12}=0$) and the triangular phase ($F_{12}=+1/2$) are at distance $\approx 1/4$ from $\mathbf{F}_{\text{target}}$, while the reflected obtuse triangular orientation ($F_{12}=-1/2$) and unaligned square orientations ($F_{12}=\pm 1$) are at distance $\ge 3/4$.
+both the square phase ($F_{12}=0$) and the acute triangular phase ($F_{12} \approx +1/2$) are at distance $\approx 1/4$ from $\mathbf{F}_{\text{target}}$, while the reflected obtuse triangular orientation ($F_{12} \approx -1/2$, $r \in \{1,3\}$) and unaligned square orientations ($F_{12}=\pm 1$) are at distance $\ge 3/4$.
 
 Combining the $3$ cyclic triangle vertex permutations $\mathbf{M}_p$ ($p \in \{0,1,2\}$) with the $4$ discrete $90^\circ$ reference rotations $\mathbf{R}_r \in SL(2,\Z)$,
 \begin{equation}
@@ -284,25 +439,50 @@ Combining the $3$ cyclic triangle vertex permutations $\mathbf{M}_p$ ($p \in \{0
   \mathbf{R}_2 = \begin{pmatrix} -1 & 0 \\ 0 & -1 \end{pmatrix}, \quad
   \mathbf{R}_3 = \begin{pmatrix} 0 & 1 \\ -1 & 0 \end{pmatrix},
 \end{equation}
-yields the single formula used for all elements:
+yields the unified $\Z^2$-reference formula used for both square and triangular lattices:
 \begin{equation}
   \boxed{
-  \mathbf{F}_{\text{aligned}} = \operatorname*{arg\,min}_{\substack{p \in \{0,1,2\} \\ r \in \{0,1,2,3\}}}
-  \left\| \mathbf{F}\,\mathbf{M}_p\,\mathbf{R}_r\T - \mathbf{F}_{\text{target}} \right\|_F^2
+  \mathbf{F}_{\text{aligned}}^{\text{(SquareZ2)}} = \operatorname*{arg\,min}_{\substack{p \in \{0,1,2\} \\ r \in \{0,1,2,3\}}}
+  \left\| \mathbf{F}\,\mathbf{M}_p\,\mathbf{R}_r\T - \mathbf{F}_{\text{target}} \right\|_F^2.
   }
   \label{eq:f_aligned_sq}
 \end{equation}
-where $\|\mathbf{A}\|_F^2 = \operatorname{tr}(\mathbf{A}\T\mathbf{A}) = \sum_{i,j} A_{ij}^2$ is the squared Frobenius norm (\code{.squaredNorm()} in Eigen).
+
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.35}
+\small
+\begin{tabular}{@{}p{3.4cm}p{3.6cm}p{4.3cm}p{3.5cm}@{}}
+\toprule
+\textbf{Lattice \& Mode} & \textbf{Parent Reference $\mathbf{X}_{\text{ref}}$} & \textbf{Candidate Transformations} & \textbf{Aligned Undeformed $\mathbf{F}_{\text{aligned}}$} \\
+\midrule
+\textbf{Square Lattice}\newline (\code{SquareZ2}) &
+Right triangle\newline $h\,\mathbf{I}$ &
+$12$ candidates in $SL(2,\Z)$:\newline $\mathbf{F}\,\mathbf{M}_p\,\mathbf{R}_r\T$ ($p\in\{0..2\},\, r\in\{0..3\}$) &
+$\mathbf{R}(\theta_0)\,\mathbf{I}$ \\[6pt]
+\textbf{Triangular Lattice}\newline (\code{SquareZ2}, default) &
+Right triangle\newline $h\,\mathbf{I}$, $h = a_0/(4/3)^{1/4}$ &
+Same $12$ candidates in $SL(2,\Z)$\newline (acute $\triangle/\triangledown$ select $r\in\{0,2\}$) &
+$\mathbf{R}(\theta_0)\,\mathbf{F}_{\text{hex}}$ \\[6pt]
+\textbf{Triangular Lattice}\newline (\code{Triangular}, \code{--triangular-reference=1}) &
+Equilateral triangle\newline $a_0\begin{pmatrix} 1 & 1/2 \\ 0 & \sqrt{3}/2 \end{pmatrix}$ &
+$6$ hexagonal rotations in $SO(2)$:\newline $\mathbf{F}\,\mathbf{R}(k\cdot 60^\circ)\T$ ($k\in\{0..5\}$) &
+$\mathbf{R}(\theta_0)\,\mathbf{I}$ \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of the $\mathbf{F}_{\text{aligned}}$ calculation across the Square Lattice and the two Triangular Lattice reference-frame modes in \code{computeAlignedDeformationGradient} (\code{src/configuration\_saver.cpp}).}
+\label{tab:summary_modes}
+\end{table}
 
 % ============================================================================
 \section{Why Nothing Downstream Needs to Change Once $\mathbf{F}_{\text{aligned}}$ is Found}
 % ============================================================================
 
 \begin{keyidea}[Drop-In Replacement Property]
-Because $\mathbf{F}_{\text{aligned}} = \mathbf{F}\mathbf{N}$ with $\mathbf{N} \in SL(2,\Z)$ ($\det\mathbf{N} = +1$), $\mathbf{F}_{\text{aligned}}$ belongs to the \textbf{exact same $GL(2,\Z)$ lattice equivalence class} as $\mathbf{F}$. Therefore, replacing $\mathbf{F}$ by $\mathbf{F}_{\text{aligned}}$ at the very start of the stress routine leaves the reduced metric $\mathbf{C}_{\text{red}}$, the strain energy $W$, and the Cauchy stress $\boldsymbol{\sigma}$ mathematically unchanged, while automatically aligning the First Piola--Kirchhoff stress $\mathbf{P}_{\text{aligned}}$ and Projected Stress $\tau_{\text{aligned}}$.
+Because $\mathbf{F}_{\text{aligned}} = \mathbf{F}\mathbf{N}$ where $\mathbf{N} \in SL(2,\Z)$ (in \code{SquareZ2} mode) or $\mathbf{N} = \mathbf{R}(k\cdot 60^\circ)\T$ (a point-group symmetry of the triangular lattice in \code{Triangular} mode), $\mathbf{F}_{\text{aligned}}$ belongs to the \textbf{exact same lattice symmetry equivalence class} as $\mathbf{F}$. Therefore, replacing $\mathbf{F}$ by $\mathbf{F}_{\text{aligned}}$ at the very start of the stress routine leaves the reduced metric $\mathbf{C}_{\text{red}}$, the strain energy $W$, and the Cauchy stress $\boldsymbol{\sigma}$ mathematically unchanged, while automatically aligning the First Piola--Kirchhoff stress $\mathbf{P}_{\text{aligned}}$ and Projected Stress $\tau_{\text{aligned}}$.
 \end{keyidea}
 
-Once $\mathbf{F}_{\text{aligned}}$ is computed via Eq.~\eqref{eq:f_aligned_sq}, the existing stress pipeline proceeds verbatim:
+Once $\mathbf{F}_{\text{aligned}}$ is computed via Eq.~\eqref{eq:f_aligned_tri_ref} or Eq.~\eqref{eq:f_aligned_sq}, the existing stress pipeline proceeds verbatim:
 
 \begin{enumerate}
   \item \textbf{Aligned Right Cauchy--Green Metric Tensor}:
@@ -313,11 +493,11 @@ Once $\mathbf{F}_{\text{aligned}}$ is computed via Eq.~\eqref{eq:f_aligned_sq}, 
   \end{equation}
 
   \item \textbf{Lagrange Reduction to the Fundamental Domain}:
-  Applying \code{lagrange::reduce}$(\mathbf{C}_{\text{aligned}})$ finds the unimodular reduction matrix $\mathbf{M} \in GL(2,\Z)$ that maps $\mathbf{C}_{\text{aligned}}$ into the unique Lagrange-reduced metric $\mathbf{C}_{\text{red}}$:
+  In \code{SquareZ2} mode, applying \code{lagrange::reduce}$(\mathbf{C}_{\text{aligned}})$ finds the unimodular reduction matrix $\mathbf{M} \in GL(2,\Z)$ that maps $\mathbf{C}_{\text{aligned}}$ into the unique Lagrange-reduced metric $\mathbf{C}_{\text{red}}$:
   \begin{equation}
     \mathbf{C}_{\text{red}} = \mathbf{M}\T \mathbf{C}_{\text{aligned}} \mathbf{M}.
   \end{equation}
-  For bulk elastic elements, $\mathbf{C}_{\text{aligned}}$ is already in the fundamental domain, so $\mathbf{M} = \mathbf{I}$. For plastically slipped elements (or elements at dislocation cores), $\mathbf{M}$ automatically strips the plastic lattice shear!
+  For bulk elastic elements, $\mathbf{C}_{\text{aligned}}$ is already in the fundamental domain, so $\mathbf{M} = \mathbf{I}$. For plastically slipped elements (or elements at dislocation cores), $\mathbf{M}$ automatically strips the plastic lattice shear! (In \code{Triangular} reference mode without Lagrange reduction, $\mathbf{M} = \mathbf{I}$ and $\mathbf{C}_{\text{red}} = \mathbf{C}_{\text{aligned}}$.)
 
   \item \textbf{Constitutive Energy Derivative}:
   \begin{equation}
@@ -358,20 +538,18 @@ Once $\mathbf{F}_{\text{aligned}}$ is computed via Eq.~\eqref{eq:f_aligned_sq}, 
 \end{enumerate}
 
 % ============================================================================
-\section{Worked Numerical Examples from Simulation}
+\section{Worked Numerical Examples for Square and Triangular Lattices}
 % ============================================================================
 
-The tables below show actual element tensors extracted from a $100 \times 100$ square-lattice simulation (\code{checkpoint\_00007.chk} at external stretch $\alpha = 0.1419$).
-
-\subsection{Example 1: Alternating Bulk Elements (\code{Element 0} vs.\ \code{Element 1})}
-\code{Element 0} is a lower-left triangle ($\triangle$) whose CGAL vertex order shifted its columns by $\mathbf{M}_2$, while \code{Element 1} is the adjacent upper-right triangle ($\triangledown$) with opposite orientation:
+\subsection{Square Lattice Example 1: Alternating Bulk Elements (\code{Element 0} vs.\ \code{Element 1})}
+The table below shows actual element tensors extracted from a $100 \times 100$ square-lattice simulation (\code{checkpoint\_00007.chk} at external stretch $\alpha = 0.1419$). \code{Element 0} is a lower-left triangle ($\triangle$) whose CGAL vertex order shifted its columns by $\mathbf{M}_2$, while \code{Element 1} is the adjacent upper-right triangle ($\triangledown$) with opposite orientation:
 
 \begin{center}
 \renewcommand{\arraystretch}{1.35}
 \small
 \begin{tabular}{@{}lll@{}}
 \toprule
-\textbf{Quantity} & \textbf{Element 0 (Bulk $\triangle$)} & \textbf{Element 1 (Bulk $\triangledown$)} \\
+\textbf{Quantity} & \textbf{Element 0 (Square Bulk $\triangle$)} & \textbf{Element 1 (Square Bulk $\triangledown$)} \\
 \midrule
 Raw $\mathbf{F}$ &
 $\begin{pmatrix} -1.15035 & -0.00011 \\ 0.00010 & 0.86927 \end{pmatrix}$ &
@@ -401,7 +579,7 @@ Notice two key facts in this table:
   \item With $\mathbf{F}_{\text{aligned}}$, both elements have $\mathbf{F}_{\text{aligned}} \approx \operatorname{diag}(1.150, 0.869)$, $\mathbf{P}_{\text{aligned}} \approx \operatorname{diag}(-0.391, -0.506)$ with consistent sign across the entire mesh, and $\boldsymbol{\sigma}_{\text{aligned}} \equiv \boldsymbol{\sigma}$ to machine precision.
 \end{itemize}
 
-\subsection{Example 2: Plastically Slipped Elements (\code{Element 16328} and \code{Element 16126})}
+\subsection{Square Lattice Example 2: Plastically Slipped Elements (\code{Element 16328} and \code{Element 16126})}
 For triangles that have undergone a plastic slip or sit next to a dislocation core, $\mathbf{F}_{\text{aligned}}$ removes the arbitrary CGAL vertex permutation while Lagrange reduction ($\mathbf{M}$ in Eq.~\eqref{eq:P_aligned}) reduces the slipped metric back to the fundamental elastic domain:
 
 \begin{center}
@@ -432,5 +610,44 @@ $\begin{pmatrix} -0.42703 & -0.02985 \\ -0.02985 & -0.44042 \end{pmatrix}$ \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\subsection{Triangular Lattice Example: All 6 Mesh Orientations ($\triangle / \triangledown \times 3$ Cyclic Shifts)}
+Consider a triangular lattice under simple shear $\mathbf{F}_{\text{ext}}(\alpha) = \begin{pmatrix} 1 & \alpha \\ 0 & 1 \end{pmatrix}$ with $\alpha = 0.05$. Depending on whether CGAL picks corner $0, 1,$ or $2$ as $v_0$ and whether the element is an ``up'' ($\triangle$) or ``down'' ($\triangledown$) triangle, the raw deformation gradient $\mathbf{F}$ takes 6 completely different matrix forms, whereas $\mathbf{F}_{\text{aligned}}$ collapses all 6 to the exact same matrix:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.35}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Triangle \& CGAL $v_0$} & \textbf{Raw $\mathbf{F}$ in \code{SquareZ2} Mode} & \textbf{Winning $(p^*, r^*)$} & \textbf{Aligned $\mathbf{F}_{\text{aligned}}$ (\code{SquareZ2})} \\
+\midrule
+$\triangle$, corner $0$ ($0^\circ$) &
+$s_0\begin{pmatrix} 1 & 0.5 + 0.866\alpha \\ 0 & 0.866 \end{pmatrix}$ &
+$\mathbf{M}_0\,\mathbf{R}_0\T$ &
+$s_0\begin{pmatrix} 1 & 0.5 + 0.866\alpha \\ 0 & 0.866 \end{pmatrix}$ \\[8pt]
+$\triangle$, corner $1$ ($120^\circ$) &
+$s_0\begin{pmatrix} -0.5 + 0.866\alpha & -1 \\ 0.866 & 0 \end{pmatrix}$ &
+$\mathbf{M}_2\,\mathbf{R}_0\T$ &
+$s_0\begin{pmatrix} 1 & 0.5 + 0.866\alpha \\ 0 & 0.866 \end{pmatrix}$ \\[8pt]
+$\triangle$, corner $2$ ($240^\circ$) &
+$s_0\begin{pmatrix} -0.5 - 0.866\alpha & 0.5 - 0.866\alpha \\ -0.866 & -0.866 \end{pmatrix}$ &
+$\mathbf{M}_1\,\mathbf{R}_0\T$ &
+$s_0\begin{pmatrix} 1 & 0.5 + 0.866\alpha \\ 0 & 0.866 \end{pmatrix}$ \\[8pt]
+$\triangledown$, corner $0$ ($180^\circ$) &
+$s_0\begin{pmatrix} -1 & -0.5 - 0.866\alpha \\ 0 & -0.866 \end{pmatrix}$ &
+$\mathbf{M}_0\,\mathbf{R}_2\T$ &
+$s_0\begin{pmatrix} 1 & 0.5 + 0.866\alpha \\ 0 & 0.866 \end{pmatrix}$ \\[8pt]
+$\triangledown$, corner $1$ ($300^\circ$) &
+$s_0\begin{pmatrix} 0.5 - 0.866\alpha & 1 \\ -0.866 & 0 \end{pmatrix}$ &
+$\mathbf{M}_2\,\mathbf{R}_2\T$ &
+$s_0\begin{pmatrix} 1 & 0.5 + 0.866\alpha \\ 0 & 0.866 \end{pmatrix}$ \\[8pt]
+$\triangledown$, corner $2$ ($60^\circ$) &
+$s_0\begin{pmatrix} 0.5 + 0.866\alpha & -0.5 + 0.866\alpha \\ 0.866 & 0.866 \end{pmatrix}$ &
+$\mathbf{M}_1\,\mathbf{R}_2\T$ &
+$s_0\begin{pmatrix} 1 & 0.5 + 0.866\alpha \\ 0 & 0.866 \end{pmatrix}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+where $s_0 = (4/3)^{1/4} \approx 1.07457$. Similarly, in \code{ReferenceFrame::Triangular} (\code{--triangular-reference=1}), the 6 raw element deformation gradients $\mathbf{F} = \mathbf{F}_{\text{ext}}(\alpha)\,\mathbf{R}(k\cdot 60^\circ)$ are right-multiplied by $\mathbf{R}(k^*\cdot 60^\circ)\T$, collapsing all 6 orientations onto the single aligned deformation gradient $\mathbf{F}_{\text{aligned}} = \mathbf{F}_{\text{ext}}(\alpha) = \begin{pmatrix} 1 & \alpha \\ 0 & 1 \end{pmatrix}$ and producing a uniform First Piola--Kirchhoff stress $\mathbf{P}_{\text{aligned}}$ across every $\triangle$ and $\triangledown$ triangle in the mesh.
 
 \end{document}
