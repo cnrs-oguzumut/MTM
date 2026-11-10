@@ -239,14 +239,13 @@ public struct InitialLatticeVisualizerView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 // View Mode Picker (1x1 vs 3x3)
-                Picker("", selection: $viewMode) {
-                    ForEach(InitialMeshViewMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .fixedSize()
+                BlueHourSegmentedPicker(
+                    selection: $viewMode,
+                    items: InitialMeshViewMode.allCases.map { mode in
+                        BlueHourTabItem(mode, title: mode.rawValue)
+                    },
+                    scale: .compact
+                )
                 
                 Divider().frame(height: 18)
                 

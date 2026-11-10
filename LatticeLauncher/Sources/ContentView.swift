@@ -105,6 +105,7 @@ struct ContentView: View {
     @State private var workspace: WorkspaceMode = .specimen
     @State private var specimenSub: SpecimenSubView = .blueprint
     @State private var resultsSub: ResultsSubView = .curves
+    @State private var snapshotFileCount: Int = 0
     /// Volterra load runs: show the α curves (core glide, stress) instead of the core profiles
     @State private var volterraShowsLoadCurve: Bool = true
     @State private var inspectorStep: SetupInspectorStep = .crystal
@@ -201,11 +202,23 @@ struct ContentView: View {
         previewManager.generateInitialMeshPreview()
     }
     
+    private func refreshSnapshotCount() {
+        let baseDir = (!runner.outputDirectory.isEmpty && FileManager.default.fileExists(atPath: runner.outputDirectory))
+            ? runner.outputDirectory
+            : config.targetDirectory
+        let vtkDir = (baseDir as NSString).appendingPathComponent("vtk_output")
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: vtkDir) else {
+            snapshotFileCount = 0
+            return
+        }
+        snapshotFileCount = names.filter { $0.hasPrefix("configuration_") && $0.lowercased().hasSuffix(".vtk") }.count
+    }
+
     // MARK: Top Bar
     
     private var globalTopHeaderBar: some View {
         HStack(spacing: 12) {
-            // Left: module selector (compact menu instead of 3 big tabs)
+            // Left: module selector styled as a clear interactive pill menu
             Menu {
                 ForEach(AppNavigationTab.allCases) { tab in
                     Button(action: { appTab = tab }) {
@@ -213,25 +226,57 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                Label(appTab.rawValue, systemImage: appTab.icon)
-                    .font(.system(size: 12, weight: .semibold))
+                HStack(spacing: 6) {
+                    Image(systemName: appTab.icon)
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundColor(BlueHour.activeTabBorder)
+                    Text(appTab.rawValue)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(BlueHour.ice)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(BlueHour.mist)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(BlueHour.controlSurface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(BlueHour.steel.opacity(0.55), lineWidth: 1)
+                )
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Switch tool: Lattice Simulation, Parametric Acoustic Study or Stiffness Spectrum K(α)")
+            .help("Switch active module: Lattice Simulation, Parametric Acoustic Study, or Stiffness Spectrum K(α)")
             
             Spacer(minLength: 8)
             
-            // Center: the ONE viewport switcher
+            // Center: high-contrast primary workspace switcher
             if appTab == .simulation {
-                Picker("Workspace", selection: $workspace) {
-                    ForEach(WorkspaceMode.allCases) { mode in
-                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .fixedSize()
+                BlueHourSegmentedPicker(
+                    selection: $workspace,
+                    items: WorkspaceMode.allCases.map { mode in
+                        let hasResultsDot: Color? = {
+                            guard mode == .results else { return nil }
+                            if runner.status.isRunning { return .green }
+                            if !runner.curvePoints.isEmpty || !runner.gbEnergyPoints.isEmpty {
+                                return BlueHour.activeTabBorder
+                            }
+                            return nil
+                        }()
+                        return BlueHourTabItem(
+                            mode,
+                            title: mode.rawValue,
+                            icon: mode.icon,
+                            liveDotColor: hasResultsDot,
+                            helpText: "Switch viewport to \(mode.rawValue)"
+                        )
+                    },
+                    scale: .prominent
+                )
             }
             
             Spacer(minLength: 8)
@@ -284,15 +329,13 @@ struct ContentView: View {
                 Text("Specimen")
                     .font(.system(size: 11.5, weight: .bold))
                     .foregroundColor(BlueHour.ice)
-                Picker("View", selection: $specimenSub) {
-                    ForEach(SpecimenSubView.allCases) { sub in
-                        Label(sub.rawValue, systemImage: sub.icon).tag(sub)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .fixedSize()
+                BlueHourSegmentedPicker(
+                    selection: $specimenSub,
+                    items: SpecimenSubView.allCases.map { sub in
+                        BlueHourTabItem(sub, title: sub.rawValue, icon: sub.icon)
+                    },
+                    scale: .compact
+                )
                 
                 if specimenSub == .femMesh {
                     Button(action: refreshMeshPreview) {
@@ -302,6 +345,7 @@ struct ContentView: View {
                             Label("Regenerate Mesh", systemImage: "arrow.clockwise")
                         }
                     }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Re-mesh using the current crystal, shape and BC settings")
                 }
@@ -311,7 +355,7 @@ struct ContentView: View {
                     .foregroundColor(BlueHour.mist)
             }
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: 36)
             .background(BlueHour.controlSurface)
             
             Divider()
@@ -342,20 +386,30 @@ struct ContentView: View {
                 Text("Results")
                     .font(.system(size: 11.5, weight: .bold))
                     .foregroundColor(BlueHour.ice)
-                Picker("Results view", selection: $resultsSub) {
-                    Label("Curves", systemImage: "chart.xyaxis.line").tag(ResultsSubView.curves)
-                    Label("Snapshots", systemImage: "cube.transparent").tag(ResultsSubView.snapshots)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .fixedSize()
+                BlueHourSegmentedPicker(
+                    selection: $resultsSub,
+                    items: [
+                        BlueHourTabItem(.curves, title: "Curves", icon: "chart.xyaxis.line", helpText: "Live mechanical & stability curves"),
+                        BlueHourTabItem(
+                            .snapshots,
+                            title: "Snapshots",
+                            icon: "cube.transparent",
+                            badge: snapshotFileCount > 0 ? "\(snapshotFileCount)" : nil,
+                            helpText: "Built-in VTK mesh & field snapshot viewer"
+                        )
+                    ],
+                    scale: .compact
+                )
                 Divider().frame(height: 18)
                 LiveStatusHeaderView(config: config)
             }
             .padding(.horizontal, 12)
             .frame(height: 44)
             .background(BlueHour.controlSurface)
+            .onAppear { refreshSnapshotCount() }
+            .onChange(of: runner.outputDirectory) { _, _ in refreshSnapshotCount() }
+            .onChange(of: runner.status.isRunning) { _, _ in refreshSnapshotCount() }
+            .onChange(of: resultsSub) { _, _ in refreshSnapshotCount() }
             Divider()
             if resultsSub == .snapshots {
                 let effectiveSnapDir = (!runner.outputDirectory.isEmpty && FileManager.default.fileExists(atPath: runner.outputDirectory))
@@ -365,18 +419,19 @@ struct ContentView: View {
             } else if config.mode == .volterra {
                 if config.cylinderLoadMode != .none || runner.curvePoints.contains(where: { $0.coreShift != nil }) {
                     HStack {
-                        Picker("Volterra results", selection: $volterraShowsLoadCurve) {
-                            Text("Load Curve: Core Glide / σ vs α").tag(true)
-                            Text("Core Profiles E(r), σ(r)").tag(false)
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .controlSize(.small)
-                        .fixedSize()
+                        BlueHourSegmentedPicker(
+                            selection: $volterraShowsLoadCurve,
+                            items: [
+                                BlueHourTabItem(true, title: "Load Curve: Core Glide / σ vs α", icon: "chart.xyaxis.line"),
+                                BlueHourTabItem(false, title: "Core Profiles E(r), σ(r)", icon: "waveform.path.ecg")
+                            ],
+                            scale: .compact
+                        )
                         Spacer()
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
+                    .background(BlueHour.controlSurface.opacity(0.65))
                     Divider()
                     if volterraShowsLoadCurve {
                         StressStrainChartView()
@@ -677,14 +732,10 @@ struct SidebarControlsView: View {
                     case .shapeAndBCs:
                         if config.mode == .volterra {
                             stepNotApplicableNote(
-                                "Shape & boundary conditions are fixed by the selected loading mode (\(config.mode.displayName)). Switch the loading mode in step 2 to carve a custom specimen."
+                                "Shape & boundary conditions are fixed by the selected loading mode (\(config.mode.displayName)). Switch the loading mode in 2 Protocol to carve a custom specimen."
                             )
                         } else if config.mode == .shift {
-                            boundaryAndLoadingSelectorCard
-                            stepNotApplicableNote(
-                                "Staircase Shift uses fixed support along the left & bottom edges with alternating horizontal (upper-left) and vertical (lower-right) block shifts configured in 2 Protocol."
-                            )
-                            protocolScheduleCard
+                            staircaseShiftBCCard
                         } else {
                             boundaryAndLoadingSelectorCard
                             specimenShapeCard
@@ -796,6 +847,64 @@ struct SidebarControlsView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(BlueHour.pillSurface, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var staircaseShiftBCCard: some View {
+        GroupBox(label: Label("Staircase Shift Boundary Conditions", systemImage: "stairs")) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundColor(BlueHour.activeTabBorder)
+                        .font(.caption)
+                    Text("Dedicated Block-Shift Kinematics Active")
+                        .font(.caption.bold())
+                        .foregroundColor(BlueHour.ice)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Left & bottom outer edges are supported (fixed anchor walls).", systemImage: "pin.fill")
+                        .font(.caption)
+                        .foregroundColor(BlueHour.mist)
+                    Label("Upper-left window shifts horizontally (+du_x) and lower-right window pushes vertically (+du_y) in alternating steps.", systemImage: "arrow.up.and.right")
+                        .font(.caption)
+                        .foregroundColor(BlueHour.mist)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Label("Active schedule: \(config.shiftTotalSteps) steps up to \(String(format: "%g", config.shiftAmplitude)) a₀ (|du| = \(String(format: "%g", abs(config.shiftStepSize))) a₀).", systemImage: "clock.arrow.2.circlepath")
+                        .font(.caption)
+                        .foregroundColor(BlueHour.ice)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(BlueHour.tabTrack.opacity(0.75), in: RoundedRectangle(cornerRadius: 7))
+
+                HStack(spacing: 8) {
+                    Button {
+                        inspectorStep = .protocolAndSchedule
+                    } label: {
+                        Label("Edit Shift Schedule (2 Protocol)", systemImage: "slider.horizontal.3")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+
+                Divider()
+
+                HStack {
+                    Text("Want 2D Periodic or custom surface grips instead?")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Switch Mode") {
+                        config.mode = .positive
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+            }
+            .padding(8)
+        }
     }
     
     @ViewBuilder
@@ -1100,14 +1209,13 @@ struct SidebarControlsView: View {
                             HStack {
                                 Text("Load:")
                                     .font(.subheadline)
-                                Picker("", selection: $config.cylinderLoadMode) {
-                                    ForEach(CylinderLoadMode.allCases) { m in
-                                        Text(m.displayName).tag(m)
-                                    }
-                                }
-                                .pickerStyle(.segmented)
-                                .labelsHidden()
-                                .fixedSize() // natural width: a flexible segmented control re-lays out on every redraw
+                                BlueHourSegmentedPicker(
+                                    selection: $config.cylinderLoadMode,
+                                    items: CylinderLoadMode.allCases.map { m in
+                                        BlueHourTabItem(m, title: m.displayName)
+                                    },
+                                    scale: .compact
+                                )
                                 Spacer()
                             }
                             if config.cylinderLoadMode != .none {
@@ -1203,8 +1311,24 @@ struct SidebarControlsView: View {
                             }
                         }
                         
-                        Toggle("Adaptive Remeshing (Delaunay Surgery)", isOn: $config.enableRemeshing)
+                        HStack(spacing: 8) {
+                            Toggle(isOn: $config.enableRemeshing) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Adaptive Remeshing (Delaunay Surgery)")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(BlueHour.ice)
+                                    HStack(spacing: 4) {
+                                        Circle()
+                                            .fill(config.enableRemeshing ? Color.green : Color.orange)
+                                            .frame(width: 6, height: 6)
+                                        Text(config.enableRemeshing ? "Plasticity ON (Edge Flips Active)" : "Elastic Only (Fixed Connectivity — No Slip)")
+                                            .font(.system(size: 9.5, weight: .bold))
+                                            .foregroundColor(config.enableRemeshing ? Color(red: 0.43, green: 0.91, blue: 0.61) : .orange)
+                                    }
+                                }
+                            }
                             .toggleStyle(.switch)
+                        }
                         
                         if config.mode == .shift {
                             Toggle("Perturb Initial Mesh Diagonal (-1e-7)", isOn: $config.shiftPerturbMesh)
@@ -1370,10 +1494,18 @@ struct SidebarControlsView: View {
                             }
                         }
                         
-                        Picker("Symmetry", selection: $config.latticeSymmetry) {
-                            ForEach(LatticeSymmetry.allCases) { sym in
-                                Text(sym.displayName).tag(sym)
-                            }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Lattice Symmetry")
+                                .font(.caption)
+                                .foregroundColor(BlueHour.mist)
+                            BlueHourSegmentedPicker(
+                                selection: $config.latticeSymmetry,
+                                items: LatticeSymmetry.allCases.map { sym in
+                                    BlueHourTabItem(sym, title: sym.displayName, icon: sym == .square ? "square.grid.2x2" : "triangle")
+                                },
+                                scale: .compact,
+                                expandEqually: true
+                            )
                         }
                         
                         if config.potentialMode == .zanzotto {
@@ -1872,13 +2004,26 @@ struct SidebarControlsView: View {
                     }) {
                         VStack(alignment: .leading, spacing: 10) {
                             // 3-Mode Protocol Switcher: 1. Relax Only | 2. Relax -> Load | 3. Sweep Δθ
-                            Picker("Protocol", selection: $config.protocolMode) {
-                                ForEach(SimulationProtocolMode.allCases) { mode in
-                                    Text(mode.shortTitle).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
+                            BlueHourSegmentedPicker(
+                                selection: $config.protocolMode,
+                                items: SimulationProtocolMode.allCases.map { mode in
+                                    let (fill, border): (Color, Color) = {
+                                        switch mode {
+                                        case .relaxOnly:          return (BlueHour.gbTabFill, BlueHour.gbTabBorder)
+                                        case .relaxThenLoad:      return (BlueHour.activeTabFill, BlueHour.activeTabBorder)
+                                        case .sweepMisorientation: return (Color(red: 0.58, green: 0.34, blue: 0.08), Color.orange)
+                                        }
+                                    }()
+                                    return BlueHourTabItem(
+                                        mode,
+                                        title: mode.shortTitle,
+                                        activeFill: fill,
+                                        activeBorder: border
+                                    )
+                                },
+                                scale: .compact,
+                                expandEqually: true
+                            )
                             .onChange(of: config.protocolMode) { newMode in
                                 config.geometryConfig.microstructure.relax_only = (newMode != .relaxThenLoad)
                                 if newMode == .relaxThenLoad {
@@ -2098,13 +2243,15 @@ struct SidebarControlsView: View {
                                             .font(.caption.bold())
                                     }
                                     
-                                    Picker("Sweep Sampling", selection: $config.sweepContinuousMode) {
-                                        Text("Continuous Δθ Grid").tag(true)
-                                        Text("Discrete Σ Catalog").tag(false)
-                                    }
-                                    .pickerStyle(.segmented)
-                                    .labelsHidden()
-                                    .controlSize(.small)
+                                    BlueHourSegmentedPicker(
+                                        selection: $config.sweepContinuousMode,
+                                        items: [
+                                            BlueHourTabItem(true, title: "Continuous Δθ Grid", activeFill: Color(red: 0.58, green: 0.34, blue: 0.08), activeBorder: .orange),
+                                            BlueHourTabItem(false, title: "Discrete Σ Catalog", activeFill: Color(red: 0.58, green: 0.34, blue: 0.08), activeBorder: .orange)
+                                        ],
+                                        scale: .compact,
+                                        expandEqually: true
+                                    )
                                     
                                     HStack {
                                         Text("Half-Angle θ_min (°):")

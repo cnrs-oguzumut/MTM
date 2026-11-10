@@ -33,11 +33,15 @@ public struct StiffnessStudyView: View {
                         // 1. Grid Size (Node Numbers)
                         GroupBox(label: Label("Lattice Grid & Symmetry", systemImage: "grid")) {
                             VStack(alignment: .leading, spacing: 10) {
-                                Picker("Symmetry", selection: $manager.latticeSymmetry) {
-                                    Text("Square").tag(LatticeSymmetry.square)
-                                    Text("Triangular").tag(LatticeSymmetry.triangular)
-                                }
-                                .pickerStyle(.segmented)
+                                BlueHourSegmentedPicker(
+                                    selection: $manager.latticeSymmetry,
+                                    items: [
+                                        BlueHourTabItem(.square, title: "Square", icon: "square.grid.2x2"),
+                                        BlueHourTabItem(.triangular, title: "Triangular", icon: "triangle")
+                                    ],
+                                    scale: .compact,
+                                    expandEqually: true
+                                )
                                 
                                 HStack(spacing: 16) {
                                     HStack {
@@ -69,12 +73,14 @@ public struct StiffnessStudyView: View {
                         // 2. Boundary Conditions
                         GroupBox(label: Label("Boundary Conditions", systemImage: "rectangle.dashed")) {
                             VStack(alignment: .leading, spacing: 8) {
-                                Picker("Boundary Condition", selection: $manager.boundaryCondition) {
-                                    ForEach(BoundaryConditionMode.allCases) { bc in
-                                        Label(bc.displayName, systemImage: bc.icon).tag(bc)
-                                    }
-                                }
-                                .pickerStyle(.segmented)
+                                BlueHourSegmentedPicker(
+                                    selection: $manager.boundaryCondition,
+                                    items: BoundaryConditionMode.allCases.map { bc in
+                                        BlueHourTabItem(bc, title: bc.displayName, icon: bc.icon)
+                                    },
+                                    scale: .compact,
+                                    expandEqually: true
+                                )
                                 
                                 if manager.boundaryCondition == .periodic {
                                     Text("Periodic cell across boundaries. Rigid translations (u_x, u_y) are automatically deflated.")
@@ -414,19 +420,19 @@ public struct StiffnessStudyView: View {
             VStack(spacing: 0) {
                 // Header Bar: Pinned Tab Picker + Horizontally Scrollable Options & Badges
                 HStack(spacing: 10) {
-                    Picker("", selection: $selectedDisplayTab) {
-                        Label("λ_min(α)", systemImage: "chart.xyaxis.line").tag(0)
-                        Label("Energy E(α)", systemImage: "waveform.path.ecg").tag(1)
-                        Label("Split", systemImage: "rectangle.split.2x1").tag(2)
-                        Label("Mode v(α)", systemImage: "scope").tag(5)
-                        Label("Initial Mesh", systemImage: "square.grid.3x3.fill").tag(6)
-                        Label("Table", systemImage: "tablecells").tag(3)
-                        Label("Log", systemImage: "terminal").tag(4)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .fixedSize()
+                    BlueHourSegmentedPicker(
+                        selection: $selectedDisplayTab,
+                        items: [
+                            BlueHourTabItem(0, title: "λ_min(α)", icon: "chart.xyaxis.line", activeFill: BlueHour.eigenTabFill, activeBorder: BlueHour.eigenTabBorder),
+                            BlueHourTabItem(1, title: "Energy E(α)", icon: "waveform.path.ecg", activeFill: BlueHour.energyTabFill, activeBorder: BlueHour.energyTabBorder),
+                            BlueHourTabItem(2, title: "Split", icon: "rectangle.split.2x1"),
+                            BlueHourTabItem(5, title: "Mode v(α)", icon: "scope"),
+                            BlueHourTabItem(6, title: "Initial Mesh", icon: "square.grid.3x3.fill"),
+                            BlueHourTabItem(3, title: "Table", icon: "tablecells"),
+                            BlueHourTabItem(4, title: "Log", icon: "terminal")
+                        ],
+                        scale: .compact
+                    )
                     
                     Divider()
                         .frame(height: 18)

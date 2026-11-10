@@ -1640,13 +1640,13 @@ public struct GeometryBuilderView: View {
                     Text("Symmetry:")
                         .font(.caption.bold())
                     Spacer()
-                    Picker("", selection: $config.latticeSymmetry) {
-                        ForEach(LatticeSymmetry.allCases) { sym in
-                            Text(sym.displayName).tag(sym)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
+                    BlueHourSegmentedPicker(
+                        selection: $config.latticeSymmetry,
+                        items: LatticeSymmetry.allCases.map { sym in
+                            BlueHourTabItem(sym, title: sym.displayName)
+                        },
+                        scale: .compact
+                    )
                 }
                 
                 Toggle(isOn: $config.useRotation) {
@@ -1710,16 +1710,17 @@ public struct GeometryBuilderView: View {
             )
         }) {
             VStack(alignment: .leading, spacing: 8) {
-                Picker("", selection: $config.geometryConfig.microstructure.mode) {
-                    Text("Single Crystal").tag(MicrostructureModeModel.singleCrystal)
-                    Text("Bicrystal (GB)").tag(MicrostructureModeModel.bicrystal)
-                    Text("2D Voronoi").tag(MicrostructureModeModel.voronoi)
-                    Text("Periodic Dislocs").tag(MicrostructureModeModel.periodicDislocations)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .frame(maxWidth: .infinity)
+                BlueHourSegmentedPicker(
+                    selection: $config.geometryConfig.microstructure.mode,
+                    items: [
+                        BlueHourTabItem(.singleCrystal, title: "Single", helpText: "Defect-free single crystal"),
+                        BlueHourTabItem(.bicrystal, title: "Bicrystal", helpText: "Symmetric tilt or general grain boundary"),
+                        BlueHourTabItem(.voronoi, title: "Voronoi", helpText: "2D Voronoi polycrystal or Tri-Crystal"),
+                        BlueHourTabItem(.periodicDislocations, title: "Dislocs", helpText: "Periodic edge dislocation dipoles")
+                    ],
+                    scale: .compact,
+                    expandEqually: true
+                )
                 .onChange(of: config.geometryConfig.microstructure.mode) { newMode in
                     if newMode != .singleCrystal {
                         config.geometryConfig.enabled = true
@@ -3464,14 +3465,17 @@ public struct GeometryBuilderView: View {
                     Text(String(format: "%.3f", cutout.wrappedValue.thickness)).font(.caption2.monospacedDigit())
                 }
             } else if cutout.wrappedValue.type == .edgeNotch {
-                Picker("Edge", selection: cutout.notch_edge) {
-                    Text("Left").tag("left")
-                    Text("Right").tag("right")
-                    Text("Top").tag("top")
-                    Text("Bottom").tag("bottom")
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.mini)
+                BlueHourSegmentedPicker(
+                    selection: cutout.notch_edge,
+                    items: [
+                        BlueHourTabItem("left", title: "Left"),
+                        BlueHourTabItem("right", title: "Right"),
+                        BlueHourTabItem("top", title: "Top"),
+                        BlueHourTabItem("bottom", title: "Bottom")
+                    ],
+                    scale: .compact,
+                    expandEqually: true
+                )
                 
                 HStack {
                     Text("Notch Depth:").font(.caption2)
@@ -3939,33 +3943,35 @@ public struct GeometryBuilderView: View {
                                 HStack(spacing: 6) {
                                     Text("Grip Δu/α:").font(.caption2).foregroundColor(.secondary)
                                     Text("ux:").font(.caption2.bold())
-                                    Picker("", selection: Binding(
-                                        get: { BoundaryZoneRuleModel.snapUnitDirection(rule.ux) },
-                                        set: { rule.ux = $0 }
-                                    )) {
-                                        Text("-1").tag(-1.0)
-                                        Text("0").tag(0.0)
-                                        Text("+1").tag(1.0)
-                                    }
-                                    .pickerStyle(.segmented)
-                                    .labelsHidden()
-                                    .controlSize(.mini)
-                                    .frame(width: 72)
+                                    BlueHourSegmentedPicker(
+                                        selection: Binding(
+                                            get: { BoundaryZoneRuleModel.snapUnitDirection(rule.ux) },
+                                            set: { rule.ux = $0 }
+                                        ),
+                                        items: [
+                                            BlueHourTabItem(-1.0, title: "-1"),
+                                            BlueHourTabItem(0.0, title: "0"),
+                                            BlueHourTabItem(1.0, title: "+1")
+                                        ],
+                                        scale: .micro
+                                    )
+                                    .opacity(rule.lock_x ? 1.0 : 0.45)
                                     .disabled(!rule.lock_x)
 
                                     Text("uy:").font(.caption2.bold())
-                                    Picker("", selection: Binding(
-                                        get: { BoundaryZoneRuleModel.snapUnitDirection(rule.uy) },
-                                        set: { rule.uy = $0 }
-                                    )) {
-                                        Text("-1").tag(-1.0)
-                                        Text("0").tag(0.0)
-                                        Text("+1").tag(1.0)
-                                    }
-                                    .pickerStyle(.segmented)
-                                    .labelsHidden()
-                                    .controlSize(.mini)
-                                    .frame(width: 72)
+                                    BlueHourSegmentedPicker(
+                                        selection: Binding(
+                                            get: { BoundaryZoneRuleModel.snapUnitDirection(rule.uy) },
+                                            set: { rule.uy = $0 }
+                                        ),
+                                        items: [
+                                            BlueHourTabItem(-1.0, title: "-1"),
+                                            BlueHourTabItem(0.0, title: "0"),
+                                            BlueHourTabItem(1.0, title: "+1")
+                                        ],
+                                        scale: .micro
+                                    )
+                                    .opacity(rule.lock_y ? 1.0 : 0.45)
                                     .disabled(!rule.lock_y)
 
                                     Text("Strip (a₀):").font(.caption2)

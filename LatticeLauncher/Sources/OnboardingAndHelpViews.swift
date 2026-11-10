@@ -496,12 +496,14 @@ public struct WelcomeOnboardingSheet: View {
                 
                 Spacer()
                 
-                Picker("", selection: $selectedTab) {
-                    Text("Quick-Start Tour").tag(0)
-                    Text("Sample Experiments (\(SampleExperimentPreset.allCases.count))").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 310)
+                BlueHourSegmentedPicker(
+                    selection: $selectedTab,
+                    items: [
+                        BlueHourTabItem(0, title: "Quick-Start Tour", icon: "sparkles"),
+                        BlueHourTabItem(1, title: "Sample Experiments (\(SampleExperimentPreset.allCases.count))", icon: "flask")
+                    ],
+                    scale: .regular
+                )
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)

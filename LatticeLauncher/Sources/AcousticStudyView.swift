@@ -206,14 +206,13 @@ public struct AcousticStudyView: View {
                                     Text("Active Field:")
                                         .font(.caption)
                                     Spacer()
-                                    Picker("", selection: $manager.colorField) {
-                                        ForEach(ColorFieldMode.allCases) { mode in
-                                            Text(mode.shortLabel).tag(mode)
-                                        }
-                                    }
-                                    .labelsHidden()
-                                    .pickerStyle(.segmented)
-                                    .frame(width: 200)
+                                    BlueHourSegmentedPicker(
+                                        selection: $manager.colorField,
+                                        items: ColorFieldMode.allCases.map { mode in
+                                            BlueHourTabItem(mode, title: mode.shortLabel)
+                                        },
+                                        scale: .compact
+                                    )
                                 }
                                 
                                 Divider()
@@ -447,16 +446,16 @@ public struct AcousticStudyView: View {
                 // Top Header Bar: Pinned View Mode Switcher + Horizontally Scrollable Status & Stats
                 HStack(spacing: 10) {
                     // 1. Pinned View Mode Switcher on the left — never moves or clips
-                    Picker("", selection: $viewMode) {
-                        Label("Poincaré", systemImage: "circle").tag(AcousticViewMode.poincare)
-                        Label("Split", systemImage: "rectangle.split.2x1").tag(AcousticViewMode.split)
-                        Label("Energy E(α)", systemImage: "chart.xyaxis.line").tag(AcousticViewMode.energyPath)
-                        Label("Mode Q(n)", systemImage: "scope").tag(AcousticViewMode.instabilityMode)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .fixedSize()
+                    BlueHourSegmentedPicker(
+                        selection: $viewMode,
+                        items: [
+                            BlueHourTabItem(.poincare, title: "Poincaré", icon: "circle"),
+                            BlueHourTabItem(.split, title: "Split", icon: "rectangle.split.2x1"),
+                            BlueHourTabItem(.energyPath, title: "Energy E(α)", icon: "chart.xyaxis.line"),
+                            BlueHourTabItem(.instabilityMode, title: "Mode Q(n)", icon: "scope")
+                        ],
+                        scale: .compact
+                    )
                     
                     Divider()
                         .frame(height: 18)

@@ -12,7 +12,7 @@ public enum ChartMetricMode: String, CaseIterable, Identifiable {
 
 public enum ChartScaleMode: String, CaseIterable, Identifiable {
     case autoFit = "Auto-Fit"
-    case fullSchedule = "Full α"
+    case fullSchedule = "Full"
     case fromZero = "From 0"
     
     public var id: String { rawValue }
@@ -22,9 +22,9 @@ public enum ChartScaleMode: String, CaseIterable, Identifiable {
         case .autoFit:
             return "Clever Auto-Fit: dynamically zooms to active data range"
         case .fullSchedule:
-            return "Full Schedule: starts at α_start up to α_end"
+            return "Full Schedule: spans the full configured loading schedule"
         case .fromZero:
-            return "Origin at 0: shows strain from 0.0"
+            return "Origin at 0: anchors horizontal axis at 0.0"
         }
     }
 }
@@ -66,20 +66,21 @@ struct StressStrainChartView: View {
     @State private var showYieldLine: Bool = true
     @State private var useInteriorGBGauge: Bool = true
     @State private var showGBSigmaLabels: Bool = true
+    @State private var showStylePopover: Bool = false
     // Line & Point appearance controls
     @State private var showLine: Bool = true
     @State private var showPoints: Bool = false
-    @State private var lineWidth: Double = 2.0
+    @State private var lineWidth: Double = 2.25
     @State private var pointSize: Double = 5.0
     @State private var pointSymbol: ChartPointSymbol = .circle
-    @State private var stressLineColor: Color = .blue
-    @State private var stressPointColor: Color = .blue
-    @State private var energyLineColor: Color = .purple
-    @State private var energyPointColor: Color = .purple
-    @State private var eigenLineColor: Color = .teal
-    @State private var eigenPointColor: Color = .teal
-    @State private var gbLineColor: Color = .green
-    @State private var gbPointColor: Color = .green
+    @State private var stressLineColor: Color = Color(red: 0.25, green: 0.62, blue: 1.00)
+    @State private var stressPointColor: Color = Color(red: 0.35, green: 0.70, blue: 1.00)
+    @State private var energyLineColor: Color = Color(red: 0.72, green: 0.48, blue: 1.00)
+    @State private var energyPointColor: Color = Color(red: 0.78, green: 0.58, blue: 1.00)
+    @State private var eigenLineColor: Color = Color(red: 0.20, green: 0.86, blue: 0.78)
+    @State private var eigenPointColor: Color = Color(red: 0.28, green: 0.92, blue: 0.84)
+    @State private var gbLineColor: Color = Color(red: 0.28, green: 0.85, blue: 0.52)
+    @State private var gbPointColor: Color = Color(red: 0.36, green: 0.90, blue: 0.58)
     /// Force / stress control: plot against the conjugate strain (bursts show as jumps along x)
     @State private var plotAgainstConjugateStrain: Bool = true
     /// Volterra cylinder load: plot against the applied far-field stress σ_xy instead of the load α
@@ -90,6 +91,15 @@ struct StressStrainChartView: View {
     @State private var plotEnthalpy: Bool = false
     /// PBC stress control: λ_min chart shows the free-cell eigenvalue λ_box (true) or the fixed-cell λ_min(K)
     @State private var eigenShowsCell: Bool = true
+
+    private var isShiftMode: Bool {
+        runner.activeConfig?.mode == .shift
+    }
+
+    private var isIndentationMode: Bool {
+        runner.activeConfig?.geometryConfig.indenter.enabled == true ||
+        runner.activeConfig?.geometryConfig.primary_stress_component == "indentation_load"
+    }
 
     private var hasElasticEnergy: Bool {
         runner.curvePoints.contains { $0.elasticEnergy != nil }
@@ -135,8 +145,27 @@ struct StressStrainChartView: View {
         return conjugateStrainAxis ? pt.effectiveStrain : pt.alpha
     }
     private var xAxisLabel: String {
-        corePositionAxis ? "Dislocation Position (x_d / b)"
-            : (appliedStressAxis ? "Applied Stress (σ_xy)" : (conjugateStrainAxis ? "Conjugate Strain (ε)" : "Shear Strain (α)"))
+        if corePositionAxis { return "Dislocation Position (x_d / b)" }
+        if appliedStressAxis { return "Applied Stress (σ_xy)" }
+        if conjugateStrainAxis { return "Conjugate Strain (ε)" }
+        if isShiftMode { return "Block Shift (u / a₀)" }
+        if isIndentationMode { return "Indentation Depth δ (a₀)" }
+        return "Shear Strain (α)"
+    }
+    private var xSymbolShort: String {
+        if chartMode == .gbEnergy { return "Δθ" }
+        if chartMode == .eigenvalue {
+            if eigenStrainAxis { return "ε" }
+            if isShiftMode { return "u/a₀" }
+            if isIndentationMode { return "δ" }
+            return "α"
+        }
+        if corePositionAxis { return "x_d/b" }
+        if appliedStressAxis { return "σ_xy" }
+        if conjugateStrainAxis { return "ε" }
+        if isShiftMode { return "u/a₀" }
+        if isIndentationMode { return "δ" }
+        return "α"
     }
 
     /// PBC stress control: the eigen log carries the free-cell stability λ_box and the strain
@@ -157,10 +186,94 @@ struct StressStrainChartView: View {
         showCellEigen ? pt.isCellUnstable : pt.isUnstable
     }
     private var eigenXLabel: String {
-        eigenStrainAxis ? "Conjugate Strain (ε)" : (hasConjugateStrain ? "Load (α)" : "Shear Strain (α)")
+        if eigenStrainAxis { return "Conjugate Strain (ε)" }
+        if isShiftMode { return "Block Shift (u / a₀)" }
+        if isIndentationMode { return "Indentation Depth δ (a₀)" }
+        return hasConjugateStrain ? "Load (α)" : "Shear Strain (α)"
     }
     private var eigenYLabel: String {
         showCellEigen ? "Cell Eigenvalue (λ_box)" : "Smallest Eigenvalue (λ_min)"
+    }
+
+    private var activeXAxisTitle: String {
+        switch chartMode {
+        case .gbEnergy:   return "Misorientation Angle Δθ (°)"
+        case .eigenvalue: return eigenXLabel
+        case .stress, .energy: return xAxisLabel
+        }
+    }
+
+    private var activeYAxisTitle: String {
+        switch chartMode {
+        case .gbEnergy:
+            return useInteriorGBGauge ? "Interior GB Energy γ_GB (E_int / L_int)" : "Total GB Energy γ_GB (E / L_GB)"
+        case .eigenvalue:
+            return eigenYLabel
+        case .energy:
+            return energyLabel
+        case .stress:
+            if stressComponent == .primary {
+                if isIndentationMode { return "Indentation Load P" }
+                if primaryIsTorque { return "Rim Torque T" }
+                if isShiftMode { return "Shear Stress σ" }
+                return "Primary Stress σ"
+            }
+            return stressComponent.rawValue
+        }
+    }
+
+    private var chartModeTabItems: [BlueHourTabItem<ChartMetricMode>] {
+        let paramSym = isShiftMode ? "u" : (isIndentationMode ? "δ" : "α")
+        let stressTitle = isIndentationMode ? "Load P(δ)" : "Stress σ(\(paramSym))"
+        let energyTitle = "Energy E(\(paramSym))"
+        let eigenTitle  = "λ_min(\(paramSym))"
+        let hasCurve    = !runner.curvePoints.isEmpty
+        let hasEigen    = !runner.eigenPoints.isEmpty
+        let hasGB       = !displayGBPoints.isEmpty
+
+        return [
+            BlueHourTabItem(
+                .stress,
+                title: stressTitle,
+                hasData: hasCurve || runner.status == .idle,
+                liveDotColor: hasCurve ? stressLineColor : nil,
+                activeFill: BlueHour.stressTabFill,
+                activeBorder: BlueHour.stressTabBorder,
+                helpText: "Plot mechanical response: \(stressTitle)"
+            ),
+            BlueHourTabItem(
+                .energy,
+                title: energyTitle,
+                hasData: hasCurve || runner.status == .idle,
+                liveDotColor: hasCurve ? energyLineColor : nil,
+                activeFill: BlueHour.energyTabFill,
+                activeBorder: BlueHour.energyTabBorder,
+                helpText: "Plot stored elastic / internal energy: \(energyTitle)"
+            ),
+            BlueHourTabItem(
+                .eigenvalue,
+                title: eigenTitle,
+                hasData: hasEigen,
+                liveDotColor: hasEigen ? eigenLineColor : nil,
+                activeFill: BlueHour.eigenTabFill,
+                activeBorder: BlueHour.eigenTabBorder,
+                helpText: hasEigen
+                    ? "Plot smallest Hessian eigenvalue \(eigenTitle)"
+                    : "Smallest Hessian eigenvalue \(eigenTitle) — no eigenvalues recorded in this run (click for instructions)"
+            ),
+            BlueHourTabItem(
+                .gbEnergy,
+                title: "γ_GB(Δθ)",
+                badge: hasGB ? "\(displayGBPoints.count)" : nil,
+                hasData: hasGB,
+                liveDotColor: hasGB ? gbLineColor : nil,
+                activeFill: BlueHour.gbTabFill,
+                activeBorder: BlueHour.gbTabBorder,
+                helpText: hasGB
+                    ? "Grain Boundary Energy γ_GB vs. Misorientation Δθ (\(displayGBPoints.count) recorded angles)"
+                    : "Grain Boundary Energy γ_GB(Δθ) — run a Bicrystal relaxation or Δθ sweep to populate"
+            )
+        ]
     }
     
     /// Torsion runs report the rim torque T = Σ r × f as their primary quantity.
@@ -506,40 +619,55 @@ struct StressStrainChartView: View {
     private func resetPlotStyle() {
         showLine = true
         showPoints = false
-        lineWidth = 2.0
+        lineWidth = 2.25
         pointSize = 5.0
         pointSymbol = .circle
-        stressLineColor = .blue
-        stressPointColor = .blue
-        energyLineColor = .purple
-        energyPointColor = .purple
-        eigenLineColor = .teal
-        eigenPointColor = .teal
-        gbLineColor = .green
-        gbPointColor = .green
+        stressLineColor = Color(red: 0.25, green: 0.62, blue: 1.00)
+        stressPointColor = Color(red: 0.35, green: 0.70, blue: 1.00)
+        energyLineColor = Color(red: 0.72, green: 0.48, blue: 1.00)
+        energyPointColor = Color(red: 0.78, green: 0.58, blue: 1.00)
+        eigenLineColor = Color(red: 0.20, green: 0.86, blue: 0.78)
+        eigenPointColor = Color(red: 0.28, green: 0.92, blue: 0.84)
+        gbLineColor = Color(red: 0.28, green: 0.85, blue: 0.52)
+        gbPointColor = Color(red: 0.36, green: 0.90, blue: 0.58)
     }
     
     @ViewBuilder
-    private var plotStyleBar: some View {
-        HStack(spacing: 10) {
-            // Line controls: toggle + color + width slider
-            HStack(spacing: 6) {
-                Toggle("Line", isOn: lineToggleBinding)
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
-                    .font(.system(size: 11, weight: .semibold))
-                    .help("Show or hide the connecting curve line")
-                
-                ColorPicker("", selection: activeLineColorBinding, supportsOpacity: true)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(width: 24)
-                    .help("Line color for the current chart mode")
-                
-                HStack(spacing: 4) {
+    private var plotStylePopoverContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Curve Appearance", systemImage: "paintbrush.pointed.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(BlueHour.ice)
+                Spacer()
+                Button(action: resetPlotStyle) {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                        .font(.system(size: 10.5, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help("Reset line & point colors, widths, and markers to defaults")
+            }
+
+            Divider()
+
+            // Line controls
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Toggle("Connecting Line", isOn: lineToggleBinding)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Spacer()
+                    ColorPicker("", selection: activeLineColorBinding, supportsOpacity: true)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 28)
+                }
+                HStack(spacing: 8) {
                     Text("Width")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 10.5))
+                        .foregroundColor(BlueHour.mist)
+                        .frame(width: 40, alignment: .leading)
                     Slider(
                         value: Binding(
                             get: { lineWidth },
@@ -551,38 +679,34 @@ struct StressStrainChartView: View {
                         in: 0.5...6.0,
                         step: 0.25
                     )
-                    .controlSize(.mini)
-                    .frame(width: 68)
-                    .help("Line thickness (0.5 pt – 6.0 pt)")
+                    .controlSize(.small)
                     Text(String(format: "%.2g pt", lineWidth))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .frame(width: 34, alignment: .leading)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundColor(BlueHour.ice)
+                        .frame(width: 42, alignment: .trailing)
                 }
                 .opacity(showLine ? 1.0 : 0.45)
             }
-            
+
             Divider()
-                .frame(height: 14)
-            
-            // Point controls: toggle + color + size slider + symbol picker
-            HStack(spacing: 6) {
-                Toggle("Points", isOn: pointsToggleBinding)
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
-                    .font(.system(size: 11, weight: .semibold))
-                    .help("Show or hide data point markers on the curve")
-                
-                ColorPicker("", selection: activePointColorBinding, supportsOpacity: true)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(width: 24)
-                    .help("Point marker color for the current chart mode")
-                
-                HStack(spacing: 4) {
+
+            // Point marker controls
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Toggle("Data Point Markers", isOn: pointsToggleBinding)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Spacer()
+                    ColorPicker("", selection: activePointColorBinding, supportsOpacity: true)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 28)
+                }
+                HStack(spacing: 8) {
                     Text("Size")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 10.5))
+                        .foregroundColor(BlueHour.mist)
+                        .frame(width: 40, alignment: .leading)
                     Slider(
                         value: Binding(
                             get: { pointSize },
@@ -594,366 +718,422 @@ struct StressStrainChartView: View {
                         in: 2.0...14.0,
                         step: 0.5
                     )
-                    .controlSize(.mini)
-                    .frame(width: 68)
-                    .help("Point marker diameter (2 pt – 14 pt)")
+                    .controlSize(.small)
                     Text(String(format: "%.2g pt", pointSize))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .frame(width: 34, alignment: .leading)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundColor(BlueHour.ice)
+                        .frame(width: 42, alignment: .trailing)
                 }
                 .opacity(showPoints ? 1.0 : 0.45)
-                
-                Picker("", selection: $pointSymbol) {
-                    ForEach(ChartPointSymbol.allCases) { sym in
-                        Text(sym.rawValue).tag(sym)
+
+                HStack(spacing: 8) {
+                    Text("Shape")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(BlueHour.mist)
+                        .frame(width: 40, alignment: .leading)
+                    Picker("", selection: $pointSymbol) {
+                        ForEach(ChartPointSymbol.allCases) { sym in
+                            Text(sym.rawValue).tag(sym)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .controlSize(.mini)
-                .frame(width: 86)
                 .opacity(showPoints ? 1.0 : 0.45)
-                .help("Point marker shape")
             }
-            
-            Button(action: resetPlotStyle) {
-                Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: 10, weight: .medium))
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .help("Reset line & point colors, sizes, and symbols to defaults")
-            
-            Spacer(minLength: 4)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
-        .background(BlueHour.controlSurface.opacity(0.65))
+        .padding(14)
+        .frame(width: 278)
+        .background(BlueHour.cardSurface)
+    }
+
+    @ViewBuilder
+    private var chartTitleBanner: some View {
+        let ptCount: Int = {
+            switch chartMode {
+            case .eigenvalue: return runner.eigenPoints.count
+            case .gbEnergy:   return displayGBPoints.count
+            default:          return runner.curvePoints.count
+            }
+        }()
+
+        HStack(spacing: 10) {
+            // Active curve visual swatch
+            ZStack {
+                if showLine {
+                    Capsule()
+                        .fill(currentLineColor)
+                        .frame(width: 20, height: max(2.0, min(4.5, lineWidth)))
+                }
+                if showPoints {
+                    Circle()
+                        .fill(currentPointColor)
+                        .frame(width: 7, height: 7)
+                }
+            }
+            .frame(width: 22, height: 12)
+
+            // Self-describing plot title: Y vs X
+            HStack(spacing: 5) {
+                Text(activeYAxisTitle)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(BlueHour.ice)
+                Text("vs.")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(BlueHour.mist.opacity(0.8))
+                Text(activeXAxisTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(BlueHour.mist)
+            }
+            .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            // Live GB Energy shortcut pill (when viewing another tab during a Bicrystal run)
+            if chartMode != .gbEnergy, let curGB = runner.currentGBEnergy {
+                let gVal = useInteriorGBGauge ? curGB.gbEnergyInterior : curGB.gbEnergyTotal
+                Button(action: { chartMode = .gbEnergy }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.split.2x1.fill")
+                            .font(.system(size: 9))
+                        Text("γ_GB = \(String(format: "%.5f", gVal)) ↗")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundColor(Color(red: 0.43, green: 0.91, blue: 0.61))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(BlueHour.gbTabFill.opacity(0.32))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(BlueHour.gbTabBorder.opacity(0.55), lineWidth: 1))
+                    .cornerRadius(5)
+                }
+                .buttonStyle(.plain)
+                .help("Click to switch to Grain Boundary Energy γ_GB(Δθ) plot")
+            }
+
+            // Peak Stress or Stability summary pill
+            let peakVal = currentPeakStress
+            if chartMode == .stress && stressComponent != .coreShift && peakVal > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "crown.fill")
+                        .font(.system(size: 9))
+                    Text("|\(stressComponent.shortLabel)|_max = \(String(format: "%.4f", peakVal))")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                }
+                .foregroundColor(.orange)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2.5)
+                .background(Color.orange.opacity(0.12))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.orange.opacity(0.42), lineWidth: 1))
+                .cornerRadius(5)
+                .fixedSize()
+            } else if chartMode == .eigenvalue,
+                      let lastEig = runner.eigenPoints.last(where: { eigenY($0) != nil }),
+                      let lastY = eigenY(lastEig) {
+                let unstable = eigenUnstable(lastEig)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(unstable ? Color.red : Color.green)
+                        .frame(width: 6, height: 6)
+                    Text("\(showCellEigen ? "λ_box" : "λ_min") = \(String(format: "%.3e", lastY))")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                }
+                .foregroundColor(unstable ? .red : Color(red: 0.43, green: 0.91, blue: 0.61))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2.5)
+                .background((unstable ? Color.red : Color.green).opacity(0.12))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder((unstable ? Color.red : Color.green).opacity(0.42), lineWidth: 1))
+                .cornerRadius(5)
+                .fixedSize()
+            }
+
+            // Active X range badge
+            if let firstX = activeAlphas.first, let lastX = activeAlphas.last {
+                Text("\(xSymbolShort) ∈ [\(formatXValue(firstX)) → \(formatXValue(lastX))]")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(BlueHour.mist)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(BlueHour.controlSurface.opacity(0.85))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(BlueHour.border, lineWidth: 1))
+                    .cornerRadius(5)
+                    .fixedSize()
+            }
+
+            // Point count pill
+            Text("\(ptCount) pts")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(BlueHour.ice)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2.5)
+                .background(BlueHour.controlSurface.opacity(0.85))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(BlueHour.border, lineWidth: 1))
+                .cornerRadius(5)
+                .fixedSize()
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
+        .background(BlueHour.canvasBackground)
     }
 
     // MARK: - View Body
     
     var body: some View {
         VStack(spacing: 0) {
-            // Chart Control Toolbar: Pinned left pickers + horizontally scrollable options/badges
-            HStack(spacing: 10) {
-                // 1. Pinned Metric Selector: Stress vs Energy vs Eigenvalue vs GB Energy
-                Picker("", selection: $chartMode) {
-                    ForEach(ChartMetricMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.small)
-                .fixedSize()
-                .help("Select plotted quantity: Stress / Load σ(α), Internal Energy E(α), Smallest Stiffness Eigenvalue λ_min(α), or Grain Boundary Energy γ_GB(Δθ)")
-                
-                // 1b. Stress / Nanoindentation Component Dropdown Selector
-                if chartMode == .stress {
-                    Picker("", selection: $stressComponent) {
-                        Section(header: Text("Primary")) {
-                            Text(StressComponentType.primary.rawValue).tag(StressComponentType.primary)
-                        }
-                        Section(header: Text("Cauchy Stress & Pressure")) {
-                            Text(StressComponentType.cauchyXY.rawValue).tag(StressComponentType.cauchyXY)
-                            Text(StressComponentType.cauchyXX.rawValue).tag(StressComponentType.cauchyXX)
-                            Text(StressComponentType.cauchyYY.rawValue).tag(StressComponentType.cauchyYY)
-                            Text(StressComponentType.hydrostaticPressure.rawValue).tag(StressComponentType.hydrostaticPressure)
-                        }
-                        Section(header: Text("Aligned Piola / Projected Stress")) {
-                            Text(StressComponentType.piola12.rawValue).tag(StressComponentType.piola12)
-                            Text(StressComponentType.piola11.rawValue).tag(StressComponentType.piola11)
-                            Text(StressComponentType.piola22.rawValue).tag(StressComponentType.piola22)
-                        }
-                        Section(header: Text("Von Mises Equivalent Stress (2D)")) {
-                            Text(StressComponentType.vonMisesAvg.rawValue).tag(StressComponentType.vonMisesAvg)
-                            Text(StressComponentType.vonMisesMax.rawValue).tag(StressComponentType.vonMisesMax)
-                        }
-                        Section(header: Text("Nanoindentation Metrics")) {
-                            Text(StressComponentType.indenterLoad.rawValue).tag(StressComponentType.indenterLoad)
-                            Text(StressComponentType.meanContactPressure.rawValue).tag(StressComponentType.meanContactPressure)
-                            Text(StressComponentType.contactAtoms.rawValue).tag(StressComponentType.contactAtoms)
-                        }
-                        Section(header: Text("Force / Stress Control")) {
-                            Text(StressComponentType.effectiveStrain.rawValue).tag(StressComponentType.effectiveStrain)
-                        }
-                        if hasCoreShift {
-                            Section(header: Text("Dislocation Core (Volterra Load)")) {
-                                Text(StressComponentType.appliedSigmaXY.rawValue).tag(StressComponentType.appliedSigmaXY)
-                                Text(StressComponentType.coreShift.rawValue).tag(StressComponentType.coreShift)
-                            }
-                        }
-                    }
-                    .onChange(of: hasCoreShift, initial: true) { _, present in
-                        // Volterra load run: open on the shear stress inside the free region (Cauchy σ_xy, averaged
-                        // over the free disc) against the dislocation position, as in Fig. 8a; fall back when the
-                        // columns go away
-                        if present && stressComponent == .primary { stressComponent = .cauchyXY }
-                        if !present && (stressComponent == .coreShift || stressComponent == .appliedSigmaXY) {
-                            stressComponent = .primary
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(width: 195)
-                    .help("Select which stress component (Cauchy, Aligned Piola / Projected, Von Mises) or nanoindentation metric to monitor live")
-                }
-                
-                // 2. Pinned Clever Auto-Scaling Selector
-                Picker("", selection: $scaleMode) {
-                    ForEach(ChartScaleMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.small)
-                .fixedSize()
-                .help(scaleMode.tooltip)
+            // Single clean, high-contrast Chart Control Toolbar (scrollable if narrowed in Split View so nothing ever clips)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    // 1. Color-coded High-Contrast Metric Tabs
+                    BlueHourSegmentedPicker(
+                        selection: $chartMode,
+                        items: chartModeTabItems,
+                        scale: .compact
+                    )
 
-                if isXZoomed {
-                    Button(action: resetXZoom) {
-                        Label("Zoom", systemImage: "xmark.circle.fill")
-                            .font(.system(size: 10, weight: .semibold))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .help("Showing a zoomed x range (drag on the chart to choose it). Click, or double-click the chart, to show all points.")
-                }
-                
-                Divider()
-                    .frame(height: 14)
-                
-                // 3. Horizontally scrollable toggles & badges so left pickers never shift or clip
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        if chartMode == .gbEnergy {
-                            Toggle("Interior Gauge (exclude 4a₀ collar)", isOn: $useInteriorGBGauge)
-                                .toggleStyle(.checkbox)
-                                .controlSize(.small)
-                                .lineLimit(1)
-                                .fixedSize()
-                                .help("When checked, uses E_int / L_int (excluding 4a₀ near the outer boundaries). Uncheck for total E / L_GB.")
-                            Toggle("Σ Labels", isOn: $showGBSigmaLabels)
-                                .toggleStyle(.checkbox)
-                                .controlSize(.small)
-                                .lineLimit(1)
-                                .fixedSize()
-                                .help("Show Σ cusp labels on the γ_GB(Δθ) curve")
-                        } else if chartMode != .eigenvalue {
-                            Toggle("Remesh (\(remeshEvents.count))", isOn: $showRemeshEvents)
-                                .toggleStyle(.checkbox)
-                                .controlSize(.small)
-                                .lineLimit(1)
-                                .fixedSize()
-                                .help("Highlight Delaunay remeshing & plastic surgery avalanche events")
-                        }
-                        
-                        if chartMode == .stress {
-                            Toggle("Peak Yield", isOn: $showYieldLine)
-                                .toggleStyle(.checkbox)
-                                .controlSize(.small)
-                                .lineLimit(1)
-                                .fixedSize()
-                                .help("Display peak stress horizontal guide line")
-                        }
-                        
-                        // Live Grain Boundary Energy badge (always visible when a Bicrystal run produced γ_GB)
-                        if let curGB = runner.currentGBEnergy {
-                            let gVal = useInteriorGBGauge ? curGB.gbEnergyInterior : curGB.gbEnergyTotal
-                            Button(action: { chartMode = .gbEnergy }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "square.split.2x1.fill")
-                                        .font(.system(size: 9))
-                                        .foregroundColor(.green)
-                                    Text("γ_GB: \(String(format: "%.5f", gVal)) (Δθ=\(String(format: "%.2f°", curGB.misorientationDeg)))")
-                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                        .foregroundColor(.green)
-                                }
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(BlueHour.controlSurface)
-                                .cornerRadius(4)
+                    // 1b. Contextual Metric Sub-Selector
+                    if chartMode == .stress {
+                        Picker("", selection: $stressComponent) {
+                            Section(header: Text("Primary")) {
+                                Text(StressComponentType.primary.rawValue).tag(StressComponentType.primary)
                             }
-                            .buttonStyle(.plain)
-                            .help("Grain Boundary Energy at α = 0. Click to view the cumulative γ_GB(Δθ) curve across misorientations.")
-                            .lineLimit(1)
-                            .fixedSize()
-                        }
-                        
-                        let peakVal = currentPeakStress
-                        if chartMode == .stress && peakVal > 0 {
-                            HStack(spacing: 4) {
-                                Image(systemName: "crown.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.orange)
-                                Text("|\(stressComponent.shortLabel)|_max: \(String(format: "%.4f", peakVal))")
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundColor(.orange)
+                            Section(header: Text("Cauchy Stress & Pressure")) {
+                                Text(StressComponentType.cauchyXY.rawValue).tag(StressComponentType.cauchyXY)
+                                Text(StressComponentType.cauchyXX.rawValue).tag(StressComponentType.cauchyXX)
+                                Text(StressComponentType.cauchyYY.rawValue).tag(StressComponentType.cauchyYY)
+                                Text(StressComponentType.hydrostaticPressure.rawValue).tag(StressComponentType.hydrostaticPressure)
                             }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(BlueHour.controlSurface)
-                            .cornerRadius(4)
-                            .lineLimit(1)
-                            .fixedSize()
-                        } else if chartMode == .eigenvalue, let lastEig = runner.eigenPoints.last(where: { eigenY($0) != nil }),
-                                  let lastY = eigenY(lastEig) {
-                            HStack(spacing: 4) {
-                                Circle()
-                                    .fill(eigenUnstable(lastEig) ? Color.red : Color.green)
-                                    .frame(width: 6, height: 6)
-                                Text("\(showCellEigen ? "λ_box" : "λ_min"): \(String(format: "%.4e", lastY))")
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundColor(eigenUnstable(lastEig) ? .red : .green)
+                            Section(header: Text("Aligned Piola / Projected Stress")) {
+                                Text(StressComponentType.piola12.rawValue).tag(StressComponentType.piola12)
+                                Text(StressComponentType.piola11.rawValue).tag(StressComponentType.piola11)
+                                Text(StressComponentType.piola22.rawValue).tag(StressComponentType.piola22)
                             }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(BlueHour.controlSurface)
-                            .cornerRadius(4)
-                            .lineLimit(1)
-                            .fixedSize()
-                        }
-                        
-                        let ptCount: Int = {
-                            switch chartMode {
-                            case .eigenvalue: return runner.eigenPoints.count
-                            case .gbEnergy: return displayGBPoints.count
-                            default: return runner.curvePoints.count
+                            Section(header: Text("Von Mises Equivalent Stress (2D)")) {
+                                Text(StressComponentType.vonMisesAvg.rawValue).tag(StressComponentType.vonMisesAvg)
+                                Text(StressComponentType.vonMisesMax.rawValue).tag(StressComponentType.vonMisesMax)
                             }
-                        }()
-                        Text("\(ptCount) pts")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(BlueHour.controlSurface)
-                            .cornerRadius(4)
-                            .lineLimit(1)
-                            .fixedSize()
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                
-                // Force / stress control: energy = elastic E_el or enthalpy H
-                if hasElasticEnergy && chartMode == .energy {
-                    Picker("", selection: $plotEnthalpy) {
-                        Text("E_el").tag(false)
-                        Text("H").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(width: 90)
-                    .help("Under force or stress control the logged energy is the enthalpy H = E_el − W_ext, dominated by the load term; E_el is the stored elastic energy.")
-                }
-                // PBC stress control: λ_min chart = free cell (λ_box) or fixed cell (λ_min of K)
-                if hasCellEigen && chartMode == .eigenvalue {
-                    Picker("", selection: $eigenShowsCell) {
-                        Text("Cell").tag(true)
-                        Text("Atoms").tag(false)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(width: 110)
-                    .help("Under stress control the cell is free. Cell: lowest eigenvalue λ_box of the relaxed cell stiffness (with the Cauchy load stiffness); it reaches 0 at the limit load. Atoms: λ_min of the atomic stiffness K at fixed cell, the strain-control criterion.")
-                }
-                // Volterra cylinder load: x-axis = applied far-field stress or load α (γ or τ)
-                if hasAppliedStress && chartMode != .gbEnergy && chartMode != .eigenvalue {
-                    Picker("", selection: $volterraXAxis) {
-                        Text("x: x_d").tag(VolterraXAxis.corePosition)
-                        Text("x: σ").tag(VolterraXAxis.appliedStress)
-                        Text("x: α").tag(VolterraXAxis.load)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .fixedSize()
-                    .help("Volterra cylinder load: x axis = dislocation position x_d / b (with Cauchy Shear σ_xy, the average over the free disc, as y this is σ̄₁₂(x_d) as in Fig. 8a), the far-field shear stress σ_xy applied by the frozen ring, or the load α (γ or τ).")
-                }
-                // Force / stress control: x-axis = load α or conjugate strain ε
-                if (hasConjugateStrain && chartMode != .gbEnergy && chartMode != .eigenvalue) ||
-                    (chartMode == .eigenvalue && runner.eigenPoints.contains { $0.strain != nil }) {
-                    Picker("", selection: $plotAgainstConjugateStrain) {
-                        Text("x: ε").tag(true)
-                        Text("x: α").tag(false)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(width: 96)
-                    .help("Under force or stress control α is the applied load; plot against the conjugate strain ε to see strain bursts as jumps along x.")
-                }
-                // Active Strain Range Badge
-                if chartMode != .gbEnergy, let firstA = runner.curvePoints.first?.alpha, let lastA = runner.curvePoints.last?.alpha {
-                    Text("α: [\(String(format: "%.3f", firstA)) → \(String(format: "%.3f", lastA))]")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(BlueHour.controlSurface)
-                        .cornerRadius(4)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-                
-                // Export Data Menu
-                if !runner.curvePoints.isEmpty || !displayGBPoints.isEmpty {
-                    Menu {
-                        if !runner.curvePoints.isEmpty {
-                            Button(action: exportCurveCSV) {
-                                Label("Save Stress–Strain Curve (CSV)...", systemImage: "chart.xyaxis.line")
+                            Section(header: Text("Nanoindentation Metrics")) {
+                                Text(StressComponentType.indenterLoad.rawValue).tag(StressComponentType.indenterLoad)
+                                Text(StressComponentType.meanContactPressure.rawValue).tag(StressComponentType.meanContactPressure)
+                                Text(StressComponentType.contactAtoms.rawValue).tag(StressComponentType.contactAtoms)
                             }
-                            if !remeshEvents.isEmpty {
-                                Button(action: exportAvalanchesCSV) {
-                                    Label("Save Avalanches / Remesh Events (CSV)...", systemImage: "burst")
+                            Section(header: Text("Force / Stress Control")) {
+                                Text(StressComponentType.effectiveStrain.rawValue).tag(StressComponentType.effectiveStrain)
+                            }
+                            if hasCoreShift {
+                                Section(header: Text("Dislocation Core (Volterra Load)")) {
+                                    Text(StressComponentType.appliedSigmaXY.rawValue).tag(StressComponentType.appliedSigmaXY)
+                                    Text(StressComponentType.coreShift.rawValue).tag(StressComponentType.coreShift)
                                 }
                             }
-                            Button(action: copyCurveCSVToClipboard) {
-                                Label("Copy Curve Data (CSV)", systemImage: "doc.on.doc")
+                        }
+                        .onChange(of: hasCoreShift, initial: true) { _, present in
+                            if present && stressComponent == .primary { stressComponent = .cauchyXY }
+                            if !present && (stressComponent == .coreShift || stressComponent == .appliedSigmaXY) {
+                                stressComponent = .primary
                             }
                         }
-                        if !displayGBPoints.isEmpty {
-                            if !runner.curvePoints.isEmpty {
-                                Divider()
-                            }
-                            Button(action: exportGBEnergyText) {
-                                Label("Save Angle vs. Energy Table (.txt)...", systemImage: "doc.text")
-                            }
-                            Button(action: exportGBEnergyCSV) {
-                                Label("Save γ_GB vs Misorientation Δθ (CSV)...", systemImage: "square.split.2x1")
-                            }
-                            Button(action: copyGBEnergyCSVToClipboard) {
-                                Label("Copy γ_GB(Δθ) Table (CSV)", systemImage: "doc.on.doc")
-                            }
-                            Button(action: { runner.openSweepTextFile() }) {
-                                Label("Open angle_vs_energy.txt", systemImage: "arrow.up.forward.app")
-                            }
-                            Button(action: { runner.openSweepRelaxedVTKFolder() }) {
-                                Label("Open Relaxed VTK Configurations Folder", systemImage: "folder")
-                            }
-                            Button(role: .destructive, action: { runner.clearGBEnergyHistory() }) {
-                                Label("Clear Cumulative γ_GB(Δθ) History", systemImage: "trash")
-                            }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 162)
+                        .help("Select which stress component (Cauchy, Aligned Piola / Projected, Von Mises) or nanoindentation metric to plot")
+                    } else if chartMode == .energy && hasElasticEnergy {
+                        BlueHourSegmentedPicker(
+                            selection: $plotEnthalpy,
+                            items: [
+                                BlueHourTabItem(false, title: "E_el", activeFill: BlueHour.energyTabFill, activeBorder: BlueHour.energyTabBorder, helpText: "Stored elastic energy E_el"),
+                                BlueHourTabItem(true, title: "H", activeFill: BlueHour.energyTabFill, activeBorder: BlueHour.energyTabBorder, helpText: "Enthalpy H = E_el − W_ext")
+                            ],
+                            scale: .compact
+                        )
+                    } else if chartMode == .eigenvalue && hasCellEigen {
+                        BlueHourSegmentedPicker(
+                            selection: $eigenShowsCell,
+                            items: [
+                                BlueHourTabItem(true, title: "Cell", activeFill: BlueHour.eigenTabFill, activeBorder: BlueHour.eigenTabBorder, helpText: "Relaxed free-cell eigenvalue λ_box"),
+                                BlueHourTabItem(false, title: "Atoms", activeFill: BlueHour.eigenTabFill, activeBorder: BlueHour.eigenTabBorder, helpText: "Fixed-cell atomic stiffness λ_min(K)")
+                            ],
+                            scale: .compact
+                        )
+                    }
+
+                    // 1c. Contextual X-Axis Variable Switcher (Volterra or Force/Stress Control)
+                    if hasAppliedStress && chartMode != .gbEnergy && chartMode != .eigenvalue {
+                        BlueHourSegmentedPicker(
+                            selection: $volterraXAxis,
+                            items: [
+                                BlueHourTabItem(.corePosition, title: "x: x_d/b", helpText: "Dislocation position x_d / b"),
+                                BlueHourTabItem(.appliedStress, title: "x: σ_xy", helpText: "Far-field applied shear stress σ_xy"),
+                                BlueHourTabItem(.load, title: "x: α", helpText: "Applied load parameter α")
+                            ],
+                            scale: .compact
+                        )
+                    } else if (hasConjugateStrain && chartMode != .gbEnergy && chartMode != .eigenvalue) ||
+                              (chartMode == .eigenvalue && runner.eigenPoints.contains { $0.strain != nil }) {
+                        BlueHourSegmentedPicker(
+                            selection: $plotAgainstConjugateStrain,
+                            items: [
+                                BlueHourTabItem(true, title: "x: ε", helpText: "Plot against conjugate strain ε (shows bursts as jumps along x)"),
+                                BlueHourTabItem(false, title: "x: α", helpText: "Plot against applied load parameter α")
+                            ],
+                            scale: .compact
+                        )
+                    }
+
+                    Divider()
+                        .frame(height: 16)
+
+                    // 2. X-Axis Domain Mode
+                    BlueHourSegmentedPicker(
+                        selection: $scaleMode,
+                        items: ChartScaleMode.allCases.map { m in
+                            BlueHourTabItem(m, title: m.rawValue, helpText: m.tooltip)
+                        },
+                        scale: .compact
+                    )
+
+                    if isXZoomed {
+                        Button(action: resetXZoom) {
+                            Label("Reset Zoom", systemImage: "arrow.uturn.backward")
+                                .font(.system(size: 10.5, weight: .semibold))
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(.cyan)
+                        .help("Reset custom X-axis zoom (or double-click on the plot)")
+                    }
+
+                    Divider()
+                        .frame(height: 16)
+
+                    // 3. Explicit Overlay Toggle Chips (never clipped!)
+                    if chartMode == .gbEnergy {
+                        BlueHourToggleChip(
+                            "Interior Gauge",
+                            isOn: $useInteriorGBGauge,
+                            activeFill: BlueHour.gbTabFill,
+                            activeBorder: BlueHour.gbTabBorder,
+                            scale: .compact,
+                            helpText: "Use interior gauge E_int / L_int (excluding 4a₀ outer boundary collar)"
+                        )
+                        BlueHourToggleChip(
+                            "Σ Labels",
+                            isOn: $showGBSigmaLabels,
+                            activeFill: BlueHour.gbTabFill,
+                            activeBorder: BlueHour.gbTabBorder,
+                            scale: .compact,
+                            helpText: "Display Σ CSL cusp labels above points"
+                        )
+                    } else if chartMode != .eigenvalue {
+                        BlueHourToggleChip(
+                            "Remesh",
+                            badge: "\(remeshEvents.count)",
+                            isOn: $showRemeshEvents,
+                            activeFill: Color(red: 0.62, green: 0.16, blue: 0.22),
+                            activeBorder: Color(red: 1.0, green: 0.48, blue: 0.52),
+                            scale: .compact,
+                            helpText: "Highlight Delaunay remeshing & plastic slip surgery events on the curve"
+                        )
+                    }
+
+                    if chartMode == .stress && stressComponent != .coreShift {
+                        BlueHourToggleChip(
+                            "Peak",
+                            isOn: $showYieldLine,
+                            activeFill: Color(red: 0.58, green: 0.34, blue: 0.08),
+                            activeBorder: Color.orange,
+                            scale: .compact,
+                            helpText: "Show dashed horizontal peak stress guide line"
+                        )
+                    }
+
+                    Divider()
+                        .frame(height: 16)
+
+                    // 4. Curve Style Popover Button + Export Menu
+                    Button {
+                        showStylePopover.toggle()
                     } label: {
-                        Label("Export Data", systemImage: "square.and.arrow.up")
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(currentLineColor)
+                                .frame(width: 7, height: 7)
+                            Text("Style")
+                                .font(.system(size: 10.5, weight: .semibold))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundColor(BlueHour.mist)
+                        }
+                        .foregroundColor(BlueHour.ice)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(showStylePopover ? BlueHour.elevatedSurface : BlueHour.tabTrack)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .strokeBorder(BlueHour.steel.opacity(0.5), lineWidth: 1)
+                        )
                     }
-                    .menuStyle(.borderedButton)
-                    .controlSize(.small)
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showStylePopover, arrowEdge: .bottom) {
+                        plotStylePopoverContent
+                    }
+                    .help("Customize curve line width, point markers, colors, and symbols")
+
+                    if !runner.curvePoints.isEmpty || !displayGBPoints.isEmpty {
+                        Menu {
+                            if !runner.curvePoints.isEmpty {
+                                Button(action: exportCurveCSV) {
+                                    Label("Save Stress–Strain Curve (CSV)...", systemImage: "chart.xyaxis.line")
+                                }
+                                if !remeshEvents.isEmpty {
+                                    Button(action: exportAvalanchesCSV) {
+                                        Label("Save Avalanches / Remesh Events (CSV)...", systemImage: "burst")
+                                    }
+                                }
+                                Button(action: copyCurveCSVToClipboard) {
+                                    Label("Copy Curve Data (CSV)", systemImage: "doc.on.doc")
+                                }
+                            }
+                            if !displayGBPoints.isEmpty {
+                                if !runner.curvePoints.isEmpty {
+                                    Divider()
+                                }
+                                Button(action: exportGBEnergyText) {
+                                    Label("Save Angle vs. Energy Table (.txt)...", systemImage: "doc.text")
+                                }
+                                Button(action: exportGBEnergyCSV) {
+                                    Label("Save γ_GB vs Misorientation Δθ (CSV)...", systemImage: "square.split.2x1")
+                                }
+                                Button(action: copyGBEnergyCSVToClipboard) {
+                                    Label("Copy γ_GB(Δθ) Table (CSV)", systemImage: "doc.on.doc")
+                                }
+                                Button(action: { runner.openSweepTextFile() }) {
+                                    Label("Open angle_vs_energy.txt", systemImage: "arrow.up.forward.app")
+                                }
+                                Button(action: { runner.openSweepRelaxedVTKFolder() }) {
+                                    Label("Open Relaxed VTK Configurations Folder", systemImage: "folder")
+                                }
+                                Button(role: .destructive, action: { runner.clearGBEnergyHistory() }) {
+                                    Label("Clear Cumulative γ_GB(Δθ) History", systemImage: "trash")
+                                }
+                            }
+                        } label: {
+                            Label("Export", systemImage: "square.and.arrow.up")
+                        }
+                        .menuStyle(.borderedButton)
+                        .controlSize(.small)
+                        .fixedSize()
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(BlueHour.controlSurface.opacity(0.85))
+            .background(BlueHour.controlSurface.opacity(0.9))
             
-            Divider()
-            plotStyleBar
             Divider()
             
             // Main Chart Canvas
@@ -982,8 +1162,8 @@ struct StressStrainChartView: View {
                         .font(.headline)
                         .foregroundColor(.secondary)
                     Text(runner.activeConfig?.enableEigenvalues == true || runner.status == .idle
-                         ? "Enable 'Compute Lowest Stiffness Eigenvalues' in the Stability & Eigenvalues sidebar section and launch the simulation to plot λ_min(α) live."
-                         : "Eigenvalue computation was disabled for this run. Enable 'Compute Lowest Stiffness Eigenvalues' in the sidebar for the next run.")
+                         ? "Enable 'Compute Lowest Stiffness Eigenvalues' in the 4 Solver sidebar tab and launch the simulation to plot λ_min live."
+                         : "Eigenvalue computation was disabled for this run. Enable 'Compute Lowest Stiffness Eigenvalues' in 4 Solver for the next run.")
                         .font(.subheadline)
                         .foregroundColor(.secondary.opacity(0.8))
                         .multilineTextAlignment(.center)
@@ -999,7 +1179,7 @@ struct StressStrainChartView: View {
                     Text("No Simulation Data Yet")
                         .font(.headline)
                         .foregroundColor(.secondary)
-                    Text("Click 'Launch Simulation' to stream the live stress–strain, energy, and lowest eigenvalue curves in real-time.")
+                    Text("Click 'Launch' in the bottom-right corner to stream live stress, energy, and stability curves in real time.")
                         .font(.subheadline)
                         .foregroundColor(.secondary.opacity(0.8))
                         .multilineTextAlignment(.center)
@@ -1008,6 +1188,8 @@ struct StressStrainChartView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(BlueHour.canvasBackground)
             } else {
+                chartTitleBanner
+
                 Chart {
                     if chartMode == .gbEnergy {
                         ForEach(displayGBPoints) { pt in
@@ -1204,13 +1386,13 @@ struct StressStrainChartView: View {
                             AxisValueLabel {
                                 Text(formatXValue(d))
                                     .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(BlueHour.mist)
                             }
                         }
                     }
                 }
                 .chartYAxis {
-                    AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
                             .foregroundStyle(Color.secondary.opacity(0.25))
                         AxisTick()
@@ -1218,10 +1400,22 @@ struct StressStrainChartView: View {
                             AxisValueLabel {
                                 Text(formatYValue(d))
                                     .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(BlueHour.mist)
                             }
                         }
                     }
+                }
+                .chartXAxisLabel(position: .bottom, alignment: .center) {
+                    Text(activeXAxisTitle)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(BlueHour.mist)
+                        .padding(.top, 2)
+                }
+                .chartYAxisLabel(position: .leading, alignment: .center) {
+                    Text(activeYAxisTitle)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(BlueHour.mist)
+                        .padding(.bottom, 2)
                 }
                 .chartOverlay { proxy in
                     GeometryReader { geo in
@@ -1289,12 +1483,13 @@ struct StressStrainChartView: View {
                                     path.move(to: CGPoint(x: screenX, y: plotFrame.minY))
                                     path.addLine(to: CGPoint(x: screenX, y: plotFrame.maxY))
                                 }
-                                .stroke(Color.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                                .stroke(Color.cyan.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
                                 .allowsHitTesting(false)
                                 
                                 if screenY >= plotFrame.minY && screenY <= plotFrame.maxY {
                                     Circle()
                                         .fill(Color.cyan)
+                                        .overlay(Circle().strokeBorder(Color.white, lineWidth: 1.5))
                                         .frame(width: 9, height: 9)
                                         .position(x: screenX, y: screenY)
                                         .allowsHitTesting(false)
@@ -1304,8 +1499,8 @@ struct StressStrainChartView: View {
                         
                         if let s0 = zoomDragStart, let s1 = zoomDragCurrent {
                             Rectangle()
-                                .fill(BlueHour.accent.opacity(0.15))
-                                .overlay(Rectangle().stroke(BlueHour.accent.opacity(0.6), lineWidth: 1))
+                                .fill(BlueHour.activeAccent.opacity(0.16))
+                                .overlay(Rectangle().stroke(BlueHour.activeAccent.opacity(0.7), lineWidth: 1))
                                 .frame(width: abs(s1 - s0), height: geo.size.height)
                                 .position(x: (s0 + s1) / 2, y: geo.size.height / 2)
                                 .allowsHitTesting(false)
@@ -1319,130 +1514,14 @@ struct StressStrainChartView: View {
                 .onChange(of: scaleMode) { _, _ in resetXZoom() }
                 .onChange(of: runner.outputDirectory) { _, _ in resetXZoom() }
                 .padding(.horizontal, 16)
-                .padding(.top, 16)
+                .padding(.top, 8)
                 .padding(.bottom, 8)
                 .background(BlueHour.canvasBackground)
                 
-                // Hovered point details bar
-                if chartMode == .gbEnergy, let gbPt = (selectedAlpha.flatMap { findClosestGBPoint(to: $0) } ?? runner.currentGBEnergy ?? displayGBPoints.last) {
-                    HStack(spacing: 12) {
-                        Text(gbPt.sigma > 0
-                             ? String(format: "Δθ: %.2f° (Σ%d, %d %d 0)", gbPt.misorientationDeg, gbPt.sigma, gbPt.m, gbPt.n)
-                             : String(format: "Δθ: %.3f° (θ = ±%.3f°)", gbPt.misorientationDeg, gbPt.halfAngleDeg))
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text("γ_GB (Int): \(String(format: "%.6f", gbPt.gbEnergyInterior))")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(.green)
-                        Text("γ_GB (Tot): \(String(format: "%.6f", gbPt.gbEnergyTotal))")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(.teal)
-                        Text("L_GB: \(String(format: "%.0f", gbPt.lengthGBA0))a₀ (\(gbPt.nx)×\(gbPt.ny))")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.secondary)
-                        
-                        Spacer()
-                        
-                        if !gbPt.relaxedVTKPath.isEmpty && FileManager.default.fileExists(atPath: gbPt.relaxedVTKPath) {
-                            Button(action: {
-                                NSWorkspace.shared.open(URL(fileURLWithPath: gbPt.relaxedVTKPath))
-                            }) {
-                                Label("Open Angle VTK", systemImage: "cube.transparent")
-                                    .font(.system(size: 10, weight: .semibold))
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                            .help("Open relaxed configuration VTK for Δθ = \(String(format: "%.2f°", gbPt.misorientationDeg)) in ParaView")
-                        }
-                        
-                        Button(action: { runner.openSweepTextFile() }) {
-                            Label("angle_vs_energy.txt", systemImage: "doc.text")
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.mini)
-                        
-                        Button(action: { runner.openSweepRelaxedVTKFolder() }) {
-                            Label("VTK Folder", systemImage: "folder")
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.mini)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(BlueHour.controlSurface)
-                } else if chartMode == .eigenvalue, let selAlpha = selectedAlpha, let eigPt = findClosestEigenPoint(to: selAlpha) {
-                    HStack(spacing: 18) {
-                        Text("Step: \(eigPt.iteration)")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text("\(hasConjugateStrain ? "Load" : "Strain") α: \(String(format: "%.6f", eigPt.alpha))")
-                            .font(.system(size: 11, design: .monospaced))
-                        if let eps = eigPt.strain {
-                            Text("ε: \(String(format: "%.6f", eps))")
-                                .font(.system(size: 11, design: .monospaced))
-                        }
-                        if let lb = eigPt.lambdaBox {
-                            Text("λ_box: \(String(format: "%.4e", lb))")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .foregroundColor(eigPt.isCellUnstable ? .red : .teal)
-                        }
-                        if let tan = eigPt.boxTangent {
-                            Text("dα/dε: \(String(format: "%.4g", tan))")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                        Text("λ₁ (min): \(String(format: "%.6e", eigPt.lambdaMin))")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundColor(eigPt.isUnstable ? .red : .teal)
-                        if let l2 = eigPt.lambda2 {
-                            Text("λ₂: \(String(format: "%.6e", l2))")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
-                        }
-                        Text("Trigger: \(eigPt.trigger)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(BlueHour.controlSurface)
-                } else if let selAlpha = selectedAlpha, let pt = findClosestPoint(to: selAlpha) {
-                    let isIndentation = (runner.activeConfig?.geometryConfig.indenter.enabled == true ||
-                                         runner.activeConfig?.geometryConfig.primary_stress_component == "indentation_load")
-                    let curStress = stressValue(for: pt)
-                    let stressTitle: String = {
-                        if stressComponent == .primary {
-                            return isIndentation ? "Load P" : (primaryIsTorque ? "Torque T" : "Stress σ")
-                        }
-                        return stressComponent.shortLabel
-                    }()
-                    HStack(spacing: 18) {
-                        Text("Step: \(pt.iteration)")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        Text(isIndentation ? "Depth δ: \(String(format: "%.4f", pt.alpha))" : (hasConjugateStrain ? "Load α: \(String(format: "%.6f", pt.alpha))  Strain ε: \(String(format: "%.6f", pt.effectiveStrain))" : "Strain α: \(String(format: "%.6f", pt.alpha))"))
-                            .font(.system(size: 11, design: .monospaced))
-                        Text("\(stressTitle): \(String(format: "%.6f", curStress))")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.blue)
-                        if stressComponent != .vonMisesAvg {
-                            Text("⟨σ_vM⟩: \(String(format: "%.4f", pt.vonMisesAvg))")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.orange)
-                        }
-                        Text(pt.elasticEnergy.map { "E_el: \(String(format: "%.6e", $0))  H: \(String(format: "%.6e", pt.postEnergy))" }
-                             ?? "Energy E: \(String(format: "%.6e", pt.postEnergy))")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(.purple)
-                        if pt.shouldRemesh && pt.iteration > 0 {
-                            Text("⚡ Delaunay Surgery Event")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.red)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(BlueHour.controlSurface)
-                }
+                Divider()
+
+                // Fixed-height (30 pt) non-jittering bottom readout strip (Cursor when hovering, Latest otherwise)
+                bottomReadoutBar
             }
         }
         .onAppear {
@@ -1457,6 +1536,162 @@ struct StressStrainChartView: View {
                 chartMode = m
             }
         }
+    }
+
+    @ViewBuilder
+    private var bottomReadoutBar: some View {
+        let isHovering = (selectedAlpha != nil)
+
+        HStack(spacing: 12) {
+            // Mode badge: CURSOR vs LATEST
+            Text(isHovering ? "CURSOR" : "LATEST")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(isHovering ? .black : BlueHour.mist)
+                .padding(.horizontal, 5.5)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule()
+                        .fill(isHovering ? Color.cyan : BlueHour.slate.opacity(0.65))
+                )
+
+            if chartMode == .gbEnergy,
+               let gbPt = (selectedAlpha.flatMap { findClosestGBPoint(to: $0) } ?? runner.currentGBEnergy ?? displayGBPoints.last) {
+                Text(gbPt.sigma > 0
+                     ? String(format: "Δθ = %.2f° (Σ%d, %d %d 0)", gbPt.misorientationDeg, gbPt.sigma, gbPt.m, gbPt.n)
+                     : String(format: "Δθ = %.3f° (θ = ±%.3f°)", gbPt.misorientationDeg, gbPt.halfAngleDeg))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(BlueHour.ice)
+                Text("γ_GB(Int) = \(String(format: "%.6f", gbPt.gbEnergyInterior))")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(gbLineColor)
+                Text("γ_GB(Tot) = \(String(format: "%.6f", gbPt.gbEnergyTotal))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.teal)
+                Text("L_GB = \(String(format: "%.0f", gbPt.lengthGBA0))a₀ (\(gbPt.nx)×\(gbPt.ny))")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(BlueHour.mist)
+
+                Spacer(minLength: 6)
+
+                if !gbPt.relaxedVTKPath.isEmpty && FileManager.default.fileExists(atPath: gbPt.relaxedVTKPath) {
+                    Button(action: {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: gbPt.relaxedVTKPath))
+                    }) {
+                        Label("Open Angle VTK", systemImage: "cube.transparent")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help("Open relaxed configuration VTK for Δθ = \(String(format: "%.2f°", gbPt.misorientationDeg)) in ParaView")
+                }
+
+                Button(action: { runner.openSweepTextFile() }) {
+                    Label("angle_vs_energy.txt", systemImage: "doc.text")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+
+                Button(action: { runner.openSweepRelaxedVTKFolder() }) {
+                    Label("VTK Folder", systemImage: "folder")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            } else if chartMode == .eigenvalue,
+                      let eigPt = (selectedAlpha.flatMap { findClosestEigenPoint(to: $0) } ?? runner.eigenPoints.last) {
+                let paramLabel = isShiftMode ? "Shift u/a₀" : (isIndentationMode ? "Depth δ" : (hasConjugateStrain ? "Load α" : "Strain α"))
+                Text("Step \(eigPt.iteration)")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(BlueHour.ice)
+                Text("\(paramLabel) = \(String(format: "%.6f", eigPt.alpha))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(BlueHour.mist)
+                if let eps = eigPt.strain {
+                    Text("ε = \(String(format: "%.6f", eps))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(BlueHour.mist)
+                }
+                if let lb = eigPt.lambdaBox {
+                    Text("λ_box = \(String(format: "%.4e", lb))")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(eigPt.isCellUnstable ? .red : eigenLineColor)
+                }
+                Text("λ₁(min) = \(String(format: "%.5e", eigPt.lambdaMin))")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(eigPt.isUnstable ? .red : eigenLineColor)
+                if let l2 = eigPt.lambda2 {
+                    Text("λ₂ = \(String(format: "%.5e", l2))")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundColor(BlueHour.mist)
+                }
+                Spacer(minLength: 6)
+                if !isHovering {
+                    Text("Hover curve to inspect • Drag to zoom X")
+                        .font(.system(size: 10))
+                        .foregroundColor(BlueHour.mist.opacity(0.75))
+                        .lineLimit(1)
+                }
+            } else if let pt = (selectedAlpha.flatMap { findClosestPoint(to: $0) } ?? runner.curvePoints.last) {
+                let curStress = stressValue(for: pt)
+                let stressTitle: String = {
+                    if stressComponent == .primary {
+                        return isIndentationMode ? "Load P" : (primaryIsTorque ? "Torque T" : "Stress σ")
+                    }
+                    return stressComponent.shortLabel
+                }()
+                let xReadout: String = {
+                    if isIndentationMode {
+                        return "Depth δ = \(String(format: "%.4f", pt.alpha))"
+                    } else if isShiftMode {
+                        return "Shift u/a₀ = \(String(format: "%.5f", pt.alpha))"
+                    } else if hasConjugateStrain {
+                        return "Load α = \(String(format: "%.5f", pt.alpha))  ε = \(String(format: "%.5f", pt.effectiveStrain))"
+                    } else {
+                        return "Strain α = \(String(format: "%.5f", pt.alpha))"
+                    }
+                }()
+
+                Text("Step \(pt.iteration)")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(BlueHour.ice)
+                Text(xReadout)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(BlueHour.mist)
+                Text("\(stressTitle) = \(String(format: "%.6f", curStress))")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(stressLineColor)
+                if stressComponent != .vonMisesAvg {
+                    Text("⟨σ_vM⟩ = \(String(format: "%.4f", pt.vonMisesAvg))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.orange)
+                }
+                Text(pt.elasticEnergy.map { "E_el = \(String(format: "%.4e", $0))" }
+                     ?? "E = \(String(format: "%.4e", pt.postEnergy))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(energyLineColor)
+                if pt.shouldRemesh && pt.iteration > 0 {
+                    Text("⚡ Surgery")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.red)
+                }
+
+                Spacer(minLength: 6)
+
+                if !isHovering {
+                    Text("Hover curve to inspect • Drag to zoom X")
+                        .font(.system(size: 10))
+                        .foregroundColor(BlueHour.mist.opacity(0.75))
+                        .lineLimit(1)
+                }
+            } else {
+                Spacer()
+            }
+        }
+        .lineLimit(1)
+        .padding(.horizontal, 14)
+        .frame(height: 30)
+        .background(BlueHour.controlSurface)
     }
     
     private func hoveredCoordinates(for selX: Double) -> (x: Double, y: Double)? {

@@ -129,68 +129,165 @@ struct VTKSnapshotViewer: View {
     }
     
     // MARK: Colour / display controls
+
+    private struct QuickFieldSpec: Identifiable {
+        let id: String
+        let title: String
+        let candidates: [String]
+        let help: String
+    }
+
+    private static let quickFieldSpecs: [QuickFieldSpec] = [
+        QuickFieldSpec(
+            id: "vm",
+            title: "Von Mises",
+            candidates: ["cell:ElementVonMisesStress", "point:NodalVonMisesStress"],
+            help: "2D Von Mises equivalent stress"
+        ),
+        QuickFieldSpec(
+            id: "slip",
+            title: "Plastic Slip",
+            candidates: ["cell:ElementPlasticSlip", "cell:ElementPlasticStrainMag", "point:NodalPlasticSlip"],
+            help: "Cumulative plastic slip γ_p = ||F_p − I||_F across Delaunay remeshing"
+        ),
+        QuickFieldSpec(
+            id: "burgers",
+            title: "Burgers |b|",
+            candidates: ["cell:ElementBurgersMagnitude", "point:BurgersMagnitude"],
+            help: "Discrete Burgers vector magnitude |b| around defect cores"
+        ),
+        QuickFieldSpec(
+            id: "energy",
+            title: "Energy",
+            candidates: ["cell:ElementEnergy", "point:NodalEnergy", "point:NodalEnergyDensity"],
+            help: "Strain energy per element / node"
+        )
+    ]
+
+    private func resolvedQuickFieldID(for spec: QuickFieldSpec) -> String? {
+        guard let fields = model.frame?.dataset.fields else { return nil }
+        for cand in spec.candidates where fields.contains(where: { $0.id == cand }) {
+            return cand
+        }
+        return nil
+    }
     
     private var controlBar: some View {
-        HStack(spacing: 10) {
-            Text("Colour")
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundColor(BlueHour.mist)
-            fieldMenu
-            Picker("Map", selection: $model.colormap) {
-                ForEach(MeshColormap.allCases) { Text($0.rawValue).tag($0) }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text("Field")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundColor(BlueHour.mist)
+
+                // 1-Click Quick-Pick Field Pills
+                HStack(spacing: 2) {
+                    ForEach(Self.quickFieldSpecs) { spec in
+                        if let resolvedID = resolvedQuickFieldID(for: spec) {
+                            let isSelected = (model.fieldID == resolvedID)
+                            Button {
+                                model.fieldID = resolvedID
+                            } label: {
+                                Text(spec.title)
+                                    .font(.system(size: 10.5, weight: isSelected ? .bold : .medium))
+                                    .foregroundColor(isSelected ? .white : BlueHour.mist)
+                                    .padding(.horizontal, 7.5)
+                                    .padding(.vertical, 3.5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(isSelected ? BlueHour.activeTabFill : Color.clear)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .strokeBorder(isSelected ? BlueHour.activeTabBorder : Color.clear, lineWidth: 1.2)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .help(spec.help)
+                        }
+                    }
+                }
+                .padding(2)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(BlueHour.tabTrack))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(BlueHour.steel.opacity(0.4), lineWidth: 1))
+
+                fieldMenu
+
+                Divider().frame(height: 16)
+
+                Picker("Map", selection: $model.colormap) {
+                    ForEach(MeshColormap.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden().pickerStyle(.menu).controlSize(.small).frame(width: 98)
+
+                Picker("Range", selection: $model.rangeMode) {
+                    ForEach(SnapshotRangeMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden().pickerStyle(.menu).controlSize(.small).frame(width: 122)
+
+                if model.rangeMode == .manual {
+                    DoubleField(title: "min", value: $model.manualMin, width: 58)
+                    DoubleField(title: "max", value: $model.manualMax, width: 58)
+                }
+
+                Divider().frame(height: 16)
+
+                BlueHourToggleChip(
+                    "Edges",
+                    isOn: $showEdges,
+                    scale: .compact,
+                    helpText: "Overlay FEM triangle edges on the mesh"
+                )
+                GuardedNodesToggle(isOn: $showNodes, nodeCount: nodeCount)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+
+                Divider().frame(height: 16)
+
+                HStack(spacing: 5) {
+                    BlueHourToggleChip(
+                        "Box Zoom",
+                        icon: "plus.viewfinder",
+                        isOn: $boxZoomActive,
+                        showsCheckmark: false,
+                        scale: .compact,
+                        helpText: "Zoom to Box: drag a rectangle on the snapshot to zoom in (or hold Shift + drag)"
+                    )
+                    
+                    Button(action: { zoomOutToken += 1 }) {
+                        Image(systemName: "minus.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Zoom out (or scroll / right-drag)")
+                    
+                    Button(action: { fitToken += 1 }) {
+                        Text(String(format: "%.0f%%", max(10, min(25000, zoomScale * 100))))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .frame(minWidth: 38)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Current zoom level (click to reset to 100%)")
+                    
+                    Button(action: { zoomInToken += 1 }) {
+                        Image(systemName: "plus.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Zoom in (or scroll / right-drag)")
+                    
+                    Button(action: { boxZoomActive = false; fitToken += 1 }) {
+                        Image(systemName: "arrow.up.left.and.down.right.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Reset camera / Fit to view (or double-click the mesh)")
+                }
             }
-            .labelsHidden().pickerStyle(.menu).controlSize(.small).frame(width: 105)
-            Picker("Range", selection: $model.rangeMode) {
-                ForEach(SnapshotRangeMode.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .labelsHidden().pickerStyle(.menu).controlSize(.small).frame(width: 130)
-            if model.rangeMode == .manual {
-                DoubleField(title: "min", value: $model.manualMin, width: 64)
-                DoubleField(title: "max", value: $model.manualMax, width: 64)
-            }
-            Spacer()
-            Toggle("Edges", isOn: $showEdges).toggleStyle(.checkbox).controlSize(.small)
-            GuardedNodesToggle(isOn: $showNodes, nodeCount: nodeCount).toggleStyle(.checkbox).controlSize(.small)
-            Divider().frame(height: 16)
-            HStack(spacing: 4) {
-                Button(action: { boxZoomActive.toggle() }) {
-                    Image(systemName: "plus.viewfinder")
-                        .foregroundColor(boxZoomActive ? .accentColor : BlueHour.ice)
-                }
-                .controlSize(.small)
-                .help("Zoom to Box: drag a rectangle on the snapshot to zoom in (or hold Shift + drag)")
-                
-                Button(action: { zoomOutToken += 1 }) {
-                    Image(systemName: "minus.magnifyingglass")
-                }
-                .controlSize(.small)
-                .help("Zoom out (or scroll / right-drag)")
-                
-                Button(action: { fitToken += 1 }) {
-                    Text(String(format: "%.0f%%", max(10, min(25000, zoomScale * 100))))
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .frame(minWidth: 38)
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .help("Current zoom level (click to reset to 100%)")
-                
-                Button(action: { zoomInToken += 1 }) {
-                    Image(systemName: "plus.magnifyingglass")
-                }
-                .controlSize(.small)
-                .help("Zoom in (or scroll / right-drag)")
-                
-                Button(action: { boxZoomActive = false; fitToken += 1 }) {
-                    Image(systemName: "arrow.up.left.and.down.right.magnifyingglass")
-                }
-                .controlSize(.small)
-                .help("Reset camera / Fit to view (or double-click the mesh)")
-            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 32)
-        .background(BlueHour.controlSurface.opacity(0.7))
+        .background(BlueHour.controlSurface.opacity(0.85))
     }
     
     private var fieldMenu: some View {
@@ -206,14 +303,15 @@ struct VTKSnapshotViewer: View {
                 Section("Per node (smooth)") { ForEach(points) { f in Button(f.displayName) { model.fieldID = f.id } } }
             }
         } label: {
-            Text(model.currentField?.displayName ?? "Solid")
-                .font(.system(size: 11))
+            Label(model.currentField?.displayName ?? "All Fields", systemImage: "square.stack.3d.up")
+                .font(.system(size: 10.5, weight: .medium))
                 .lineLimit(1)
         }
         .menuStyle(.borderedButton)
         .controlSize(.small)
-        .frame(maxWidth: 240)
+        .frame(maxWidth: 210)
         .disabled(fields.isEmpty)
+        .help("Choose any cell or nodal VTK field")
     }
     
     // MARK: Canvas

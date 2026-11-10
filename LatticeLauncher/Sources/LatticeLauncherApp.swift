@@ -23,7 +23,7 @@ struct LatticeLauncherApp: App {
                 .environmentObject(runner)
                 .environment(\.locale, Locale(identifier: "en_US_POSIX"))
                 .preferredColorScheme(.dark)
-                .tint(BlueHour.steel)
+                .tint(BlueHour.activeAccent)
                 .groupBoxStyle(BlueHourGroupBoxStyle())
                 .background(BlueHour.windowBackground)
                 .frame(minWidth: 1120, idealWidth: 1280, minHeight: 740, idealHeight: 840)

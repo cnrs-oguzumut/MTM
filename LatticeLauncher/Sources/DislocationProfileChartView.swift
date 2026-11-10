@@ -146,25 +146,23 @@ public struct DislocationProfileChartView: View {
     private var tier1Header: some View {
         HStack(spacing: 10) {
             ScrollView(.horizontal, showsIndicators: false) {
-                Picker("", selection: $plotMode) {
-                    ForEach(DislocationPlotMode.allCases) { mode in
-                        Label(mode.rawValue, systemImage: mode.icon).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
+                BlueHourSegmentedPicker(
+                    selection: $plotMode,
+                    items: DislocationPlotMode.allCases.map { mode in
+                        BlueHourTabItem(mode, title: mode.rawValue, icon: mode.icon)
+                    },
+                    scale: .compact
+                )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             
-            Picker("", selection: $stateSelection) {
-                ForEach(DislocationStateSelection.allCases) { state in
-                    Text(state.rawValue).tag(state)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+            BlueHourSegmentedPicker(
+                selection: $stateSelection,
+                items: DislocationStateSelection.allCases.map { state in
+                    BlueHourTabItem(state, title: state.rawValue)
+                },
+                scale: .compact
+            )
             
             exportMenu
         }
