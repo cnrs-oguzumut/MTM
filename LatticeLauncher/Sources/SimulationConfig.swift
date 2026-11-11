@@ -279,36 +279,62 @@ public class SimulationConfig: ObservableObject {
     @Published public var geometryConfig: MacroscopicGeometryConfigModel = MacroscopicGeometryConfigModel()
     
     public static func detectProjectRoot() -> String {
-        let hardcodedDefault = "/Users/usalman/programming/FEM_2D/factorized/lattice_triangulation"
+        let fm = FileManager.default
         let bundleURL = Bundle.main.bundleURL
         
-        // 1. If running inside LatticeLauncher/Lattice Launcher.app
+        // 1. If running inside LatticeLauncher/Lattice Launcher.app in a writable source checkout
         let grandParent = bundleURL.deletingLastPathComponent().deletingLastPathComponent().path
-        if FileManager.default.fileExists(atPath: "\(grandParent)/src/main.cpp") {
+        if fm.fileExists(atPath: "\(grandParent)/src/main.cpp") && fm.isWritableFile(atPath: grandParent) {
             return grandParent
         }
         
-        // 2. If running inside project root
+        // 2. If running inside a writable project root
         let parent = bundleURL.deletingLastPathComponent().path
-        if FileManager.default.fileExists(atPath: "\(parent)/src/main.cpp") {
+        if fm.fileExists(atPath: "\(parent)/src/main.cpp") && fm.isWritableFile(atPath: parent) {
             return parent
         }
         
-        // 3. Current directory (if not root /)
-        let cwd = FileManager.default.currentDirectoryPath
-        if cwd != "/" && FileManager.default.fileExists(atPath: "\(cwd)/src/main.cpp") {
+        // 3. Current directory (if not root / and writable)
+        let cwd = fm.currentDirectoryPath
+        if cwd != "/" && fm.fileExists(atPath: "\(cwd)/src/main.cpp") && fm.isWritableFile(atPath: cwd) {
             return cwd
         }
         
-        // 4. Default project directory
-        if FileManager.default.fileExists(atPath: hardcodedDefault) {
-            return hardcodedDefault
+        // 4. Standalone .app / .dmg fallback in user's Documents folder
+        let docsFallback = "\(fm.homeDirectoryForCurrentUser.path)/Documents/LatticeRuns"
+        try? fm.createDirectory(atPath: "\(docsFallback)/scratch", withIntermediateDirectories: true)
+        return docsFallback
+    }
+    
+    /// Build a portable subprocess environment that prefers bundled Contents/Frameworks
+    /// without allowing external Homebrew libraries to hijack bundled dylibs via DYLD_LIBRARY_PATH.
+    public static func subprocessEnvironment(ompThreads: Int? = nil, blasThreads: Int? = nil) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if let omp = ompThreads {
+            env["OMP_NUM_THREADS"] = String(omp)
+        }
+        if let blas = blasThreads {
+            env["MKL_NUM_THREADS"] = String(blas)
+            env["OPENBLAS_NUM_THREADS"] = String(blas)
+            env["VECLIB_MAXIMUM_THREADS"] = String(blas)
         }
         
-        // 5. Fallback to user Documents (auto-create for standalone .app / .dmg users)
-        let docsFallback = "\(FileManager.default.homeDirectoryForCurrentUser.path)/Documents/LatticeRuns"
-        try? FileManager.default.createDirectory(atPath: "\(docsFallback)/scratch", withIntermediateDirectories: true)
-        return docsFallback
+        var fallbackDirs: [String] = []
+        let bundledFrameworks = Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks").path
+        if FileManager.default.fileExists(atPath: bundledFrameworks) {
+            fallbackDirs.append(bundledFrameworks)
+        }
+        fallbackDirs.append(contentsOf: [
+            "/opt/homebrew/lib",
+            "/opt/homebrew/opt/libomp/lib",
+            "/usr/local/lib",
+            "/usr/lib"
+        ])
+        if let existingFallback = env["DYLD_FALLBACK_LIBRARY_PATH"], !existingFallback.isEmpty {
+            fallbackDirs.append(existingFallback)
+        }
+        env["DYLD_FALLBACK_LIBRARY_PATH"] = fallbackDirs.joined(separator: ":")
+        return env
     }
     
     public static func detectBinaryPath(projectRoot: String? = nil) -> String {

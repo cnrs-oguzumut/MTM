@@ -293,6 +293,7 @@ public class StiffnessStudyManager: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.currentDirectoryURL = URL(fileURLWithPath: root)
+        p.environment = SimulationConfig.subprocessEnvironment()
         
         var args = [
             "--stiffness-study",
@@ -382,6 +383,7 @@ public class StiffnessStudyManager: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.currentDirectoryURL = URL(fileURLWithPath: root)
+        p.environment = SimulationConfig.subprocessEnvironment()
         var args = [
             "--stiffness-study",
             "--nx=\(nx)",
@@ -731,6 +733,7 @@ public class StiffnessStudyManager: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.currentDirectoryURL = URL(fileURLWithPath: root)
+        p.environment = SimulationConfig.subprocessEnvironment()
         var args = [
             "--stiffness-study",
             "--nx=\(nx)",

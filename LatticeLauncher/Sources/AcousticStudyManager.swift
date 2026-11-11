@@ -426,6 +426,7 @@ public class AcousticStudyManager: ObservableObject {
         
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
+        p.environment = SimulationConfig.subprocessEnvironment()
         // Never pass --triangular-reference: the acoustic study is Z² reference + Lagrange reduction by design.
         p.arguments = [
             "--acoustic-study",
@@ -580,6 +581,7 @@ public class AcousticStudyManager: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.currentDirectoryURL = URL(fileURLWithPath: root)
+        p.environment = SimulationConfig.subprocessEnvironment()
         // Never pass --triangular-reference: the acoustic study is Z² reference + Lagrange reduction by design.
         p.arguments = [
             "--acoustic-study",

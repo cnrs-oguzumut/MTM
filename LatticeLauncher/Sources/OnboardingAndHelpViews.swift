@@ -830,8 +830,11 @@ public struct DocumentationCenterSheet: View {
                     
                     docFileButton(title: "How to Install Dislocations (.md)", fileName: "how_to_install_dislocations.md")
                     docFileButton(title: "Special GBs & BCs Math (.pdf)", fileName: "special_grain_boundaries_and_bcs_math.pdf")
-                    docFileButton(title: "Special GBs & BCs Math (.md)", fileName: "SPECIAL_GRAIN_BOUNDARIES_AND_BCS_MATH.md")
                     docFileButton(title: "Discrete Burgers Circuit (.pdf)", fileName: "discrete_burgers_circuit_method.pdf")
+                    docFileButton(title: "Plasticity & Remeshing (.pdf)", fileName: "plasticity_memory_remeshing.pdf")
+                    docFileButton(title: "Aligned Deformation Gradient (.pdf)", fileName: "aligned_deformation_gradient.pdf")
+                    docFileButton(title: "Stress & Traction Control (.pdf)", fileName: "stress_and_traction_control.pdf")
+                    docFileButton(title: "Periodic Rotated Lattices (.pdf)", fileName: "periodic_rotated_lattices_recipe.pdf")
                     docFileButton(title: "Preconditioned L-BFGS (.pdf)", fileName: "preconditioned_lbfgs.pdf")
                     
                     Spacer()

@@ -1,15 +1,30 @@
 cmake_minimum_required(VERSION 3.10)
+
+# Default to macOS 14.0 deployment target so Apple Silicon binaries run across Sonoma, Sequoia, Tahoe+
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS deployment version" FORCE)
+endif()
+
 project(LatticeTriangulation)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Target baseline Apple Silicon (apple-m1) by default on macOS arm64 so packaged binaries
+# run without SIGILL across M1, M2, M3, M4, and newer M-series Macs.
+option(PORTABLE_APPLE_SILICON "Target baseline Apple Silicon (apple-m1) for universal M-series compatibility" ON)
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64" AND PORTABLE_APPLE_SILICON)
+    set(LATTICE_ARCH_FLAG "-mcpu=apple-m1")
+else()
+    set(LATTICE_ARCH_FLAG "-march=native")
+endif()
+
 # Set aggressive optimization flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     # For GCC, Clang, and AppleClang
-    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -flto=auto -ffast-math -funroll-loops -fstrict-aliasing -w")
-    set(CMAKE_C_FLAGS_RELEASE   "-O3 -DNDEBUG -march=native -flto=auto -ffast-math -funroll-loops -fstrict-aliasing -w")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG ${LATTICE_ARCH_FLAG} -flto=auto -ffast-math -funroll-loops -fstrict-aliasing -w")
+    set(CMAKE_C_FLAGS_RELEASE   "-O3 -DNDEBUG ${LATTICE_ARCH_FLAG} -flto=auto -ffast-math -funroll-loops -fstrict-aliasing -w")
     set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto=auto ")
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     # For Microsoft Visual C++
@@ -312,7 +327,7 @@ set(ALGLIB_SOURCES
 # Create ALGLIB library with optimization flags
 add_library(alglib STATIC ${ALGLIB_SOURCES})
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    target_compile_options(alglib PRIVATE -O3 -march=native -flto -ffast-math)
+    target_compile_options(alglib PRIVATE -O3 ${LATTICE_ARCH_FLAG} -flto -ffast-math)
 endif()
 
 # Include directories
@@ -385,7 +400,7 @@ endif()
 
 # Add compiler flags and definitions
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    target_compile_options(lattice_lib PRIVATE -O3 -march=native -flto -ffast-math)
+    target_compile_options(lattice_lib PRIVATE -O3 ${LATTICE_ARCH_FLAG} -flto -ffast-math)
 endif()
 
 # Add Armadillo preprocessor definition if found
@@ -452,7 +467,7 @@ else()
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    target_compile_options(lattice_triangulation PRIVATE -O3 -march=native -flto -ffast-math)
+    target_compile_options(lattice_triangulation PRIVATE -O3 ${LATTICE_ARCH_FLAG} -flto -ffast-math)
 endif()
 
 # Add Armadillo definition to main executable too
@@ -527,7 +542,7 @@ else()
     target_include_directories(benchmark_preconditioner PUBLIC ${EIGEN3_INCLUDE_DIR})
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    target_compile_options(benchmark_preconditioner PRIVATE -O3 -march=native -flto -ffast-math)
+    target_compile_options(benchmark_preconditioner PRIVATE -O3 ${LATTICE_ARCH_FLAG} -flto -ffast-math)
 endif()
 get_target_property(MAIN_EXE_DEFINITIONS lattice_triangulation COMPILE_DEFINITIONS)
 if(MAIN_EXE_DEFINITIONS)
@@ -552,7 +567,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
         endif()
         
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-            target_compile_options(run_tests PRIVATE -O3 -march=native -flto -ffast-math)
+            target_compile_options(run_tests PRIVATE -O3 ${LATTICE_ARCH_FLAG} -flto -ffast-math)
         endif()
         
         # Add definitions to tests

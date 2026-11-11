@@ -330,20 +330,10 @@ public class ProcessRunner: ObservableObject {
         )
         proc.currentDirectoryURL = URL(fileURLWithPath: runDir)
         
-        var env = ProcessInfo.processInfo.environment
-        env["OMP_NUM_THREADS"] = String(config.ompThreads)
-        env["MKL_NUM_THREADS"] = String(config.blasThreads)
-        env["OPENBLAS_NUM_THREADS"] = String(config.blasThreads)
-        env["VECLIB_MAXIMUM_THREADS"] = String(config.blasThreads)
-        
-        // Ensure Homebrew and Apple libraries are found
-        let extraPaths = "/opt/homebrew/lib:/opt/homebrew/opt/libomp/lib:/usr/local/lib"
-        if let existingDyld = env["DYLD_LIBRARY_PATH"] {
-            env["DYLD_LIBRARY_PATH"] = "\(extraPaths):\(existingDyld)"
-        } else {
-            env["DYLD_LIBRARY_PATH"] = extraPaths
-        }
-        proc.environment = env
+        proc.environment = SimulationConfig.subprocessEnvironment(
+            ompThreads: config.ompThreads,
+            blasThreads: config.blasThreads
+        )
         
         // 5. Pipes
         let pipe = Pipe()
