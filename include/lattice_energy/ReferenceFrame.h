@@ -46,7 +46,12 @@ struct ReferenceSetup {
     Eigen::Matrix2d C_ref = Eigen::Matrix2d::Identity();
     Eigen::Matrix2d F0 = Eigen::Matrix2d::Identity();
     std::unique_ptr<BaseLatticeCalculator> calc;
+    // Energy zero = the potential's ground state (lowest energy over all 2D lattices, any cell size)
     double zero = 0.0;
+    // Energy of the reference lattice above that ground state (0 when the reference lattice is the ground
+    // state, e.g. triangular Lennard-Jones; > 0 e.g. for a triangular lattice under the Zanzotto energy with
+    // beta < 8/3, whose ground state is square). Subtract it to get excess energies relative to the bulk.
+    double reference_excess = 0.0;
 };
 
 ReferenceSetup make_reference_setup(const std::string& lattice_type,

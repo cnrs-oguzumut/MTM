@@ -1694,7 +1694,13 @@ void example_1_conti_zanzotto_loading(
       const double L_int_a0 = std::max(a0_gb, L_gb_phys - 2.0 * collar_phys) / a0_gb;
 
       double interior_energy = 0.0;
+      double interior_ref_area = 0.0;
+      double total_ref_area = 0.0;
       const double norm_area = calculator.getUnitCellArea();
+      for (size_t elem_idx : active_elements) {
+        if (elem_idx < elements.size() && elements[elem_idx].isInitialized())
+          total_ref_area += elements[elem_idx].getReferenceArea();
+      }
       for (size_t elem_idx : active_elements) {
         if (elem_idx >= elements.size()) continue;
         auto &el = elements[elem_idx];
@@ -1714,11 +1720,17 @@ void example_1_conti_zanzotto_loading(
                                   red.C_reduced, potential_func, zero) /
                               norm_area;
           interior_energy += e_el * el.getReferenceArea();
+          interior_ref_area += el.getReferenceArea();
         }
       }
 
-      const double gamma_gb_total = post_energy / L_gb_a0;
-      const double gamma_gb_interior = interior_energy / L_int_a0;
+      // The energy zero is the potential's ground state; when the reference lattice lies above it
+      // (reference_excess > 0) the perfect bulk carries that energy too, and gamma_GB is the excess over it
+      const double bulk_density = ref_setup.reference_excess / norm_area;
+      const double total_excess = post_energy - bulk_density * total_ref_area;
+      const double interior_excess = interior_energy - bulk_density * interior_ref_area;
+      const double gamma_gb_total = total_excess / L_gb_a0;
+      const double gamma_gb_interior = interior_excess / L_int_a0;
       const double th1_deg = macro_geom.microstructure.theta1_deg;
       const double th2_deg = macro_geom.microstructure.theta2_deg;
       const double misori_deg = std::abs(th2_deg - th1_deg);
@@ -1731,7 +1743,7 @@ void example_1_conti_zanzotto_loading(
                 << "°, φ_GB = " << macro_geom.microstructure.gb_angle_deg << "°)\n"
                 << "  GB Length L_GB          = " << std::fixed << std::setprecision(3) << L_gb_a0
                 << " a0 (Interior Gauge L_int = " << L_int_a0 << " a0)\n"
-                << "  Total Excess Energy E   = " << std::scientific << std::setprecision(6) << post_energy << "\n"
+                << "  Total Excess Energy E   = " << std::scientific << std::setprecision(6) << total_excess << "\n"
                 << "  γ_GB (Total E / L_GB)   = " << std::fixed << std::setprecision(6) << gamma_gb_total << "\n"
                 << "  γ_GB (Interior Gauge)   = " << std::fixed << std::setprecision(6) << gamma_gb_interior << "\n"
                 << "======================================================================\n"
@@ -1745,7 +1757,7 @@ void example_1_conti_zanzotto_loading(
                << misori_deg << "," << half_tilt_deg << "," << th1_deg << "," << th2_deg << ","
                << macro_geom.microstructure.gb_angle_deg << "," << nx << "," << ny << ","
                << L_gb_a0 << "," << L_int_a0 << ","
-               << post_energy << "," << interior_energy << ","
+               << total_excess << "," << interior_excess << ","
                << gamma_gb_total << "," << gamma_gb_interior << ","
                << macro_geom.microstructure.gb_normal_gap_a0 << ","
                << macro_geom.microstructure.min_seam_distance_a0 << "\n";
@@ -1782,7 +1794,7 @@ void example_1_conti_zanzotto_loading(
                << misori_deg << "," << half_tilt_deg << "," << th1_deg << "," << th2_deg << ","
                << macro_geom.microstructure.gb_angle_deg << "," << nx << "," << ny << ","
                << L_gb_a0 << "," << L_int_a0 << ","
-               << post_energy << "," << interior_energy << ","
+               << total_excess << "," << interior_excess << ","
                << gamma_gb_total << "," << gamma_gb_interior << ","
                << macro_geom.microstructure.gb_normal_gap_a0 << ","
                << macro_geom.microstructure.min_seam_distance_a0;
