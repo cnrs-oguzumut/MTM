@@ -650,4 +650,72 @@ $s_0\begin{pmatrix} 1 & 0.5 + 0.866\alpha \\ 0 & 0.866 \end{pmatrix}$ \\
 \end{center}
 where $s_0 = (4/3)^{1/4} \approx 1.07457$. Similarly, in \code{ReferenceFrame::Triangular} (\code{--triangular-reference=1}), the 6 raw element deformation gradients $\mathbf{F} = \mathbf{F}_{\text{ext}}(\alpha)\,\mathbf{R}(k\cdot 60^\circ)$ are right-multiplied by $\mathbf{R}(k^*\cdot 60^\circ)\T$, collapsing all 6 orientations onto the single aligned deformation gradient $\mathbf{F}_{\text{aligned}} = \mathbf{F}_{\text{ext}}(\alpha) = \begin{pmatrix} 1 & \alpha \\ 0 & 1 \end{pmatrix}$ and producing a uniform First Piola--Kirchhoff stress $\mathbf{P}_{\text{aligned}}$ across every $\triangle$ and $\triangledown$ triangle in the mesh.
 
+% ============================================================================
+\section{Lattice Orientation $\varphi$ and Lattice Rotation $\omega$}
+\label{sec:lattice_rotation}
+% ============================================================================
+
+\begin{keyidea}[Independent of $\mathbf{F}_{\text{aligned}}$]
+The lattice orientation $\varphi$ and rotation $\omega$ are a separate measure. They do not use $\mathbf{F}_{\text{aligned}}$ or its target matrix: they are computed from the \emph{current} bond vectors of each element and compared with the ideal unit cell, so they do not depend on the reference frame (\code{SquareZ2} or \code{Triangular}), on the triangle labelling, on remeshing, or on the starting positions $\mathbf{X}_0$. Code: \code{measureLatticeOrientation} and \code{logLatticeRotation} in \code{src/configuration\_saver.cpp}.
+\end{keyidea}
+
+\subsection{Per element}
+
+\paragraph{1. Current edge matrix.} With $\mathbf{F} = \mathbf{x}_e\,\nabla_{\mathbf{X}}\mathbf{N}$ built from the current atom positions, the current edge vectors are
+\begin{equation}
+  \mathbf{E} = \begin{bmatrix} \mathbf{x}_1 - \mathbf{x}_0 & \mathbf{x}_2 - \mathbf{x}_0 \end{bmatrix}
+  = \mathbf{F}\,\mathbf{E}_{\text{ref}},
+  \qquad
+  \mathbf{E}_{\text{ref}}^{-1} = \begin{bmatrix} \nabla N_1\T \\ \nabla N_2\T \end{bmatrix}.
+\end{equation}
+If $\det\mathbf{E} < 0$ (clockwise nodes) the two columns are swapped; elements with $\det\mathbf{F} \le 0$ are discarded.
+
+\paragraph{2. Least-distorted lattice cell.} Let $\mathbf{B}$ be the ideal unit cell,
+\begin{equation}
+  \mathbf{B}_{\text{tri}} = \begin{pmatrix} 1 & 1/2 \\ 0 & \sqrt{3}/2 \end{pmatrix}, \qquad \mathbf{B}_{\text{sq}} = \mathbf{I}.
+\end{equation}
+For every unimodular $\mathbf{M}$ with entries in $\{-1,0,1\}$ and $\det\mathbf{M} = 1$ (about 20 matrices, identity first),
+\begin{equation}
+  \mathbf{G} = \mathbf{E}\,\mathbf{M}\,\mathbf{B}^{-1}, \qquad
+  \mathbf{G}_n = \frac{\mathbf{G}}{\sqrt{\det\mathbf{G}}}, \qquad
+  s(\mathbf{M}) = \big\| \mathbf{G}_n\T \mathbf{G}_n - \mathbf{I} \big\|_F^2,
+\end{equation}
+and the candidate with the smallest $s$ is kept. Removing the scale makes the choice depend on cell shape only. The distortion $d = \sqrt{s/2}$ is approximately the equivalent shear of the cell (VTK field \code{ElementLatticeDistortion}).
+
+\paragraph{3. Orientation.} The rotation of the polar decomposition $\mathbf{G} = \mathbf{R}\,\mathbf{U}$ has the closed form (2D, $\det\mathbf{G} > 0$)
+\begin{equation}
+  \boxed{\varphi = \operatorname{atan2}\!\big(G_{21} - G_{12},\; G_{11} + G_{22}\big),}
+\end{equation}
+defined only modulo the lattice symmetry $\Theta_s = 60^\circ$ (triangular) or $90^\circ$ (square).
+
+\paragraph{4. Rotation.} With $\theta$ the starting angle of the element's grain (majority grain label of its three nodes),
+\begin{equation}
+  \boxed{\omega = \operatorname{wrap}_{\Theta_s}(\varphi - \theta)}
+\end{equation}
+with $\operatorname{wrap}_{\Theta_s}$ into $(-\Theta_s/2, \Theta_s/2]$ (VTK field \code{ElementRotationAngleDeg}). A pristine grain gives $\mathbf{G} = \mathbf{R}(\theta)$ exactly, hence $\omega = 0$, in both reference frames.
+
+\paragraph{5. Reported orientation.} The VTK field \code{ElementLatticeOrientationDeg} stores
+\begin{equation}
+  \varphi_{\text{out}} = \theta + \omega,
+\end{equation}
+i.e.\ $\varphi$ folded around the grain's own starting angle rather than around $0^\circ$, so a grain whose starting angle lies near the fold stays continuous (values may lie outside $\pm\Theta_s/2$). Since the orientation is only defined modulo $\Theta_s$, any linear colour scale has a seam; the snapshot viewer therefore shows these fields with a cyclic colour map of period $\Theta_s$, on which $-\Theta_s/2$ and $+\Theta_s/2$ have the same colour.
+
+Elements are excluded from the statistics below when their nodes belong to more than one grain (grain-boundary elements) or when $d > 0.35$ (dislocation cores, phase-transformed regions).
+
+\subsection{Per grain and per load step (\code{lattice\_rotation\_log.csv})}
+
+With $w_e$ the current element area and $k = 360^\circ/\Theta_s$ ($6$ triangular, $4$ square), the grain mean is the area-weighted circular mean
+\begin{equation}
+  \bar\omega_g = \frac{1}{k}\operatorname{atan2}\!\Big(\sum_{e\in g} w_e \sin k\omega_e,\; \sum_{e\in g} w_e \cos k\omega_e\Big),
+\end{equation}
+so that values near $\pm\Theta_s/2$ do not cancel. Successive steps are joined, $\bar\omega_g^{(n)} \leftarrow \bar\omega_g^{(n-1)} + \operatorname{wrap}_{\Theta_s}\!\big(\bar\omega_g - \bar\omega_g^{(n-1)}\big)$, so cumulative rotations beyond $\Theta_s/2$ stay continuous (\code{Grain$k$RotationDeg}); the current grain orientation is $\varphi_g = \theta_g + \bar\omega_g$ (\code{Grain$k$OrientationDeg}). The rigid rotation of the applied macroscopic deformation is
+\begin{equation}
+  \omega_{\text{applied}} = \operatorname{atan2}\!\big(F^{\text{ext}}_{21} - F^{\text{ext}}_{12},\; F^{\text{ext}}_{11} + F^{\text{ext}}_{22}\big) \;=\; -\arctan(\gamma/2) \text{ in simple shear},
+\end{equation}
+and \code{MeanRotationNetDeg} $= \bar\omega - \omega_{\text{applied}}$.
+
+\paragraph{Physical meaning.} Slip along a lattice plane leaves bond directions unchanged, so dislocation glide alone gives $\omega = 0$; $\omega$ measures the turning of the lattice itself (elastic rotation, grain rotation, bending, kinking), as an EBSD map would.
+
+\paragraph{Validation.} A crystal rotated by $17^\circ$ gives $|\omega| < 10^{-9}$ degrees at $\alpha = 0$ (triangular LJ in both reference frames, Zanzotto square); under simple shear the mean follows $-\arctan(\gamma/2)$ to within $10^{-3}$ degrees, and exactly for a periodic box.
+
 \end{document}

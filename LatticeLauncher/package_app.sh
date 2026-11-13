@@ -180,9 +180,9 @@ cat <<EOF > "${CONTENTS}/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1</string>
+    <string>1.2</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
@@ -222,6 +222,10 @@ rm -f "$DMG_PATH"
 
 cp -R "${APP_DIR}" "${DMG_STAGING}/Lattice Launcher.app"
 ln -s /Applications "${DMG_STAGING}/Applications"
+
+if [ -f "${DIR}/AppIcon.icns" ]; then
+    cp "${DIR}/AppIcon.icns" "${DMG_STAGING}/.VolumeIcon.icns"
+fi
 
 mkdir -p "${DMG_STAGING}/Documentation"
 for pdf in \
@@ -276,8 +280,15 @@ READMEEOF
 
 xattr -cr "${DMG_STAGING}" || true
 
+SETFILE_BIN="$(xcrun -f SetFile 2>/dev/null || true)"
+if [ -n "$SETFILE_BIN" ] && [ -f "${DMG_STAGING}/.VolumeIcon.icns" ]; then
+    "$SETFILE_BIN" -c icnC "${DMG_STAGING}/.VolumeIcon.icns" 2>/dev/null || true
+    "$SETFILE_BIN" -a C "${DMG_STAGING}" 2>/dev/null || true
+fi
+
 if command -v hdiutil >/dev/null 2>&1; then
-    hdiutil create -volname "Lattice Launcher" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH"
+    hdiutil create -volname "Lattice Launcher" -srcfolder "$DMG_STAGING" -ov -format UDZO -imagekey zlib-level=9 "$DMG_PATH"
+    xattr -cr "$DMG_PATH" || true
     echo "Created standalone Apple Silicon DMG installer: ${DMG_PATH}"
 fi
 rm -rf "$DMG_STAGING"
