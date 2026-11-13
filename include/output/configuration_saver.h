@@ -77,6 +77,34 @@ public:
         int* out_grain_id = nullptr,
         double* out_theta_rad = nullptr);
 
+    // Lattice orientation of one element, measured from its CURRENT edge vectors (E = F * E_ref):
+    // the least-distorted lattice cell spanned by the element is compared with the ideal cell
+    // (equilateral or square), and the rotation of that fit is the lattice orientation. Independent of
+    // the reference frame, the mesh history (remeshing) and the starting positions X_0.
+    struct LatticeOrientationSample {
+        bool valid = false;        // false for inverted / degenerate elements
+        double phi_deg = 0.0;      // absolute lattice orientation = theta + omega (within sym/2 of the grain's start)
+        double omega_deg = 0.0;    // rotation from the element's grain angle theta, wrapped to (-sym/2, sym/2]
+        double theta_deg = 0.0;    // grain reference angle used
+        int grain_id = 0;          // majority grain of the 3 nodes
+        bool mixed_grain = false;  // nodes from 3 different grains (grain-boundary element)
+        bool boundary_element = false; // nodes from more than one grain
+        double area = 0.0;         // current element area
+        double distortion = 0.0;   // equivalent shear of the best-fitting cell away from the ideal cell
+        bool recognized = false;   // distortion <= kLatticeRecognitionShear (else core / transformed region)
+    };
+    // Cells sheared further than this from every ideal lattice cell (dislocation cores, phase-transformed
+    // regions) have no meaningful lattice orientation and are left out of the rotation statistics.
+    static constexpr double kLatticeRecognitionShear = 0.35;
+    static double latticeSymmetryDeg();  // 60 (triangular) or 90 (square)
+    static double wrapToSymmetry(double angle_deg, double symmetry_deg);
+    static LatticeOrientationSample measureLatticeOrientation(const ElementTriangle2D& element,
+                                                              const std::vector<Point2D>& points);
+    // Per-step lattice rotation log (lattice_rotation_log.csv in the current directory): area-weighted
+    // rotation statistics, per-grain mean rotations (unwrapped across steps) and the rigid rotation of
+    // the applied macroscopic deformation. Called from logEnergyAndStress_v2.
+    static void logLatticeRotation(int iteration, double alpha, UserData* userData);
+
     static void saveCheckpoint(const std::string& filename, const CheckpointData& data);
     static bool loadCheckpoint(const std::string& filename, CheckpointData& data,
                                const Eigen::Matrix<double, 3, 2>& dndx);

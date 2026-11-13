@@ -62,6 +62,8 @@ public:
         return 0.5 / std::abs(dndx(1, 0) * dndx(2, 1) - dndx(1, 1) * dndx(2, 0));
     }
     double getReferenceArea() const { return reference_area > 0.0 ? reference_area : area; }
+    // Reference shape-function gradients (rows: nodes 0, 1, 2); F = x_e * dNdX
+    const Eigen::Matrix<double, 3, 2>& getShapeDerivatives() const { return dNdX; }
     
     // New area calculation methods
     double calculateReferenceArea(const std::vector<Point2D>& reference_points);

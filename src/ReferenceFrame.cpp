@@ -11,7 +11,12 @@
 
 namespace {
 ReferenceFrame g_reference_frame = ReferenceFrame::SquareZ2;
+bool g_reference_lattice_triangular = false;
 } // namespace
+
+bool reference_lattice_is_triangular() {
+    return g_reference_lattice_triangular;
+}
 
 void set_reference_frame(ReferenceFrame frame) {
     g_reference_frame = frame;
@@ -26,6 +31,7 @@ ReferenceSetup make_reference_setup(const std::string& lattice_type,
                                     double a0,
                                     double r_cutoff,
                                     const std::function<double(double)>& pot) {
+    g_reference_lattice_triangular = (lattice_type == "triangular");
     if (g_reference_frame == ReferenceFrame::Triangular) {
         if (lattice_type != "triangular") {
             throw std::invalid_argument(

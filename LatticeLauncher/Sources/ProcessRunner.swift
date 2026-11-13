@@ -53,6 +53,7 @@ public class ProcessRunner: ObservableObject {
     // Live Stress-Strain & Eigenvalue Curve points
     @Published public var curvePoints: [StressStrainPoint] = []
     @Published public var eigenPoints: [EigenPoint] = []
+    @Published public var latticeRotationPoints: [LatticeRotationPoint] = []
     @Published public var currentLambdaMin: Double? = nil
     @Published public var peakStress: Double = 0.0
     @Published public var yieldStrain: Double = 0.0
@@ -97,6 +98,7 @@ public class ProcessRunner: ObservableObject {
         logLines.removeAll()
         curvePoints.removeAll()
         eigenPoints.removeAll()
+        latticeRotationPoints.removeAll()
         currentLambdaMin = nil
         currentGBEnergy = nil
         peakStress = 0.0
@@ -117,10 +119,12 @@ public class ProcessRunner: ObservableObject {
         if FileManager.default.fileExists(atPath: csvPath) {
             self.curvePoints.removeAll()
             self.eigenPoints.removeAll()
+            self.latticeRotationPoints.removeAll()
             self.pollCSV()
         } else {
             self.curvePoints.removeAll()
             self.eigenPoints.removeAll()
+            self.latticeRotationPoints.removeAll()
             self.currentStep = 0
             self.currentAlpha = 0.0
             self.currentStress = 0.0
@@ -291,6 +295,7 @@ public class ProcessRunner: ObservableObject {
         self.activeConfig = config
         self.curvePoints.removeAll()
         self.eigenPoints.removeAll()
+        self.latticeRotationPoints.removeAll()
         self.currentLambdaMin = nil
         if !isSweepRunning {
             self.currentGBEnergy = nil
@@ -815,6 +820,7 @@ public class ProcessRunner: ObservableObject {
                     self.updateAvalancheStats(solverCount: solverAvalanches)
                 }
                 self.pollEigenCSV()
+                self.pollLatticeRotationCSV()
                 if !self.isSweepRunning {
                     self.pollGBEnergyCSV()
                 }
@@ -935,6 +941,17 @@ public class ProcessRunner: ObservableObject {
         self.gbEnergyPoints.removeAll()
     }
     
+    /// Lattice rotation log written by the solver every load step (lattice_rotation_log.csv)
+    public func pollLatticeRotationCSV() {
+        let path = "\(outputDirectory)/lattice_rotation_log.csv"
+        guard FileManager.default.fileExists(atPath: path),
+              let content = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        let parsed = LatticeRotationLog.parse(content)
+        if parsed.count != latticeRotationPoints.count || parsed.last != latticeRotationPoints.last {
+            latticeRotationPoints = parsed
+        }
+    }
+
     public func pollEigenCSV() {
         let eigPath = "\(outputDirectory)/eigen_log.csv"
         guard FileManager.default.fileExists(atPath: eigPath) else { return }

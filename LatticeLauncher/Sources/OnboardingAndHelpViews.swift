@@ -910,7 +910,8 @@ public struct DocumentationCenterSheet: View {
             docCard(
                 title: "2. Main Workspace Tabs (⌘1 – ⌘4)",
                 lines: [
-                    "• 📈 Curve (⌘1): Plots live Stress–Strain σ(α), Grain Boundary Energy γ_GB(Δθ), or radial Volterra Dislocation Profiles.",
+                    "• 📈 Curve (⌘1): Plots live Stress–Strain σ(α), Grain Boundary Energy γ_GB(Δθ), Lattice Rotation ω(α), or radial Volterra Dislocation Profiles.",
+                    "• ω(α) is the rotation of the crystal lattice measured from the current atom positions (per grain and mean ± spread; optionally net of the applied rigid rotation). Per-element fields ElementRotationAngleDeg, ElementLatticeOrientationDeg and ElementLatticeDistortion are in every VTK snapshot; cells distorted by more than 0.35 shear (dislocation cores, transformed regions) are excluded from the statistics.",
                     "• 📐 Geometry & BCs (⌘2): Interactive 2D studio showing discrete lattice atoms, grain boundaries, dislocation glide planes, cutouts, nanoindenter, and boundary condition vectors.",
                     "• 🕸 Initial Mesh (⌘3): Generates and renders the actual Delaunay triangulation and per-element elastic energy prior to running.",
                     "• 💻 Terminal Log (⌘4): Streams real-time solver iterations, CHOLMOD factorization metrics, and avalanche timestamps."

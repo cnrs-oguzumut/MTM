@@ -2227,17 +2227,7 @@ public struct GeometryBuilderView: View {
     }
 
     private func grainPaletteColor(_ gid: Int) -> Color {
-        let palette: [Color] = [
-            Color(red: 0.56, green: 0.78, blue: 1.00),
-            Color(red: 1.00, green: 0.76, blue: 0.42),
-            Color(red: 0.62, green: 0.92, blue: 0.68),
-            Color(red: 0.92, green: 0.62, blue: 0.95),
-            Color(red: 1.00, green: 0.60, blue: 0.62),
-            Color(red: 0.52, green: 0.92, blue: 0.90),
-            Color(red: 0.95, green: 0.90, blue: 0.52),
-            Color(red: 0.75, green: 0.68, blue: 1.00)
-        ]
-        return palette[abs(gid) % palette.count]
+        GrainPalette.color(gid)
     }
     
     // MARK: - Periodic Dislocations Section (2M Planes, 1 Dislocation Per Plane, Net b = 0)

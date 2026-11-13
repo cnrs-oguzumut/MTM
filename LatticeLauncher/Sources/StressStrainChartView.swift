@@ -6,6 +6,7 @@ public enum ChartMetricMode: String, CaseIterable, Identifiable {
     case energy = "Energy E(α)"
     case eigenvalue = "λ_min(α)"
     case gbEnergy = "γ_GB(Δθ)"
+    case rotation = "ω(α)"
     
     public var id: String { rawValue }
 }
@@ -199,7 +200,7 @@ struct StressStrainChartView: View {
         switch chartMode {
         case .gbEnergy:   return "Misorientation Angle Δθ (°)"
         case .eigenvalue: return eigenXLabel
-        case .stress, .energy: return xAxisLabel
+        case .stress, .rotation, .energy: return xAxisLabel
         }
     }
 
@@ -211,7 +212,7 @@ struct StressStrainChartView: View {
             return eigenYLabel
         case .energy:
             return energyLabel
-        case .stress:
+        case .stress, .rotation:
             if stressComponent == .primary {
                 if isIndentationMode { return "Indentation Load P" }
                 if primaryIsTorque { return "Rim Torque T" }
@@ -272,6 +273,17 @@ struct StressStrainChartView: View {
                 helpText: hasGB
                     ? "Grain Boundary Energy γ_GB vs. Misorientation Δθ (\(displayGBPoints.count) recorded angles)"
                     : "Grain Boundary Energy γ_GB(Δθ) — run a Bicrystal relaxation or Δθ sweep to populate"
+            ),
+            BlueHourTabItem(
+                .rotation,
+                title: "ω(α)",
+                hasData: !runner.latticeRotationPoints.isEmpty,
+                liveDotColor: runner.latticeRotationPoints.isEmpty ? nil : Color(red: 0.75, green: 0.68, blue: 1.00),
+                activeFill: BlueHour.eigenTabFill,
+                activeBorder: BlueHour.eigenTabBorder,
+                helpText: runner.latticeRotationPoints.isEmpty
+                    ? "Lattice rotation ω(α) — written every load step by the solver (lattice_rotation_log.csv)"
+                    : "Lattice rotation ω(α): per-grain and mean rotation of the crystal lattice, measured from current atom positions"
             )
         ]
     }
@@ -427,7 +439,7 @@ struct StressStrainChartView: View {
             let hi = maxY + span * 0.14
             return lo < hi ? lo...hi : 0.0...max(0.5, maxY * 1.2)
             
-        case .stress:
+        case .stress, .rotation:
             guard !runner.curvePoints.isEmpty else { return 0.0...0.05 }
             let zoomed = runner.curvePoints.filter { inXZoom(xValue($0)) }
             let vals = (zoomed.isEmpty ? runner.curvePoints : zoomed).map { stressValue(for: $0) }
@@ -515,7 +527,7 @@ struct StressStrainChartView: View {
     private func formatYValue(_ val: Double) -> String {
         let span = yDomain.upperBound - yDomain.lowerBound
         switch chartMode {
-        case .stress, .eigenvalue, .gbEnergy:
+        case .stress, .rotation, .eigenvalue, .gbEnergy:
             if span <= 0.002 {
                 return String(format: "%.5f", val)
             } else if span <= 0.02 {
@@ -542,7 +554,7 @@ struct StressStrainChartView: View {
     
     private var currentLineColor: Color {
         switch chartMode {
-        case .stress: return stressLineColor
+        case .stress, .rotation: return stressLineColor
         case .energy: return energyLineColor
         case .eigenvalue: return eigenLineColor
         case .gbEnergy: return gbLineColor
@@ -551,7 +563,7 @@ struct StressStrainChartView: View {
     
     private var currentPointColor: Color {
         switch chartMode {
-        case .stress: return stressPointColor
+        case .stress, .rotation: return stressPointColor
         case .energy: return energyPointColor
         case .eigenvalue: return eigenPointColor
         case .gbEnergy: return gbPointColor
@@ -563,7 +575,7 @@ struct StressStrainChartView: View {
             get: { currentLineColor },
             set: { newColor in
                 switch chartMode {
-                case .stress: stressLineColor = newColor
+                case .stress, .rotation: stressLineColor = newColor
                 case .energy: energyLineColor = newColor
                 case .eigenvalue: eigenLineColor = newColor
                 case .gbEnergy: gbLineColor = newColor
@@ -578,7 +590,7 @@ struct StressStrainChartView: View {
             get: { currentPointColor },
             set: { newColor in
                 switch chartMode {
-                case .stress: stressPointColor = newColor
+                case .stress, .rotation: stressPointColor = newColor
                 case .energy: energyPointColor = newColor
                 case .eigenvalue: eigenPointColor = newColor
                 case .gbEnergy: gbPointColor = newColor
@@ -1137,7 +1149,27 @@ struct StressStrainChartView: View {
             Divider()
             
             // Main Chart Canvas
-            if chartMode == .gbEnergy && displayGBPoints.isEmpty {
+            if chartMode == .rotation {
+                if runner.latticeRotationPoints.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 44))
+                            .foregroundColor(.secondary.opacity(0.5))
+                        Text("No Lattice Rotation Data Yet")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        Text("The solver writes lattice_rotation_log.csv at every load step: the rotation of the crystal lattice in each grain, measured from the current atom positions. Launch a run (or open a run folder made with this version) to plot it here.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary.opacity(0.8))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 460)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(BlueHour.canvasBackground)
+                } else {
+                    LatticeRotationChartView(points: runner.latticeRotationPoints)
+                }
+            } else if chartMode == .gbEnergy && displayGBPoints.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "square.split.2x1")
                         .font(.system(size: 44))

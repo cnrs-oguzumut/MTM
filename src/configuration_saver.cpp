@@ -189,6 +189,272 @@ Eigen::Matrix2d ConfigurationSaver::computeElementGrainAlignedElasticF(
     return R_grain.transpose() * F_aligned;
 }
 
+// ==================== LATTICE ORIENTATION / ROTATION (measured from current coordinates) ====================
+// NOTE: this file is compiled with -ffast-math; no infinity()/NaN comparisons in this block.
+namespace {
+// Unimodular basis changes with entries in {-1, 0, 1} (identity first, so ties keep the element's own edges)
+const std::vector<Eigen::Matrix2d>& smallUnimodularCandidates() {
+    static const std::vector<Eigen::Matrix2d> cands = [] {
+        std::vector<Eigen::Matrix2d> out;
+        out.push_back(Eigen::Matrix2d::Identity());
+        for (int a = -1; a <= 1; ++a)
+            for (int b = -1; b <= 1; ++b)
+                for (int c = -1; c <= 1; ++c)
+                    for (int d = -1; d <= 1; ++d) {
+                        if (a * d - b * c != 1) continue;
+                        if (a == 1 && b == 0 && c == 0 && d == 1) continue;
+                        Eigen::Matrix2d M;
+                        M << a, b, c, d;
+                        out.push_back(M);
+                    }
+        return out;
+    }();
+    return cands;
+}
+
+// Majority grain and its reference angle (same rule as computeElementGrainAlignedElasticF)
+void elementGrainAndTheta(const ElementTriangle2D& element, const std::vector<Point2D>& points,
+                          int& grain_id, double& theta_deg, bool& boundary, bool& mixed) {
+    const int n_pts = static_cast<int>(points.size());
+    int n[3];
+    int g[3];
+    for (int k = 0; k < 3; ++k) {
+        n[k] = element.getNodeIndex(k);
+        g[k] = (n[k] >= 0 && n[k] < n_pts) ? points[n[k]].grain_id : 0;
+    }
+    int pick = 0;
+    if (g[0] == g[1] || g[0] == g[2]) pick = 0;
+    else if (g[1] == g[2]) pick = 1;
+    grain_id = g[pick];
+    theta_deg = (n[pick] >= 0 && n[pick] < n_pts) ? points[n[pick]].grain_theta_deg : g_reference_rotation_deg;
+    if (std::abs(theta_deg) < 1e-12 && std::abs(g_reference_rotation_deg) > 1e-12 && grain_id == 0) {
+        theta_deg = g_reference_rotation_deg;
+    }
+    boundary = !(g[0] == g[1] && g[1] == g[2]);
+    mixed = (g[0] != g[1] && g[1] != g[2] && g[0] != g[2]);
+}
+} // namespace
+
+double ConfigurationSaver::latticeSymmetryDeg() {
+    return reference_lattice_is_triangular() ? 60.0 : 90.0;
+}
+
+double ConfigurationSaver::wrapToSymmetry(double angle_deg, double symmetry_deg) {
+    const double sym = (symmetry_deg > 1e-9) ? symmetry_deg : 360.0;
+    double r = std::fmod(angle_deg + 0.5 * sym, sym);
+    if (r <= 0.0) r += sym;
+    return r - 0.5 * sym;  // (-sym/2, sym/2]
+}
+
+ConfigurationSaver::LatticeOrientationSample ConfigurationSaver::measureLatticeOrientation(
+    const ElementTriangle2D& element, const std::vector<Point2D>& points) {
+    LatticeOrientationSample out;
+    elementGrainAndTheta(element, points, out.grain_id, out.theta_deg, out.boundary_element, out.mixed_grain);
+
+    // Current edge matrix E = [x1 - x0, x2 - x0] = F * E_ref, with E_ref^{-1} = rows (grad N1, grad N2)
+    const Eigen::Matrix<double, 3, 2>& dN = element.getShapeDerivatives();
+    Eigen::Matrix2d E_ref_inv;
+    E_ref_inv << dN(1, 0), dN(1, 1),
+                 dN(2, 0), dN(2, 1);
+    const double det_ref_inv = E_ref_inv.determinant();
+    const Eigen::Matrix2d& F = element.getDeformationGradient();
+    if (std::abs(det_ref_inv) < 1e-300 || F.determinant() <= 0.0) {
+        return out;  // degenerate or inverted element
+    }
+    Eigen::Matrix2d E = F * E_ref_inv.inverse();
+    if (E.determinant() < 0.0) {
+        E.col(0).swap(E.col(1));  // clockwise node order: same triangle, counter-clockwise edges
+    }
+    const double det_E = E.determinant();
+    if (det_E <= 1e-14 * E.squaredNorm()) {
+        return out;
+    }
+
+    // Ideal unit cell (unit bond length): equilateral for triangular lattices, square otherwise
+    const bool tri = reference_lattice_is_triangular();
+    Eigen::Matrix2d B_inv;
+    if (tri) {
+        Eigen::Matrix2d B;
+        B << 1.0, 0.5,
+             0.0, std::sqrt(3.0) / 2.0;
+        B_inv = B.inverse();
+    } else {
+        B_inv.setIdentity();
+    }
+
+    // Least-distorted lattice cell spanned by the element (shape only: scale removed)
+    double best_score = std::numeric_limits<double>::max();
+    Eigen::Matrix2d best_G = Eigen::Matrix2d::Identity();
+    for (const Eigen::Matrix2d& M : smallUnimodularCandidates()) {
+        const Eigen::Matrix2d G = E * M * B_inv;
+        const double dG = G.determinant();
+        if (dG <= 0.0) continue;
+        const Eigen::Matrix2d Gn = G / std::sqrt(dG);
+        const double score = (Gn.transpose() * Gn - Eigen::Matrix2d::Identity()).squaredNorm();
+        if (score < best_score - 1e-12) {
+            best_score = score;
+            best_G = G;
+        }
+    }
+    // Rotation of the polar decomposition G = R U (closed form in 2D, det G > 0)
+    const double phi = std::atan2(best_G(1, 0) - best_G(0, 1), best_G(0, 0) + best_G(1, 1)) * 180.0 / M_PI;
+    const double sym = tri ? 60.0 : 90.0;
+    // omega is folded to +-sym/2 around the grain's own starting angle, and phi = theta + omega: the fold
+    // is centred on each grain, so a grain stays continuous unless it rotates more than sym/2 from its start
+    // (a fixed +-sym/2 window splits grains that sit near it, e.g. theta = -26 deg rotating past -30 deg)
+    out.omega_deg = wrapToSymmetry(phi - out.theta_deg, sym);
+    out.phi_deg = out.theta_deg + out.omega_deg;
+    out.area = 0.5 * det_E;
+    out.distortion = std::sqrt(0.5 * best_score);  // ~ |shear| of the fitted cell for small distortions
+    out.recognized = (out.distortion <= kLatticeRecognitionShear);
+    out.valid = true;
+    return out;
+}
+
+void ConfigurationSaver::logLatticeRotation(int iteration, double alpha, UserData* userData) {
+    if (userData == nullptr) return;
+    static std::ofstream log_file;
+    static std::filesystem::path log_directory;
+    static std::vector<double> grain_unwrapped;
+    static std::vector<char> grain_has_prev;
+    static double mean_unwrapped = 0.0;
+    static bool mean_has_prev = false;
+    static int header_grains = 0;
+
+    std::vector<Point2D>& pts = userData->points;
+    std::vector<ElementTriangle2D>& elems = userData->elements;
+    int n_grains = 1;
+    for (const auto& p : pts) n_grains = std::max(n_grains, p.grain_id + 1);
+
+    const std::filesystem::path current_directory = std::filesystem::current_path();
+    if (!log_file.is_open() || log_directory != current_directory) {
+        if (log_file.is_open()) log_file.close();
+        grain_unwrapped.assign(static_cast<size_t>(n_grains), 0.0);
+        grain_has_prev.assign(static_cast<size_t>(n_grains), 0);
+        mean_unwrapped = 0.0;
+        mean_has_prev = false;
+        const bool exists = std::filesystem::exists("lattice_rotation_log.csv") && (iteration > 0);
+        if (exists) {
+            log_file.open("lattice_rotation_log.csv", std::ios::app);
+        } else {
+            log_file.open("lattice_rotation_log.csv");
+            // All angles in degrees, counter-clockwise positive. Rotation = lattice orientation minus the
+            // grain's starting angle; Net = minus the rigid rotation of the applied macroscopic deformation.
+            log_file << "Iteration,Alpha,AppliedRotationDeg,MeanRotationDeg,MeanRotationNetDeg,StdRotationDeg,"
+                     << "MaxAbsRotationDeg,FracAbsRotationAbove2Deg,NumElements,NumBoundaryElements,"
+                     << "NumUnrecognizedElements";
+            for (int g = 0; g < n_grains; ++g) log_file << ",Grain" << g << "RotationDeg";
+            // Current orientation of each grain: starting angle theta + its tracked rotation (not wrapped)
+            for (int g = 0; g < n_grains; ++g) log_file << ",Grain" << g << "OrientationDeg";
+            log_file << "\n";
+        }
+        log_file << std::setprecision(8);
+        header_grains = n_grains;
+        log_directory = current_directory;
+    }
+    if (static_cast<int>(grain_unwrapped.size()) < header_grains) {
+        grain_unwrapped.resize(static_cast<size_t>(header_grains), 0.0);
+        grain_has_prev.resize(static_cast<size_t>(header_grains), 0);
+    }
+
+    const double sym = latticeSymmetryDeg();
+    const double kfold = 360.0 / sym;
+    const double to_rad = M_PI / 180.0;
+
+    // Rigid rotation of the applied macroscopic deformation (polar decomposition, closed form)
+    const Eigen::Matrix2d F_macro = (userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->enabled)
+        ? userData->macro_geom_ptr->computeMacroscopicF(alpha)
+        : Eigen::Matrix2d(userData->F_external);
+    const double applied_rot = std::atan2(F_macro(1, 0) - F_macro(0, 1), F_macro(0, 0) + F_macro(1, 1)) / to_rad;
+
+    std::vector<LatticeOrientationSample> samples;
+    samples.reserve(userData->active_elements.size());
+    int n_boundary = 0;
+    int n_unrecognized = 0;
+    double W = 0.0, Sc = 0.0, Ss = 0.0;
+    std::vector<double> gW(static_cast<size_t>(header_grains), 0.0);
+    std::vector<double> gSc(static_cast<size_t>(header_grains), 0.0);
+    std::vector<double> gSs(static_cast<size_t>(header_grains), 0.0);
+    for (size_t elem_idx : userData->active_elements) {
+        if (elem_idx >= elems.size()) continue;
+        ElementTriangle2D& element = elems[elem_idx];
+        if (!element.isInitialized()) continue;
+        element.calculate_deformation_gradient(pts);
+        const LatticeOrientationSample smp = measureLatticeOrientation(element, pts);
+        if (!smp.valid) continue;
+        if (smp.boundary_element) {
+            ++n_boundary;
+            continue;  // grain-boundary elements have no single lattice orientation
+        }
+        if (!smp.recognized) {
+            ++n_unrecognized;
+            continue;  // dislocation core / transformed cell: orientation not defined
+        }
+        const double w = smp.area;
+        const double a = kfold * smp.omega_deg * to_rad;
+        W += w; Sc += w * std::cos(a); Ss += w * std::sin(a);
+        if (smp.grain_id >= 0 && smp.grain_id < header_grains) {
+            gW[static_cast<size_t>(smp.grain_id)] += w;
+            gSc[static_cast<size_t>(smp.grain_id)] += w * std::cos(a);
+            gSs[static_cast<size_t>(smp.grain_id)] += w * std::sin(a);
+        }
+        samples.push_back(smp);
+    }
+
+    // Area-weighted circular mean (period = lattice symmetry), spread and extremes
+    const double mean = (W > 0.0) ? std::atan2(Ss, Sc) / (kfold * to_rad) : 0.0;
+    double var = 0.0, max_abs = 0.0, w_above = 0.0;
+    for (const auto& smp : samples) {
+        const double d = wrapToSymmetry(smp.omega_deg - mean, sym);
+        var += smp.area * d * d;
+        max_abs = std::max(max_abs, std::abs(smp.omega_deg));
+        if (std::abs(smp.omega_deg) > 2.0) w_above += smp.area;
+    }
+    const double std_dev = (W > 0.0) ? std::sqrt(var / W) : 0.0;
+    const double frac_above = (W > 0.0) ? (w_above / W) : 0.0;
+
+    // Unwrap means across steps so cumulative rotations beyond sym/2 stay continuous
+    mean_unwrapped = mean_has_prev ? (mean_unwrapped + wrapToSymmetry(mean - mean_unwrapped, sym)) : mean;
+    mean_has_prev = (W > 0.0) || mean_has_prev;
+
+    log_file << iteration << "," << alpha << "," << applied_rot << "," << mean_unwrapped << ","
+             << (mean_unwrapped - applied_rot) << "," << std_dev << "," << max_abs << "," << frac_above << ","
+             << samples.size() << "," << n_boundary << "," << n_unrecognized;
+    // Starting angle of each grain (same fallback as elementGrainAndTheta for rotated single crystals)
+    std::vector<double> grain_theta(static_cast<size_t>(header_grains), 0.0);
+    std::vector<char> grain_theta_set(static_cast<size_t>(header_grains), 0);
+    for (const auto& p : pts) {
+        if (p.grain_id < 0 || p.grain_id >= header_grains || grain_theta_set[static_cast<size_t>(p.grain_id)]) continue;
+        double th = p.grain_theta_deg;
+        if (std::abs(th) < 1e-12 && std::abs(g_reference_rotation_deg) > 1e-12 && p.grain_id == 0) th = g_reference_rotation_deg;
+        grain_theta[static_cast<size_t>(p.grain_id)] = th;
+        grain_theta_set[static_cast<size_t>(p.grain_id)] = 1;
+    }
+    std::vector<char> grain_measured(static_cast<size_t>(header_grains), 0);
+    for (int g = 0; g < header_grains; ++g) {
+        const size_t gi = static_cast<size_t>(g);
+        if (gW[gi] > 0.0) {
+            grain_measured[gi] = 1;
+            const double gm = std::atan2(gSs[gi], gSc[gi]) / (kfold * to_rad);
+            grain_unwrapped[gi] = grain_has_prev[gi] ? (grain_unwrapped[gi] + wrapToSymmetry(gm - grain_unwrapped[gi], sym)) : gm;
+            grain_has_prev[gi] = 1;
+            log_file << "," << grain_unwrapped[gi];
+        } else {
+            log_file << ",";  // grain absent at this step (e.g. carved away): empty field
+        }
+    }
+    for (int g = 0; g < header_grains; ++g) {
+        const size_t gi = static_cast<size_t>(g);
+        if (grain_measured[gi]) {
+            log_file << "," << (grain_theta[gi] + grain_unwrapped[gi]);
+        } else {
+            log_file << ",";
+        }
+    }
+    log_file << "\n";
+    log_file.flush();
+}
+
 void ConfigurationSaver::ensureDirectoryExists(const std::string& directory) {
     std::filesystem::create_directory(directory);
 }
@@ -915,6 +1181,9 @@ void ConfigurationSaver::logEnergyAndStress_v2(
     log_file << "\n";
     
     log_file.flush();
+
+    // Lattice rotation statistics for the same step (lattice_rotation_log.csv)
+    logLatticeRotation(iteration, alpha, postUserData);
 }
 
 // Start of the modified function body
@@ -1031,6 +1300,8 @@ void ConfigurationSaver::writeToVTKFile(
     std::vector<double> element_hydrostatic_pressure_values;
     std::vector<int> element_grain_ids;
     std::vector<double> element_rotation_angle_deg;
+    std::vector<double> element_lattice_orientation_deg;
+    std::vector<double> element_lattice_distortion;
     std::vector<Eigen::Matrix2d> element_f_aligned_tensors;
     std::vector<Eigen::Matrix2d> element_f_total_tensors;
     std::vector<Eigen::Matrix2d> element_f_plastic_tensors;
@@ -1042,6 +1313,8 @@ void ConfigurationSaver::writeToVTKFile(
     std::vector<double> atom_energy(original_points_count, 0.0);
     std::vector<double> atom_area(original_points_count, 0.0);
     std::vector<double> atom_plastic_slip_weighted(original_points_count, 0.0);
+    std::vector<double> atom_rot_cos(original_points_count, 0.0);  // area-weighted circular sums of omega
+    std::vector<double> atom_rot_sin(original_points_count, 0.0);
     std::vector<double> nodal_projected_stress(extended_point_count, 0.0);
     std::vector<double> nodal_von_mises(extended_point_count, 0.0);
     std::vector<double> nodal_hydrostatic_pressure(extended_point_count, 0.0);
@@ -1113,16 +1386,23 @@ void ConfigurationSaver::writeToVTKFile(
         element_plastic_slip_values.push_back(elem_plastic_slip);
         element_plastic_strain_mag_values.push_back(elem_plastic_strain_mag);
 
-        // Extract polar rotation angle relative to the grain's reference frame
-        Eigen::JacobiSVD<Eigen::Matrix2d> svd(F_grain_rel, Eigen::ComputeFullU | Eigen::ComputeFullV);
-        Eigen::Matrix2d Q_rel = svd.matrixU() * svd.matrixV().transpose();
-        if (Q_rel.determinant() < 0.0) {
-            Eigen::Matrix2d U_fix = svd.matrixU();
-            U_fix.col(1) *= -1.0;
-            Q_rel = U_fix * svd.matrixV().transpose();
+        // Lattice orientation from the element's current edges (frame- and remesh-independent):
+        // phi = absolute lattice orientation, omega = rotation from the grain's starting angle
+        const LatticeOrientationSample lat = measureLatticeOrientation(element, points);
+        element_rotation_angle_deg.push_back(lat.valid ? lat.omega_deg : 0.0);
+        element_lattice_orientation_deg.push_back(lat.valid ? lat.phi_deg : 0.0);
+        element_lattice_distortion.push_back(lat.valid ? lat.distortion : 1.0);
+        if (lat.valid && lat.recognized && !lat.boundary_element) {
+            const double a_rot = (360.0 / latticeSymmetryDeg()) * lat.omega_deg * M_PI / 180.0;
+            const double w_rot = lat.area / 3.0;
+            for (int k = 0; k < 3; ++k) {
+                const int idx = element.getNodeIndex(k);
+                if (idx >= 0 && idx < original_points_count) {
+                    atom_rot_cos[idx] += w_rot * std::cos(a_rot);
+                    atom_rot_sin[idx] += w_rot * std::sin(a_rot);
+                }
+            }
         }
-        double rel_rot_deg = std::atan2(Q_rel(1, 0), Q_rel(0, 0)) * 180.0 / M_PI;
-        element_rotation_angle_deg.push_back(rel_rot_deg);
 
         Eigen::Matrix2d C = F.transpose() * F;
         lagrange::Result result;
@@ -1416,7 +1696,8 @@ void ConfigurationSaver::writeToVTKFile(
     file.write(reinterpret_cast<const char*>(elem_gid_buf.data()), elem_gid_buf.size() * sizeof(int32_t));
     file << "\n";
 
-    // Element Local Rotation Angle (degrees, relative to grain reference angle)
+    // Element lattice rotation (degrees): lattice orientation minus the element's grain starting angle,
+    // measured from current coordinates and wrapped into +-30 (triangular) / +-45 (square)
     file << "SCALARS ElementRotationAngleDeg float 1\n";
     file << "LOOKUP_TABLE default\n";
     std::vector<float> elem_rot_buf;
@@ -1425,6 +1706,30 @@ void ConfigurationSaver::writeToVTKFile(
         elem_rot_buf.push_back(vtk_swap_float(static_cast<float>(val)));
     }
     file.write(reinterpret_cast<const char*>(elem_rot_buf.data()), elem_rot_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element absolute lattice orientation (degrees): grain starting angle + rotation, so each grain stays
+    // continuous (folded by the lattice symmetry only around the grain's own starting angle)
+    file << "SCALARS ElementLatticeOrientationDeg float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_phi_buf;
+    elem_phi_buf.reserve(element_lattice_orientation_deg.size());
+    for (double val : element_lattice_orientation_deg) {
+        elem_phi_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_phi_buf.data()), elem_phi_buf.size() * sizeof(float));
+    file << "\n";
+
+    // Element lattice distortion: equivalent shear of the best-fitting cell away from a perfect cell.
+    // Above 0.35 (dislocation cores, transformed regions) the rotation/orientation fields are not meaningful.
+    file << "SCALARS ElementLatticeDistortion float 1\n";
+    file << "LOOKUP_TABLE default\n";
+    std::vector<float> elem_dist_buf;
+    elem_dist_buf.reserve(element_lattice_distortion.size());
+    for (double val : element_lattice_distortion) {
+        elem_dist_buf.push_back(vtk_swap_float(static_cast<float>(val)));
+    }
+    file.write(reinterpret_cast<const char*>(elem_dist_buf.data()), elem_dist_buf.size() * sizeof(float));
     file << "\n";
 
     // Element Aligned Deformation Gradient Tensor (in grain reference frame)
@@ -1549,6 +1854,26 @@ void ConfigurationSaver::writeToVTKFile(
         file << "SCALARS NodalGrainThetaDeg float 1\n";
         file << "LOOKUP_TABLE default\n";
         file.write(reinterpret_cast<const char*>(nodal_gtheta_buf.data()), nodal_gtheta_buf.size() * sizeof(float));
+        file << "\n";
+    }
+
+    // Nodal lattice rotation: area-weighted circular mean of the adjacent elements' rotation
+    {
+        const double kfold = 360.0 / latticeSymmetryDeg();
+        std::vector<float> nodal_rot_buf(extended_point_count, vtk_swap_float(0.0f));
+        for (const auto& entry : node_map) {
+            const int original_idx = entry.first.index;
+            const int extended_idx = entry.second;
+            if (original_idx >= 0 && original_idx < original_points_count &&
+                extended_idx >= 0 && extended_idx < extended_point_count) {
+                const double c = atom_rot_cos[original_idx], sn = atom_rot_sin[original_idx];
+                const double val = (c * c + sn * sn > 0.0) ? std::atan2(sn, c) * 180.0 / M_PI / kfold : 0.0;
+                nodal_rot_buf[extended_idx] = vtk_swap_float(static_cast<float>(val));
+            }
+        }
+        file << "SCALARS NodalLatticeRotationDeg float 1\n";
+        file << "LOOKUP_TABLE default\n";
+        file.write(reinterpret_cast<const char*>(nodal_rot_buf.data()), nodal_rot_buf.size() * sizeof(float));
         file << "\n";
     }
     

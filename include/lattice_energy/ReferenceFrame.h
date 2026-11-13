@@ -17,6 +17,10 @@ enum class ReferenceFrame {
 void set_reference_frame(ReferenceFrame frame);
 ReferenceFrame reference_frame();
 
+// Lattice symmetry of the run (triangular or square), recorded by make_reference_setup so output-side
+// lattice measures (orientation, rotation) need no separate setup call
+bool reference_lattice_is_triangular();
+
 inline bool use_lagrange_reduction() {
     return reference_frame() == ReferenceFrame::SquareZ2;
 }
