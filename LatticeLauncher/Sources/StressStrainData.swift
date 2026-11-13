@@ -75,6 +75,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
     public let appliedSigmaXY: Double?
     /// Volterra cylinder load: Burgers vector length b, the unit of the dislocation position x_d / b (Burgers)
     public let burgers: Double?
+    /// Volterra cylinder load: relaxed start of the core from the box centre (CoreStart; nil in older logs)
+    public let coreStart: Double?
 
     public init(
         iteration: Int,
@@ -101,7 +103,8 @@ public struct StressStrainPoint: Identifiable, Equatable {
         coreShift: Double? = nil,
         coreShiftRelaxed: Double? = nil,
         appliedSigmaXY: Double? = nil,
-        burgers: Double? = nil
+        burgers: Double? = nil,
+        coreStart: Double? = nil
     ) {
         self.iteration = iteration
         self.alpha = alpha
@@ -128,6 +131,7 @@ public struct StressStrainPoint: Identifiable, Equatable {
         self.coreShiftRelaxed = coreShiftRelaxed
         self.appliedSigmaXY = appliedSigmaXY
         self.burgers = burgers
+        self.coreStart = coreStart
     }
 
     public func value(for component: StressComponentType) -> Double {

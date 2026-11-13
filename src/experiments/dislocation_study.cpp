@@ -1644,6 +1644,9 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
         cols.push_back({"Core2Y", core_ref[1].y()});
       }
       cols.push_back({"CoreShift", core_ref[0].x() - core_ref0[0].x()});
+      // Relaxed start of the core measured from the box centre (constant): CoreStart + CoreShift is the core's
+      // position from the box centre, which shows the start site within the Peierls period (--cyl-core-shift)
+      cols.push_back({"CoreStart", core_ref0[0].x() - box_centre_x});
       if (core_ref.size() > 1) cols.push_back({"Core2Shift", core_ref[1].x() - core_ref0[1].x()});
       cols.push_back({"CoreJump", jump ? 1.0 : 0.0});
       // The same after the fixed-connectivity relaxation, before any remeshing of the step: a jump there is
@@ -1828,8 +1831,17 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
                      "predictor of the first step starts from F_bar = I." << std::endl;
         Fcb_prev = Eigen::Matrix2d::Identity();
       }
+      const std::vector<Eigen::Vector2d> core_before_control = core_ref0;
       core_ref0 = find_cores(core_ref0, Fb_prev, lost0);
       core_ref_prev = core_ref0;
+      if (!lost0) {
+        for (size_t k = 0; k < core_ref0.size() && k < cores.size(); ++k) {
+          std::cout << "[Cylinder Load] Zero-load core " << (cores[k].sign > 0 ? "+b" : "-b") << " (residual stress "
+                    << "removed): x = " << (core_ref0[k].x() - box_centre_x) / a
+                    << " b from the box centre (moved " << (core_ref0[k].x() - core_before_control[k].x()) / a
+                    << " b); the load curve starts here" << std::endl;
+        }
+      }
       zero_load_file = relaxed_file_id + 1; // the relaxed state keeps its own file
       save_vtk(zero_load_file, 0.0);
       std::cout << "[Cylinder Load] Average stress inside R_free controlled: zero-load state at F_bar = ["
@@ -1849,14 +1861,15 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     int file_id = (zero_load_file >= 0 ? zero_load_file : relaxed_file_id) + 1;
     int first_jump = -1;
     double alpha_prev = 0.0, alpha_before_jump = 0.0, alpha_at_jump = 0.0;
-    // Load cycle: forward until the first core has glided cycle_b b, then back until it returns to its start
+    // Load cycle of amplitude A = cycle_b, glide measured from the core's start: forward until the first core
+    // has glided +A, backward until it is at -A, then forward again until it is back at its start (0)
     const bool cycle = load.cycle_b > 0.0;
     const double alpha_cap = std::max(std::abs(load.alpha_end), dstep);
     double cycle_dir = dir;
-    bool cycle_reversed = false;
+    int cycle_leg = 0; // 0: forward to +A, 1: backward to -A, 2: forward to 0
     if (cycle) {
-      std::cout << "[Cylinder Load] Load cycle: forward until the core has glided " << load.cycle_b
-                << " b, then reverse until it is back at its start (|alpha| <= " << alpha_cap << ")." << std::endl;
+      std::cout << "[Cylinder Load] Load cycle: glide the core +" << load.cycle_b << " b from its start, then -"
+                << load.cycle_b << " b, then back to its start (|alpha| <= " << alpha_cap << ")." << std::endl;
     }
     for (size_t k = 0; !lost0; ++k) {
       double alpha = 0.0;
@@ -1938,11 +1951,16 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
       bool cycle_done = false;
       if (cycle) {
         const double glide_b = dir * (core_ref[0].x() - core_ref0[0].x()) / burgers_vector.x();
-        if (!cycle_reversed && glide_b >= load.cycle_b) {
-          cycle_reversed = true;
+        if (cycle_leg == 0 && glide_b >= load.cycle_b) {
+          cycle_leg = 1;
           cycle_dir = -dir;
-          std::cout << "[Cylinder Load] Core glide reached " << load.cycle_b << " b: reversing the load." << std::endl;
-        } else if (cycle_reversed && glide_b <= 0.0) {
+          std::cout << "[Cylinder Load] Core glide reached +" << load.cycle_b << " b: reversing the load." << std::endl;
+        } else if (cycle_leg == 1 && glide_b <= -load.cycle_b) {
+          cycle_leg = 2;
+          cycle_dir = dir;
+          std::cout << "[Cylinder Load] Core glide reached -" << load.cycle_b
+                    << " b: loading forward again, back to the start." << std::endl;
+        } else if (cycle_leg == 2 && glide_b >= 0.0) {
           cycle_done = true;
         }
       }

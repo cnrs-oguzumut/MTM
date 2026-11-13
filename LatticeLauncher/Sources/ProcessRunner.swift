@@ -725,6 +725,7 @@ public class ProcessRunner: ObservableObject {
             var coreShiftRelaxedCol: Int? = nil
             var appliedSigmaCol: Int? = nil
             var burgersCol: Int? = nil
+            var coreStartCol: Int? = nil
             if let header = lines.first(where: { $0.hasPrefix("Iteration") }) {
                 let names = header.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 effectiveStrainCol = names.firstIndex(of: "EffectiveStrain")
@@ -733,6 +734,7 @@ public class ProcessRunner: ObservableObject {
                 coreShiftRelaxedCol = names.firstIndex(of: "CoreShiftRelaxed")
                 appliedSigmaCol = names.firstIndex(of: "AppliedSigmaXY")
                 burgersCol = names.firstIndex(of: "Burgers")
+                coreStartCol = names.firstIndex(of: "CoreStart")
             }
 
             for line in lines {
@@ -796,7 +798,8 @@ public class ProcessRunner: ObservableObject {
                     coreShift: parseOptional(coreShiftCol), // Volterra cylinder load runs
                     coreShiftRelaxed: parseOptional(coreShiftRelaxedCol),
                     appliedSigmaXY: parseOptional(appliedSigmaCol),
-                    burgers: parseOptional(burgersCol)
+                    burgers: parseOptional(burgersCol),
+                    coreStart: parseOptional(coreStartCol)
                 ))
             }
             

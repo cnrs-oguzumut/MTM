@@ -2,6 +2,22 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Changed — dislocation cylinder: three-leg load cycle, positions from the box centre
+- `--cyl-cycle=A` is now a symmetric cycle of amplitude A (in b), with glide measured from the core's start:
+  forward until the core has glided +A, backward until it is at −A, then forward until it is back at its
+  start. Before, the cycle went to +A and back to the start only. GUI: "Cycle amplitude ±A", with a line
+  under it showing 0 → +A → −A → 0.
+- The load log adds `CoreStart`: where the core starts its load curve, measured from the box centre. The
+  "x: x_d/b" axis plots `CoreShift + CoreStart`, labelled "Dislocation Position from Box Centre", so the
+  start site within the Peierls period shows on the chart. Older logs without the column still plot from
+  the relaxed start.
+- With average-stress control, the zero-load correction moves the core after the initial relaxation; the
+  log now prints that position too, and `CoreStart` is that position.
+- GUI: a "Core start shift (b)" field sets `--cyl-core-shift`, and a shifted run gets its own folder
+  (`…_shift0.5_…`) instead of overwriting the unshifted one.
+- Test: triangular, mode 2, 100 × 100, R_free = 8, strain control, A = 0.4: glide 0 → +0.42 → −0.42 →
+  0.01 b (each leg overshoots by under one load step), i.e. 0.11 → 0.53 → −0.31 → 0.12 b from the box centre.
+
 ### Added — dislocation cylinder: start site of the core (`--cyl-core-shift`)
 - `--cyl-core-shift=s` moves the inserted core, and the cylinder centred on it, by s·b along the glide
   direction from the centre of the atoms' bounding box (default 0). Each Peierls period has two

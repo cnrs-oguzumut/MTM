@@ -1205,6 +1205,20 @@ struct SidebarControlsView: View {
                                 }
                             }
 
+                            HStack {
+                                Text("Core start shift (b):")
+                                    .font(.caption)
+                                Spacer()
+                                DoubleField(title: "0", value: $config.cylinderCoreShiftB, width: 60)
+                            }
+                            .help("Moves the inserted dislocation core, and the cylinder centred on it, along the glide direction by this many Burgers vectors from the centre of the crystal. Each Peierls period has two mirror-symmetric sites: the box centre (0) and 0.5 b. One is a Peierls valley, the other a hill; on the triangular lattice the box centre is the hill, so 0.5 starts the core in a valley (as needed to compare with molecular statics from the same site).")
+                            Text(config.cylinderCoreShiftB == 0
+                                 ? "Core at the box centre (a Peierls hill on the triangular lattice; the relaxation moves it into the next valley). 0.5 starts it in the valley."
+                                 : String(format: "Core inserted %g b from the box centre along the glide direction; the run log reports where it settles after the relaxation.", config.cylinderCoreShiftB))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
                             Divider()
                             HStack {
                                 Text("Load:")
@@ -1229,12 +1243,18 @@ struct SidebarControlsView: View {
                                     DoubleField(title: "1e-4", value: $config.cylinderLoadStep, width: 75, minValue: 1e-8)
                                 }
                                 HStack {
-                                    Text("Cycle to x_d = (b, 0 = off):")
+                                    Text("Cycle amplitude ±A (b, 0 = off):")
                                         .font(.caption)
                                     Spacer()
                                     DoubleField(title: "2", value: $config.cylinderCycleB, width: 60)
                                 }
-                                .help("Peierls protocol (Fig. 8 of the MTM cylinder paper): load until the dislocation has glided this many Burgers vectors, then reverse the load until it is back at its start. End then only caps |α|.")
+                                .help("Peierls cycle of amplitude A, glide measured from where the core starts its load curve (not from the box centre): load until the dislocation has glided +A Burgers vectors, reverse until it is at −A, then load forward again until it is back at its start. End then only caps |α|.")
+                                if config.cylinderCycleB > 0 {
+                                    Text(String(format: "Glide from the core's start: 0 → +%g b → −%g b → 0 (on the x_d axis, which is measured from the box centre, the cycle is centred on the start).", config.cylinderCycleB, config.cylinderCycleB))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                                 HStack {
                                     Text("Normal stress σ_xx:")
                                         .font(.caption)

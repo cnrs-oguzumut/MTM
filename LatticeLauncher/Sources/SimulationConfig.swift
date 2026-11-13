@@ -152,13 +152,16 @@ public class SimulationConfig: ObservableObject {
     /// End of the α schedule (γ or τ); a negative end loads in reverse
     @Published public var cylinderLoadEnd: Double = 0.01
     @Published public var cylinderLoadStep: Double = 1e-4
-    /// Load cycle: forward until the core has glided this many b, then back to its start (0 = off)
+    /// Load cycle amplitude A (b, glide from the core's start): forward to +A, back to −A, forward to the start (0 = off)
     @Published public var cylinderCycleB: Double = 2.0
     /// Normal stresses σ_xx, σ_yy (average inside R_free when cylinderAverageStress is on, otherwise Cauchy–Born on the ring)
     @Published public var cylinderSigmaXX: Double = 0.0
     @Published public var cylinderSigmaYY: Double = 0.0
     /// Control the average stress inside R_free at each step (and at zero load) by iterating F̄ on the ring
     @Published public var cylinderAverageStress: Bool = true
+    /// Start site of the core: shift (in b) along the glide direction from the box centre; the cylinder follows the core.
+    /// The box centre and 0.5 b are the two mirror-symmetric sites of a Peierls period (one valley, one hill).
+    @Published public var cylinderCoreShiftB: Double = 0.0
     /// Place a second, opposite dislocation (−b) at (dipoleDx, dipoleDy) lattice steps from the first
     @Published public var dipoleEnabled: Bool = false
     @Published public var dipoleDx: Int = 10
@@ -373,12 +376,13 @@ public class SimulationConfig: ObservableObject {
         let cylLoadTag = (mode == .volterra && cylinderLoadMode != .none)
             ? "_load_\(cylinderLoadMode.rawValue)\(cylinderLoadEnd < 0 ? "_rev" : "")" : ""
         let dipoleTag = (mode == .volterra && dipoleEnabled) ? "_dipole\(dipoleDx)x\(dipoleDy)" : ""
+        let coreShiftTag = (mode == .volterra && cylinderCoreShiftB != 0) ? String(format: "_shift%g", cylinderCoreShiftB) : ""
         let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? (isPeriodicDislocs ? "_pbc_dislocs_\(2 * geometryConfig.microstructure.dislocation_pair_count)D" : (isPeriodicVoronoi ? "_pbc_voronoi_\(geometryConfig.microstructure.seeds.count)G" : "_\(geometryConfig.preset_name)")) : ""
         if mode == .shift {
             let pertTag = shiftPerturbMesh ? "_pert" : ""
             return String(format: "run_shift_%dx%d_amp%g_du%g_%@%@%@%@%@%@", nx, ny, shiftAmplitude, abs(shiftStepSize), remeshTag, pertTag, latTag, potTag, triRefTag, rotTag)
         }
-        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(triRefTag)\(rotTag)\(relaxTag)\(dipoleTag)\(cylLoadTag)"
+        return "run_\(mode.rawValue)_\(nx)x\(ny)\(bcTag)\(geomTag)_seed\(seed)_\(remeshTag)\(latTag)\(potTag)\(triRefTag)\(rotTag)\(relaxTag)\(dipoleTag)\(coreShiftTag)\(cylLoadTag)"
     }
     
     public var targetDirectory: String {
@@ -473,6 +477,8 @@ public class SimulationConfig: ObservableObject {
                 if cylinderSigmaYY != 0 { args.append(String(format: "--cyl-syy=%.8g", cylinderSigmaYY)) }
                 if cylinderAverageStress { args.append("--cyl-avg-stress=1") }
             }
+            // 0 (core at the box centre) is the simulator default: emit the flag only when shifted
+            if cylinderCoreShiftB != 0 { args.append(String(format: "--cyl-core-shift=%g", cylinderCoreShiftB)) }
             if dipoleEnabled {
                 args.append("--dipole-dx=\(dipoleDx)")
                 args.append("--dipole-dy=\(dipoleDy)")

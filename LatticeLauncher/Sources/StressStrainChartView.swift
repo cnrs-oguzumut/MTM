@@ -138,15 +138,20 @@ struct StressStrainChartView: View {
     private var appliedStressAxis: Bool { volterraAxisActive && volterraXAxis == .appliedStress }
     /// Dislocation position x_d / b (core glide in Burgers vectors), as in Fig. 8 of the MTM cylinder paper
     private var corePositionAxis: Bool { volterraAxisActive && volterraXAxis == .corePosition }
+    /// The log carries the core's relaxed start from the box centre (CoreStart): x_d is then plotted from the box
+    /// centre, so the start site within the Peierls period shows on the axis (older logs: from the relaxed start)
+    private var corePositionFromBoxCentre: Bool { runner.curvePoints.contains { $0.coreStart != nil } }
     /// x coordinate of a curve point: the load parameter α, the conjugate strain ε under force control, or the
     /// applied far-field stress in a Volterra cylinder load
     private func xValue(_ pt: StressStrainPoint) -> Double {
-        if corePositionAxis { return (pt.coreShift ?? 0.0) / max(pt.burgers ?? 1.0, 1e-12) }
+        if corePositionAxis { return ((pt.coreShift ?? 0.0) + (pt.coreStart ?? 0.0)) / max(pt.burgers ?? 1.0, 1e-12) }
         if appliedStressAxis { return pt.appliedSigmaXY ?? pt.alpha }
         return conjugateStrainAxis ? pt.effectiveStrain : pt.alpha
     }
     private var xAxisLabel: String {
-        if corePositionAxis { return "Dislocation Position (x_d / b)" }
+        if corePositionAxis {
+            return corePositionFromBoxCentre ? "Dislocation Position from Box Centre (x_d / b)" : "Dislocation Position (x_d / b)"
+        }
         if appliedStressAxis { return "Applied Stress (σ_xy)" }
         if conjugateStrainAxis { return "Conjugate Strain (ε)" }
         if isShiftMode { return "Block Shift (u / a₀)" }

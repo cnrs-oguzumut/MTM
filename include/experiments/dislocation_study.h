@@ -24,8 +24,9 @@ struct CylinderLoadOptions {
   // Delaunay mesh of the dislocated crystal) for the whole load: the core can then move only through the
   // lattice energy at fixed connectivity, which isolates an elastic instability from a mesh reconnection.
   bool step_remesh = true;
-  // > 0: load cycle (the Peierls protocol of Fig. 8 in the MTM cylinder paper): load until the core has glided
-  // cycle_b Burgers vectors, then reverse until it is back at its start; |alpha_end| caps the load
+  // > 0: load cycle of amplitude A = cycle_b Burgers vectors, glide measured from the core's start (after the
+  // initial relaxation): load until the core has glided +A, reverse until it is at -A, then load forward again
+  // until it is back at its start; |alpha_end| caps the load
   double cycle_b = 0.0;
   // Normal stresses (sigma_xx, sigma_yy) of the ring's Cauchy-Born stress, in both load modes (applied at the
   // first load step)
