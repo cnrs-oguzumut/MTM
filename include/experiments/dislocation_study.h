@@ -41,6 +41,11 @@ struct CylinderLoadOptions {
   // (both 0: a single dislocation)
   int dipole_dx = 0;
   int dipole_dy = 0;
+  // Shift of the inserted core (and of the cylinder centred on it) along the glide direction x, in units of
+  // b, from the default position at the centre of the atoms' bounding box. 0.5 puts the core on the other
+  // mirror-symmetric site of the Peierls period (the box centre is one of the two; one is a Peierls valley,
+  // the other a hill).
+  double core_shift_b = 0.0;
   bool loading() const { return mode == "strain" || mode == "stress"; }
   bool dipole() const { return dipole_dx != 0 || dipole_dy != 0; }
 };

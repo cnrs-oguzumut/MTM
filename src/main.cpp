@@ -326,6 +326,8 @@ int main(int argc, char **argv) {
       cylinder_load.sigma_yy = std::stod(arg.substr(10));
     } else if (arg.rfind("--cyl-step-remesh=", 0) == 0) {
       cylinder_load.step_remesh = std::stoi(arg.substr(18)) != 0;
+    } else if (arg.rfind("--cyl-core-shift=", 0) == 0) {
+      cylinder_load.core_shift_b = std::stod(arg.substr(17));
     } else if (arg.rfind("--dipole-dx=", 0) == 0) {
       cylinder_load.dipole_dx = std::stoi(arg.substr(12));
     } else if (arg.rfind("--dipole-dy=", 0) == 0) {

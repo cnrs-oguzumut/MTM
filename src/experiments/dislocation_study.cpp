@@ -1069,6 +1069,10 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
   }
   double core_x = 0.5 * (x_min + x_max);
   double core_y = 0.5 * (y_min + y_max);
+  // Optional shift along the glide direction (--cyl-core-shift, in b = a): the cylinder stays centred on
+  // the core, so only the core's site within the Peierls period changes
+  const double box_centre_x = core_x;
+  core_x += load.core_shift_b * lattice_constant;
   Eigen::Vector2d dislocation_core(core_x, core_y);
 
   // Dynamically compute elastic moduli and dislocation field parameters from the potential
@@ -1611,6 +1615,14 @@ void single_dislocation_cylinder_relaxation(int caller_id, int nx, int ny,
     for (const auto &cs : cores) guess0.push_back(cs.pos);
     bool lost0 = false;
     std::vector<Eigen::Vector2d> core_ref0 = find_cores(guess0, Eigen::Matrix2d::Identity(), lost0);
+    if (!lost0) {
+      for (size_t k = 0; k < cores.size(); ++k) {
+        std::cout << "[Cylinder Load] Relaxed core " << (cores[k].sign > 0 ? "+b" : "-b") << ": inserted at x = "
+                  << (cores[k].pos.x() - box_centre_x) / a << " b, relaxed to x = "
+                  << (core_ref0[k].x() - box_centre_x) / a << " b (from the box centre; moved "
+                  << (core_ref0[k].x() - cores[k].pos.x()) / a << " b in the relaxation)" << std::endl;
+      }
+    }
     if (lost0) {
       std::cout << "[Cylinder Load] A core is not found on its glide plane in the relaxed state (a dipole whose "
                    "cores attract more strongly than the lattice holds them annihilates during the relaxation; "

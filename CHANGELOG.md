@@ -2,6 +2,20 @@
 
 ## Unreleased (feature/gui-onboarding-redesign)
 
+### Added — dislocation cylinder: start site of the core (`--cyl-core-shift`)
+- `--cyl-core-shift=s` moves the inserted core, and the cylinder centred on it, by s·b along the glide
+  direction from the centre of the atoms' bounding box (default 0). Each Peierls period has two
+  mirror-symmetric sites, a valley and a hill; s = 0.5 switches between them.
+- A loaded run prints where the core is inserted and where it sits after the initial relaxation, both from the
+  box centre, and how far it moved.
+- Triangular, mode 2, 80 × 80, R_free = 30, stress-controlled cycle to 1 b:
+  - inserted at the box centre (a Peierls hill), the relaxation moves the core 0.58 b, into the valley;
+  - inserted with s = 0.5, it moves 0.09 b, ending in the same valley (0.58–0.59 b from the box centre);
+  - the load curves then agree, with the first forward jump at τ ≈ 0.062.
+  `CoreShift` is measured from the relaxed core, so MTM's x = 0 is that valley. A molecular-statics run that
+  stays on the symmetric hill puts its x = 0 at the hill, so its curve starts on the unstable branch. Use
+  s = 0.5, or the same shift in the molecular-statics setup, to compare the two from the same site.
+
 ### Added — cylinder load: control of the average stress inside R_free
 - `--cyl-avg-stress=1` (GUI: "Control average stress inside R_free", on by default) adjusts the ring's
   deformation F̄ until the stress averaged over the free region hits its targets:
