@@ -18,14 +18,19 @@ double seconds_since(Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
-// Removes the means of the u block and of the v block, i.e. applies
-// Q = I - t_u t_u^T - t_v t_v^T with the unit translation vectors t_u, t_v.
-void project_out_translations(double *v, int n_total) {
+// Removes the means of the u block and/or v block independently, i.e. applies
+// Q = I - (deflate_x ? t_u t_u^T : 0) - (deflate_y ? t_v t_v^T : 0).
+void project_out_translations(double *v, int n_total, bool deflate_x, bool deflate_y) {
   const int m = n_total / 2;
-  for (int block = 0; block < 2; block++) {
-    double *b = v + block * m;
-    const double mean = std::accumulate(b, b + m, 0.0) / m;
-    for (int i = 0; i < m; i++) b[i] -= mean;
+  if (deflate_x) {
+    double *bx = v;
+    const double mean_x = std::accumulate(bx, bx + m, 0.0) / m;
+    for (int i = 0; i < m; i++) bx[i] -= mean_x;
+  }
+  if (deflate_y) {
+    double *by = v + m;
+    const double mean_y = std::accumulate(by, by + m, 0.0) / m;
+    for (int i = 0; i < m; i++) by[i] -= mean_y;
   }
 }
 
@@ -35,8 +40,10 @@ class CholeskyShiftInvertOp {
 public:
   using Scalar = double;
 
-  CholeskyShiftInvertOp(SparseCholeskyBackend &cholesky, int n, double sigma, bool deflate)
-      : cholesky_(cholesky), n_(n), sigma_(sigma), deflate_(deflate), work_(n) {}
+  CholeskyShiftInvertOp(SparseCholeskyBackend &cholesky, int n, double sigma,
+                        bool deflate_x, bool deflate_y)
+      : cholesky_(cholesky), n_(n), sigma_(sigma),
+        deflate_x_(deflate_x), deflate_y_(deflate_y), work_(n) {}
 
   Eigen::Index rows() const { return n_; }
   Eigen::Index cols() const { return n_; }
@@ -49,9 +56,9 @@ public:
 
   void perform_op(const Scalar *x_in, Scalar *y_out) const {
     std::copy(x_in, x_in + n_, work_.data());
-    if (deflate_) project_out_translations(work_.data(), n_);
+    if (deflate_x_ || deflate_y_) project_out_translations(work_.data(), n_, deflate_x_, deflate_y_);
     cholesky_.solve(work_.data(), y_out);
-    if (deflate_) project_out_translations(y_out, n_);
+    if (deflate_x_ || deflate_y_) project_out_translations(y_out, n_, deflate_x_, deflate_y_);
     ++count_;
   }
 
@@ -61,34 +68,53 @@ private:
   SparseCholeskyBackend &cholesky_;
   int n_;
   double sigma_;
-  bool deflate_;
+  bool deflate_x_;
+  bool deflate_y_;
   mutable Eigen::VectorXd work_;
   mutable int count_ = 0;
 };
 
+std::pair<bool, bool> detect_translation_modes_xy(const SpMat &K) {
+  const int n = static_cast<int>(K.rows());
+  if (n <= 0 || n % 2 != 0) return {false, false};
+  const int m = n / 2;
+  const double scale = K.coeffs().cwiseAbs().maxCoeff();
+  if (scale <= 0.0) return {false, false};
+  bool has_x = false, has_y = false;
+  {
+    Eigen::VectorXd tx = Eigen::VectorXd::Zero(n);
+    tx.segment(0, m).setOnes();
+    has_x = ((K * tx).cwiseAbs().maxCoeff() <= 1e-9 * scale);
+  }
+  {
+    Eigen::VectorXd ty = Eigen::VectorXd::Zero(n);
+    ty.segment(m, m).setOnes();
+    has_y = ((K * ty).cwiseAbs().maxCoeff() <= 1e-9 * scale);
+  }
+  return {has_x, has_y};
+}
+
 } // namespace
 
 bool stiffness_has_translation_modes(const SpMat &K) {
-  const int n = static_cast<int>(K.rows());
-  if (n % 2 != 0) return false;
-  const int m = n / 2;
-  const double scale = K.coeffs().cwiseAbs().maxCoeff();
-  for (int block = 0; block < 2; block++) {
-    Eigen::VectorXd t = Eigen::VectorXd::Zero(n);
-    t.segment(block * m, m).setOnes();
-    if ((K * t).cwiseAbs().maxCoeff() > 1e-9 * scale) return false;
-  }
-  return true;
+  const auto [hx, hy] = detect_translation_modes_xy(K);
+  return hx && hy;
 }
 
 StiffnessSpectrum lowest_stiffness_modes(const SpMat &K, const StiffnessSpectrumOptions &opt) {
   StiffnessSpectrum out;
   const int n = static_cast<int>(K.rows());
 
-  const bool deflate = opt.deflate_translations == 1 ||
-                       (opt.deflate_translations == -1 && stiffness_has_translation_modes(K));
-  out.translations_deflated = deflate;
-  const int n_available = deflate ? n - 2 : n;
+  bool deflate_x = false, deflate_y = false;
+  if (opt.deflate_translations == 1) {
+    deflate_x = true;
+    deflate_y = true;
+  } else if (opt.deflate_translations == -1) {
+    std::tie(deflate_x, deflate_y) = detect_translation_modes_xy(K);
+  }
+  const int n_deflated = (deflate_x ? 1 : 0) + (deflate_y ? 1 : 0);
+  out.translations_deflated = (n_deflated > 0);
+  const int n_available = n - n_deflated;
   const int nev = std::min(opt.n_modes, n_available - 1);
   const int ncv = std::min(opt.ncv > 0 ? opt.ncv : std::max(2 * nev + 1, 20), n_available);
   if (nev <= 0) return out;
@@ -117,7 +143,7 @@ StiffnessSpectrum lowest_stiffness_modes(const SpMat &K, const StiffnessSpectrum
   }
 
   const auto lanczos_start = Clock::now();
-  CholeskyShiftInvertOp op(*cholesky, n, sigma, deflate);
+  CholeskyShiftInvertOp op(*cholesky, n, sigma, deflate_x, deflate_y);
   Spectra::SymEigsShiftSolver<CholeskyShiftInvertOp> eigs(op, nev, ncv, sigma);
   eigs.init();
   const int nconv = static_cast<int>(
@@ -147,7 +173,7 @@ StiffnessSpectrum lowest_stiffness_modes(const SpMat &K, const StiffnessSpectrum
 
   if (opt.verbose) {
     std::cout << "lowest_stiffness_modes [" << cholesky->name() << "]: n=" << n
-              << ", modes=" << nconv << "/" << nev << (deflate ? " (translations deflated)" : "")
+              << ", modes=" << nconv << "/" << nev << (out.translations_deflated ? " (translations deflated)" : "")
               << ", sigma=" << sigma << " (" << out.failed_shifts << " failed shifts)"
               << ", lambda_min=" << (nconv ? out.eigenvalues(0) : NAN)
               << ", solves=" << out.n_operations << ", factorize=" << out.factorize_seconds
