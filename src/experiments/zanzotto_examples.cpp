@@ -482,11 +482,11 @@ void example_1_conti_zanzotto_loading(
     }
   }
 
-  bool is_periodic_dislocs = has_custom_geom &&
-      macro_geom.microstructure.mode == MicrostructureMode::PeriodicDislocations &&
-      macro_geom.microstructure.enforce_periodic_bc;
+  // Periodic microstructures (2M periodic dislocations, periodic Voronoi) run on the T^2 torus:
+  // no carving, no studio BCs, all DOFs free, loading through the periodic box F_ext
+  bool is_periodic_micro = has_custom_geom && macro_geom.isPeriodicMicrostructure();
 
-  bool pbc = is_periodic_dislocs ||
+  bool pbc = is_periodic_micro ||
       (!has_custom_geom && (bc == "periodic" || bc == "Periodic" || bc == "pbc" || bc == "PBC"));
 
   // Parameters for lattice
@@ -664,7 +664,7 @@ void example_1_conti_zanzotto_loading(
   }
   ConfigurationSaver::setReferenceRotationDeg(theta_rot);
 
-  if (has_custom_geom && !is_periodic_dislocs) {
+  if (has_custom_geom && !is_periodic_micro) {
     square_points = macro_geom.carveLatticePoints(square_points, lattice_constant);
     square_points_ref = square_points;
   }
@@ -691,7 +691,7 @@ void example_1_conti_zanzotto_loading(
                    "resume from. Restart from a later checkpoint, or rerun from the start." << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    if (!restart_chk->ref_points.empty() && !(has_custom_geom && !is_periodic_dislocs)) {
+    if (!restart_chk->ref_points.empty() && !(has_custom_geom && !is_periodic_micro)) {
       std::cerr << "[RESTART] Fatal: the checkpoint was written by a custom-geometry run. Restart with the "
                    "original run's --geometry-json, --bc, --lattice and rotation flags." << std::endl;
       std::exit(EXIT_FAILURE);
@@ -705,7 +705,7 @@ void example_1_conti_zanzotto_loading(
     }
   }
   // Restart: the checkpoint carries X_0 (re-anchored after Stage 1); a regenerated lattice does not
-  if (restart_chk != nullptr && has_custom_geom && !is_periodic_dislocs) {
+  if (restart_chk != nullptr && has_custom_geom && !is_periodic_micro) {
     if (restart_chk->ref_points.size() == square_points_ref.size()) {
       for (size_t j = 0; j < square_points_ref.size(); ++j) {
         square_points_ref[j].coord = restart_chk->ref_points[j];
@@ -745,7 +745,7 @@ void example_1_conti_zanzotto_loading(
       (macro_geom.microstructure.relax_only ||
        macro_geom.microstructure.pre_relax_gb);
 
-  if (is_periodic_dislocs) {
+  if (is_periodic_micro) {
     std::tie(interior_mapping, full_mapping) =
         create_dof_mapping_original(square_points, 0.25 * lattice_constant, /*pbc=*/true);
     node_bc_role.assign(square_points.size(), 0);
@@ -826,7 +826,7 @@ void example_1_conti_zanzotto_loading(
   std::vector<ElementTriangle2D> elements;
   std::vector<size_t> active_elements;
 
-  if (has_custom_geom && !is_periodic_dislocs) {
+  if (has_custom_geom && !is_periodic_micro) {
     AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &square_points_ref);
   } else {
     AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
@@ -865,7 +865,7 @@ void example_1_conti_zanzotto_loading(
   double element_area = elements.empty() ? ref_setup.element_area : elements[0].getReferenceArea();
 
   // Dead-load tractions need the reference boundary edges, so they are assembled once the mesh exists
-  if (has_custom_geom && !is_periodic_dislocs &&
+  if (has_custom_geom && !is_periodic_micro &&
       !macro_geom.finalizeBoundaryTractions(square_points_ref, elements)) {
     std::cerr << "[Traction] Run refused: unbalanced dead load on an unsupported specimen." << std::endl;
     AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
@@ -890,7 +890,7 @@ void example_1_conti_zanzotto_loading(
   // Relaxation step at a nonzero shear strain (shear stress presets): step 0 holds F12 = relax_strain under
   // strain control with noise, then the stress schedule rises from the relaxed stress sigma_0
   const bool stress_relax_strain = stress_ctrl_enabled && stress_ctrl.relax_strain != 0.0 && restart_chk == nullptr &&
-                                   !is_periodic_dislocs &&
+                                   !is_periodic_micro &&
                                 PBCStressControl::basePreset(stress_ctrl.preset) == "shear";
   if (stress_ctrl_enabled && stress_ctrl.relax_strain != 0.0 && !stress_relax_strain) {
     std::cerr << "[Stress Control] WARNING: --relax-strain applies to fresh plain periodic runs with a shear stress "
@@ -926,7 +926,7 @@ void example_1_conti_zanzotto_loading(
     }
     return st(0, 1);
   };
-  const bool run_has_tractions = stress_ctrl_enabled || (has_custom_geom && !is_periodic_dislocs &&
+  const bool run_has_tractions = stress_ctrl_enabled || (has_custom_geom && !is_periodic_micro &&
       (rules_have_traction(macro_geom.boundary_rules) || rules_have_traction(original_studio_rules)));
 
   std::cout << "[Triangulation] Initial Delaunay mesh: " << original_domain_size
@@ -1029,7 +1029,7 @@ void example_1_conti_zanzotto_loading(
                            restart_chk->F_ext, interior_mapping, full_mapping,
                            active_elements, plasticity);
     checkUserData.second_derivative_function = &potential_func_sder;
-    const bool custom_bcs = has_custom_geom && !is_periodic_dislocs;
+    const bool custom_bcs = has_custom_geom && !is_periodic_micro;
     if (custom_bcs) {
       checkUserData.macro_geom_ptr = &macro_geom;
       checkUserData.current_alpha = restart_chk->current_alpha;
@@ -1048,7 +1048,7 @@ void example_1_conti_zanzotto_loading(
 
   // Force-control (dead-load) bookkeeping: conjugate strain, elastic secant, predictor, runaway
   double traction_strain_previous =
-      (restart_chk != nullptr && has_custom_geom && !is_periodic_dislocs)
+      (restart_chk != nullptr && has_custom_geom && !is_periodic_micro)
           ? macro_geom.computeTractionConjugateStrain(square_points) : 0.0;
   if (restart_chk != nullptr && stress_ctrl_enabled) {
     // PBC stress control: conjugate strain of the resumed cell, from the Stage-1 cell
@@ -1122,10 +1122,10 @@ void example_1_conti_zanzotto_loading(
     const bool stress_force_step = stress_ctrl_enabled && !stress_relax_step && !stress_relax_strain_step &&
                                    !stress_zero_after_strain_step && stress_preset_is_force;
     // Force control: dead-load tractions or a nominal-stress target drive this step (never Stage 1)
-    const bool force_control_step = stress_force_step || (has_custom_geom && !is_periodic_dislocs &&
+    const bool force_control_step = stress_force_step || (has_custom_geom && !is_periodic_micro &&
                                     !is_stage1_relax_step && macro_geom.hasForceControl());
     set_relaxation_max_iterations(force_control_step ? kForceControlMaxIterations : 0);
-    if (has_custom_geom && !is_periodic_dislocs) {
+    if (has_custom_geom && !is_periodic_micro) {
       macro_geom.setRunawayReference(square_points, force_control_step
           ? 0.35 * std::max(macro_geom.Lx, macro_geom.Ly) : 0.0);
     }
@@ -1202,7 +1202,7 @@ void example_1_conti_zanzotto_loading(
     }
 
     std::vector<int> indenter_contacts;
-    if (has_custom_geom && !is_periodic_dislocs) {
+    if (has_custom_geom && !is_periodic_micro) {
       if (macro_geom.isIndenterActive()) {
         node_bc_role = baseline_node_bc_role;
       }
@@ -1242,7 +1242,7 @@ void example_1_conti_zanzotto_loading(
         square_points[j].coord = F_ext * square_points[j].coord;
       }
     } else if (is_first_loading_step) {
-      if (effective_noise_level > 0.0 && !is_periodic_dislocs) {
+      if (effective_noise_level > 0.0 && !is_periodic_micro) {
         // Use deterministic seed so both positive and negative runs share the exact same initial noise
         std::mt19937 gen(seed);
         std::normal_distribution<double> noise_dist(0.0, effective_noise_level);
@@ -1271,7 +1271,7 @@ void example_1_conti_zanzotto_loading(
                       F_ext, interior_mapping, full_mapping, active_elements,
                       plasticity);
     userData.second_derivative_function = &potential_func_sder;
-    if (has_custom_geom && !is_periodic_dislocs) {
+    if (has_custom_geom && !is_periodic_micro) {
       userData.macro_geom_ptr = &macro_geom;
       userData.current_alpha = alpha;
     }
@@ -1293,7 +1293,7 @@ void example_1_conti_zanzotto_loading(
 
     ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
                                                  stress_tensor, true);
-    pre_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor);
+    pre_stress = (has_custom_geom && !is_periodic_micro) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor);
     pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     if (verbose_log) {
@@ -1382,7 +1382,7 @@ void example_1_conti_zanzotto_loading(
     stress_tensor.setZero();
     ConfigurationSaver::calculateEnergyAndStress(&userData, post_energy,
                                                  stress_tensor, true);
-    post_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor);
+    post_stress = (has_custom_geom && !is_periodic_micro) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor);
     post_area = ConfigurationSaver::calculateTotalArea2D(&userData);
 
     AvalancheRecorder::instance().recordStep(
@@ -1474,7 +1474,7 @@ void example_1_conti_zanzotto_loading(
 
       remesh_iterations = std::abs(iterations);
       post_energy = post_energy_re;
-      post_stress = (has_custom_geom && !is_periodic_dislocs) ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor_re);
+      post_stress = (has_custom_geom && !is_periodic_micro) ? macro_geom.extractPrimaryStress(stress_tensor_re, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor_re);
 
       // Update DOF mapping
       for (auto &element : elements) {
@@ -1601,7 +1601,7 @@ void example_1_conti_zanzotto_loading(
       elements = std::move(step_start_elements);
       active_elements = std::move(step_start_active_elements);
       F_ext = stress_ctrl_enabled ? step_start_F_bar
-          : (has_custom_geom && !is_periodic_dislocs ? macro_geom.computeMacroscopicF(alpha_eq) : F_ext);
+          : (has_custom_geom && !is_periodic_micro ? macro_geom.computeMacroscopicF(alpha_eq) : F_ext);
       for (auto &element : elements) {
         element.set_reference_mesh(square_points);
         element.set_dof_mapping(full_mapping);
@@ -1611,7 +1611,7 @@ void example_1_conti_zanzotto_loading(
                           optimal_lattice_parameter, F_ext, interior_mapping, full_mapping, active_elements,
                           plasticity);
       eqUserData.second_derivative_function = &potential_func_sder;
-      if (has_custom_geom && !is_periodic_dislocs) {
+      if (has_custom_geom && !is_periodic_micro) {
         eqUserData.macro_geom_ptr = &macro_geom;
         eqUserData.current_alpha = alpha_eq;
       }
@@ -1633,7 +1633,7 @@ void example_1_conti_zanzotto_loading(
       chk_eq.F_ext = F_ext; chk_eq.points = square_points;
       chk_eq.F_stage1 = F_stage1; chk_eq.has_F_stage1 = stress_ctrl_enabled;
       chk_eq.relaxation_step = (i == 0 && step0_is_relaxation);
-      if (has_custom_geom && !is_periodic_dislocs) {
+      if (has_custom_geom && !is_periodic_micro) {
         for (const auto &p : square_points_ref) chk_eq.ref_points.push_back(p.coord);
       }
       chk_eq.elements = elements; chk_eq.active_elements = active_elements;
@@ -1664,7 +1664,7 @@ void example_1_conti_zanzotto_loading(
                              optimal_lattice_parameter, F_ext, interior_mapping,
                              full_mapping, active_elements, plasticity);
     postOptUserData.second_derivative_function = &potential_func_sder;
-    if (has_custom_geom && !is_periodic_dislocs) {
+    if (has_custom_geom && !is_periodic_micro) {
       postOptUserData.macro_geom_ptr = &macro_geom;
       postOptUserData.current_alpha = alpha;
     }
@@ -1862,7 +1862,7 @@ void example_1_conti_zanzotto_loading(
           chk_pre.F_ext = pre_F_ext; chk_pre.points = pre_points;
           chk_pre.F_stage1 = F_stage1; chk_pre.has_F_stage1 = stress_ctrl_enabled;
           chk_pre.relaxation_step = (i == 0 && step0_is_relaxation);
-          if (has_custom_geom && !is_periodic_dislocs) {
+          if (has_custom_geom && !is_periodic_micro) {
             for (const auto &p : square_points_ref) chk_pre.ref_points.push_back(p.coord);
           }
           chk_pre.elements = pre_elements; chk_pre.active_elements = pre_active_elements;
@@ -1906,7 +1906,7 @@ void example_1_conti_zanzotto_loading(
         chk_post.F_ext = F_ext; chk_post.points = square_points;
         chk_post.F_stage1 = F_stage1; chk_post.has_F_stage1 = stress_ctrl_enabled;
         chk_post.relaxation_step = (i == 0 && step0_is_relaxation);
-        if (has_custom_geom && !is_periodic_dislocs) {
+        if (has_custom_geom && !is_periodic_micro) {
           for (const auto &p : square_points_ref) chk_post.ref_points.push_back(p.coord);
         }
         chk_post.elements = elements; chk_post.active_elements = active_elements;
@@ -2016,7 +2016,7 @@ void example_1_conti_zanzotto_loading(
         chk_periodic.F_ext = F_ext; chk_periodic.points = square_points;
         chk_periodic.F_stage1 = F_stage1; chk_periodic.has_F_stage1 = stress_ctrl_enabled;
         chk_periodic.relaxation_step = (i == 0 && step0_is_relaxation);
-        if (has_custom_geom && !is_periodic_dislocs) {
+        if (has_custom_geom && !is_periodic_micro) {
           for (const auto &p : square_points_ref) chk_periodic.ref_points.push_back(p.coord);
         }
         chk_periodic.elements = elements; chk_periodic.active_elements = active_elements;
@@ -2089,7 +2089,7 @@ void example_1_conti_zanzotto_loading(
         std::cout << "[Stage 1/1] Equilibration complete at alpha = 0 (Relax Only mode). Stopping cleanly." << std::endl;
         break;
       }
-      if (is_periodic_dislocs) {
+      if (is_periodic_micro) {
         if (macro_geom.microstructure.reanchor_ref_after_relax) {
           square_points_ref = square_points;
           for (auto &pt : square_points) {
@@ -2107,7 +2107,7 @@ void example_1_conti_zanzotto_loading(
             elem.setQOrient(ConfigurationSaver::computeAlignmentMatrix(elem.getDeformationGradient(), elem_theta_rad));
           }
         }
-        std::cout << "[Stage 2/2] Handover complete: Periodic dislocations equilibrated in full 2D PBCs at alpha = 0; starting homogeneous periodic simple shear F_ext(alpha)..." << std::endl;
+        std::cout << "[Stage 2/2] Handover complete: Periodic microstructure equilibrated in full 2D PBCs at alpha = 0; starting homogeneous periodic simple shear F_ext(alpha)..." << std::endl;
       } else if (stage1_pre_relax_active) {
         macro_geom.indenter.enabled = original_indenter_enabled;
         if (macro_geom.microstructure.reanchor_ref_after_relax) {

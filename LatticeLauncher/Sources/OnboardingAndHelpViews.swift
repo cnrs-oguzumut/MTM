@@ -954,6 +954,16 @@ public struct DocumentationCenterSheet: View {
                     "• Merged seam-core atoms are highlighted with a gold ring on the Geometry Studio canvas."
                 ]
             )
+            docCard(
+                title: "2D Voronoi Polycrystals (Finite or Periodic)",
+                lines: [
+                    "• Each grain is a lattice rotated by θ_k and anchored at its seed; an atom belongs to the grain with the nearest seed (physical distance). Seeds come from a stratified layout driven by Grains N_g and Seed, or are dragged on the canvas.",
+                    "• Min. Neighbour Misorientation redraws θ_k when it lies within that angle of an adjacent grain (modulo 60° triangular / 90° square), avoiding accidental near-identical neighbours.",
+                    "• Finite specimens relax in Stage 1 under a minimal anchor by default (Bottom RollerX + Left RollerY, top and right free), so the grain network relaxes without the loading grips clamping it.",
+                    "• 'Periodic (T² torus)' tiles a fully periodic box: no free surfaces or grips, every atom free in Stage 1, the periodic box sheared in Stage 2. Grains that cross the box edge stay continuous, so the only seams are real grain boundaries.",
+                    "• On the torus a grain must never border its own periodic copy (its two rotated copies would not line up). That happens with 2–3 grains or aligned seeds; the canvas draws such edges in red and the solver refuses the run."
+                ]
+            )
             
         case .boundaryConditionsIndenter:
             docSectionHeader("Two-Stage Boundary Conditions & Nanoindenter", subtitle: "Decoupling Stage 1 equilibrium relaxation (α = 0) from Stage 2 mechanical loading (α > 0)")

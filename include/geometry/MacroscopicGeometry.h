@@ -210,6 +210,8 @@ struct MicrostructureConfig {
     int random_seed = 42;
     double theta_min_deg = -30.0;
     double theta_max_deg = +30.0;
+    double min_misorientation_deg = 0.0; // Redraw a grain's theta if it lies within this angle of a neighbouring grain (0 = off)
+    bool voronoi_periodic = false;       // Periodic (T^2 torus) Voronoi tessellation: no free surfaces, all DOFs free
     std::vector<VoronoiGrainSeed> seeds;
 
     // Multi-Plane Single-Dislocation Periodic Setup (2M active glide planes, 1 dislocation per plane, sum(b) = 0)
@@ -221,6 +223,25 @@ struct MicrostructureConfig {
     bool enforce_periodic_bc = true;             // Enforce full 2D periodic boundary conditions (T^2 torus)
     std::vector<SeededDislocation> dislocations; // Explicit list of seeded glide-plane dislocations
 };
+
+// Deterministic Voronoi seed layout shared with the LatticeLauncher GUI (VoronoiGrainSeedModel.regenerateSeeds):
+// identical LCG stream, stratified jitter, margins and rounding, so a JSON without explicit seeds
+// reproduces the layout the GUI shows for the same (num_grains, random_seed, theta range).
+// aspect = Lx / Ly is used only for the neighbour test of min_misorientation_deg.
+std::vector<VoronoiGrainSeed> generateVoronoiSeeds(const MicrostructureConfig& micro, double aspect, bool periodic,
+                                                   double symmetry_deg);
+
+// Symmetry-reduced misorientation |theta_a - theta_b| modulo the lattice rotation symmetry (60 or 90 deg)
+double latticeMisorientationDeg(double theta_a_deg, double theta_b_deg, double symmetry_deg);
+
+// Pairs (i < j) of Voronoi cells sharing an edge, from a sampled ownership grid in physical aspect
+std::vector<std::pair<int, int>> voronoiNeighbourPairs(const std::vector<VoronoiGrainSeed>& seeds,
+                                                       double aspect, bool periodic, int samples = 160);
+
+// Periodic Voronoi: index of a grain whose cell reaches its own periodic image (self-contact), or -1
+// (a separating grain thinner than min_gap is treated as contact, since the seam filter would erase it)
+int findSelfContactingVoronoiCell(const std::vector<VoronoiGrainSeed>& seeds, double size_x, double size_y,
+                                  double min_gap);
 
 struct MacroscopicGeometryConfig {
     bool enabled = false;
@@ -265,6 +286,11 @@ struct MacroscopicGeometryConfig {
     double carved_x_max = 100.0;
     double carved_y_min = 0.0;
     double carved_y_max = 100.0;
+
+    bool isPeriodicMicrostructure() const {
+        return (microstructure.mode == MicrostructureMode::PeriodicDislocations && microstructure.enforce_periodic_bc) ||
+               (microstructure.mode == MicrostructureMode::VoronoiPolycrystal && microstructure.voronoi_periodic);
+    }
 
     // Load from JSON file
     static bool loadFromJSON(const std::string& filepath, MacroscopicGeometryConfig& out_config);

@@ -492,19 +492,19 @@ public struct GeometryBuilderView: View {
                 }
                 
                 // 8. Nanoindenter Tip Visual Preview (always visible when enabled so user can position it in either tab)
-                if config.geometryConfig.indenter.enabled && config.geometryConfig.microstructure.mode != .periodicDislocations {
+                if config.geometryConfig.indenter.enabled && !config.geometryConfig.microstructure.isPeriodic {
                     drawNanoindenterTip(ctx: &ctx, toScreen: toScreen, boxW: boxW, boxH: boxH)
                 }
             }
             .overlay(alignment: .topLeading) {
                 let isPeriodic = config.isEffectivePeriodicPBC
-                let isPeriodicDislocs = (config.geometryConfig.microstructure.mode == .periodicDislocations)
+                let isPeriodicMicro = config.geometryConfig.enabled && config.geometryConfig.microstructure.isPeriodic
                 HStack(spacing: 6) {
                     Circle()
                         .fill((isPeriodic || isViewingStage1RelaxBCs) ? Color.green : canvasSurfaceBadgeColor)
                         .frame(width: 7, height: 7)
                     if isPeriodic {
-                        if isPeriodicDislocs {
+                        if isPeriodicMicro {
                             Text(config.protocolMode == .relaxOnly
                                  ? "FULL 2D PERIODIC TORUS (PBC) · Stage 1 Core Relaxation Only (α = 0)"
                                  : "FULL 2D PERIODIC TORUS (PBC) · Stage 1 Relax (α = 0) → Stage 2 Shear (\(config.mode == .negative ? "-α" : "+α"))")
@@ -989,7 +989,7 @@ public struct GeometryBuilderView: View {
         
         for (xHat, yHat) in coords {
             guard config.geometryConfig.isPointInsideSolid(xHat: xHat, yHat: yHat) else { continue }
-            let role = (micro.mode == .periodicDislocations)
+            let role = micro.isPeriodic
                 ? 0
                 : config.geometryConfig.classifyNodeRole(
                     xHat: xHat,
@@ -1003,7 +1003,7 @@ public struct GeometryBuilderView: View {
             let rect = CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)
             let baseColor: Color
             if micro.mode == .bicrystal || micro.mode == .voronoi {
-                let gid = micro.grainAt(xHat: xHat, yHat: yHat).0
+                let gid = micro.grainAt(xHat: xHat, yHat: yHat, aspect: physicalAspect).0
                 baseColor = grainPaletteColor(gid).opacity(0.90)
             } else {
                 baseColor = BlueHour.ice.opacity(0.85)
@@ -1511,9 +1511,14 @@ public struct GeometryBuilderView: View {
             config.geometryConfig.microstructure.gb_cy = (round(yh * 200) / 200)
         case .moveVoronoiSeed(let sIdx):
             if sIdx >= 0 && sIdx < config.geometryConfig.microstructure.seeds.count {
-                let clamped = config.geometryConfig.clampSeedToSolid(xHat: round(xh * 200) / 200, yHat: round(yh * 200) / 200)
-                config.geometryConfig.microstructure.seeds[sIdx].cx = clamped.x
-                config.geometryConfig.microstructure.seeds[sIdx].cy = clamped.y
+                if config.geometryConfig.microstructure.isPeriodicVoronoi {
+                    config.geometryConfig.microstructure.seeds[sIdx].cx = MacroscopicGeometryConfigModel.wrapUnit(round(xh * 200) / 200)
+                    config.geometryConfig.microstructure.seeds[sIdx].cy = MacroscopicGeometryConfigModel.wrapUnit(round(yh * 200) / 200)
+                } else {
+                    let clamped = config.geometryConfig.clampSeedToSolid(xHat: round(xh * 200) / 200, yHat: round(yh * 200) / 200)
+                    config.geometryConfig.microstructure.seeds[sIdx].cx = clamped.x
+                    config.geometryConfig.microstructure.seeds[sIdx].cy = clamped.y
+                }
             }
         case .moveDislocationCore(let dIdx):
             if dIdx >= 0 && dIdx < config.geometryConfig.microstructure.dislocations.count {
@@ -1730,8 +1735,14 @@ public struct GeometryBuilderView: View {
                             if config.activeMechanicalLoading == .uniaxialTensionY {
                                 config.applyMechanicalLoading(.simpleShearPos)
                             }
-                        } else if newMode == .voronoi && config.geometryConfig.microstructure.seeds.isEmpty {
-                            config.geometryConfig.microstructure.regenerateSeeds()
+                        } else if newMode == .voronoi {
+                            if config.geometryConfig.microstructure.seeds.isEmpty {
+                                regenerateVoronoiSeeds()
+                            }
+                            // Relax grain boundaries under a minimal anchor rather than the clamped loading grips
+                            if config.geometryConfig.isStage1LinkedToLoading {
+                                config.geometryConfig.resetStage1ToMinimalAnchor()
+                            }
                         } else if newMode == .periodicDislocations {
                             let hasOutOfBounds = config.geometryConfig.microstructure.dislocations.contains {
                                 $0.glide_plane_row < 1 || $0.glide_plane_row >= config.ny - 1
@@ -2037,10 +2048,9 @@ public struct GeometryBuilderView: View {
                             Stepper(
                                 "\(config.geometryConfig.microstructure.num_grains)",
                                 value: $config.geometryConfig.microstructure.num_grains,
-                                in: 2...32,
+                                in: 2...MicrostructureConfigModel.maxVoronoiGrains,
                                 onEditingChanged: { _ in
-                                    config.geometryConfig.microstructure.regenerateSeeds()
-                                    config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
+                                    regenerateVoronoiSeeds()
                                 }
                             )
                             .font(.caption2.monospacedDigit())
@@ -2049,8 +2059,7 @@ public struct GeometryBuilderView: View {
                                 .font(.caption2)
                             IntField(title: "42", value: $config.geometryConfig.microstructure.random_seed, width: 44)
                             Button("Regenerate") {
-                                config.geometryConfig.microstructure.regenerateSeeds()
-                                config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
+                                regenerateVoronoiSeeds()
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.mini)
@@ -2063,6 +2072,39 @@ public struct GeometryBuilderView: View {
                             DoubleField(title: "-30", value: $config.geometryConfig.microstructure.theta_min_deg, width: 46, minValue: -180.0, maxValue: 180.0)
                             Text("to").font(.caption2)
                             DoubleField(title: "+30", value: $config.geometryConfig.microstructure.theta_max_deg, width: 46, minValue: -180.0, maxValue: 180.0)
+                        }
+
+                        HStack {
+                            Text("Min. Neighbour Misorientation (°):")
+                                .font(.caption2)
+                                .help("Redraws a grain's θ (on Regenerate) if it lies within this angle of a neighbouring grain, modulo the lattice symmetry (60° triangular, 90° square). 0 = off.")
+                            Spacer()
+                            DoubleField(title: "0", value: $config.geometryConfig.microstructure.min_misorientation_deg, width: 46, minValue: 0.0, maxValue: 45.0)
+                        }
+
+                        Toggle(isOn: Binding(
+                            get: { config.geometryConfig.microstructure.voronoi_periodic },
+                            set: { periodic in
+                                config.setBoundaryRegime(periodic ? .periodicPBC : .finiteSurfaceBCs)
+                                if !periodic && config.geometryConfig.isStage1LinkedToLoading {
+                                    config.geometryConfig.resetStage1ToMinimalAnchor()
+                                }
+                                config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
+                            }
+                        )) {
+                            Text("Periodic (T² torus)")
+                                .font(.caption2.bold())
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .help("Grains tile a fully periodic box: no free surfaces, no grips; Stage 1 relaxes all atoms, Stage 2 shears the periodic box. Grains crossing the box edge stay continuous.")
+
+                        if let g = periodicVoronoiSelfContact {
+                            Label("G\(g) reaches its own periodic copy, so it would border itself with a mismatched seam. The run will be refused: add grains (4+) or move seeds so every grain is enclosed by others.",
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9.5))
+                                .foregroundColor(Color(red: 1.0, green: 0.55, blue: 0.40))
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         
                         Text("Drag grain seeds (G0, G1, ...) directly on canvas or edit below:")
@@ -2158,6 +2200,32 @@ public struct GeometryBuilderView: View {
         }
     }
     
+    /// Physical Lx / Ly of the reference crystal (Voronoi cells use physical distances, as in the solver)
+    private var physicalAspect: Double {
+        config.latticeSymmetry == .triangular
+            ? Double(config.nx) / (Double(max(1, config.ny)) * sqrt(3.0) / 2.0)
+            : Double(config.nx) / Double(max(1, config.ny))
+    }
+
+    /// Rotation symmetry of the lattice (60° triangular, 90° square) for misorientation
+    private var latticeSymmetryDeg: Double {
+        config.latticeSymmetry == .triangular ? 60.0 : 90.0
+    }
+
+    private func regenerateVoronoiSeeds() {
+        config.geometryConfig.microstructure.regenerateSeeds(aspect: physicalAspect, symmetryDeg: latticeSymmetryDeg)
+        config.geometryConfig.sanitizeVoronoiSeedsInsideSolid()
+    }
+
+    /// Periodic Voronoi: grain whose cell reaches its own periodic image (the solver refuses such a run)
+    private var periodicVoronoiSelfContact: Int? {
+        let micro = config.geometryConfig.microstructure
+        guard micro.isPeriodicVoronoi else { return nil }
+        let effNy = (config.latticeSymmetry == .triangular && config.ny % 2 != 0) ? config.ny + 1 : config.ny
+        let sizeY = config.latticeSymmetry == .triangular ? Double(effNy) * sqrt(3.0) / 2.0 : Double(effNy)
+        return MicrostructureConfigModel.selfContactingVoronoiCell(micro.seeds, sizeX: Double(config.nx), sizeY: sizeY)
+    }
+
     private func grainPaletteColor(_ gid: Int) -> Color {
         let palette: [Color] = [
             Color(red: 0.56, green: 0.78, blue: 1.00),
@@ -2658,9 +2726,46 @@ public struct GeometryBuilderView: View {
                 ((x * Lx - x0) * nx + (y * Ly - y0) * ny) >= -cslBand
             }
         case .voronoi:
-            for (k, s) in micro.seeds.enumerated() {
-                appendGrainLattice(gid: k, thetaDeg: s.theta_deg, originXHat: s.cx, originYHat: s.cy) { x, y in
-                    micro.grainAt(xHat: x, yHat: y).0 == k
+            if micro.isPeriodicVoronoi {
+                // Mirrors the C++ periodic generator: each grain is one lattice anchored at its seed, built over the
+                // seed-centred half-period box (nearest-image ownership) and folded into [0, Lx) x [0, Ly)
+                let seedsP = micro.seeds
+                let halfX = 0.5 * Lx, halfY = 0.5 * Ly
+                let nSpanP = Int(ceil(hypot(halfX, halfY) / dMinGrid)) + 4
+                for (k, sd) in seedsP.enumerated() {
+                    let thetaRad = sd.theta_deg * .pi / 180.0
+                    let cosT = cos(thetaRad), sinT = sin(thetaRad)
+                    let a1X = aCanvas * cosT, a1Y = aCanvas * sinT
+                    let a2X = isTri ? (aCanvas * (0.5 * cosT - 0.5 * sqrt3 * sinT)) : (-aCanvas * sinT)
+                    let a2Y = isTri ? (aCanvas * (0.5 * sinT + 0.5 * sqrt3 * cosT)) : (aCanvas * cosT)
+                    let sx = sd.cx * Lx, sy = sd.cy * Ly
+                    for i in -nSpanP...nSpanP {
+                        for j in -nSpanP...nSpanP {
+                            let rx = Double(i) * a1X + Double(j) * a2X
+                            let ry = Double(i) * a1Y + Double(j) * a2Y
+                            if rx < -halfX || rx >= halfX || ry < -halfY || ry >= halfY { continue }
+                            let dK = rx * rx + ry * ry
+                            var px = sx + rx, py = sy + ry
+                            var own = true
+                            for (q, sq) in seedsP.enumerated() where q != k {
+                                var dx = px - sq.cx * Lx, dy = py - sq.cy * Ly
+                                dx -= Lx * (dx / Lx).rounded()
+                                dy -= Ly * (dy / Ly).rounded()
+                                let dQ = dx * dx + dy * dy
+                                if dQ < dK - 1e-10 || (abs(dQ - dK) <= 1e-10 && q < k) { own = false; break }
+                            }
+                            guard own else { continue }
+                            px -= Lx * floor(px / Lx)
+                            py -= Ly * floor(py / Ly)
+                            rawSites.append(CanvasLatticeSite(xPhys: px, yPhys: py, gid: k, thetaDeg: sd.theta_deg))
+                        }
+                    }
+                }
+            } else {
+                for (k, s) in micro.seeds.enumerated() {
+                    appendGrainLattice(gid: k, thetaDeg: s.theta_deg, originXHat: s.cx, originYHat: s.cy) { x, y in
+                        micro.grainAt(xHat: x, yHat: y, aspect: Lx / Ly).0 == k
+                    }
                 }
             }
         case .periodicDislocations:
@@ -2735,16 +2840,54 @@ public struct GeometryBuilderView: View {
             var removed = [Bool](repeating: false, count: n)
 
             let cellH = max(1e-3, 2.5 * aCanvas)
-            let invCell = 1.0 / cellH
-            let gNx = max(1, Int(ceil(Lx * invCell)) + 3)
-            let gNy = max(1, Int(ceil(Ly * invCell)) + 3)
+            // Periodic Voronoi: wrapping hash grid + nearest-image separations (mirrors the C++ seam filter)
+            let periodicSeams = micro.isPeriodicVoronoi
+            let gNx = periodicSeams ? max(1, Int(floor(Lx / cellH))) : max(1, Int(ceil(Lx / cellH)) + 3)
+            let gNy = periodicSeams ? max(1, Int(floor(Ly / cellH))) : max(1, Int(ceil(Ly / cellH)) + 3)
+            let invCellX = periodicSeams ? Double(gNx) / Lx : 1.0 / cellH
+            let invCellY = periodicSeams ? Double(gNy) / Ly : 1.0 / cellH
             var buckets = [[Int]](repeating: [], count: gNx * gNy)
 
             @inline(__always)
             func cellCoord(_ x: Double, _ y: Double) -> (Int, Int) {
-                let ix = min(gNx - 1, max(0, Int(floor(x * invCell)) + 1))
-                let iy = min(gNy - 1, max(0, Int(floor(y * invCell)) + 1))
+                if periodicSeams {
+                    var ix = Int(floor(x * invCellX)) % gNx
+                    var iy = Int(floor(y * invCellY)) % gNy
+                    if ix < 0 { ix += gNx }
+                    if iy < 0 { iy += gNy }
+                    return (ix, iy)
+                }
+                let ix = min(gNx - 1, max(0, Int(floor(x * invCellX)) + 1))
+                let iy = min(gNy - 1, max(0, Int(floor(y * invCellY)) + 1))
                 return (ix, iy)
+            }
+
+            /// Distinct neighbouring bucket indices of (ix, iy), wrapped when periodic
+            func neighbourBuckets(_ ix: Int, _ iy: Int) -> [Int] {
+                var out: [Int] = []
+                out.reserveCapacity(9)
+                for dy in -1...1 {
+                    var cy = iy + dy
+                    if periodicSeams { cy = (cy + gNy) % gNy } else if cy < 0 || cy >= gNy { continue }
+                    for dx in -1...1 {
+                        var cx = ix + dx
+                        if periodicSeams { cx = (cx + gNx) % gNx } else if cx < 0 || cx >= gNx { continue }
+                        let b = cy * gNx + cx
+                        if !out.contains(b) { out.append(b) }
+                    }
+                }
+                return out
+            }
+
+            /// Separation (dx, dy) from a to b, nearest periodic image when periodic
+            @inline(__always)
+            func sep(_ ax: Double, _ ay: Double, _ bx: Double, _ by: Double) -> (Double, Double) {
+                var dx = bx - ax, dy = by - ay
+                if periodicSeams {
+                    dx -= Lx * (dx / Lx).rounded()
+                    dy -= Ly * (dy / Ly).rounded()
+                }
+                return (dx, dy)
             }
 
             for i in 0..<n {
@@ -2757,20 +2900,13 @@ public struct GeometryBuilderView: View {
                 let xi = filteredSites[i].xPhys, yi = filteredSites[i].yPhys
                 let gi = filteredSites[i].gid
                 let (ix, iy) = cellCoord(xi, yi)
-                for dy in -1...1 {
-                    let ny = iy + dy
-                    if ny < 0 || ny >= gNy { continue }
-                    for dx in -1...1 {
-                        let nx = ix + dx
-                        if nx < 0 || nx >= gNx { continue }
-                        for j in buckets[ny * gNx + nx] where j > i {
-                            if filteredSites[j].gid == gi { continue }
-                            let ddx = filteredSites[j].xPhys - xi
-                            let ddy = filteredSites[j].yPhys - yi
-                            let d2 = ddx * ddx + ddy * ddy
-                            if d2 < dMinSq {
-                                crossPairs.append((i, j, d2))
-                            }
+                for b in neighbourBuckets(ix, iy) {
+                    for j in buckets[b] where j > i {
+                        if filteredSites[j].gid == gi { continue }
+                        let (ddx, ddy) = sep(xi, yi, filteredSites[j].xPhys, filteredSites[j].yPhys)
+                        let d2 = ddx * ddx + ddy * ddy
+                        if d2 < dMinSq {
+                            crossPairs.append((i, j, d2))
                         }
                     }
                 }
@@ -2779,30 +2915,26 @@ public struct GeometryBuilderView: View {
 
             for (i, j, _) in crossPairs {
                 if removed[i] || removed[j] { continue }
-                let dx = filteredSites[j].xPhys - filteredSites[i].xPhys
-                let dy = filteredSites[j].yPhys - filteredSites[i].yPhys
+                let (dx, dy) = sep(filteredSites[i].xPhys, filteredSites[i].yPhys, filteredSites[j].xPhys, filteredSites[j].yPhys)
                 if dx * dx + dy * dy >= dMinSq { continue }
 
                 if micro.seam_resolution == .mergeMidpoint {
-                    let mx = 0.5 * (filteredSites[i].xPhys + filteredSites[j].xPhys)
-                    let my = 0.5 * (filteredSites[i].yPhys + filteredSites[j].yPhys)
+                    var mx = filteredSites[i].xPhys + 0.5 * dx
+                    var my = filteredSites[i].yPhys + 0.5 * dy
+                    if periodicSeams {
+                        mx -= Lx * floor(mx / Lx)
+                        my -= Ly * floor(my / Ly)
+                    }
                     let (mix, miy) = cellCoord(mx, my)
                     var crowded = false
-                    outerCheck: for dy in -1...1 {
-                        let ny = miy + dy
-                        if ny < 0 || ny >= gNy { continue }
-                        for dx in -1...1 {
-                            let nx = mix + dx
-                            if nx < 0 || nx >= gNx { continue }
-                            for k in buckets[ny * gNx + nx] where !removed[k] && k != i && k != j {
-                                let kx = filteredSites[k].xPhys - mx
-                                let ky = filteredSites[k].yPhys - my
-                                let sameOrSeam = (filteredSites[k].gid == filteredSites[i].gid) || filteredSites[k].isMergedSeam
-                                let tol2 = sameOrSeam ? dSameSafeSq : dMinSq
-                                if kx * kx + ky * ky < tol2 {
-                                    crowded = true
-                                    break outerCheck
-                                }
+                    outerCheck: for b in neighbourBuckets(mix, miy) {
+                        for k in buckets[b] where !removed[k] && k != i && k != j {
+                            let (kx, ky) = sep(mx, my, filteredSites[k].xPhys, filteredSites[k].yPhys)
+                            let sameOrSeam = (filteredSites[k].gid == filteredSites[i].gid) || filteredSites[k].isMergedSeam
+                            let tol2 = sameOrSeam ? dSameSafeSq : dMinSq
+                            if kx * kx + ky * ky < tol2 {
+                                crowded = true
+                                break outerCheck
                             }
                         }
                     }
@@ -2826,20 +2958,13 @@ public struct GeometryBuilderView: View {
                 let xi = filteredSites[i].xPhys, yi = filteredSites[i].yPhys
                 let gi = filteredSites[i].gid
                 let (ix, iy) = cellCoord(xi, yi)
-                for dy in -1...1 {
-                    let ny = iy + dy
-                    if ny < 0 || ny >= gNy { continue }
-                    for dx in -1...1 {
-                        let nx = ix + dx
-                        if nx < 0 || nx >= gNx { continue }
-                        for j in buckets[ny * gNx + nx] where j > i && !removed[j] {
-                            let ddx = filteredSites[j].xPhys - xi
-                            let ddy = filteredSites[j].yPhys - yi
-                            let bothMergedSeam = filteredSites[i].isMergedSeam && filteredSites[j].isMergedSeam
-                            let cutoff2 = (filteredSites[j].gid != gi && !bothMergedSeam) ? dMinSq : dSameSafeSq
-                            if ddx * ddx + ddy * ddy < cutoff2 {
-                                removed[j] = true
-                            }
+                for b in neighbourBuckets(ix, iy) {
+                    for j in buckets[b] where j > i && !removed[j] {
+                        let (ddx, ddy) = sep(xi, yi, filteredSites[j].xPhys, filteredSites[j].yPhys)
+                        let bothMergedSeam = filteredSites[i].isMergedSeam && filteredSites[j].isMergedSeam
+                        let cutoff2 = (filteredSites[j].gid != gi && !bothMergedSeam) ? dMinSq : dSameSafeSq
+                        if ddx * ddx + ddy * ddy < cutoff2 {
+                            removed[j] = true
                         }
                     }
                 }
@@ -2883,28 +3008,22 @@ public struct GeometryBuilderView: View {
                 let (ix, iy) = cellCoord(si.xPhys, si.yPhys)
                 var nearestCrossIdx = -1
                 var nearestD2 = maxSearchSq
-                for dy in -1...1 {
-                    let ny = iy + dy
-                    if ny < 0 || ny >= gNy { continue }
-                    for dx in -1...1 {
-                        let nx = ix + dx
-                        if nx < 0 || nx >= gNx { continue }
-                        for j in buckets[ny * gNx + nx] where filteredSites[j].gid != si.gid {
-                            let ddx = filteredSites[j].xPhys - si.xPhys
-                            let ddy = filteredSites[j].yPhys - si.yPhys
-                            let d2 = ddx * ddx + ddy * ddy
-                            if d2 < nearestD2 {
-                                nearestD2 = d2
-                                nearestCrossIdx = j
-                            }
+                for b in neighbourBuckets(ix, iy) {
+                    for j in buckets[b] where filteredSites[j].gid != si.gid {
+                        let (ddx, ddy) = sep(si.xPhys, si.yPhys, filteredSites[j].xPhys, filteredSites[j].yPhys)
+                        let d2 = ddx * ddx + ddy * ddy
+                        if d2 < nearestD2 {
+                            nearestD2 = d2
+                            nearestCrossIdx = j
                         }
                     }
                 }
                 if nearestCrossIdx >= 0 {
                     let sj = filteredSites[nearestCrossIdx]
                     let dist = sqrt(nearestD2)
+                    let (bx, by) = sep(si.xPhys, si.yPhys, sj.xPhys, sj.yPhys)
                     let p1 = toScreen(si.xPhys / Lx, si.yPhys / Ly)
-                    let p2 = toScreen(sj.xPhys / Lx, sj.yPhys / Ly)
+                    let p2 = toScreen((si.xPhys + bx) / Lx, (si.yPhys + by) / Ly)
                     if dist <= lMaxPhys {
                         connectedPath.move(to: p1)
                         connectedPath.addLine(to: p2)
@@ -2914,8 +3033,16 @@ public struct GeometryBuilderView: View {
                     }
                 }
             }
-            ctx.stroke(connectedPath, with: .color(Color(red: 0.45, green: 0.90, blue: 0.62).opacity(0.42)), lineWidth: 1.1)
-            ctx.stroke(brokenPath, with: .color(Color(red: 1.0, green: 0.38, blue: 0.36).opacity(0.90)), style: StrokeStyle(lineWidth: 1.6, dash: [3, 2]))
+            // Periodic: bonds across the box edge point at the neighbour's periodic image, so clip them to the box
+            var bondCtx = ctx
+            if periodicSeams {
+                let topLeft = toScreen(0.0, 1.0)
+                let bottomRight = toScreen(1.0, 0.0)
+                bondCtx.clip(to: Path(CGRect(x: topLeft.x, y: topLeft.y,
+                                             width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y)))
+            }
+            bondCtx.stroke(connectedPath, with: .color(Color(red: 0.45, green: 0.90, blue: 0.62).opacity(0.42)), lineWidth: 1.1)
+            bondCtx.stroke(brokenPath, with: .color(Color(red: 1.0, green: 0.38, blue: 0.36).opacity(0.90)), style: StrokeStyle(lineWidth: 1.6, dash: [3, 2]))
         }
 
         // Render all surviving lattice sites (highlighting merged seam-core atoms)
@@ -2923,7 +3050,7 @@ public struct GeometryBuilderView: View {
         for site in filteredSites {
             let xHat = min(1.0, max(0.0, site.xPhys / Lx))
             let yHat = min(1.0, max(0.0, site.yPhys / Ly))
-            let role = (micro.mode == .periodicDislocations)
+            let role = micro.isPeriodic
                 ? 0
                 : config.geometryConfig.classifyNodeRole(
                     xHat: xHat,
@@ -3010,65 +3137,82 @@ public struct GeometryBuilderView: View {
                 at: g1Pt
             )
         } else if micro.mode == .voronoi {
-            // Draw analytical Voronoi grain-boundary network (dashed gold bisector edges)
+            // Draw analytical Voronoi grain-boundary network (dashed gold bisector edges).
+            // Distances are physical (x scaled by Lx/Ly), as in the solver. Periodic: every seed competes with
+            // the 9 periodic images of all seeds, and each edge is redrawn at the 9 box translations so cells
+            // that wrap across the box edge show on both sides. Edges between a grain and its own image are red.
             let seeds = micro.seeds
             let ng = seeds.count
             if ng >= 2 {
+                let asp = max(1e-6, physicalAspect)
+                let periodic = micro.isPeriodicVoronoi
                 var clipCtx = ctx
                 clipCtx.clip(to: buildSolidClipPath(originX: originX, originY: originY, boxW: boxW, boxH: boxH), style: FillStyle(eoFill: true))
-                var voronoiPath = Path()
+                let shifts: [(Double, Double)] = periodic
+                    ? [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+                    : [(0, 0)]
+                var comp: [(x: Double, y: Double, owner: Int, image: Bool)] = []
+                comp.reserveCapacity(ng * shifts.count)
+                for (k, sd) in seeds.enumerated() {
+                    for (sx, sy) in shifts {
+                        comp.append(((sd.cx + sx) * asp, sd.cy + sy, k, sx != 0 || sy != 0))
+                    }
+                }
+                var segments: [(Double, Double, Double, Double, Bool)] = []
                 for i in 0..<ng {
-                    for j in (i + 1)..<ng {
-                        let sx_i = seeds[i].cx, sy_i = seeds[i].cy
-                        let sx_j = seeds[j].cx, sy_j = seeds[j].cy
-                        let dx = sx_j - sx_i, dy = sy_j - sy_i
+                    let px = seeds[i].cx * asp, py = seeds[i].cy
+                    for (ci, c) in comp.enumerated() {
+                        if c.owner < i || (c.owner == i && !c.image) { continue }
+                        let dx = c.x - px, dy = c.y - py
                         let dist = hypot(dx, dy)
-                        if dist < 1e-6 { continue }
-                        let mx = 0.5 * (sx_i + sx_j)
-                        let my = 0.5 * (sy_i + sy_j)
-                        let tx = -dy / dist
-                        let ty = dx / dist
-                        var tMin = -2.0
-                        var tMax = 2.0
-
-                        // Clip to [0, 1]^2
-                        if abs(tx) > 1e-9 {
-                            let t0 = (0.0 - mx) / tx
-                            let t1 = (1.0 - mx) / tx
-                            tMin = max(tMin, min(t0, t1))
-                            tMax = min(tMax, max(t0, t1))
+                        if dist < 1e-9 { continue }
+                        let mx = 0.5 * (px + c.x), my = 0.5 * (py + c.y)
+                        let tx = -dy / dist, ty = dx / dist
+                        var tMin = -4.0 * max(1.0, asp)
+                        var tMax = 4.0 * max(1.0, asp)
+                        if !periodic {
+                            if abs(tx) > 1e-9 {
+                                let t0 = (0.0 - mx) / tx, t1 = (asp - mx) / tx
+                                tMin = max(tMin, min(t0, t1)); tMax = min(tMax, max(t0, t1))
+                            }
+                            if abs(ty) > 1e-9 {
+                                let t0 = (0.0 - my) / ty, t1 = (1.0 - my) / ty
+                                tMin = max(tMin, min(t0, t1)); tMax = min(tMax, max(t0, t1))
+                            }
                         }
-                        if abs(ty) > 1e-9 {
-                            let t0 = (0.0 - my) / ty
-                            let t1 = (1.0 - my) / ty
-                            tMin = max(tMin, min(t0, t1))
-                            tMax = min(tMax, max(t0, t1))
-                        }
-
-                        // Clip against all other Voronoi seeds k != i, j
-                        let r_i2 = (mx - sx_i) * (mx - sx_i) + (my - sy_i) * (my - sy_i)
-                        for k in 0..<ng where k != i && k != j {
-                            let sx_k = seeds[k].cx, sy_k = seeds[k].cy
-                            let a = 2.0 * (tx * (sx_k - sx_i) + ty * (sy_k - sy_i))
-                            let b = ((mx - sx_k) * (mx - sx_k) + (my - sy_k) * (my - sy_k)) - r_i2
-                            if abs(a) < 1e-9 {
+                        let rP2 = (mx - px) * (mx - px) + (my - py) * (my - py)
+                        for (qi, q) in comp.enumerated() where qi != ci && !(q.owner == i && !q.image) {
+                            let a = 2.0 * (tx * (q.x - px) + ty * (q.y - py))
+                            let b = ((mx - q.x) * (mx - q.x) + (my - q.y) * (my - q.y)) - rP2
+                            if abs(a) < 1e-12 {
                                 if b < 0.0 { tMin = 1.0; tMax = -1.0; break }
                             } else if a > 0.0 {
                                 tMax = min(tMax, b / a)
                             } else {
                                 tMin = max(tMin, b / a)
                             }
+                            if tMin >= tMax { break }
                         }
-
                         if tMin < tMax {
-                            let p1 = toScreen(mx + tMin * tx, my + tMin * ty)
-                            let p2 = toScreen(mx + tMax * tx, my + tMax * ty)
-                            voronoiPath.move(to: p1)
-                            voronoiPath.addLine(to: p2)
+                            segments.append((mx + tMin * tx, my + tMin * ty, mx + tMax * tx, my + tMax * ty, c.owner == i))
+                        }
+                    }
+                }
+                var voronoiPath = Path()
+                var selfPath = Path()
+                for (x1, y1, x2, y2, isSelf) in segments {
+                    for (sx, sy) in shifts {
+                        let p1 = toScreen(x1 / asp + sx, y1 + sy)
+                        let p2 = toScreen(x2 / asp + sx, y2 + sy)
+                        if isSelf {
+                            selfPath.move(to: p1); selfPath.addLine(to: p2)
+                        } else {
+                            voronoiPath.move(to: p1); voronoiPath.addLine(to: p2)
                         }
                     }
                 }
                 clipCtx.stroke(voronoiPath, with: .color(gold.opacity(0.82)), style: StrokeStyle(lineWidth: 1.8, dash: [5, 3]))
+                clipCtx.stroke(selfPath, with: .color(Color(red: 1.0, green: 0.38, blue: 0.36).opacity(0.95)), style: StrokeStyle(lineWidth: 2.4, dash: [4, 2]))
             }
 
             for (idx, s) in micro.seeds.enumerated() {

@@ -343,10 +343,10 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             has_custom_geom = true;
         }
     }
-    const bool is_periodic_dislocs = has_custom_geom &&
-        macro_geom.microstructure.mode == MicrostructureMode::PeriodicDislocations &&
-        macro_geom.microstructure.enforce_periodic_bc;
-    const bool pbc = is_periodic_dislocs || (!has_custom_geom &&
+    // Periodic microstructures (2M periodic dislocations, periodic Voronoi) run on the T^2 torus:
+    // no carving, no studio BCs, all DOFs free, loading through the periodic box F_ext
+    const bool is_periodic_micro = has_custom_geom && macro_geom.isPeriodicMicrostructure();
+    const bool pbc = is_periodic_micro || (!has_custom_geom &&
         (config.bc == "periodic" || config.bc == "Periodic" || config.bc == "pbc" || config.bc == "PBC"));
     if (config.lattice_type == "triangular" && (study_ny % 2 != 0)) {
         study_ny++;
@@ -423,7 +423,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
             : std::array<double, 2>{a_0 / 2.0, (std::sqrt(3.0) / 2.0) * a_0};
     }
 
-    if (has_custom_geom && !is_periodic_dislocs) {
+    if (has_custom_geom && !is_periodic_micro) {
         points_ref = macro_geom.carveLatticePoints(points_ref, a_0);
     }
 
@@ -437,7 +437,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     std::vector<int> node_bc_role;
     std::vector<Eigen::Vector2d> node_bc_velocity;
 
-    if (is_periodic_dislocs) {
+    if (is_periodic_micro) {
         std::tie(interior_mapping, full_mapping) =
             create_dof_mapping_original(points_ref, 0.25 * a_0, /*pbc=*/true);
         node_bc_role.assign(total_nodes, 0);
@@ -465,7 +465,7 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
                           translation_map, full_mapping, 1e-6, pbc);
     mesher.setUsePeriodicCopies(pbc);
-    if (has_custom_geom && !is_periodic_dislocs) {
+    if (has_custom_geom && !is_periodic_micro) {
         AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &points_ref);
     } else {
         AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);

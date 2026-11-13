@@ -575,6 +575,10 @@ public struct MicrostructureConfigModel: Codable, Equatable {
     public var random_seed: Int = 42
     public var theta_min_deg: Double = -30.0
     public var theta_max_deg: Double = +30.0
+    /// Redraw a grain's θ if it lies within this angle of a neighbouring grain (lattice-symmetry reduced; 0 = off)
+    public var min_misorientation_deg: Double = 0.0
+    /// Periodic (T² torus) Voronoi: no free surfaces, all DOFs free, loaded through the periodic box
+    public var voronoi_periodic: Bool = false
     public var seeds: [VoronoiGrainSeedModel] = []
     
     // Multi-Plane Single-Dislocation Periodic Setup (2M active glide planes, 1 dislocation per plane, sum(b) = 0)
@@ -608,6 +612,8 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         case random_seed
         case theta_min_deg
         case theta_max_deg
+        case min_misorientation_deg
+        case voronoi_periodic
         case seeds
         case dislocation_pair_count
         case dislocation_layout
@@ -646,6 +652,8 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         self.random_seed = try c.decodeIfPresent(Int.self, forKey: .random_seed) ?? 42
         self.theta_min_deg = try c.decodeIfPresent(Double.self, forKey: .theta_min_deg) ?? -30.0
         self.theta_max_deg = try c.decodeIfPresent(Double.self, forKey: .theta_max_deg) ?? +30.0
+        self.min_misorientation_deg = try c.decodeIfPresent(Double.self, forKey: .min_misorientation_deg) ?? 0.0
+        self.voronoi_periodic = try c.decodeIfPresent(Bool.self, forKey: .voronoi_periodic) ?? false
         if let decodedSeeds = try c.decodeIfPresent([VoronoiGrainSeedModel].self, forKey: .seeds), !decodedSeeds.isEmpty {
             self.seeds = decodedSeeds
         } else {
@@ -664,8 +672,30 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         }
     }
     
-    public mutating func regenerateSeeds() {
-        let ng = max(2, min(32, num_grains))
+    /// True when the solver runs this microstructure on the T² torus (mirrors C++ isPeriodicMicrostructure)
+    public var isPeriodic: Bool {
+        mode == .periodicDislocations || isPeriodicVoronoi
+    }
+
+    public var isPeriodicVoronoi: Bool {
+        mode == .voronoi && voronoi_periodic
+    }
+
+    /// Leave any periodic microstructure (finite-specimen loading presets)
+    public mutating func leavePeriodicMode() {
+        if mode == .periodicDislocations {
+            mode = .singleCrystal
+        }
+        voronoi_periodic = false
+    }
+
+    public static let maxVoronoiGrains = 64
+
+    /// Stratified seed layout + θ draws. Mirrors C++ generateVoronoiSeeds (same LCG stream, margins and
+    /// rounding), so a JSON without seeds reproduces this layout in the solver.
+    /// aspect = Lx / Ly and symmetryDeg (60 triangular, 90 square) only matter for min_misorientation_deg.
+    public mutating func regenerateSeeds(aspect: Double = 1.0, symmetryDeg: Double = 60.0) {
+        let ng = max(2, min(Self.maxVoronoiGrains, num_grains))
         let cols = max(1, Int(ceil(sqrt(Double(ng)))))
         let rows = max(1, Int(ceil(Double(ng) / Double(cols))))
         let tMin = min(theta_min_deg, theta_max_deg)
@@ -691,9 +721,119 @@ public struct MicrostructureConfigModel: Codable, Equatable {
                 theta_deg: (th * 10).rounded() / 10
             ))
         }
+
+        // Neighbour misorientation floor: redraw θ_k against already-assigned neighbours j < k
+        if min_misorientation_deg > 1e-9 {
+            var nbrs = [[Int]](repeating: [], count: ng)
+            for (a, b) in Self.voronoiNeighbourPairs(out, aspect: aspect, periodic: voronoi_periodic) {
+                nbrs[b].append(a)
+            }
+            for k in 0..<ng {
+                func worst(_ th: Double) -> Double {
+                    var w = Double.infinity
+                    for j in nbrs[k] {
+                        w = min(w, Self.latticeMisorientationDeg(th, out[j].theta_deg, symmetryDeg: symmetryDeg))
+                    }
+                    return w
+                }
+                var best = out[k].theta_deg
+                var bestScore = worst(best)
+                if bestScore >= min_misorientation_deg { continue }
+                for _ in 0..<64 {
+                    let th = ((tMin + (tMax - tMin) * nextRand()) * 10).rounded() / 10
+                    let sc = worst(th)
+                    if sc > bestScore { best = th; bestScore = sc }
+                    if sc >= min_misorientation_deg { break }
+                }
+                out[k].theta_deg = best
+            }
+        }
         self.seeds = out
     }
-    
+
+    /// Symmetry-reduced misorientation |θa − θb| modulo the lattice rotation symmetry
+    public static func latticeMisorientationDeg(_ a: Double, _ b: Double, symmetryDeg: Double) -> Double {
+        let sym = symmetryDeg > 1e-9 ? symmetryDeg : 90.0
+        let d = fmod(abs(a - b), sym)
+        return min(d, sym - d)
+    }
+
+    /// Pairs (i < j) of Voronoi cells sharing an edge, from a sampled ownership grid (mirrors C++ voronoiNeighbourPairs)
+    public static func voronoiNeighbourPairs(_ seeds: [VoronoiGrainSeedModel], aspect: Double, periodic: Bool,
+                                             samples: Int = 160) -> [(Int, Int)] {
+        let ng = seeds.count
+        guard ng >= 2 else { return [] }
+        let n = max(16, samples)
+        let asp = aspect > 1e-9 ? aspect : 1.0
+        var owner = [Int](repeating: 0, count: n * n)
+        for iy in 0..<n {
+            let y = (Double(iy) + 0.5) / Double(n)
+            for ix in 0..<n {
+                let x = (Double(ix) + 0.5) / Double(n)
+                var best = 0
+                var bestD2 = Double.infinity
+                for k in 0..<ng {
+                    var dx = x - seeds[k].cx
+                    var dy = y - seeds[k].cy
+                    if periodic { dx -= dx.rounded(); dy -= dy.rounded() }
+                    let d2 = dx * dx * asp * asp + dy * dy
+                    if d2 < bestD2 { bestD2 = d2; best = k }
+                }
+                owner[iy * n + ix] = best
+            }
+        }
+        var adj = [Bool](repeating: false, count: ng * ng)
+        func mark(_ a: Int, _ b: Int) {
+            guard a != b else { return }
+            adj[min(a, b) * ng + max(a, b)] = true
+        }
+        for iy in 0..<n {
+            for ix in 0..<n {
+                let o = owner[iy * n + ix]
+                if ix + 1 < n { mark(o, owner[iy * n + ix + 1]) } else if periodic { mark(o, owner[iy * n]) }
+                if iy + 1 < n { mark(o, owner[(iy + 1) * n + ix]) } else if periodic { mark(o, owner[ix]) }
+            }
+        }
+        var pairs: [(Int, Int)] = []
+        for a in 0..<ng { for b in (a + 1)..<ng where adj[a * ng + b] { pairs.append((a, b)) } }
+        return pairs
+    }
+
+    /// Periodic Voronoi: index of a grain whose cell reaches its own periodic image, or nil
+    /// (mirrors C++ findSelfContactingVoronoiCell; sizes and minGap in units of a0)
+    public static func selfContactingVoronoiCell(_ seeds: [VoronoiGrainSeedModel], sizeX: Double, sizeY: Double,
+                                                 minGap: Double = 1.0) -> Int? {
+        let ng = seeds.count
+        if ng < 2 { return ng == 1 ? 0 : nil }
+        let step = max(1e-6, 0.25 * max(minGap, 1e-3 * min(sizeX, sizeY)))
+        let nX = max(8, Int(ceil(sizeX / step)))
+        let nY = max(8, Int(ceil(sizeY / step)))
+        for k in 0..<ng {
+            let sx = seeds[k].cx * sizeX, sy = seeds[k].cy * sizeY
+            func ownedByK(_ rx: Double, _ ry: Double) -> Bool {
+                let dK = hypot(rx, ry)
+                let px = sx + rx, py = sy + ry
+                for j in 0..<ng where j != k {
+                    var dx = px - seeds[j].cx * sizeX
+                    var dy = py - seeds[j].cy * sizeY
+                    dx -= sizeX * (dx / sizeX).rounded()
+                    dy -= sizeY * (dy / sizeY).rounded()
+                    if hypot(dx, dy) < dK - minGap { return false }
+                }
+                return true
+            }
+            for i in 0...nY {
+                let ry = -0.5 * sizeY + sizeY * Double(i) / Double(nY)
+                if ownedByK(-0.5 * sizeX, ry) || ownedByK(0.5 * sizeX, ry) { return k }
+            }
+            for i in 0...nX {
+                let rx = -0.5 * sizeX + sizeX * Double(i) / Double(nX)
+                if ownedByK(rx, -0.5 * sizeY) || ownedByK(rx, 0.5 * sizeY) { return k }
+            }
+        }
+        return nil
+    }
+
     public mutating func regeneratePeriodicDislocations(nx: Int = 60, ny: Int = 60) {
         let M = max(1, dislocation_pair_count)
         let totalPlanes = 2 * M
@@ -786,7 +926,8 @@ public struct MicrostructureConfigModel: Codable, Equatable {
     }
     
     /// Returns (grainID, thetaDeg) at normalized coordinate (xHat, yHat)
-    public func grainAt(xHat: Double, yHat: Double, fallbackTheta: Double = 0.0) -> (Int, Double) {
+    /// aspect = Lx / Ly: Voronoi cells are built from physical distances (as in the solver), not normalized ones.
+    public func grainAt(xHat: Double, yHat: Double, fallbackTheta: Double = 0.0, aspect: Double = 1.0) -> (Int, Double) {
         switch mode {
         case .singleCrystal, .periodicDislocations:
             return (0, fallbackTheta)
@@ -800,8 +941,12 @@ public struct MicrostructureConfigModel: Codable, Equatable {
             guard !seeds.isEmpty else { return (0, fallbackTheta) }
             var bestIdx = 0
             var bestD2 = Double.infinity
+            let asp = aspect > 1e-9 ? aspect : 1.0
             for (idx, s) in seeds.enumerated() {
-                let d2 = (xHat - s.cx) * (xHat - s.cx) + (yHat - s.cy) * (yHat - s.cy)
+                var dx = xHat - s.cx
+                var dy = yHat - s.cy
+                if voronoi_periodic { dx -= dx.rounded(); dy -= dy.rounded() }
+                let d2 = dx * dx * asp * asp + dy * dy
                 if d2 < bestD2 {
                     bestD2 = d2
                     bestIdx = idx
@@ -1102,6 +1247,8 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         switch preset {
         case .bicrystalTiltTension:
             resetStage1ToGBFrameRollerBCs(forAngleDeg: microstructure.gb_angle_deg)
+        case .voronoiPolycrystalDogbone:
+            resetStage1ToMinimalAnchor()
         case .nanoIndentation, .bicrystalIndentation:
             stage1_boundary_rules = [
                 BoundaryZoneRuleModel(region: .bottom, kind: .fixed, thickness_a0: 2.5, ux: 0.0, uy: 0.0),
@@ -1218,9 +1365,22 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
         )
     }
     
+    public static func wrapUnit(_ v: Double) -> Double {
+        let w = v - floor(v)
+        return w >= 1.0 ? 0.0 : w
+    }
+
     /// Relocates any Voronoi grain seeds that fall outside the carved outer shape or inside a cutout.
     public mutating func sanitizeVoronoiSeedsInsideSolid() {
         guard !microstructure.seeds.isEmpty else { return }
+        if microstructure.isPeriodicVoronoi {
+            // Torus: no outer shape or cutouts; just fold seeds into the unit cell
+            for i in microstructure.seeds.indices {
+                microstructure.seeds[i].cx = Self.wrapUnit(microstructure.seeds[i].cx)
+                microstructure.seeds[i].cy = Self.wrapUnit(microstructure.seeds[i].cy)
+            }
+            return
+        }
         for i in microstructure.seeds.indices {
             let s = microstructure.seeds[i]
             let clamped = clampSeedToSolid(xHat: s.cx, yHat: s.cy)
@@ -1481,6 +1641,22 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
 
     public mutating func resetStage1ToGBFrameRollerBCs(forAngleDeg gbAngleDeg: Double) {
         stage1_boundary_rules = Self.defaultStage1RollerRules(forAngleDeg: gbAngleDeg)
+    }
+
+    /// Minimal anchor (mirrors the C++ Voronoi Stage 1 default): Bottom RollerX (uy = 0) + Left RollerY (ux = 0),
+    /// top and right traction-free. Removes rigid-body motion only, so grain boundaries relax without the
+    /// loading grips clamping the specimen at its unrelaxed size.
+    public static func minimalAnchorStage1Rules() -> [BoundaryZoneRuleModel] {
+        [
+            BoundaryZoneRuleModel(region: .bottom, kind: .rollerX, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: false, lock_y: true),
+            BoundaryZoneRuleModel(region: .left, kind: .rollerY, thickness_a0: 1.5, ux: 0.0, uy: 0.0, lock_x: true, lock_y: false),
+            BoundaryZoneRuleModel(region: .top, kind: .free, thickness_a0: 1.5),
+            BoundaryZoneRuleModel(region: .right, kind: .free, thickness_a0: 1.5)
+        ]
+    }
+
+    public mutating func resetStage1ToMinimalAnchor() {
+        stage1_boundary_rules = Self.minimalAnchorStage1Rules()
     }
 
     /// Bounding box of the carved outer shape in normalized coordinates (matches C++ domain bounds).

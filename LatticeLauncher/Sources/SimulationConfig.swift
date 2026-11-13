@@ -364,7 +364,8 @@ public class SimulationConfig: ObservableObject {
         let remeshTag = enableRemeshing ? "remesh" : "noremesh"
         let latTag = latticeSymmetry == .triangular ? "_tri" : ""
         let isPeriodicDislocs = (geometryConfig.enabled && geometryConfig.microstructure.mode == .periodicDislocations)
-        let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed && !isPeriodicDislocs) ? "_fixed" : ""
+        let isPeriodicVoronoi = (geometryConfig.enabled && geometryConfig.microstructure.isPeriodicVoronoi)
+        let bcTag = (mode != .shift && mode != .volterra && boundaryCondition == .fixed && !isPeriodicDislocs && !isPeriodicVoronoi) ? "_fixed" : ""
         let potTag = potentialMode == .zanzotto ? "" : "_pot\(potentialMode.rawValue)"
         let triRefTag = usesTriangularReference ? "_triref" : ""
         let rotTag = useRotation ? ((boundaryCondition == .fixed || geometryConfig.enabled || mode == .volterra || mode == .shift) ? String(format: "_rot%.1f", rotationAngle) : "_csl\(cslM)_\(cslN)_K\(cslKx)x\(cslKy)") : ""
@@ -372,7 +373,7 @@ public class SimulationConfig: ObservableObject {
         let cylLoadTag = (mode == .volterra && cylinderLoadMode != .none)
             ? "_load_\(cylinderLoadMode.rawValue)\(cylinderLoadEnd < 0 ? "_rev" : "")" : ""
         let dipoleTag = (mode == .volterra && dipoleEnabled) ? "_dipole\(dipoleDx)x\(dipoleDy)" : ""
-        let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? (isPeriodicDislocs ? "_pbc_dislocs_\(2 * geometryConfig.microstructure.dislocation_pair_count)D" : "_\(geometryConfig.preset_name)") : ""
+        let geomTag = (mode != .volterra && mode != .shift && geometryConfig.enabled) ? (isPeriodicDislocs ? "_pbc_dislocs_\(2 * geometryConfig.microstructure.dislocation_pair_count)D" : (isPeriodicVoronoi ? "_pbc_voronoi_\(geometryConfig.microstructure.seeds.count)G" : "_\(geometryConfig.preset_name)")) : ""
         if mode == .shift {
             let pertTag = shiftPerturbMesh ? "_pert" : ""
             return String(format: "run_shift_%dx%d_amp%g_du%g_%@%@%@%@%@%@", nx, ny, shiftAmplitude, abs(shiftStepSize), remeshTag, pertTag, latTag, potTag, triRefTag, rotTag)
@@ -541,9 +542,9 @@ public class SimulationConfig: ObservableObject {
         
         // Boundary condition & Macroscopic Geometry Studio
         if mode != .shift && mode != .volterra {
-            let isPeriodicDislocs = (activeGeometry.enabled && activeGeometry.microstructure.mode == .periodicDislocations)
-            if activeGeometry.enabled && (isPeriodicDislocs || boundaryCondition != .periodic) {
-                args.append(isPeriodicDislocs ? "--bc=periodic" : "--bc=fixed")
+            let isPeriodicMicro = (activeGeometry.enabled && activeGeometry.microstructure.isPeriodic)
+            if activeGeometry.enabled && (isPeriodicMicro || boundaryCondition != .periodic) {
+                args.append(isPeriodicMicro ? "--bc=periodic" : "--bc=fixed")
                 var effectiveGeom = activeGeometry
                 effectiveGeom.microstructure.relax_only = (activeProtocol != .relaxThenLoad)
                 let scratchDir = "\(projectRoot)/scratch"
@@ -752,7 +753,7 @@ public extension SimulationConfig {
     var isEffectivePeriodicPBC: Bool {
         guard mode != .shift && mode != .volterra else { return false }
         if geometryConfig.enabled {
-            return geometryConfig.microstructure.mode == .periodicDislocations
+            return geometryConfig.microstructure.isPeriodic
         }
         return boundaryCondition == .periodic
     }
@@ -839,9 +840,12 @@ public extension SimulationConfig {
             let wasNegShear = (activeMechanicalLoading == .simpleShearNeg)
             boundaryCondition = .periodic
             geometryConfig.indenter.enabled = false
-            if geometryConfig.microstructure.mode == .periodicDislocations {
+            if geometryConfig.microstructure.mode == .periodicDislocations || geometryConfig.microstructure.mode == .voronoi {
                 geometryConfig.enabled = true
                 geometryConfig.microstructure.enforce_periodic_bc = true
+                if geometryConfig.microstructure.mode == .voronoi {
+                    geometryConfig.microstructure.voronoi_periodic = true
+                }
                 geometryConfig.outer_shape = .rectangle
                 geometryConfig.cutouts = []
             } else {
@@ -855,9 +859,7 @@ public extension SimulationConfig {
         case .finiteSurfaceBCs:
             let prevLoading = activeMechanicalLoading
             boundaryCondition = .fixed
-            if geometryConfig.microstructure.mode == .periodicDislocations {
-                geometryConfig.microstructure.mode = .singleCrystal
-            }
+            geometryConfig.microstructure.leavePeriodicMode()
             geometryConfig.enabled = true
             // Preserve shear if the user was previously in Simple Shear
             if prevLoading == .simpleShearPos {
@@ -908,9 +910,7 @@ public extension SimulationConfig {
         case .uniaxialTensionY:
             mode = .positive
             boundaryCondition = .fixed
-            if geometryConfig.microstructure.mode == .periodicDislocations {
-                geometryConfig.microstructure.mode = .singleCrystal
-            }
+            geometryConfig.microstructure.leavePeriodicMode()
             geometryConfig.enabled = true
             geometryConfig.indenter.enabled = false
             geometryConfig.boundary_rules = [
@@ -925,9 +925,7 @@ public extension SimulationConfig {
         case .uniaxialCompY:
             mode = .positive
             boundaryCondition = .fixed
-            if geometryConfig.microstructure.mode == .periodicDislocations {
-                geometryConfig.microstructure.mode = .singleCrystal
-            }
+            geometryConfig.microstructure.leavePeriodicMode()
             geometryConfig.enabled = true
             geometryConfig.indenter.enabled = false
             geometryConfig.boundary_rules = [
@@ -942,9 +940,7 @@ public extension SimulationConfig {
         case .uniaxialTensionX:
             mode = .positive
             boundaryCondition = .fixed
-            if geometryConfig.microstructure.mode == .periodicDislocations {
-                geometryConfig.microstructure.mode = .singleCrystal
-            }
+            geometryConfig.microstructure.leavePeriodicMode()
             geometryConfig.enabled = true
             geometryConfig.indenter.enabled = false
             geometryConfig.boundary_rules = [
@@ -959,6 +955,7 @@ public extension SimulationConfig {
         case .shearParallelGB:
             mode = .positive
             boundaryCondition = .fixed
+            geometryConfig.microstructure.voronoi_periodic = false
             if geometryConfig.microstructure.mode == .periodicDislocations {
                 geometryConfig.microstructure.mode = .bicrystal
             }
@@ -976,9 +973,7 @@ public extension SimulationConfig {
         case .affineShearBox:
             mode = .positive
             boundaryCondition = .fixed
-            if geometryConfig.microstructure.mode == .periodicDislocations {
-                geometryConfig.microstructure.mode = .singleCrystal
-            }
+            geometryConfig.microstructure.leavePeriodicMode()
             geometryConfig.enabled = true
             geometryConfig.indenter.enabled = false
             geometryConfig.boundary_rules = [
@@ -990,9 +985,7 @@ public extension SimulationConfig {
         case .radialExpansionOutward:
             mode = .positive
             boundaryCondition = .fixed
-            if geometryConfig.microstructure.mode == .periodicDislocations {
-                geometryConfig.microstructure.mode = .singleCrystal
-            }
+            geometryConfig.microstructure.leavePeriodicMode()
             geometryConfig.enabled = true
             geometryConfig.indenter.enabled = false
             geometryConfig.boundary_rules = [
@@ -1004,9 +997,7 @@ public extension SimulationConfig {
         case .radialCompressionInward:
             mode = .positive
             boundaryCondition = .fixed
-            if geometryConfig.microstructure.mode == .periodicDislocations {
-                geometryConfig.microstructure.mode = .singleCrystal
-            }
+            geometryConfig.microstructure.leavePeriodicMode()
             geometryConfig.enabled = true
             geometryConfig.indenter.enabled = false
             geometryConfig.boundary_rules = [
@@ -1018,9 +1009,7 @@ public extension SimulationConfig {
         case .nanoindentation:
             mode = .positive
             boundaryCondition = .fixed
-            if geometryConfig.microstructure.mode == .periodicDislocations {
-                geometryConfig.microstructure.mode = .singleCrystal
-            }
+            geometryConfig.microstructure.leavePeriodicMode()
             geometryConfig.enabled = true
             geometryConfig.indenter.enabled = true
             geometryConfig.boundary_rules = [
@@ -1061,13 +1050,13 @@ public extension SimulationConfig {
         geometryConfig.enabled ? geometryConfig.boundary_rules.first { $0.enabled && $0.kind.isForceControl } : nil
     }
 
-    /// Loading run on a periodic cell (plain PBC or periodic dislocations): box stress control applies.
+    /// Loading run on a periodic cell (plain PBC, periodic dislocations or periodic Voronoi): box stress control applies.
     var isPeriodicLoadingRun: Bool { isPeriodicLoadingRun(geometry: geometryConfig) }
 
     func isPeriodicLoadingRun(geometry: MacroscopicGeometryConfigModel) -> Bool {
         guard mode != .shift && mode != .volterra else { return false }
-        let isPeriodicDislocs = geometry.enabled && geometry.microstructure.mode == .periodicDislocations
-        return isPeriodicDislocs || boundaryCondition == .periodic
+        let isPeriodicMicro = geometry.enabled && geometry.microstructure.isPeriodic
+        return isPeriodicMicro || boundaryCondition == .periodic
     }
 
     /// Dead load the supports cannot react (see MacroscopicGeometryConfigModel.tractionBalanceIssue), for the
@@ -1077,11 +1066,11 @@ public extension SimulationConfig {
         return geometryConfig.tractionBalanceIssue(width: Double(nx), height: Double(ny) * rowSpacing)
     }
 
-    /// Relaxation at a nonzero shear strain: plain periodic cell (no periodic dislocations) + shear stress preset
+    /// Relaxation at a nonzero shear strain: plain periodic cell (no periodic microstructure) + shear stress preset
     var pbcRelaxStrainApplies: Bool { pbcRelaxStrainApplies(geometry: geometryConfig) }
     func pbcRelaxStrainApplies(geometry: MacroscopicGeometryConfigModel) -> Bool {
-        let isPeriodicDislocs = geometry.enabled && geometry.microstructure.mode == .periodicDislocations
-        return isPeriodicLoadingRun(geometry: geometry) && !isPeriodicDislocs &&
+        let isPeriodicMicro = geometry.enabled && geometry.microstructure.isPeriodic
+        return isPeriodicLoadingRun(geometry: geometry) && !isPeriodicMicro &&
             ["shear", "cauchy_shear"].contains(pbcStressControl)
     }
 

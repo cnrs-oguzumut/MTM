@@ -437,6 +437,8 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
         out_config.microstructure.random_seed = static_cast<int>(extractDouble(micro_raw, "random_seed", 42.0));
         out_config.microstructure.theta_min_deg = extractDouble(micro_raw, "theta_min_deg", -30.0);
         out_config.microstructure.theta_max_deg = extractDouble(micro_raw, "theta_max_deg", +30.0);
+        out_config.microstructure.min_misorientation_deg = std::clamp(extractDouble(micro_raw, "min_misorientation_deg", 0.0), 0.0, 45.0);
+        out_config.microstructure.voronoi_periodic = extractBool(micro_raw, "voronoi_periodic", false);
 
         // Multi-Plane Single-Dislocation Periodic Setup parameters
         out_config.microstructure.dislocation_pair_count = std::clamp(static_cast<int>(extractDouble(micro_raw, "dislocation_pair_count", 2.0)), 1, 16);
@@ -476,7 +478,8 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
 
     std::string micro_label = "SINGLE";
     if (out_config.microstructure.mode == MicrostructureMode::Bicrystal) micro_label = "BICRYSTAL";
-    else if (out_config.microstructure.mode == MicrostructureMode::VoronoiPolycrystal) micro_label = "VORONOI";
+    else if (out_config.microstructure.mode == MicrostructureMode::VoronoiPolycrystal)
+        micro_label = out_config.microstructure.voronoi_periodic ? "VORONOI_PERIODIC" : "VORONOI";
     else if (out_config.microstructure.mode == MicrostructureMode::PeriodicDislocations) micro_label = "PERIODIC_DISLOCATIONS";
 
     std::cout << "[MacroscopicGeometry] Loaded '" << out_config.preset_name << "' from " << filepath
@@ -486,6 +489,174 @@ bool MacroscopicGeometryConfig::loadFromJSON(const std::string& filepath,
               << (out_config.indenter.enabled ? (out_config.indenter.contact_mode == IndenterContactMode::RepulsivePenalty ? "PENALTY" : "KINEMATIC") : "OFF")
               << ")\n";
     return true;
+}
+
+// ==================== VORONOI SEED HELPERS (mirrored in LatticeLauncher MacroscopicGeometryModels.swift) ====================
+// NOTE: this file is compiled with -ffast-math (finite-math-only), so never compare against infinity() here:
+// the comparisons may be folded away. Use numeric_limits<double>::max() as the "no value yet" sentinel.
+namespace {
+struct VoronoiLCG {
+    uint64_t state;
+    explicit VoronoiLCG(int seed)
+        : state(static_cast<uint64_t>(static_cast<int64_t>(seed == 0 ? 42 : seed))) {}
+    double next() {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<double>((state >> 11) & 0x1FFFFFULL) / static_cast<double>(0x1FFFFFULL);
+    }
+};
+
+inline double wrapUnit(double v) {
+    v -= std::floor(v);
+    return (v >= 1.0) ? 0.0 : v;
+}
+
+inline double minImage(double d, double L) {
+    return d - L * std::round(d / L);
+}
+} // namespace
+
+double latticeMisorientationDeg(double theta_a_deg, double theta_b_deg, double symmetry_deg) {
+    const double sym = (symmetry_deg > 1e-9) ? symmetry_deg : 90.0;
+    double d = std::fmod(std::abs(theta_a_deg - theta_b_deg), sym);
+    return std::min(d, sym - d);
+}
+
+std::vector<std::pair<int, int>> voronoiNeighbourPairs(const std::vector<VoronoiGrainSeed>& seeds,
+                                                       double aspect, bool periodic, int samples) {
+    const int ng = static_cast<int>(seeds.size());
+    std::vector<std::pair<int, int>> pairs;
+    if (ng < 2) return pairs;
+    const int n = std::max(16, samples);
+    const double asp = (aspect > 1e-9) ? aspect : 1.0;
+    std::vector<int> owner(static_cast<size_t>(n * n), 0);
+    for (int iy = 0; iy < n; ++iy) {
+        const double y = (iy + 0.5) / n;
+        for (int ix = 0; ix < n; ++ix) {
+            const double x = (ix + 0.5) / n;
+            int best = 0;
+            double best_d2 = std::numeric_limits<double>::max();
+            for (int k = 0; k < ng; ++k) {
+                double dx = x - seeds[k].cx;
+                double dy = y - seeds[k].cy;
+                if (periodic) { dx = minImage(dx, 1.0); dy = minImage(dy, 1.0); }
+                const double d2 = dx * dx * asp * asp + dy * dy;
+                if (d2 < best_d2) { best_d2 = d2; best = k; }
+            }
+            owner[static_cast<size_t>(iy * n + ix)] = best;
+        }
+    }
+    std::vector<char> adj(static_cast<size_t>(ng * ng), 0);
+    auto mark = [&](int a, int b) {
+        if (a == b) return;
+        if (a > b) std::swap(a, b);
+        adj[static_cast<size_t>(a * ng + b)] = 1;
+    };
+    for (int iy = 0; iy < n; ++iy) {
+        for (int ix = 0; ix < n; ++ix) {
+            const int o = owner[static_cast<size_t>(iy * n + ix)];
+            if (ix + 1 < n) mark(o, owner[static_cast<size_t>(iy * n + ix + 1)]);
+            else if (periodic) mark(o, owner[static_cast<size_t>(iy * n)]);
+            if (iy + 1 < n) mark(o, owner[static_cast<size_t>((iy + 1) * n + ix)]);
+            else if (periodic) mark(o, owner[static_cast<size_t>(ix)]);
+        }
+    }
+    for (int a = 0; a < ng; ++a)
+        for (int b = a + 1; b < ng; ++b)
+            if (adj[static_cast<size_t>(a * ng + b)]) pairs.emplace_back(a, b);
+    return pairs;
+}
+
+std::vector<VoronoiGrainSeed> generateVoronoiSeeds(const MicrostructureConfig& micro, double aspect, bool periodic,
+                                                   double symmetry_deg) {
+    const int ng = std::clamp(micro.num_grains, 2, 64);
+    const int cols = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(ng)))));
+    const int rows = std::max(1, static_cast<int>(std::ceil(static_cast<double>(ng) / cols)));
+    const double t_min = std::min(micro.theta_min_deg, micro.theta_max_deg);
+    const double t_max = std::max(micro.theta_min_deg, micro.theta_max_deg);
+    VoronoiLCG rng(micro.random_seed);
+
+    std::vector<VoronoiGrainSeed> seeds;
+    seeds.reserve(static_cast<size_t>(ng));
+    for (int k = 0; k < ng; ++k) {
+        const int r = k / cols;
+        const int c = k % cols;
+        const double jx = 0.20 + 0.60 * rng.next();
+        const double jy = 0.20 + 0.60 * rng.next();
+        const double cx = std::min(0.94, std::max(0.06, (c + jx) / cols));
+        const double cy = std::min(0.94, std::max(0.06, (r + jy) / rows));
+        const double th = t_min + (t_max - t_min) * rng.next();
+        VoronoiGrainSeed s;
+        s.id = k;
+        s.cx = std::round(cx * 1000.0) / 1000.0;
+        s.cy = std::round(cy * 1000.0) / 1000.0;
+        s.theta_deg = std::round(th * 10.0) / 10.0;
+        seeds.push_back(s);
+    }
+
+    // Optional neighbour misorientation floor: redraw theta_k (bounded retries, best candidate kept)
+    // against already-assigned Voronoi neighbours j < k
+    if (micro.min_misorientation_deg > 1e-9) {
+        std::vector<std::vector<int>> nbrs(static_cast<size_t>(ng));
+        for (const auto& [a, b] : voronoiNeighbourPairs(seeds, aspect, periodic)) {
+            nbrs[static_cast<size_t>(b)].push_back(a); // only lower-index neighbours constrain grain b
+        }
+        for (int k = 0; k < ng; ++k) {
+            auto worst = [&](double th) {
+                double w = std::numeric_limits<double>::max();
+                for (int j : nbrs[static_cast<size_t>(k)]) {
+                    w = std::min(w, latticeMisorientationDeg(th, seeds[static_cast<size_t>(j)].theta_deg, symmetry_deg));
+                }
+                return w;
+            };
+            double best = seeds[static_cast<size_t>(k)].theta_deg;
+            double best_score = worst(best);
+            if (best_score >= micro.min_misorientation_deg) continue;
+            for (int attempt = 0; attempt < 64; ++attempt) {
+                const double th = std::round((t_min + (t_max - t_min) * rng.next()) * 10.0) / 10.0;
+                const double sc = worst(th);
+                if (sc > best_score) { best = th; best_score = sc; }
+                if (sc >= micro.min_misorientation_deg) break;
+            }
+            seeds[static_cast<size_t>(k)].theta_deg = best;
+        }
+    }
+    return seeds;
+}
+
+int findSelfContactingVoronoiCell(const std::vector<VoronoiGrainSeed>& seeds, double size_x, double size_y,
+                                  double min_gap) {
+    const int ng = static_cast<int>(seeds.size());
+    if (ng < 2) return 0;
+    // A cell touches its own periodic image iff some point on the boundary of its seed-centred
+    // half-period box [-Lx/2, Lx/2] x [-Ly/2, Ly/2] is still owned by it (that point is equidistant
+    // from the seed and its image). Require every such point to be closer to another seed by min_gap.
+    const double step = std::max(1e-6, 0.25 * std::max(min_gap, 1e-3 * std::min(size_x, size_y)));
+    const int n_x = std::max(8, static_cast<int>(std::ceil(size_x / step)));
+    const int n_y = std::max(8, static_cast<int>(std::ceil(size_y / step)));
+    for (int k = 0; k < ng; ++k) {
+        const double sx = seeds[k].cx * size_x;
+        const double sy = seeds[k].cy * size_y;
+        auto ownedByK = [&](double rx, double ry) {
+            const double d_k = std::hypot(rx, ry);
+            const double px = sx + rx, py = sy + ry;
+            for (int j = 0; j < ng; ++j) {
+                if (j == k) continue;
+                const double dx = minImage(px - seeds[j].cx * size_x, size_x);
+                const double dy = minImage(py - seeds[j].cy * size_y, size_y);
+                if (std::hypot(dx, dy) < d_k - min_gap) return false;
+            }
+            return true;
+        };
+        for (int i = 0; i <= n_y; ++i) {
+            const double ry = -0.5 * size_y + size_y * i / n_y;
+            if (ownedByK(-0.5 * size_x, ry) || ownedByK(0.5 * size_x, ry)) return k;
+        }
+        for (int i = 0; i <= n_x; ++i) {
+            const double rx = -0.5 * size_x + size_x * i / n_x;
+            if (ownedByK(rx, -0.5 * size_y) || ownedByK(rx, 0.5 * size_y)) return k;
+        }
+    }
+    return -1;
 }
 
 std::pair<std::vector<Point2D>, DomainDimensions>
@@ -630,29 +801,18 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         Ly = size_y;
         a0 = a;
 
+        const bool periodic_voronoi = microstructure.voronoi_periodic;
+        const double symmetry_deg = (lattice_type == "triangular") ? 60.0 : 90.0;
         std::vector<VoronoiGrainSeed> seeds = microstructure.seeds;
         if (seeds.empty()) {
-            int ng = std::clamp(microstructure.num_grains, 2, 64);
-            std::mt19937 rng(static_cast<unsigned int>(microstructure.random_seed));
-            std::uniform_real_distribution<double> u01(0.10, 0.90);
-            std::uniform_real_distribution<double> utheta(
-                std::min(microstructure.theta_min_deg, microstructure.theta_max_deg),
-                std::max(microstructure.theta_min_deg, microstructure.theta_max_deg));
-
-            // Stratified / Poisson-disc-like placement constrained to the solid specimen
-            int cols = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(ng)))));
-            int rows = std::max(1, static_cast<int>(std::ceil(static_cast<double>(ng) / cols)));
-            for (int k = 0; k < ng; ++k) {
-                int r = k / cols;
-                int c = k % cols;
-                std::uniform_real_distribution<double> jx(0.20, 0.80);
-                std::uniform_real_distribution<double> jy(0.20, 0.80);
-                VoronoiGrainSeed s;
-                s.id = k;
-                s.cx = std::clamp((c + jx(rng)) / cols, 0.08, 0.92);
-                s.cy = std::clamp((r + jy(rng)) / rows, 0.08, 0.92);
-                s.theta_deg = utheta(rng);
-                seeds.push_back(s);
+            seeds = generateVoronoiSeeds(microstructure, size_x / size_y, periodic_voronoi, symmetry_deg);
+            std::cout << "[Microstructure] No explicit Voronoi seeds in JSON: generated " << seeds.size()
+                      << " seeds from random_seed = " << microstructure.random_seed
+                      << " (min misorientation " << microstructure.min_misorientation_deg << " deg)\n";
+            if (std::getenv("MTM_VERBOSE_LOG") != nullptr) {
+                for (const auto& sd : seeds) {
+                    std::cout << "    seed G" << sd.id << ": (" << sd.cx << ", " << sd.cy << ") theta = " << sd.theta_deg << "\n";
+                }
             }
         }
 
@@ -660,6 +820,12 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         // (e.g., never in the empty carved waist of a Dogbone, outside a Disk, or inside a Hole)
         int num_relocated_seeds = 0;
         for (auto& s : seeds) {
+            if (periodic_voronoi) {
+                // Torus: no outer shape or cutouts; fold seeds into the unit cell
+                s.cx = wrapUnit(s.cx);
+                s.cy = wrapUnit(s.cy);
+                continue;
+            }
             if (!isPointInsideSolid(s.cx * size_x, s.cy * size_y)) {
                 ++num_relocated_seeds;
                 bool relocated = false;
@@ -737,7 +903,56 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
             seed_phys[k] = Eigen::Vector2d(seeds[k].cx * size_x, seeds[k].cy * size_y);
         }
 
-        for (int k = 0; k < ng; ++k) {
+        if (periodic_voronoi) {
+            const int self_contact = findSelfContactingVoronoiCell(seeds, size_x, size_y, 1.0 * a);
+            if (self_contact >= 0) {
+                std::cerr << "[Microstructure] Fatal: periodic Voronoi grain G" << self_contact
+                          << " reaches its own periodic image (or is separated from it by a grain thinner than 1 a0). "
+                             "A grain cannot border itself: its two rotated copies would not line up. Use more grains "
+                             "(4 or more) or move the seeds so that every grain is enclosed by other grains."
+                          << std::endl;
+                std::exit(EXIT_FAILURE);
+            }
+            // Each grain is one continuous lattice anchored at its seed, built over the seed-centred half-period
+            // box (half-open, so every torus point is visited once) and folded into [0, Lx) x [0, Ly).
+            // The box edges never cut a grain, so the only seams are true grain boundaries.
+            const double half_x = 0.5 * size_x, half_y = 0.5 * size_y;
+            const int n_span_p = static_cast<int>(std::ceil(std::hypot(half_x, half_y) / d_lat)) + 4;
+            for (int k = 0; k < ng; ++k) {
+                const double theta_rad = seeds[k].theta_deg * M_PI / 180.0;
+                const double cos_th = std::cos(theta_rad), sin_th = std::sin(theta_rad);
+                const double a1_x = a * cos_th, a1_y = a * sin_th;
+                const double a2_x = (lattice_type == "triangular") ? a * (0.5 * cos_th - 0.5 * sqrt3 * sin_th) : (-a * sin_th);
+                const double a2_y = (lattice_type == "triangular") ? a * (0.5 * sin_th + 0.5 * sqrt3 * cos_th) : (a * cos_th);
+                for (int i = -n_span_p; i <= n_span_p; ++i) {
+                    for (int j = -n_span_p; j <= n_span_p; ++j) {
+                        const double rx = i * a1_x + j * a2_x;
+                        const double ry = i * a1_y + j * a2_y;
+                        if (rx < -half_x || rx >= half_x || ry < -half_y || ry >= half_y) continue;
+                        double px = seed_phys[k].x() + rx;
+                        double py = seed_phys[k].y() + ry;
+                        const double d_k = rx * rx + ry * ry;
+                        bool own = true;
+                        for (int q = 0; q < ng && own; ++q) {
+                            if (q == k) continue;
+                            const double dx = minImage(px - seed_phys[q].x(), size_x);
+                            const double dy = minImage(py - seed_phys[q].y(), size_y);
+                            const double d_q = dx * dx + dy * dy;
+                            if (d_q < d_k - 1e-10) own = false;
+                            else if (std::abs(d_q - d_k) <= 1e-10 && q < k) own = false;
+                        }
+                        if (!own) continue;
+                        px -= size_x * std::floor(px / size_x);
+                        py -= size_y * std::floor(py / size_y);
+                        if (px >= size_x) px -= size_x;
+                        if (py >= size_y) py -= size_y;
+                        raw_points.emplace_back(px, py, k, seeds[k].theta_deg);
+                    }
+                }
+            }
+        }
+
+        for (int k = 0; k < ng && !periodic_voronoi; ++k) {
             appendGrainPoints(k, seeds[k].theta_deg, seed_phys[k].x(), seed_phys[k].y(),
                               [&](double x, double y) {
                                   Eigen::Vector2d p(x, y);
@@ -752,7 +967,8 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                               });
         }
 
-        std::cout << "[Microstructure] Generated 2D Voronoi Polycrystal with " << ng
+        std::cout << "[Microstructure] Generated " << (periodic_voronoi ? "periodic (T^2) " : "")
+                  << "2D Voronoi Polycrystal with " << ng
                   << " grains (raw points before seam filter: " << raw_points.size() << ")\n";
     } else {
         // Fallback SingleCrystal
@@ -764,6 +980,10 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
     // ==================== SEAM OVERLAP FILTER (r_ij < d_min * a0) ====================
     // Multi-pass, distance-sorted overlap resolution for Bicrystals and 2D Voronoi Polycrystals
     // (guarantees zero overlapping nodes at grain boundaries and triple junctions).
+    // Periodic Voronoi: the hash grid wraps and all separations use the nearest periodic image,
+    // so seams that cross the box edge are resolved exactly like interior ones.
+    const bool periodic_seams = (microstructure.mode == MicrostructureMode::VoronoiPolycrystal) &&
+                                microstructure.voronoi_periodic;
     const double d_min = std::clamp(microstructure.min_seam_distance_a0, 0.15, 0.98) * a;
     const double d_min_sq = d_min * d_min;
     const double d_same_safe = std::min(d_min, 0.68 * a);
@@ -773,17 +993,56 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
     std::vector<bool> is_merged_seam(N, false);
     int merged_or_removed_count = 0;
 
-    // Spatial hash grid with cell size d_min
+    // Spatial hash grid with cell size >= d_min
     const double cell_h = std::max(1e-4, d_min);
-    const double inv_cell = 1.0 / cell_h;
-    const int grid_nx = std::max(1, static_cast<int>(std::ceil(size_x * inv_cell)) + 4);
-    const int grid_ny = std::max(1, static_cast<int>(std::ceil(size_y * inv_cell)) + 4);
+    const int grid_nx = periodic_seams ? std::max(1, static_cast<int>(std::floor(size_x / cell_h)))
+                                       : std::max(1, static_cast<int>(std::ceil(size_x / cell_h)) + 4);
+    const int grid_ny = periodic_seams ? std::max(1, static_cast<int>(std::floor(size_y / cell_h)))
+                                       : std::max(1, static_cast<int>(std::ceil(size_y / cell_h)) + 4);
+    const double inv_cell_x = periodic_seams ? (grid_nx / size_x) : (1.0 / cell_h);
+    const double inv_cell_y = periodic_seams ? (grid_ny / size_y) : (1.0 / cell_h);
     std::vector<std::vector<size_t>> buckets(static_cast<size_t>(grid_nx * grid_ny));
 
     auto cellIndex = [&](double x, double y) -> std::pair<int, int> {
-        int ix = std::clamp(static_cast<int>(std::floor(x * inv_cell)) + 1, 0, grid_nx - 1);
-        int iy = std::clamp(static_cast<int>(std::floor(y * inv_cell)) + 1, 0, grid_ny - 1);
+        if (periodic_seams) {
+            int ix = static_cast<int>(std::floor(x * inv_cell_x)) % grid_nx;
+            int iy = static_cast<int>(std::floor(y * inv_cell_y)) % grid_ny;
+            if (ix < 0) ix += grid_nx;
+            if (iy < 0) iy += grid_ny;
+            return {ix, iy};
+        }
+        int ix = std::clamp(static_cast<int>(std::floor(x * inv_cell_x)) + 1, 0, grid_nx - 1);
+        int iy = std::clamp(static_cast<int>(std::floor(y * inv_cell_y)) + 1, 0, grid_ny - 1);
         return {ix, iy};
+    };
+
+    // Distinct neighbouring buckets of (ix, iy) (wrapped when periodic; de-duplicated for tiny grids)
+    auto neighbourBuckets = [&](int ix, int iy) {
+        std::vector<int> out;
+        out.reserve(9);
+        for (int dy = -1; dy <= 1; ++dy) {
+            int cy = iy + dy;
+            if (periodic_seams) cy = (cy + grid_ny) % grid_ny;
+            else if (cy < 0 || cy >= grid_ny) continue;
+            for (int dx = -1; dx <= 1; ++dx) {
+                int cx = ix + dx;
+                if (periodic_seams) cx = (cx + grid_nx) % grid_nx;
+                else if (cx < 0 || cx >= grid_nx) continue;
+                const int b = cy * grid_nx + cx;
+                if (std::find(out.begin(), out.end(), b) == out.end()) out.push_back(b);
+            }
+        }
+        return out;
+    };
+
+    // Separation vector p_j - p_i (nearest periodic image when periodic)
+    auto separation = [&](const Eigen::Vector2d& pi, const Eigen::Vector2d& pj) -> Eigen::Vector2d {
+        Eigen::Vector2d d = pj - pi;
+        if (periodic_seams) {
+            d.x() = minImage(d.x(), size_x);
+            d.y() = minImage(d.y(), size_y);
+        }
+        return d;
     };
 
     auto rebuildBuckets = [&]() {
@@ -806,20 +1065,13 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
     std::vector<OverlapPair> candidate_pairs;
     for (size_t i = 0; i < N; ++i) {
         auto [ix, iy] = cellIndex(raw_points[i].coord.x(), raw_points[i].coord.y());
-        for (int dy = -1; dy <= 1; ++dy) {
-            int ny_c = iy + dy;
-            if (ny_c < 0 || ny_c >= grid_ny) continue;
-            for (int dx = -1; dx <= 1; ++dx) {
-                int nx_c = ix + dx;
-                if (nx_c < 0 || nx_c >= grid_nx) continue;
-                const auto& bucket = buckets[static_cast<size_t>(ny_c * grid_nx + nx_c)];
-                for (size_t j : bucket) {
-                    if (j <= i) continue;
-                    if (raw_points[i].grain_id == raw_points[j].grain_id) continue;
-                    double d2 = (raw_points[i].coord - raw_points[j].coord).squaredNorm();
-                    if (d2 < d_min_sq) {
-                        candidate_pairs.push_back({i, j, d2});
-                    }
+        for (int b : neighbourBuckets(ix, iy)) {
+            for (size_t j : buckets[static_cast<size_t>(b)]) {
+                if (j <= i) continue;
+                if (raw_points[i].grain_id == raw_points[j].grain_id) continue;
+                double d2 = separation(raw_points[i].coord, raw_points[j].coord).squaredNorm();
+                if (d2 < d_min_sq) {
+                    candidate_pairs.push_back({i, j, d2});
                 }
             }
         }
@@ -829,18 +1081,12 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
 
     auto isPositionCrowded = [&](const Eigen::Vector2d& pos, size_t ignore_a, size_t ignore_b, int keep_gid) -> bool {
         auto [ix, iy] = cellIndex(pos.x(), pos.y());
-        for (int dy = -1; dy <= 1; ++dy) {
-            int ny_c = iy + dy;
-            if (ny_c < 0 || ny_c >= grid_ny) continue;
-            for (int dx = -1; dx <= 1; ++dx) {
-                int nx_c = ix + dx;
-                if (nx_c < 0 || nx_c >= grid_nx) continue;
-                for (size_t k : buckets[static_cast<size_t>(ny_c * grid_nx + nx_c)]) {
-                    if (removed[k] || k == ignore_a || k == ignore_b) continue;
-                    double d2 = (raw_points[k].coord - pos).squaredNorm();
-                    double tol2 = (raw_points[k].grain_id == keep_gid || is_merged_seam[k]) ? d_same_safe_sq : d_min_sq;
-                    if (d2 < tol2) return true;
-                }
+        for (int b : neighbourBuckets(ix, iy)) {
+            for (size_t k : buckets[static_cast<size_t>(b)]) {
+                if (removed[k] || k == ignore_a || k == ignore_b) continue;
+                double d2 = separation(pos, raw_points[k].coord).squaredNorm();
+                double tol2 = (raw_points[k].grain_id == keep_gid || is_merged_seam[k]) ? d_same_safe_sq : d_min_sq;
+                if (d2 < tol2) return true;
             }
         }
         return false;
@@ -851,11 +1097,17 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         size_t i = pair.i;
         size_t j = pair.j;
         if (removed[i] || removed[j]) continue;
-        double cur_d2 = (raw_points[i].coord - raw_points[j].coord).squaredNorm();
-        if (cur_d2 >= d_min_sq) continue;
+        const Eigen::Vector2d sep = separation(raw_points[i].coord, raw_points[j].coord);
+        if (sep.squaredNorm() >= d_min_sq) continue;
 
         if (microstructure.seam_resolution == SeamOverlapResolution::MergeMidpoint) {
-            Eigen::Vector2d mid = 0.5 * (raw_points[i].coord + raw_points[j].coord);
+            Eigen::Vector2d mid = raw_points[i].coord + 0.5 * sep;
+            if (periodic_seams) {
+                mid.x() -= size_x * std::floor(mid.x() / size_x);
+                mid.y() -= size_y * std::floor(mid.y() / size_y);
+                if (mid.x() >= size_x) mid.x() -= size_x;
+                if (mid.y() >= size_y) mid.y() -= size_y;
+            }
             // Only shift i to midpoint if it doesn't crowd another existing node;
             // otherwise keep i at its lattice position and delete j.
             if (!isPositionCrowded(mid, i, j, raw_points[i].grain_id)) {
@@ -876,23 +1128,17 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         for (size_t i = 0; i < N; ++i) {
             if (removed[i]) continue;
             auto [ix, iy] = cellIndex(raw_points[i].coord.x(), raw_points[i].coord.y());
-            for (int dy = -1; dy <= 1; ++dy) {
-                int ny_c = iy + dy;
-                if (ny_c < 0 || ny_c >= grid_ny) continue;
-                for (int dx = -1; dx <= 1; ++dx) {
-                    int nx_c = ix + dx;
-                    if (nx_c < 0 || nx_c >= grid_nx) continue;
-                    for (size_t j : buckets[static_cast<size_t>(ny_c * grid_nx + nx_c)]) {
-                        if (j <= i || removed[j]) continue;
-                        double d2 = (raw_points[i].coord - raw_points[j].coord).squaredNorm();
-                        double cutoff2 = (raw_points[i].grain_id != raw_points[j].grain_id && !is_merged_seam[i] && !is_merged_seam[j])
-                                         ? d_min_sq
-                                         : d_same_safe_sq;
-                        if (d2 < cutoff2) {
-                            removed[j] = true;
-                            ++merged_or_removed_count;
-                            ++pass_removed;
-                        }
+            for (int b : neighbourBuckets(ix, iy)) {
+                for (size_t j : buckets[static_cast<size_t>(b)]) {
+                    if (j <= i || removed[j]) continue;
+                    double d2 = separation(raw_points[i].coord, raw_points[j].coord).squaredNorm();
+                    double cutoff2 = (raw_points[i].grain_id != raw_points[j].grain_id && !is_merged_seam[i] && !is_merged_seam[j])
+                                     ? d_min_sq
+                                     : d_same_safe_sq;
+                    if (d2 < cutoff2) {
+                        removed[j] = true;
+                        ++merged_or_removed_count;
+                        ++pass_removed;
                     }
                 }
             }
@@ -925,9 +1171,16 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
               << " a0, mode = "
               << (microstructure.seam_resolution == SeamOverlapResolution::MergeMidpoint ? "MERGE_MIDPOINT" : "DELETE_SECOND")
               << ", gap_perp = " << microstructure.gb_normal_gap_a0
-              << " a0): resolved " << merged_or_removed_count << " overlapping seam nodes -> "
-              << filtered_points.size() << " atoms retained.\n";
+              << " a0" << (periodic_seams ? ", periodic" : "") << "): resolved " << merged_or_removed_count
+              << " overlapping seam nodes -> " << filtered_points.size() << " atoms retained.\n";
 
+    if (periodic_seams) {
+        // Periodic box convention shared with generatePeriodicDislocationLattice / create_domain_maps:
+        // period = domain_dims + offsets, with offsets = (a, a) square or (a/2, sqrt(3)/2 a) triangular
+        const double offset_x = (lattice_type == "triangular") ? (0.5 * a) : a;
+        const double offset_y = d_lat;
+        return {filtered_points, DomainDimensions(size_x - offset_x, size_y - offset_y)};
+    }
     return {filtered_points, DomainDimensions(size_x + std::abs(delta_perp * nx_gb_sep),
                                               size_y + std::abs(delta_perp * ny_gb_sep))};
 }
@@ -2647,7 +2900,33 @@ std::vector<BoundaryZoneRule> MacroscopicGeometryConfig::buildStage1RelaxationRu
         return rules;
     }
 
-    // For Voronoi Polycrystal or general cutouts: keep non-driven rules or convert driven rules to rollers at alpha = 0
+    if (microstructure.mode == MicrostructureMode::VoronoiPolycrystal) {
+        // Minimal anchor: just enough constraint to remove rigid-body motion, so the grain boundary network
+        // relaxes (and the specimen breathes) without the loading grips clamping it at its unrelaxed size.
+        // Bottom Edge on RollerX (uy = 0, ux free) blocks vertical translation; Left Edge on RollerY
+        // (ux = 0, uy free) blocks horizontal translation and rotation. Top and right stay traction-free.
+        std::vector<BoundaryZoneRule> rules;
+        BoundaryZoneRule r_bot;
+        r_bot.id = "stage1_voronoi_bot_roller";
+        r_bot.region = BoundaryRegionType::BottomEdge;
+        r_bot.kind = BoundaryConditionKind::RollerX;
+        r_bot.thickness_a0 = 1.5;
+        r_bot.lock_x = false;
+        r_bot.lock_y = true;
+        rules.push_back(r_bot);
+
+        BoundaryZoneRule r_left;
+        r_left.id = "stage1_voronoi_left_roller";
+        r_left.region = BoundaryRegionType::LeftEdge;
+        r_left.kind = BoundaryConditionKind::RollerY;
+        r_left.thickness_a0 = 1.5;
+        r_left.lock_x = true;
+        r_left.lock_y = false;
+        rules.push_back(r_left);
+        return rules;
+    }
+
+    // Single crystal with cutouts: no explicit Stage 1 rules -> relax under the studio rules evaluated at alpha = 0
     return boundary_rules;
 }
 
