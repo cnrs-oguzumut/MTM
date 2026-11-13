@@ -1,4 +1,5 @@
 #include "../../include/experiments/stability_monitor.h"
+#include "../../include/geometry/MacroscopicGeometry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -76,6 +77,35 @@ StiffnessSpectrum StabilityMonitor::compute(UserData &state, bool with_vectors) 
   StiffnessSpectrumOptions opt;
   opt.n_modes = std::max(options_.modes, with_vectors ? options_.vectors : 0);
   opt.compute_vectors = with_vectors;
+
+  // When Roller (partial DOF) constraints are active, FastStiffnessAssembler places 1.0 on
+  // locked scalar diagonals. Lift those isolated diagonals above max_free_diag so stiff
+  // potentials (where physical lambda_min > 1.0) never return locked boundary DOFs as soft modes.
+  if (state.macro_geom_ptr != nullptr && state.macro_geom_ptr->hasPartialDOFConstraints()) {
+    Eigen::SparseMatrix<double> K_adj = K;
+    double max_free_diag = 1.0;
+    for (int i = 0; i < n_vars; ++i) {
+      const int node_idx = state.interior_mapping[i].first;
+      const int dof_idx = state.interior_mapping[i].second;
+      if (dof_idx < 0 || dof_idx >= n_vars) continue;
+      if (!state.macro_geom_ptr->isNodeXConstrained(node_idx))
+        max_free_diag = std::max(max_free_diag, std::abs(K_adj.coeff(dof_idx, dof_idx)));
+      if (!state.macro_geom_ptr->isNodeYConstrained(node_idx))
+        max_free_diag = std::max(max_free_diag, std::abs(K_adj.coeff(n_vars + dof_idx, n_vars + dof_idx)));
+    }
+    const double locked_diag = std::max(10.0, 2.0 * max_free_diag);
+    for (int i = 0; i < n_vars; ++i) {
+      const int node_idx = state.interior_mapping[i].first;
+      const int dof_idx = state.interior_mapping[i].second;
+      if (dof_idx < 0 || dof_idx >= n_vars) continue;
+      if (state.macro_geom_ptr->isNodeXConstrained(node_idx))
+        K_adj.coeffRef(dof_idx, dof_idx) = locked_diag;
+      if (state.macro_geom_ptr->isNodeYConstrained(node_idx))
+        K_adj.coeffRef(n_vars + dof_idx, n_vars + dof_idx) = locked_diag;
+    }
+    return lowest_stiffness_modes(K_adj, opt);
+  }
+
   return lowest_stiffness_modes(K, opt);
 }
 
@@ -138,24 +168,34 @@ void StabilityMonitor::start_branch() {
   box_last_step_ = -1;
 }
 
-void StabilityMonitor::write_soft_modes(int file_id, int step, double alpha,
+void StabilityMonitor::clear_kept_states() {
+  kept_.clear();
+  last_spectrum_step_ = -1;
+  start_branch();
+}
+
+void StabilityMonitor::write_soft_modes(const std::string &file_stem, const char *trigger,
+                                        int step, double alpha,
                                         const StiffnessSpectrum &s,
                                         const std::vector<Point2D> &points,
                                         const std::vector<ElementTriangle2D> &mesh,
                                         const std::vector<size_t> &active,
                                         const std::vector<std::pair<int, int>> &full_mapping) {
-  // Lowest nontrivial modes; translations are projected out of the solver under PBC, the
-  // check below also excludes them if they were ever returned.
+  // Lowest nontrivial modes; true rigid-body translations have both |lambda| ~ 0 and
+  // near-unit translation fraction (> 0.95). Do not use a loose 0.5 cutoff, which falsely
+  // rejects bicrystal grain-sliding soft modes where one grain (~50% of atoms) translates!
   std::vector<int> modes;
   for (int k = 0; k < s.num_computed && (int)modes.size() < options_.vectors; k++) {
-    if (s.eigenvectors.cols() > k && translation_fraction(s.eigenvectors.col(k)) < 0.5)
-      modes.push_back(k);
+    if (s.eigenvectors.cols() <= k) continue;
+    const bool is_rigid_translation =
+        (std::abs(s.eigenvalues(k)) < 1e-8 && translation_fraction(s.eigenvectors.col(k)) > 0.95);
+    if (!is_rigid_translation) modes.push_back(k);
   }
   if (modes.empty()) return;
 
   std::filesystem::create_directories("eigen_modes");
   std::ostringstream name;
-  name << "eigen_modes/soft_modes_" << std::setw(5) << std::setfill('0') << file_id << ".vtk";
+  name << "eigen_modes/" << file_stem << ".vtk";
   std::ofstream file(name.str());
 
   const int n_nodes = static_cast<int>(points.size());
@@ -171,7 +211,7 @@ void StabilityMonitor::write_soft_modes(int file_id, int step, double alpha,
   }
 
   file << "# vtk DataFile Version 3.0\n";
-  file << "Soft modes before avalanche: step " << step << " alpha " << alpha << " lambda";
+  file << "Soft modes (" << (trigger ? trigger : "state") << "): step " << step << " alpha " << alpha << " lambda";
   for (int k : modes) file << " " << s.eigenvalues(k);
   file << "\nASCII\nDATASET UNSTRUCTURED_GRID\n";
   file << std::setprecision(10);
@@ -192,14 +232,15 @@ void StabilityMonitor::write_soft_modes(int file_id, int step, double alpha,
     double amax = 0.0;
     for (int j = 0; j < n_nodes; j++) {
       const int dof = full_mapping[j].second;
-      if (dof < 0) continue;
+      if (dof < 0 || dof >= n_free) continue;
       d[j] = Eigen::Vector2d(v(dof), v(dof + n_free));
       amax = std::max(amax, d[j].norm());
     }
+    const double scale = (amax > 1e-30) ? amax : 1.0;
     file << "VECTORS mode_" << r + 1 << " double\n";
-    for (const auto &dj : d) file << dj.x() / amax << " " << dj.y() / amax << " 0\n";
+    for (const auto &dj : d) file << dj.x() / scale << " " << dj.y() / scale << " 0\n";
     file << "SCALARS mode_" << r + 1 << "_amplitude double 1\nLOOKUP_TABLE default\n";
-    for (const auto &dj : d) file << dj.norm() / amax << "\n";
+    for (const auto &dj : d) file << dj.norm() / scale << "\n";
   }
   std::cout << "Stability monitor: soft modes written to " << name.str() << std::endl;
 }
@@ -232,7 +273,8 @@ bool StabilityMonitor::stress_jump(double alpha, double stress) {
 void StabilityMonitor::end_of_step(int step, double alpha, double post_stress, UserData &post,
                                    bool avalanche,
                                    const std::vector<ElementTriangle2D> &prev_mesh,
-                                   const std::vector<size_t> &prev_active, int pre_file_id) {
+                                   const std::vector<size_t> &prev_active, int pre_file_id,
+                                   bool is_final_step) {
   if (!options_.enabled()) return;
   using seconds = std::chrono::duration<double>;
 
@@ -264,6 +306,9 @@ void StabilityMonitor::end_of_step(int step, double alpha, double post_stress, U
                       post.derivative_function, post.zero_energy, post.ideal_lattice_parameter,
                       st.F, post.interior_mapping, post.full_mapping, active, false,
                       post.second_derivative_function);
+        kept.macro_geom_ptr = post.macro_geom_ptr;
+        kept.current_alpha = st.alpha;
+        kept.stress_ctrl = post.stress_ctrl;
         const auto t0 = Clock::now();
         s = compute(kept, vectors);
         if (!st.computed) {
@@ -273,29 +318,44 @@ void StabilityMonitor::end_of_step(int step, double alpha, double post_stress, U
         }
         st.computed = true;
       }
-      if (vectors)
-        write_soft_modes(pre_file_id, st.step, st.alpha, s, st.points, prev_mesh, prev_active,
-                         post.full_mapping);
+      if (vectors) {
+        std::ostringstream stem;
+        stem << "soft_modes_step_" << std::setw(5) << std::setfill('0') << st.step
+             << "_pre_avalanche_" << std::setw(5) << std::setfill('0') << std::max(0, pre_file_id);
+        write_soft_modes(stem.str(), "before_avalanche", st.step, st.alpha, s, st.points,
+                         prev_mesh, prev_active, post.full_mapping);
+      }
     }
     start_branch();
     branch_start_ = step;
   }
 
-  // 2) The current state: after a saved avalanche, on the grid, or while refining
+  // 2) The current state: after a saved avalanche, on the grid, while refining, or at the final step
   const char *trigger = nullptr;
   if (avalanche && options_.at_avalanche) trigger = "after_avalanche";
   else if (options_.every > 0 && step % options_.every == 0) trigger = "grid";
+  else if (step == 0) trigger = "initial";
   else if (options_.every > 0 && refining_) trigger = "refine";
+  else if (is_final_step && options_.every > 0) trigger = "final";
+
   bool computed = false;
   if (trigger) {
     const auto t0 = Clock::now();
-    // Vectors are kept so that they can be written if the next step is an avalanche.
-    last_spectrum_ = compute(post, options_.at_avalanche && options_.vectors > 0);
+    const bool write_here = options_.vectors > 0 && std::string(trigger) != "refine";
+    const bool want_vectors = options_.vectors > 0 && (write_here || options_.at_avalanche);
+    last_spectrum_ = compute(post, want_vectors);
     last_spectrum_step_ = step;
     const BoxStabilityPoint box = compute_box(post, step, alpha);
     log(step, alpha, trigger, last_spectrum_, box, seconds(Clock::now() - t0).count());
     update_refinement(step, last_spectrum_, box);
     computed = true;
+
+    if (write_here && last_spectrum_.num_computed > 0) {
+      std::ostringstream stem;
+      stem << "soft_modes_step_" << std::setw(5) << std::setfill('0') << step;
+      write_soft_modes(stem.str(), trigger, step, alpha, last_spectrum_, post.points,
+                       post.elements, post.active_elements, post.full_mapping);
+    }
   }
 
   // 3) Keep POST(step)

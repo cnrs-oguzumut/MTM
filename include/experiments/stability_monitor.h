@@ -81,21 +81,27 @@ public:
   void set_box_stability(BoxStabilityFunction fn) { box_fn_ = std::move(fn); }
 
   // Call once per load step, after relaxation, remeshing and the avalanche decision.
-  //   post_stress shear stress of the relaxed state (instability detection)
-  //   post        UserData of the relaxed state (points, mesh, F_ext of this step)
-  //   avalanche   this step is a saved avalanche
-  //   prev_mesh   mesh at the start of this step (= mesh of POST(step-1))
-  //   pre_file_id file id of the PRE-avalanche configuration written for this avalanche
+  //   post_stress   shear stress of the relaxed state (instability detection)
+  //   post          UserData of the relaxed state (points, mesh, F_ext of this step)
+  //   avalanche     this step is a saved avalanche
+  //   prev_mesh     mesh at the start of this step (= mesh of POST(step-1))
+  //   pre_file_id   file id of the PRE-avalanche configuration written for this avalanche
+  //   is_final_step true on the final step of the schedule (or Relax Only completion)
   void end_of_step(int step, double alpha, double post_stress, UserData &post, bool avalanche,
                    const std::vector<ElementTriangle2D> &prev_mesh,
-                   const std::vector<size_t> &prev_active, int pre_file_id);
+                   const std::vector<size_t> &prev_active, int pre_file_id,
+                   bool is_final_step = false);
+
+  // Drop cached states when boundary DOF mappings change (e.g. Stage 1 -> Stage 2 BC handover)
+  void clear_kept_states();
 
 private:
   StiffnessSpectrum compute(UserData &state, bool with_vectors);
   BoxStabilityPoint compute_box(UserData &state, int step, double alpha);
   void log(int step, double alpha, const char *trigger, const StiffnessSpectrum &s,
            const BoxStabilityPoint &box, double seconds);
-  void write_soft_modes(int file_id, int step, double alpha, const StiffnessSpectrum &s,
+  void write_soft_modes(const std::string &file_stem, const char *trigger, int step, double alpha,
+                        const StiffnessSpectrum &s,
                         const std::vector<Point2D> &points,
                         const std::vector<ElementTriangle2D> &mesh,
                         const std::vector<size_t> &active,

@@ -2041,9 +2041,13 @@ void example_1_conti_zanzotto_loading(
     }
 
     // ==================== STABILITY MONITOR (optional) ====================
+    const bool is_final_schedule_step =
+        (i + 1 >= alpha_values.size() && !stress_relax_strain_step) ||
+        (has_custom_geom && i == 0 && restart_chk == nullptr && macro_geom.microstructure.relax_only);
     stability_monitor.end_of_step(static_cast<int>(i), alpha_log, post_stress, postOptUserData,
                                   stress_drop_detected, pre_elements,
-                                  pre_active_elements, caller_id + file_counter - 1);
+                                  pre_active_elements, caller_id + file_counter - 1,
+                                  is_final_schedule_step);
 
     // ==================== LOG DATA ====================
     if (stress_relax_strain_step || stress_zero_after_strain_step) traction_strain = F_ext(0, 1) - F_stage1(0, 1);
@@ -2164,6 +2168,7 @@ void example_1_conti_zanzotto_loading(
         traction_points_nm1.clear();
         traction_prev_step_smooth = false;
         have_elastic_ref = false;
+        stability_monitor.clear_kept_states();
         std::cout << "[Stage 2/2] Handover complete: X_0 re-anchored to relaxed equilibrium state, switched to Stage 2 BCs & Indenter ("
                   << macro_geom.boundary_rules.size() << " boundary rules"
                   << (macro_geom.isIndenterActive()
