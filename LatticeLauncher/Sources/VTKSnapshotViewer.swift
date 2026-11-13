@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Combine
 import UniformTypeIdentifiers
+import simd
 
 /// Built-in viewer for the solver's `.vtk` snapshots (Results & Plots → Snapshots).
 struct VTKSnapshotViewer: View {
@@ -18,7 +19,7 @@ struct VTKSnapshotViewer: View {
     @State private var boxZoomActive = false
     @State private var zoomScale: Float = 1.0
     @State private var marqueeRect: CGRect? = nil
-    @State private var hoverInfo: (triangle: Int, value: Float?)? = nil
+    @State private var hoverInfo: HoverProbe? = nil
     @State private var playing = false
     @State private var followLive = true
     @State private var paraViewMissing = false
@@ -38,12 +39,13 @@ struct VTKSnapshotViewer: View {
         a.rangeMax = r.1
         a.showEdges = showEdges
         a.showNodes = showNodes
+        a.showArrows = model.showArrows && (model.quiver?.arrowCount ?? 0) > 0
         a.edgeColor = SIMD4(0, 0, 0, triangleCount > 40_000 ? 0.25 : 0.45)
         a.nodeSizePx = nodeCount > 20_000 ? 2.5 : 4
         return a
     }
     
-    var body: some View {
+    private var baseStack: some View {
         VStack(spacing: 0) {
             topBar
             Divider()
@@ -54,45 +56,102 @@ struct VTKSnapshotViewer: View {
             timeline
         }
         .onAppear { model.setRunDirectory(runDirectory) }
-        .onChange(of: runDirectory) { model.setRunDirectory($0) }
-        .onChange(of: model.frame?.url) { _ in
+        .onChange(of: runDirectory) { _, newDir in model.setRunDirectory(newDir) }
+        .onChange(of: model.frame?.url) { _, _ in
             hoverInfo = nil
             // Large crystal: hide nodes unless the user already approved this size
             if LargeMeshPolicy.isLarge(nodeCount) && approvedNodeCount != nodeCount { showNodes = false }
         }
-        .onChange(of: triangleCount) { n in showEdges = n > 0 && n <= 8_000 }
-        .onChange(of: showNodes) { on in if on { approvedNodeCount = nodeCount } }
-        .onChange(of: model.fieldID) { _ in model.recomputeValues() }
-        .onReceive(playTimer) { _ in
-            guard playing else { return }
-            if model.index >= model.files.count - 1 { playing = false } else { model.step(1) }
+        .onChange(of: triangleCount) { _, n in showEdges = n > 0 && n <= 8_000 }
+        .onChange(of: showNodes) { _, on in if on { approvedNodeCount = nodeCount } }
+        .onChange(of: model.fieldID) { _, _ in
+            model.syncVectorFieldForScalarField(recompute: true)
+            model.recomputeValues()
         }
-        .onReceive(liveTimer) { _ in
-            guard followLive, isRunning, model.source != .custom, !playing else { return }
-            model.rescan(jumpToLatest: true)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openVTKFilePanel)) { _ in openFile() }
-        .alert("ParaView not found", isPresented: $paraViewMissing) {
-            Button("Reveal in Finder") { if let u = model.currentURL { NSWorkspace.shared.activateFileViewerSelecting([u]) } }
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Install ParaView in /Applications to open snapshots there, or open the file from Finder.")
-        }
+    }
+
+    var body: some View {
+        baseStack
+            .onChange(of: model.showArrows) { _, _ in model.recomputeQuiver() }
+            .onChange(of: model.vectorFieldID) { _, _ in model.recomputeQuiver() }
+            .onChange(of: model.arrowScale) { _, _ in model.recomputeQuiver() }
+            .onChange(of: model.arrowStrideOption) { _, _ in model.recomputeQuiver() }
+            .onChange(of: model.arrowMinFraction) { _, _ in model.recomputeQuiver() }
+            .onChange(of: model.arrowStyle) { _, _ in model.applyArrowStyle() }
+            .onReceive(playTimer) { _ in
+                guard playing else { return }
+                if model.index >= model.files.count - 1 { playing = false } else { model.step(1) }
+            }
+            .onReceive(liveTimer) { _ in
+                guard followLive, isRunning, model.source != .custom, !playing else { return }
+                model.rescan(jumpToLatest: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openVTKFilePanel)) { _ in openFile() }
+            .alert("ParaView not found", isPresented: $paraViewMissing) {
+                Button("Reveal in Finder") { if let u = model.currentURL { NSWorkspace.shared.activateFileViewerSelecting([u]) } }
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Install ParaView in /Applications to open snapshots there, or open the file from Finder.")
+            }
     }
     
     // MARK: Top bar: source, file, open / ParaView
     
+    private var visibleSources: [SnapshotSource] {
+        var list: [SnapshotSource] = [.configurations, .eigenModes, .defects]
+        if (model.sourceCounts[.preAvalanche] ?? 0) > 0 || model.source == .preAvalanche {
+            list.insert(.preAvalanche, at: 1)
+        }
+        if model.source == .custom {
+            list.append(.custom)
+        }
+        return list
+    }
+
     private var topBar: some View {
         HStack(spacing: 10) {
-            Picker("Source", selection: Binding(get: { model.source }, set: { model.selectSource($0) })) {
-                ForEach(SnapshotSource.allCases.filter { $0 != .custom || model.source == .custom }) { s in
-                    Text(s.rawValue).tag(s)
+            HStack(spacing: 2) {
+                ForEach(visibleSources) { s in
+                    let isSelected = (model.source == s)
+                    let count = model.sourceCounts[s] ?? 0
+                    Button {
+                        model.selectSource(s)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(s.rawValue)
+                                .font(.system(size: 10.5, weight: isSelected ? .bold : .medium))
+                            if s != .custom && count > 0 {
+                                Text("\(count)")
+                                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                    .padding(.horizontal, 4.5)
+                                    .padding(.vertical, 1)
+                                    .background(
+                                        Capsule().fill(
+                                            isSelected
+                                            ? Color.white.opacity(0.24)
+                                            : (s == .eigenModes ? Color.teal.opacity(0.28) : BlueHour.steel.opacity(0.45))
+                                        )
+                                    )
+                            }
+                        }
+                        .foregroundColor(isSelected ? .white : (count > 0 || s == .configurations ? BlueHour.ice : BlueHour.mist.opacity(0.75)))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isSelected ? BlueHour.activeTabFill : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(isSelected ? BlueHour.activeTabBorder : Color.clear, lineWidth: 1.2)
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .controlSize(.small)
-            .frame(width: 130)
+            .padding(2)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(BlueHour.tabTrack))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(BlueHour.steel.opacity(0.45), lineWidth: 1))
             
             if let url = model.currentURL {
                 Text(url.lastPathComponent)
@@ -105,6 +164,18 @@ struct VTKSnapshotViewer: View {
                 Text(String(format: "α = %.5g", a))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(BlueHour.mist)
+            }
+            if let lambdas = model.frame?.dataset.modeEigenvalues, !lambdas.isEmpty {
+                let summary = lambdas.prefix(3).enumerated()
+                    .map { idx, val in String(format: "λ%d=%.3e", idx + 1, val) }
+                    .joined(separator: " · ")
+                Text(summary)
+                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                    .foregroundColor(lambdas[0] <= 0 ? .red : Color(red: 0.35, green: 0.90, blue: 0.78))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.teal.opacity(0.16)))
+                    .lineLimit(1)
             }
             if model.frame != nil {
                 Text("\(LargeMeshPolicy.formatted(nodeCount)) nodes · \(LargeMeshPolicy.formatted(triangleCount)) triangles")
@@ -124,7 +195,7 @@ struct VTKSnapshotViewer: View {
                 .help("Open current snapshot (or run VTK folder) in ParaView")
         }
         .padding(.horizontal, 12)
-        .frame(height: 34)
+        .frame(height: 36)
         .background(BlueHour.controlSurface)
     }
     
@@ -164,6 +235,49 @@ struct VTKSnapshotViewer: View {
         )
     ]
 
+    private var activeQuickFieldSpecs: [QuickFieldSpec] {
+        guard let fields = model.frame?.dataset.fields else { return Self.quickFieldSpecs }
+        // Build soft-mode quick-pick pills dynamically when viewing eigen_modes/*.vtk
+        var softSpecs: [QuickFieldSpec] = []
+        for k in 1...8 {
+            let ampID = "point:mode_\(k)_amplitude"
+            let magID = "point:mode_\(k)_magnitude"
+            let xID   = "point:mode_\(k)_x"
+            let yID   = "point:mode_\(k)_y"
+            if fields.contains(where: { $0.id == ampID || $0.id == magID }) {
+                let lamText: String = {
+                    if let lams = model.frame?.dataset.modeEigenvalues, k - 1 < lams.count {
+                        return String(format: " (λ_%d = %.4e)", k, lams[k - 1])
+                    }
+                    return ""
+                }()
+                softSpecs.append(QuickFieldSpec(
+                    id: "m\(k)_amp",
+                    title: "Mode \(k) |u|",
+                    candidates: [ampID, magID],
+                    help: "Normalized soft mode \(k) displacement magnitude |u| ∈ [0, 1]\(lamText)"
+                ))
+                if fields.contains(where: { $0.id == xID }) {
+                    softSpecs.append(QuickFieldSpec(
+                        id: "m\(k)_x",
+                        title: "Mode \(k) uₓ",
+                        candidates: [xID],
+                        help: "Signed horizontal soft mode \(k) component uₓ\(lamText)"
+                    ))
+                }
+                if fields.contains(where: { $0.id == yID }) {
+                    softSpecs.append(QuickFieldSpec(
+                        id: "m\(k)_y",
+                        title: "Mode \(k) uᵧ",
+                        candidates: [yID],
+                        help: "Signed vertical soft mode \(k) component uᵧ\(lamText)"
+                    ))
+                }
+            }
+        }
+        return softSpecs.isEmpty ? Self.quickFieldSpecs : softSpecs
+    }
+
     private func resolvedQuickFieldID(for spec: QuickFieldSpec) -> String? {
         guard let fields = model.frame?.dataset.fields else { return nil }
         for cand in spec.candidates where fields.contains(where: { $0.id == cand }) {
@@ -181,11 +295,19 @@ struct VTKSnapshotViewer: View {
 
                 // 1-Click Quick-Pick Field Pills
                 HStack(spacing: 2) {
-                    ForEach(Self.quickFieldSpecs) { spec in
+                    ForEach(activeQuickFieldSpecs) { spec in
                         if let resolvedID = resolvedQuickFieldID(for: spec) {
                             let isSelected = (model.fieldID == resolvedID)
                             Button {
                                 model.fieldID = resolvedID
+                                if resolvedID.hasPrefix("point:mode_") {
+                                    if resolvedID.hasSuffix("_x") || resolvedID.hasSuffix("_y") {
+                                        model.rangeMode = .symmetric
+                                        model.colormap = .coolwarm
+                                    } else {
+                                        model.rangeMode = .full
+                                    }
+                                }
                             } label: {
                                 Text(spec.title)
                                     .font(.system(size: 10.5, weight: isSelected ? .bold : .medium))
@@ -244,6 +366,11 @@ struct VTKSnapshotViewer: View {
                 GuardedNodesToggle(isOn: $showNodes, nodeCount: nodeCount)
                     .toggleStyle(.checkbox)
                     .controlSize(.small)
+
+                if !model.availableVectorFields.isEmpty {
+                    Divider().frame(height: 16)
+                    quiverControls
+                }
 
                 Divider().frame(height: 16)
 
@@ -318,6 +445,109 @@ struct VTKSnapshotViewer: View {
         .help("Choose any cell or nodal VTK field")
     }
     
+    @ViewBuilder
+    private var quiverControls: some View {
+        HStack(spacing: 6) {
+            BlueHourToggleChip(
+                "Arrows",
+                icon: "location.north.line.fill",
+                isOn: $model.showArrows,
+                scale: .compact,
+                helpText: "Overlay 2D displacement / soft-mode quiver arrows (uₓ, uᵧ) on the mesh"
+            )
+            
+            if model.showArrows {
+                HStack(spacing: 4) {
+                    Slider(value: $model.arrowScale, in: 0.25...4.5)
+                        .controlSize(.mini)
+                        .frame(width: 66)
+                        .help("Arrow length scale multiplier")
+                    Button {
+                        model.arrowScale = 1.0
+                    } label: {
+                        Text(String(format: "%.1f×", model.arrowScale))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(BlueHour.ice)
+                            .frame(minWidth: 28, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Arrow length multiplier (click to reset to 1.0×)")
+                }
+                
+                Menu {
+                    if model.availableVectorFields.count > 1 {
+                        Section("Vector Field") {
+                            ForEach(model.availableVectorFields) { vf in
+                                Button {
+                                    model.vectorFieldID = vf.id
+                                } label: {
+                                    if model.vectorFieldID == vf.id {
+                                        Label(vf.displayName, systemImage: "checkmark")
+                                    } else {
+                                        Text(vf.displayName)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Section("Arrow Density (Stride)") {
+                        ForEach(QuiverStrideOption.allCases) { opt in
+                            Button {
+                                model.arrowStrideOption = opt
+                            } label: {
+                                if model.arrowStrideOption == opt {
+                                    Label(opt.label, systemImage: "checkmark")
+                                } else {
+                                    Text(opt.label)
+                                }
+                            }
+                        }
+                    }
+                    Section("Noise Cutoff (|u| / |u|_max)") {
+                        ForEach([
+                            (0.0, "Show All (≥ 0%)"),
+                            (0.02, "Hide < 2% (Default)"),
+                            (0.05, "Hide < 5%"),
+                            (0.15, "Hide < 15% (Core Only)")
+                        ], id: \.0) { pair in
+                            Button {
+                                model.arrowMinFraction = pair.0
+                            } label: {
+                                if abs(model.arrowMinFraction - pair.0) < 1e-4 {
+                                    Label(pair.1, systemImage: "checkmark")
+                                } else {
+                                    Text(pair.1)
+                                }
+                            }
+                        }
+                    }
+                    Section("Arrow Colour") {
+                        ForEach(QuiverStylePreset.allCases) { style in
+                            Button {
+                                model.arrowStyle = style
+                            } label: {
+                                if model.arrowStyle == style {
+                                    Label(style.rawValue, systemImage: "checkmark")
+                                } else {
+                                    Text(style.rawValue)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    let densityText = model.arrowStrideOption == .auto
+                        ? "Auto (\(model.effectiveArrowStride)×)"
+                        : model.arrowStrideOption.shortLabel
+                    Label(densityText, systemImage: "slider.horizontal.3")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .menuStyle(.borderedButton)
+                .controlSize(.small)
+                .help("Configure quiver arrow density, noise cutoff, colour, and vector field")
+            }
+        }
+    }
+    
     // MARK: Canvas
     
     private var canvas: some View {
@@ -325,6 +555,7 @@ struct VTKSnapshotViewer: View {
             MetalMeshView(
                 geometry: model.frame?.geometry,
                 values: model.currentField == nil ? nil : model.values,
+                quiver: model.showArrows ? model.quiver : nil,
                 appearance: appearance,
                 fitToken: fitToken,
                 zoomInToken: zoomInToken,
@@ -332,12 +563,13 @@ struct VTKSnapshotViewer: View {
                 boxZoomActive: boxZoomActive,
                 onHover: { p in
                     let newInfo = p.flatMap { model.probe($0) }
-                    if newInfo?.triangle != hoverInfo?.triangle {
+                    if newInfo != hoverInfo {
                         hoverInfo = newInfo
                     }
                 },
                 onZoomChange: { z in
                     zoomScale = z
+                    model.updateZoomFactor(z)
                 },
                 onBoxZoomChange: { rect in
                     marqueeRect = rect
@@ -410,25 +642,34 @@ struct VTKSnapshotViewer: View {
                 Image(systemName: "exclamationmark.triangle").font(.system(size: 30)).foregroundColor(.orange)
                 Text(err).font(.caption).foregroundColor(BlueHour.mist).multilineTextAlignment(.center).frame(maxWidth: 420)
             } else {
-                Image(systemName: "cube.transparent").font(.system(size: 36)).foregroundColor(BlueHour.mist)
+                Image(systemName: model.source == .eigenModes ? "waveform.path.ecg" : "cube.transparent")
+                    .font(.system(size: 36)).foregroundColor(BlueHour.mist)
                 Text("No \(model.source.rawValue.lowercased()) found")
                     .font(.headline).foregroundColor(BlueHour.ice)
-                Text(model.source.folder.map { "Looked in \($0)/ of the current output folder. Run a simulation, pick another source, or open a .vtk file." }
-                     ?? "Open a .vtk file to view it.")
-                    .font(.caption).foregroundColor(BlueHour.mist).multilineTextAlignment(.center).frame(maxWidth: 380)
+                Text(model.source == .eigenModes
+                     ? "No soft-mode VTK files in eigen_modes/ yet. Make sure 'Compute Lowest Stiffness Eigenvalues' (with Soft modes exported ≥ 1) is enabled in 4 Solver, then re-run the simulation."
+                     : (model.source.folder.map { "Looked in \($0)/ of the current output folder. Run a simulation, pick another source, or open a .vtk file." }
+                        ?? "Open a .vtk file to view it."))
+                    .font(.caption).foregroundColor(BlueHour.mist).multilineTextAlignment(.center).frame(maxWidth: 420)
                 Button("Open .vtk File…", action: openFile).buttonStyle(.borderedProminent).controlSize(.small)
             }
         }
         .padding(20)
     }
     
-    private func hoverCard(_ h: (triangle: Int, value: Float?)) -> some View {
+    private func hoverCard(_ h: HoverProbe) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Element \(h.triangle)")
                 .font(.system(size: 10.5, weight: .bold, design: .monospaced))
             if let f = model.currentField, let v = h.value {
                 Text("\(f.displayName): \(String(format: "%.5g", v))")
                     .font(.system(size: 10.5, design: .monospaced))
+            }
+            if let vec = h.vector {
+                let mag = simd_length(vec)
+                Text(String(format: "u = (%.3g, %.3g) · |u| = %.3g", vec.x, vec.y, mag))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Color(red: 0.55, green: 0.94, blue: 0.98))
             }
         }
         .foregroundColor(BlueHour.ice)

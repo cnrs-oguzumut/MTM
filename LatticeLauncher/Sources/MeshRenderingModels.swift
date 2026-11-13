@@ -134,6 +134,32 @@ public struct MeshValues {
     public let perVertex: [Float]
 }
 
+/// Pre-tessellated 2D quiver arrows (contrast halo pass + foreground arrow pass) in world coordinates.
+public struct MeshQuiver {
+    public let version: Int
+    public let arrowCount: Int
+    public let haloTriangles: [SIMD2<Float>]
+    public let arrowTriangles: [SIMD2<Float>]
+    public var arrowColor: SIMD4<Float>
+    public var haloColor: SIMD4<Float>
+    
+    public init(
+        version: Int,
+        arrowCount: Int,
+        haloTriangles: [SIMD2<Float>],
+        arrowTriangles: [SIMD2<Float>],
+        arrowColor: SIMD4<Float> = SIMD4(0.99, 0.99, 1.0, 0.96),
+        haloColor: SIMD4<Float> = SIMD4(0.02, 0.04, 0.09, 0.80)
+    ) {
+        self.version = version
+        self.arrowCount = arrowCount
+        self.haloTriangles = haloTriangles
+        self.arrowTriangles = arrowTriangles
+        self.arrowColor = arrowColor
+        self.haloColor = haloColor
+    }
+}
+
 public struct MeshAppearance: Equatable {
     public var colormap: MeshColormap = .coolwarm
     public var rangeMin: Float = 0
@@ -142,6 +168,7 @@ public struct MeshAppearance: Equatable {
     public var showEdges = false
     public var showNodes = false
     public var showOutline = true
+    public var showArrows = false
     public var solidFill = SIMD4<Float>(0.31, 0.55, 0.85, 0.30)
     public var edgeColor = SIMD4<Float>(0, 0, 0, 0.45)
     public var nodeColor = SIMD4<Float>(0.35, 0.55, 1.0, 1.0)

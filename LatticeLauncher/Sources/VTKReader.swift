@@ -15,6 +15,22 @@ public struct VTKField: Identifiable, Hashable {
     
     /// Human-friendly label, e.g. "ElementVonMisesStress" → "Von Mises Stress (element)".
     public var displayName: String {
+        if name.hasPrefix("mode_") {
+            let parts = name.split(separator: "_")
+            if parts.count >= 3, let modeNum = Int(parts[1]) {
+                let suffix = parts.dropFirst(2).joined(separator: "_")
+                switch suffix {
+                case "amplitude", "magnitude":
+                    return "Mode \(modeNum) Amplitude |u| (node)"
+                case "x":
+                    return "Mode \(modeNum) Displacement uₓ (node)"
+                case "y":
+                    return "Mode \(modeNum) Displacement uᵧ (node)"
+                default:
+                    break
+                }
+            }
+        }
         var n = name
         for prefix in ["Element", "Nodal", "Node"] where n.hasPrefix(prefix) && n.count > prefix.count {
             n = String(n.dropFirst(prefix.count))
@@ -36,14 +52,52 @@ public struct VTKField: Identifiable, Hashable {
     public func hash(into h: inout Hasher) { h.combine(id) }
 }
 
+/// A 2D vector field stored in a VTK `VECTORS` block (e.g. soft modes `mode_1`, `mode_2`, or displacements).
+public struct VTKVectorField: Identifiable, Hashable {
+    public let name: String
+    public let location: VTKField.Location
+    public let vectors: [SIMD2<Float>]
+    
+    public var id: String { "\(location.rawValue):\(name)" }
+    
+    public var displayName: String {
+        if name.hasPrefix("mode_") {
+            let parts = name.split(separator: "_")
+            if parts.count >= 2, let modeNum = Int(parts[1]) {
+                return "Mode \(modeNum) Vectors u (\(location == .cell ? "element" : "node"))"
+            }
+        }
+        var n = name
+        for prefix in ["Element", "Nodal", "Node"] where n.hasPrefix(prefix) && n.count > prefix.count {
+            n = String(n.dropFirst(prefix.count))
+            break
+        }
+        var out = ""
+        var prevLower = false
+        for ch in n {
+            if ch.isUppercase && prevLower { out.append(" ") }
+            out.append(ch)
+            prevLower = ch.isLowercase || ch.isNumber
+        }
+        out = out.replacingOccurrences(of: "_", with: " ")
+        return "\(out) (\(location == .cell ? "element" : "node"))"
+    }
+    
+    public static func == (a: VTKVectorField, b: VTKVectorField) -> Bool { a.id == b.id }
+    public func hash(into h: inout Hasher) { h.combine(id) }
+}
+
 public struct VTKDataset {
     public var title: String = ""
     public var points: [SIMD2<Float>] = []
     /// Three node indices per triangle (non-triangle cells are skipped).
     public var triangles: [UInt32] = []
     public var fields: [VTKField] = []
+    public var vectorFields: [VTKVectorField] = []
     /// `FIELD FieldData` → `LoadParameter` (α), when present.
     public var loadParameter: Double?
+    /// Eigenvalues parsed from soft-mode VTK title header (`... lambda <λ1> <λ2> ...`), when present.
+    public var modeEigenvalues: [Double] = []
     
     public var nodeCount: Int { points.count }
     public var triangleCount: Int { triangles.count / 3 }
@@ -298,10 +352,18 @@ private struct Parser {
                 if key == "VECTORS" {
                     var xs = [Float](repeating: 0, count: tupleCount)
                     var ys = xs, mag = xs
+                    var vecs = [SIMD2<Float>]()
+                    vecs.reserveCapacity(tupleCount)
                     for t in 0..<tupleCount {
-                        xs[t] = vals[3 * t]; ys[t] = vals[3 * t + 1]
-                        mag[t] = (xs[t] * xs[t] + ys[t] * ys[t] + vals[3 * t + 2] * vals[3 * t + 2]).squareRoot()
+                        let vx = vals[3 * t], vy = vals[3 * t + 1]
+                        xs[t] = vx; ys[t] = vy
+                        mag[t] = (vx * vx + vy * vy + vals[3 * t + 2] * vals[3 * t + 2]).squareRoot()
+                        vecs.append(SIMD2(vx, vy))
                     }
+                    if location == .cell && !allTriangles && vecs.count == keepCell.count {
+                        vecs = zip(vecs, keepCell).compactMap { $1 ? $0 : nil }
+                    }
+                    ds.vectorFields.append(VTKVectorField(name: name, location: location, vectors: vecs))
                     addField("\(name)_magnitude", mag, location)
                     addField("\(name)_x", xs, location)
                     addField("\(name)_y", ys, location)
@@ -340,12 +402,23 @@ private struct Parser {
             }
         }
         
-        // Eigen-mode files carry α only in the title line ("... alpha 0.0425 lambda ...")
+        // Eigen-mode files carry α and λ_k in the title line ("... alpha 0.0425 lambda 1.01e-3 1.49e-3")
+        let titleParts = ds.title.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == ":" })
         if ds.loadParameter == nil {
-            let parts = ds.title.split(separator: " ")
-            if let i = parts.firstIndex(where: { $0.lowercased() == "alpha" }), i + 1 < parts.count, let a = Double(parts[i + 1]) {
+            if let i = titleParts.firstIndex(where: { $0.lowercased() == "alpha" }),
+               i + 1 < titleParts.count,
+               let a = Double(titleParts[i + 1]) {
                 ds.loadParameter = a
             }
+        }
+        if let lamIdx = titleParts.firstIndex(where: { $0.lowercased() == "lambda" || $0.lowercased() == "lambda_min" }) {
+            var parsedLambdas: [Double] = []
+            var k = lamIdx + 1
+            while k < titleParts.count, let v = Double(titleParts[k]) {
+                parsedLambdas.append(v)
+                k += 1
+            }
+            ds.modeEigenvalues = parsedLambdas
         }
         
         // Drop triangles referencing missing points (defensive)

@@ -10,6 +10,7 @@ import MetalKit
 public struct MetalMeshView: NSViewRepresentable {
     public var geometry: MeshGeometry?
     public var values: MeshValues?
+    public var quiver: MeshQuiver? = nil
     public var appearance: MeshAppearance
     /// Increment to request "fit to view".
     public var fitToken: Int = 0
@@ -27,6 +28,7 @@ public struct MetalMeshView: NSViewRepresentable {
     public init(
         geometry: MeshGeometry?,
         values: MeshValues?,
+        quiver: MeshQuiver? = nil,
         appearance: MeshAppearance,
         fitToken: Int = 0,
         zoomInToken: Int = 0,
@@ -39,6 +41,7 @@ public struct MetalMeshView: NSViewRepresentable {
     ) {
         self.geometry = geometry
         self.values = values
+        self.quiver = quiver
         self.appearance = appearance
         self.fitToken = fitToken
         self.zoomInToken = zoomInToken
@@ -82,6 +85,7 @@ public struct MetalMeshView: NSViewRepresentable {
         r.update(
             geometry: geometry,
             values: values,
+            quiver: quiver,
             appearance: appearance,
             fitToken: fitToken,
             zoomInToken: zoomInToken,
@@ -255,9 +259,14 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
     private var nodeColorBuffer: MTLBuffer?
     private var outlineBuffer: MTLBuffer?, outlineCount = 0
     private var valueBuffer: MTLBuffer?
+    private var quiverHaloBuffer: MTLBuffer?, quiverHaloCount = 0
+    private var quiverArrowBuffer: MTLBuffer?, quiverArrowCount = 0
+    private var quiverArrowColor = SIMD4<Float>(0.99, 0.99, 1.0, 0.96)
+    private var quiverHaloColor = SIMD4<Float>(0.02, 0.04, 0.09, 0.80)
     
     private var geometryID: UUID?
     private var valuesVersion: Int?
+    private var quiverVersion: Int?
     private var appearance = MeshAppearance()
     private var fitToken = -1
     private var zoomInToken = 0
@@ -312,6 +321,7 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
     func update(
         geometry: MeshGeometry?,
         values: MeshValues?,
+        quiver: MeshQuiver? = nil,
         appearance newAppearance: MeshAppearance,
         fitToken newFit: Int,
         zoomInToken newZoomIn: Int = 0,
@@ -331,6 +341,25 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
             } else {
                 valueBuffer = nil
             }
+            dirty = true
+        }
+        if quiver?.version != quiverVersion {
+            quiverVersion = quiver?.version
+            if let q = quiver {
+                quiverHaloBuffer = makeBuffer(q.haloTriangles)
+                quiverHaloCount = q.haloTriangles.count
+                quiverArrowBuffer = makeBuffer(q.arrowTriangles)
+                quiverArrowCount = q.arrowTriangles.count
+                quiverArrowColor = q.arrowColor
+                quiverHaloColor = q.haloColor
+            } else {
+                quiverHaloBuffer = nil; quiverHaloCount = 0
+                quiverArrowBuffer = nil; quiverArrowCount = 0
+            }
+            dirty = true
+        } else if let q = quiver, (q.arrowColor != quiverArrowColor || q.haloColor != quiverHaloColor) {
+            quiverArrowColor = q.arrowColor
+            quiverHaloColor = q.haloColor
             dirty = true
         }
         if newAppearance != appearance { appearance = newAppearance; dirty = true }
@@ -510,6 +539,18 @@ public final class MeshRenderer: NSObject, MTKViewDelegate {
             enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 2)
             enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 0)
             enc.drawPrimitives(type: .point, vertexStart: 0, vertexCount: nodeCount)
+        }
+        // 5. Quiver arrows (contrast halo pass followed by foreground arrow pass)
+        if appearance.showArrows, let ab = quiverArrowBuffer, quiverArrowCount > 0 {
+            enc.setRenderPipelineState(solidPipeline)
+            if let hb = quiverHaloBuffer, quiverHaloCount > 0, quiverHaloColor.w > 0.001 {
+                enc.setVertexBuffer(hb, offset: 0, index: 0)
+                setU(uniforms(quiverHaloColor))
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: quiverHaloCount)
+            }
+            enc.setVertexBuffer(ab, offset: 0, index: 0)
+            setU(uniforms(quiverArrowColor))
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: quiverArrowCount)
         }
         enc.endEncoding()
         cmd.present(drawable)
