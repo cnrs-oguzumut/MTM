@@ -223,6 +223,10 @@ struct VTKSnapshotViewer: View {
                     ForEach(SnapshotRangeMode.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .labelsHidden().pickerStyle(.menu).controlSize(.small).frame(width: 122)
+                .disabled(model.cyclicPeriod != nil)
+                .help(model.cyclicPeriod != nil
+                      ? "Cyclic map: the range is one lattice-symmetry period (−P/2 … +P/2, the two ends are the same orientation)"
+                      : "Colour range")
 
                 if model.rangeMode == .manual {
                     DoubleField(title: "min", value: $model.manualMin, width: 58)
@@ -445,7 +449,10 @@ struct VTKSnapshotViewer: View {
                     .clipShape(RoundedRectangle(cornerRadius: 3))
                 Text(String(format: "%.3g", r.1)).font(.system(size: 9.5, design: .monospaced))
             }
-            if let s = model.stats, model.rangeMode == .percentile {
+            if let period = model.cyclicPeriod {
+                Text(String(format: "cyclic: %.0f° period, −%.0f° ≡ +%.0f°", period, period / 2, period / 2))
+                    .font(.system(size: 9)).foregroundColor(BlueHour.mist)
+            } else if let s = model.stats, model.rangeMode == .percentile {
                 Text(String(format: "data range %.3g … %.3g", s.min, s.max))
                     .font(.system(size: 9)).foregroundColor(BlueHour.mist)
             }

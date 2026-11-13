@@ -1527,7 +1527,9 @@ void ConfigurationSaver::writeToVTKFile(
     
     // Write VTK header
     file << "# vtk DataFile Version 3.0\n";
-    file << "2D Unstructured Grid of Linear Triangles\n";
+    // "lattice <type>" tells viewers the symmetry period of the lattice angle fields (60 / 90 deg)
+    file << "2D Unstructured Grid of Linear Triangles lattice "
+         << (reference_lattice_is_triangular() ? "triangular" : "square") << "\n";
     file << "BINARY\n";
     file << "DATASET UNSTRUCTURED_GRID\n";
     

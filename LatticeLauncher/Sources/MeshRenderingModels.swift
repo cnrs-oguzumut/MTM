@@ -11,8 +11,11 @@ public enum MeshColormap: String, CaseIterable, Identifiable {
     case inferno = "Inferno"
     case turbo = "Turbo"
     case grayscale = "Grayscale"
+    /// Closed loop (first colour = last colour) for angles defined modulo a period, e.g. lattice orientation
+    case cyclic = "Cyclic"
     
     public var id: String { rawValue }
+    public var isCyclic: Bool { self == .cyclic }
     
     private var stops: [(Float, UInt32)] {
         switch self {
@@ -32,6 +35,9 @@ public enum MeshColormap: String, CaseIterable, Identifiable {
                     (0.63, 0xC8EF34), (0.75, 0xFABA39), (0.88, 0xF66B19), (1, 0x7A0403)]
         case .grayscale:
             return [(0, 0x000000), (1, 0xFFFFFF)]
+        case .cyclic:
+            return [(0, 0xD8473C), (1.0 / 6, 0xE3B23C), (2.0 / 6, 0x5DB84E), (3.0 / 6, 0x3AB7C4),
+                    (4.0 / 6, 0x4A66D8), (5.0 / 6, 0xB04FC6), (1, 0xD8473C)]
         }
     }
     

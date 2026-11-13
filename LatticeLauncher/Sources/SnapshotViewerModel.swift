@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import simd
 
 // MARK: - Sources
 
@@ -48,6 +49,8 @@ struct LoadedFrame {
     let dataset: VTKDataset
     let geometry: MeshGeometry
     let locator: TriangleLocator
+    /// Symmetry period of lattice angles in this snapshot (60 deg triangular, 90 deg square)
+    var latticeAnglePeriod: Float = 60
 }
 
 // MARK: - Model
@@ -61,8 +64,10 @@ final class SnapshotViewerModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     
-    @Published var fieldID: String?
-    @Published var colormap: MeshColormap = .coolwarm
+    @Published var fieldID: String? { didSet { autoSelectCyclicColormap() } }
+    @Published var colormap: MeshColormap = .coolwarm {
+        didSet { if oldValue.isCyclic != colormap.isCyclic { recomputeValues() } }
+    }
     @Published var rangeMode: SnapshotRangeMode = .percentile
     @Published var manualMin: Double = 0
     @Published var manualMax: Double = 1
@@ -76,6 +81,71 @@ final class SnapshotViewerModel: ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var valuesTask: Task<Void, Never>?
     private var valueVersion = 0
+    private var colormapBeforeLatticeAngle: MeshColormap?
+    
+    /// Lattice orientation / rotation fields: angles only defined modulo the lattice symmetry
+    static let latticeAngleFieldNames: Set<String> = [
+        "ElementLatticeOrientationDeg", "ElementRotationAngleDeg", "NodalLatticeRotationDeg"
+    ]
+    
+    var isLatticeAngleField: Bool {
+        guard let f = currentField else { return false }
+        return Self.latticeAngleFieldNames.contains(f.name)
+    }
+    
+    /// Period used to fold lattice angles under the cyclic colour map (nil: plain linear mapping).
+    /// -P/2 and +P/2 are the same lattice orientation, so they get the same colour.
+    var cyclicPeriod: Float? {
+        guard colormap.isCyclic, isLatticeAngleField, let f = frame else { return nil }
+        return f.latticeAnglePeriod
+    }
+    
+    /// Lattice angle fields switch to the cyclic map; leaving them restores the previous map
+    private func autoSelectCyclicColormap() {
+        if isLatticeAngleField {
+            if !colormap.isCyclic {
+                colormapBeforeLatticeAngle = colormap
+                colormap = .cyclic
+            }
+        } else if let previous = colormapBeforeLatticeAngle {
+            colormapBeforeLatticeAngle = nil
+            if colormap.isCyclic { colormap = previous }
+        }
+    }
+    
+    /// 60 deg (triangular) or 90 deg (square): from the solver's VTK title ("... lattice triangular"),
+    /// else from the cell shapes (triangular-lattice cells are near-equilateral, square-lattice cells
+    /// are right triangles)
+    nonisolated static func detectLatticeAnglePeriod(_ ds: VTKDataset) -> Float {
+        let words = ds.title.lowercased().split(whereSeparator: { $0 == " " || $0 == "\t" })
+        if let i = words.firstIndex(of: "lattice"), i + 1 < words.count {
+            if words[i + 1] == "square" { return 90 }
+            if words[i + 1] == "triangular" { return 60 }
+        }
+        let nT = ds.triangleCount
+        guard nT > 0 else { return 60 }
+        let stride = max(1, nT / 4000)
+        var maxAngles: [Float] = []
+        maxAngles.reserveCapacity(nT / stride + 1)
+        var t = 0
+        while t < nT {
+            let i0 = Int(ds.triangles[3 * t]), i1 = Int(ds.triangles[3 * t + 1]), i2 = Int(ds.triangles[3 * t + 2])
+            if i0 < ds.points.count, i1 < ds.points.count, i2 < ds.points.count {
+                let p = [ds.points[i0], ds.points[i1], ds.points[i2]]
+                var largest: Float = 0
+                for k in 0..<3 {
+                    let a = p[(k + 1) % 3] - p[k], b = p[(k + 2) % 3] - p[k]
+                    let den = simd_length(a) * simd_length(b)
+                    if den > 0 { largest = max(largest, acos(max(-1, min(1, simd_dot(a, b) / den))) * 180 / .pi) }
+                }
+                maxAngles.append(largest)
+            }
+            t += stride
+        }
+        guard !maxAngles.isEmpty else { return 60 }
+        maxAngles.sort()
+        return maxAngles[maxAngles.count / 2] > 78 ? 90 : 60
+    }
     
     var currentURL: URL? {
         if source == .custom { return customURL }
@@ -88,6 +158,7 @@ final class SnapshotViewerModel: ObservableObject {
     }
     
     var displayRange: (Float, Float) {
+        if let period = cyclicPeriod { return (-period / 2, period / 2) }
         guard let s = stats else { return (0, 1) }
         var lo: Float, hi: Float
         switch rangeMode {
@@ -181,7 +252,8 @@ final class SnapshotViewerModel: ObservableObject {
                 if Task.isCancelled { return }
                 let geo = MeshGeometry(dataset: ds)
                 let loc = TriangleLocator(triPositions: geo.triPositions)
-                let loaded = LoadedFrame(url: url, dataset: ds, geometry: geo, locator: loc)
+                var loaded = LoadedFrame(url: url, dataset: ds, geometry: geo, locator: loc)
+                loaded.latticeAnglePeriod = SnapshotViewerModel.detectLatticeAnglePeriod(ds)
                 await MainActor.run {
                     guard let self, self.currentURL == url else { return }
                     self.store(loaded)
@@ -228,14 +300,20 @@ final class SnapshotViewerModel: ObservableObject {
             return
         }
         let tris = f.dataset.triangles
+        let period = cyclicPeriod
         valuesTask = Task.detached(priority: .userInitiated) { [weak self] in
+            // Cyclic map: fold into [-P/2, P/2) so equivalent lattice angles share a colour
+            let fold: (Float) -> Float = { v in
+                guard let P = period, v.isFinite else { return v }
+                return v - P * (v / P + 0.5).rounded(.down)
+            }
             var per = [Float](repeating: 0, count: tris.count)
             if field.location == .cell {
                 let nT = min(field.values.count, tris.count / 3)
-                for t in 0..<nT { let v = field.values[t]; per[3 * t] = v; per[3 * t + 1] = v; per[3 * t + 2] = v }
+                for t in 0..<nT { let v = fold(field.values[t]); per[3 * t] = v; per[3 * t + 1] = v; per[3 * t + 2] = v }
             } else {
                 let n = field.values.count
-                for i in 0..<tris.count { let k = Int(tris[i]); per[i] = k < n ? field.values[k] : 0 }
+                for i in 0..<tris.count { let k = Int(tris[i]); per[i] = k < n ? fold(field.values[k]) : 0 }
             }
             let finite = field.values.filter { $0.isFinite }
             var st = FieldStats(min: 0, max: 1, p01: 0, p99: 1, absMax: 1)
