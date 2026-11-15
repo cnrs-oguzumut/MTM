@@ -191,9 +191,16 @@ public class SimulationConfig: ObservableObject {
                 includeExactCusps: sweepIncludeExactCusps
             )
         }
+        let isTri = (latticeSymmetry == .triangular)
+        let symDeg = isTri ? 60.0 : 90.0
         let lo = min(sweepThetaMinDeg, sweepThetaMaxDeg)
-        let hi = max(sweepThetaMinDeg, sweepThetaMaxDeg)
-        let source = sweepUseCuratedCSLOnly ? CSLRationalizer.curatedCatalog : CSLRationalizer.allCandidates
+        let hi = min(0.5 * symDeg, max(sweepThetaMinDeg, sweepThetaMaxDeg))
+        let source: [CSLRationalMatch]
+        if isTri {
+            source = sweepUseCuratedCSLOnly ? CSLRationalizer.curatedTriangularCatalog : CSLRationalizer.allTriangularCandidates
+        } else {
+            source = sweepUseCuratedCSLOnly ? CSLRationalizer.curatedCatalog : CSLRationalizer.allCandidates
+        }
         return source.filter { $0.halfAngleDeg >= lo - 1e-4 && $0.halfAngleDeg <= hi + 1e-4 }
     }
     
@@ -549,7 +556,7 @@ public class SimulationConfig: ObservableObject {
         // Boundary condition & Macroscopic Geometry Studio
         if mode != .shift && mode != .volterra {
             let isPeriodicMicro = (activeGeometry.enabled && activeGeometry.microstructure.isPeriodic)
-            if activeGeometry.enabled && (isPeriodicMicro || boundaryCondition != .periodic) {
+            if activeGeometry.enabled && (isPeriodicMicro || boundaryCondition != .periodic || activeProtocol == .sweepMisorientation) {
                 args.append(isPeriodicMicro ? "--bc=periodic" : "--bc=fixed")
                 var effectiveGeom = activeGeometry
                 effectiveGeom.microstructure.relax_only = (activeProtocol != .relaxThenLoad)

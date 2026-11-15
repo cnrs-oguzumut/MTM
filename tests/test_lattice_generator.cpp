@@ -1,10 +1,17 @@
 #include <iostream>
 #include <cassert>
 #include <cmath>
+#include <array>
+#include <vector>
 #include "../include/optimization/LatticeOptimizer.h"
 #include "../include/geometry/LatticeGenerator.h"
 #include "../include/geometry/DomainDimensions.h"
 #include "../include/geometry/MacroscopicGeometry.h"
+#include "../include/interatomic/inter_atomic.h"
+#include "../include/lattice_energy/EnergyFunctions.h"
+#include "../include/lattice_energy/SquareLatticeCalculator.h"
+#include "../include/mesh/MeshGenerator.h"
+#include "../include/mesh/Remesher.h"
 
 static void test_polygon_ray_casting_and_cutouts() {
     MacroscopicGeometryConfig geo;
@@ -229,6 +236,228 @@ static void test_periodic_dislocations_setup() {
     std::cout << "[PASS] Multi-Plane Single-Dislocation Periodic Setup (Square & Triangular, net b = 0) verified." << std::endl;
 }
 
+static void test_bicrystal_seam_deadzone_and_triangular_csl() {
+    auto check_case = [](const std::string& lattice_type,
+                         int nx, int ny,
+                         double d_min_a0,
+                         double max_void_limit,
+                         const std::vector<double>& angles_deg) {
+        for (double dth : angles_deg) {
+            MacroscopicGeometryConfig cfg;
+            cfg.enabled = true;
+            cfg.microstructure.mode = MicrostructureMode::Bicrystal;
+            cfg.microstructure.gb_cx = 0.5;
+            cfg.microstructure.gb_cy = 0.5;
+            cfg.microstructure.gb_angle_deg = 0.0;
+            cfg.microstructure.theta1_deg = -0.5 * dth;
+            cfg.microstructure.theta2_deg = +0.5 * dth;
+            cfg.microstructure.min_seam_distance_a0 = d_min_a0;
+            cfg.microstructure.seam_resolution = SeamOverlapResolution::MergeMidpoint;
+            cfg.microstructure.gb_normal_gap_a0 = 0.0;
+            cfg.microstructure.gb_tangential_shift_a0 = 0.0;
+
+            auto [pts, domain] = cfg.generateMicrostructureLattice(lattice_type, nx, ny, 1.0, 0.0, 3);
+            assert(!pts.empty());
+
+            // Verify minimum pairwise separation near and away from seam
+            const size_t n = pts.size();
+            const double seam_x = 0.5 * domain.size_x;
+            double min_dist = 1e9;
+            std::vector<Eigen::Vector2d> seam_band;
+            for (size_t i = 0; i < n; ++i) {
+                if (std::abs(pts[i].coord.x() - seam_x) < 3.5) {
+                    seam_band.push_back(pts[i].coord);
+                }
+            }
+            for (size_t i = 0; i < seam_band.size(); ++i) {
+                for (size_t j = i + 1; j < seam_band.size(); ++j) {
+                    if (std::abs(seam_band[i].y() - seam_band[j].y()) > 1.5) continue;
+                    const double d = (seam_band[i] - seam_band[j]).norm();
+                    if (d < min_dist) min_dist = d;
+                }
+            }
+            assert(min_dist >= d_min_a0 - 1e-3);
+
+            // Verify zero missing-atom monovacancy voids along the interior vertical GB line
+            double max_void_r = 0.0;
+            const double y_lo = 4.0;
+            const double y_hi = domain.size_y - 4.0;
+            for (double y = y_lo; y <= y_hi; y += 0.1) {
+                double best_r = 1e9;
+                const Eigen::Vector2d q(seam_x, y);
+                for (const auto& sp : seam_band) {
+                    if (std::abs(sp.y() - y) > 2.5) continue;
+                    const double r = (sp - q).norm();
+                    if (r < best_r) best_r = r;
+                }
+                if (best_r > max_void_r) max_void_r = best_r;
+            }
+            if (max_void_r >= max_void_limit) {
+                std::cerr << "[FAIL] " << lattice_type << " dTheta=" << dth
+                          << " max_void_r=" << max_void_r << " >= " << max_void_limit << std::endl;
+            }
+            assert(max_void_r < max_void_limit);
+        }
+    };
+
+    check_case("triangular", 60, 80, 0.52, 0.82, {2.0, 4.0, 6.0, 8.0, 10.0, 21.7868, 32.2042});
+    check_case("square", 40, 40, 0.48, 0.88, {6.0, 36.87});
+    std::cout << "[PASS] Bicrystal seam dead-zone rescue & triangular CSL snap tests passed." << std::endl;
+}
+
+static void test_microstructure_a0_scale_invariance() {
+    auto make_ref_dndx = [](const std::string& lattice_type, double a0) -> Eigen::Matrix<double, 3, 2> {
+        Eigen::Matrix<double, 3, 2> dNdxi;
+        dNdxi << -1.0, -1.0,
+                  1.0,  0.0,
+                  0.0,  1.0;
+        Eigen::Matrix2d J;
+        if (lattice_type == "triangular") {
+            J << a0, 0.5 * a0,
+                 0.0, 0.5 * std::sqrt(3.0) * a0;
+        } else {
+            J << a0, 0.0,
+                 0.0, a0;
+        }
+        return dNdxi * J.inverse();
+    };
+
+    struct CaseSpec {
+        std::string name;
+        std::string lattice_type;
+        MicrostructureMode mode;
+        double dtheta_deg;
+        int nx;
+        int ny;
+        int potential_mode;
+    };
+
+    const std::vector<CaseSpec> cases = {
+        {"tri_bicrystal_21.79", "triangular", MicrostructureMode::Bicrystal, 21.786789, 24, 24, 1},
+        {"tri_bicrystal_32.20", "triangular", MicrostructureMode::Bicrystal, 32.204228, 24, 24, 1},
+        {"sq_bicrystal_36.87", "square", MicrostructureMode::Bicrystal, 36.869898, 24, 24, 1},
+        {"tri_voronoi_4g", "triangular", MicrostructureMode::VoronoiPolycrystal, 0.0, 24, 24, 1},
+    };
+    const std::array<double, 4> test_a0s = {0.6872044442, 0.99640715, 1.07456993, 1.20933111};
+
+    for (const auto& cs : cases) {
+        auto run_at_a0 = [&](double a0, MacroscopicGeometryConfig& cfg, std::vector<Point2D>& pts) -> size_t {
+            cfg = MacroscopicGeometryConfig();
+            cfg.enabled = true;
+            cfg.microstructure.mode = cs.mode;
+            if (cs.mode == MicrostructureMode::Bicrystal) {
+                cfg.microstructure.gb_cx = 0.5;
+                cfg.microstructure.gb_cy = 0.5;
+                cfg.microstructure.gb_angle_deg = 0.0;
+                cfg.microstructure.theta1_deg = -0.5 * cs.dtheta_deg;
+                cfg.microstructure.theta2_deg = +0.5 * cs.dtheta_deg;
+                cfg.microstructure.min_seam_distance_a0 = (cs.lattice_type == "triangular") ? 0.52 : 0.50;
+                cfg.microstructure.seam_resolution = SeamOverlapResolution::MergeMidpoint;
+                cfg.microstructure.gb_normal_gap_a0 = 0.0;
+                cfg.microstructure.max_gb_edge_a0 = (cs.lattice_type == "triangular") ? 1.85 : 1.95;
+            } else {
+                cfg.microstructure.num_grains = 4;
+                cfg.microstructure.random_seed = 42;
+                cfg.microstructure.min_seam_distance_a0 = 0.52;
+                cfg.microstructure.seam_resolution = SeamOverlapResolution::MergeMidpoint;
+                cfg.microstructure.max_gb_edge_a0 = 1.85;
+            }
+
+            auto [gen_pts, domain] = cfg.generateMicrostructureLattice(
+                cs.lattice_type, cs.nx, cs.ny, a0, 0.0, cs.potential_mode);
+            pts = std::move(gen_pts);
+            assert(!pts.empty());
+            assert(std::abs(cfg.a0 - a0) < 1e-12);
+            cfg.setPhysicalBoundsFromPoints(pts, a0);
+
+            const std::array<double, 2> offsets = (cs.lattice_type == "square")
+                ? std::array<double, 2>{a0, a0}
+                : std::array<double, 2>{0.5 * a0, 0.5 * std::sqrt(3.0) * a0};
+            auto [orig_map, trans_map] = MeshGenerator::create_domain_maps(pts.size(), domain, offsets);
+            auto [interior_map, full_map] = create_dof_mapping_original(pts, 0.25 * a0, false);
+
+            Point2D dims_pt(domain.size_x, domain.size_y);
+            AdaptiveMesher mesher(dims_pt, offsets, orig_map, trans_map, full_map, 1e-6 * a0 * a0, false);
+            mesher.setUsePeriodicCopies(false);
+            AdaptiveMesher::setGlobalGeometryFilter(&cfg, &pts);
+
+            alglib::real_1d_array x;
+            const int n_vars = static_cast<int>(interior_map.size());
+            x.setlength(2 * n_vars);
+            map_points_to_solver_array(x, pts, interior_map, n_vars);
+
+            const auto dndx = make_ref_dndx(cs.lattice_type, a0);
+            auto [elems, active] = mesher.createMesh(pts, x, Eigen::Matrix2d::Identity(), &dndx);
+            AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
+            assert(!elems.empty());
+            assert(active.size() == elems.size());
+            return elems.size();
+        };
+
+        MacroscopicGeometryConfig ref_cfg;
+        std::vector<Point2D> ref_pts;
+        const size_t ref_elem_count = run_at_a0(1.0, ref_cfg, ref_pts);
+
+        for (double a0 : test_a0s) {
+            MacroscopicGeometryConfig cfg;
+            std::vector<Point2D> pts;
+            const size_t elem_count = run_at_a0(a0, cfg, pts);
+            assert(pts.size() == ref_pts.size());
+            for (size_t k = 0; k < pts.size(); ++k) {
+                assert(pts[k].grain_id == ref_pts[k].grain_id);
+                assert(((pts[k].coord / a0) - ref_pts[k].coord).norm() < 1e-12);
+            }
+            assert(elem_count == ref_elem_count);
+        }
+    }
+    std::cout << "[PASS] Microstructure a0 scale-invariance (coords + initial AdaptiveMesher) tests passed." << std::endl;
+}
+
+static void test_square_calculator_dynamic_cutoff() {
+    const double a0 = 0.6872044442;
+    const double rcut = 2.5;
+    SquareLatticeCalculator calc(a0, rcut);
+
+    for (double gamma : {3.0, 4.0}) {
+        Eigen::Matrix2d F;
+        F << 1.0, gamma,
+             0.0, 1.0;
+        const Eigen::Matrix2d C = F.transpose() * F;
+
+        const double e_calc = calc.calculate_energy(C, lennard_jones_energy_v2, 0.0);
+        const Eigen::Matrix2d dE_calc = calc.calculate_derivative(C, lennard_jones_energy_der_v2);
+
+        double e_ref = 0.0;
+        Eigen::Matrix2d dE_ref = Eigen::Matrix2d::Zero();
+        double e_trunc10 = 0.0;
+        for (int m = -40; m <= 40; ++m) {
+            for (int n = -40; n <= 40; ++n) {
+                if (m == 0 && n == 0) continue;
+                const Eigen::Vector2d p(static_cast<double>(m), static_cast<double>(n));
+                const double r = a0 * std::sqrt(p.transpose() * C * p);
+                if (r <= rcut) {
+                    const double phi_term = 0.5 * lennard_jones_energy_v2(r);
+                    e_ref += phi_term;
+                    if (std::abs(m) <= 10 && std::abs(n) <= 10) {
+                        e_trunc10 += phi_term;
+                    }
+                    const double dphi = 0.5 * lennard_jones_energy_der_v2(r) / r;
+                    dE_ref(0, 0) += 0.5 * dphi * p.x() * p.x() * a0 * a0;
+                    dE_ref(1, 1) += 0.5 * dphi * p.y() * p.y() * a0 * a0;
+                    dE_ref(0, 1) += 0.5 * dphi * p.x() * p.y() * a0 * a0;
+                    dE_ref(1, 0) += 0.5 * dphi * p.x() * p.y() * a0 * a0;
+                }
+            }
+        }
+        assert(std::abs(e_calc - e_ref) < 1e-12);
+        assert((dE_calc - dE_ref).cwiseAbs().maxCoeff() < 1e-12);
+        if (gamma >= 3.5) {
+            assert(std::abs(e_calc - e_trunc10) > 1e-4);
+        }
+    }
+    std::cout << "[PASS] SquareLatticeCalculator dynamic cutoff tests passed." << std::endl;
+}
+
 void run_triangular_reference_tests();
 
 int main() {
@@ -260,6 +489,9 @@ int main() {
     test_polygon_ray_casting_and_cutouts();
     test_nanoindenter_shapes_and_penalty();
     test_periodic_dislocations_setup();
+    test_bicrystal_seam_deadzone_and_triangular_csl();
+    test_microstructure_a0_scale_invariance();
+    test_square_calculator_dynamic_cutoff();
     run_triangular_reference_tests();
 
     std::cout << "All tests passed!" << std::endl;

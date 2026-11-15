@@ -44,8 +44,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     const std::vector<int> &original_domain_map,
     const std::vector<std::tuple<double, double>> &translation_map,
     const Point2D &domain_dims_point, int &has_changes,
-    int max_iterations, double reference_area, bool pbc,
-    bool optimize_interior);
+    int max_iterations = 100, double reference_area = 0.5, bool pbc = false,
+    bool optimize_interior = true);
 
 std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop(
     alglib::real_1d_array &x, UserData *userData,

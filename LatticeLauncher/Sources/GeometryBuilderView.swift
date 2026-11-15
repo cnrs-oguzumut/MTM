@@ -1763,13 +1763,15 @@ public struct GeometryBuilderView: View {
                 }
                 
                 if config.geometryConfig.microstructure.mode == .bicrystal {
+                    let isTri = (config.latticeSymmetry == .triangular)
                     let phiGB = config.geometryConfig.microstructure.gb_angle_deg
                     let phiRad = phiGB * .pi / 180.0
                     let isMostlyVertical = abs(cos(phiRad)) >= abs(sin(phiRad))
-                    let currentHalfTilt = max(0.5, 0.5 * abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg))
-                    let cslMatch = CSLRationalizer.closestMatch(forHalfAngleDeg: currentHalfTilt, maxIndex: 18)
+                    let currentHalfTilt = max(0.0, 0.5 * abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg))
+                    let cslMatch = CSLRationalizer.closestMatch(forHalfAngleDeg: currentHalfTilt, maxIndex: 18, isTriangular: isTri)
                     let isExactCSL = abs(abs(config.geometryConfig.microstructure.theta1_deg - phiGB) - cslMatch.halfAngleDeg) < 0.025 &&
                                      abs(abs(config.geometryConfig.microstructure.theta2_deg - phiGB) - cslMatch.halfAngleDeg) < 0.025
+                    let periodRadicand = max(1, Int(round(cslMatch.periodA0 * cslMatch.periodA0)))
 
                     let isVerticalGBSelected = abs(phiGB) < 0.5 || abs(abs(phiGB) - 180.0) < 0.5
                     let isHorizontalGBSelected = abs(abs(phiGB) - 90.0) < 0.5
@@ -1795,7 +1797,7 @@ public struct GeometryBuilderView: View {
                             }
                             
                             Menu {
-                                ForEach(CSLRationalizer.curatedCatalog) { item in
+                                ForEach(isTri ? CSLRationalizer.curatedTriangularCatalog : CSLRationalizer.curatedCatalog) { item in
                                     Button(item.shortLabel) {
                                         applyCSLMatch(item, applyAnalyticGap: autoUpdateGBSeamParams)
                                     }
@@ -1823,25 +1825,48 @@ public struct GeometryBuilderView: View {
                             Text("Quick CSL:")
                                 .font(.system(size: 9.5, weight: .semibold))
                                 .foregroundColor(BlueHour.mist)
-                            selectableChipButton(
-                                title: "Σ5 (310) ±18.43°",
-                                isSelected: isExactCSL && cslMatch.m == 3 && cslMatch.n == 1
-                            ) {
-                                applyCSLMatch(CSLRationalizer.makeMatch(m: 3, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
-                            }
-                            
-                            selectableChipButton(
-                                title: "Σ5 (210) ±26.57°",
-                                isSelected: isExactCSL && cslMatch.m == 2 && cslMatch.n == 1
-                            ) {
-                                applyCSLMatch(CSLRationalizer.makeMatch(m: 2, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
-                            }
+                            if isTri {
+                                selectableChipButton(
+                                    title: "Σ7 (21.8°) ±10.89°",
+                                    isSelected: isExactCSL && cslMatch.m == 4 && cslMatch.n == 1
+                                ) {
+                                    applyCSLMatch(CSLRationalizer.makeTriangularMatch(m: 4, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
+                                }
+                                
+                                selectableChipButton(
+                                    title: "Σ13 (27.8°) ±13.90°",
+                                    isSelected: isExactCSL && cslMatch.m == 3 && cslMatch.n == 1
+                                ) {
+                                    applyCSLMatch(CSLRationalizer.makeTriangularMatch(m: 3, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
+                                }
 
-                            selectableChipButton(
-                                title: "Σ13 (320) ±33.69°",
-                                isSelected: isExactCSL && cslMatch.m == 3 && cslMatch.n == 2
-                            ) {
-                                applyCSLMatch(CSLRationalizer.makeMatch(m: 3, n: 2), applyAnalyticGap: autoUpdateGBSeamParams)
+                                selectableChipButton(
+                                    title: "Σ13 (32.2°) ±16.10°",
+                                    isSelected: isExactCSL && cslMatch.m == 5 && cslMatch.n == 2
+                                ) {
+                                    applyCSLMatch(CSLRationalizer.makeTriangularMatch(m: 5, n: 2), applyAnalyticGap: autoUpdateGBSeamParams)
+                                }
+                            } else {
+                                selectableChipButton(
+                                    title: "Σ5 (310) ±18.43°",
+                                    isSelected: isExactCSL && cslMatch.m == 3 && cslMatch.n == 1
+                                ) {
+                                    applyCSLMatch(CSLRationalizer.makeMatch(m: 3, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
+                                }
+                                
+                                selectableChipButton(
+                                    title: "Σ5 (210) ±26.57°",
+                                    isSelected: isExactCSL && cslMatch.m == 2 && cslMatch.n == 1
+                                ) {
+                                    applyCSLMatch(CSLRationalizer.makeMatch(m: 2, n: 1), applyAnalyticGap: autoUpdateGBSeamParams)
+                                }
+
+                                selectableChipButton(
+                                    title: "Σ13 (320) ±33.69°",
+                                    isSelected: isExactCSL && cslMatch.m == 3 && cslMatch.n == 2
+                                ) {
+                                    applyCSLMatch(CSLRationalizer.makeMatch(m: 3, n: 2), applyAnalyticGap: autoUpdateGBSeamParams)
+                                }
                             }
                         }
                         
@@ -1861,7 +1886,7 @@ public struct GeometryBuilderView: View {
                             }
                             
                             Text(String(format: "L_CSL = √%d a₀ = %.3f a₀ • d_(%d%d) = %.3f a₀ • d_min = %.2f a₀ • δ_⊥* = %.2f a₀",
-                                        cslMatch.m * cslMatch.m + cslMatch.n * cslMatch.n,
+                                        periodRadicand,
                                         cslMatch.periodA0,
                                         cslMatch.m, cslMatch.n,
                                         cslMatch.layerSpacingA0,
@@ -1889,13 +1914,13 @@ public struct GeometryBuilderView: View {
                                     .font(.system(size: 9, weight: .semibold))
                                     .foregroundColor(BlueHour.mist)
                                 ForEach(cslMatch.suggestedPeriodCounts(around: config.nx), id: \.self) { k in
-                                    let nBox = cslMatch.commensurateSize(periods: k)
+                                    let box = cslMatch.commensurateBoxForPeriods(k, isVerticalGB: isMostlyVertical)
                                     selectableChipButton(
-                                        title: "\(nBox)×\(nBox) (\(k)L)",
-                                        isSelected: config.nx == nBox && config.ny == nBox
+                                        title: "\(box.nx)×\(box.ny) (\(k)L)",
+                                        isSelected: config.nx == box.nx && config.ny == box.ny
                                     ) {
-                                        config.nx = nBox
-                                        config.ny = nBox
+                                        config.nx = box.nx
+                                        config.ny = box.ny
                                     }
                                 }
                                 if config.noiseLevel > 0.0 {
@@ -2588,12 +2613,14 @@ public struct GeometryBuilderView: View {
         var gid: Int
         var thetaDeg: Double
         var isMergedSeam: Bool = false
+        var isOverhang: Bool = false
     }
 
     private func syncAutoSeamParamsFromCurrentAngles() {
         guard autoUpdateGBSeamParams else { return }
-        let halfTilt = max(0.5, 0.5 * abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg))
-        let match = CSLRationalizer.closestMatch(forHalfAngleDeg: halfTilt, maxIndex: 18)
+        let isTri = (config.latticeSymmetry == .triangular)
+        let halfTilt = max(0.0, 0.5 * abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg))
+        let match = CSLRationalizer.closestMatch(forHalfAngleDeg: halfTilt, maxIndex: 18, isTriangular: isTri)
         config.geometryConfig.microstructure.min_seam_distance_a0 = match.recommendedDMinA0
         config.geometryConfig.microstructure.gb_normal_gap_a0 = match.recommendedGapA0
         config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
@@ -2628,16 +2655,24 @@ public struct GeometryBuilderView: View {
             }
         }
         config.noiseLevel = 0.0
-        let kPeriodsX = max(2, Int(round(Double(max(config.nx, 32)) / match.periodA0)))
-        let kPeriodsY = max(2, Int(round(Double(max(config.ny, 32)) / match.periodA0)))
-        config.nx = match.commensurateSize(periods: kPeriodsX)
-        config.ny = match.commensurateSize(periods: kPeriodsY)
+        let phiRad = phiGB * .pi / 180.0
+        let isVerticalGB = abs(cos(phiRad)) >= abs(sin(phiRad))
+        let box = match.commensurateBoxSizes(
+            aroundNx: max(config.nx, 32),
+            aroundNy: max(config.ny, 32),
+            isVerticalGB: isVerticalGB
+        )
+        config.nx = box.nx
+        config.ny = box.ny
     }
 
     private func snapNearCSLAngle(_ deg: Double) -> Double {
         let phiGB = config.geometryConfig.microstructure.gb_angle_deg
         let rel = deg - phiGB
-        for cand in CSLRationalizer.allCandidates {
+        let cands = (config.latticeSymmetry == .triangular)
+            ? CSLRationalizer.allTriangularCandidates
+            : CSLRationalizer.allCandidates
+        for cand in cands {
             if abs(abs(rel) - cand.halfAngleDeg) < 0.025 {
                 return phiGB + ((rel < 0.0) ? -cand.halfAngleDeg : cand.halfAngleDeg)
             }
@@ -2678,12 +2713,13 @@ public struct GeometryBuilderView: View {
             let a2Y = isTri ? (aCanvas * (0.5 * sinT + 0.5 * sqrt3 * cosT)) : (aCanvas * cosT)
             let ox = originXHat * Lx
             let oy = originYHat * Ly
+            let boundTol = 1e-4 * aCanvas
 
             for i in -nSpan...nSpan {
                 for j in -nSpan...nSpan {
                     let rx = ox + Double(i) * a1X + Double(j) * a2X
                     let ry = oy + Double(i) * a1Y + Double(j) * a2Y
-                    guard rx >= -1e-4 && rx <= Lx + 1e-4 && ry >= -1e-4 && ry <= Ly + 1e-4 else { continue }
+                    guard rx >= -boundTol && rx <= Lx + boundTol && ry >= -boundTol && ry <= Ly + boundTol else { continue }
                     let xHat = min(1.0, max(0.0, rx / Lx))
                     let yHat = min(1.0, max(0.0, ry / Ly))
                     guard pred(xHat, yHat) else { continue }
@@ -2705,20 +2741,29 @@ public struct GeometryBuilderView: View {
             let x0 = micro.gb_cx * Lx
             let y0 = micro.gb_cy * Ly
             let cslBand = 0.02 * aCanvas
+            let dMinCanvas = max(0.15, min(0.98, micro.min_seam_distance_a0)) * aCanvas
+            let captureBand = (micro.seam_resolution == .mergeMidpoint)
+                ? max(cslBand, 0.5 * dMinCanvas)
+                : cslBand
             let ox0 = (x0 - 0.5 * deltaPar * tx) / Lx
             let oy0 = (y0 - 0.5 * deltaPar * ty) / Ly
             let ox1 = (x0 + 0.5 * deltaPar * tx) / Lx
             let oy1 = (y0 + 0.5 * deltaPar * ty) / Ly
             appendGrainLattice(gid: 0, thetaDeg: micro.theta1_deg, originXHat: ox0, originYHat: oy0) { x, y in
-                ((x * Lx - x0) * nx + (y * Ly - y0) * ny) <= cslBand
+                ((x * Lx - x0) * nx + (y * Ly - y0) * ny) <= captureBand
             }
             appendGrainLattice(gid: 1, thetaDeg: micro.theta2_deg, originXHat: ox1, originYHat: oy1) { x, y in
-                ((x * Lx - x0) * nx + (y * Ly - y0) * ny) >= -cslBand
+                ((x * Lx - x0) * nx + (y * Ly - y0) * ny) >= -captureBand
+            }
+            for idx in rawSites.indices {
+                let dist = (rawSites[idx].xPhys - x0) * nx + (rawSites[idx].yPhys - y0) * ny
+                rawSites[idx].isOverhang = (rawSites[idx].gid == 0) ? (dist > cslBand) : (dist < -cslBand)
             }
         case .voronoi:
             if micro.isPeriodicVoronoi {
                 // Mirrors the C++ periodic generator: each grain is one lattice anchored at its seed, built over the
                 // seed-centred half-period box (nearest-image ownership) and folded into [0, Lx) x [0, Ly)
+                let voronoiTieEps = 1e-10 * aCanvas * aCanvas
                 let seedsP = micro.seeds
                 let halfX = 0.5 * Lx, halfY = 0.5 * Ly
                 let nSpanP = Int(ceil(hypot(halfX, halfY) / dMinGrid)) + 4
@@ -2742,7 +2787,7 @@ public struct GeometryBuilderView: View {
                                 dx -= Lx * (dx / Lx).rounded()
                                 dy -= Ly * (dy / Ly).rounded()
                                 let dQ = dx * dx + dy * dy
-                                if dQ < dK - 1e-10 || (abs(dQ - dK) <= 1e-10 && q < k) { own = false; break }
+                                if dQ < dK - voronoiTieEps || (abs(dQ - dK) <= voronoiTieEps && q < k) { own = false; break }
                             }
                             guard own else { continue }
                             px -= Lx * floor(px / Lx)
@@ -2885,7 +2930,8 @@ public struct GeometryBuilderView: View {
                 buckets[iy * gNx + ix].append(i)
             }
 
-            var crossPairs: [(Int, Int, Double)] = []
+            var primaryPairs: [(Int, Int, Double)] = []
+            var deadzonePairs: [(Int, Int, Double)] = []
             for i in 0..<n {
                 let xi = filteredSites[i].xPhys, yi = filteredSites[i].yPhys
                 let gi = filteredSites[i].gid
@@ -2896,46 +2942,67 @@ public struct GeometryBuilderView: View {
                         let (ddx, ddy) = sep(xi, yi, filteredSites[j].xPhys, filteredSites[j].yPhys)
                         let d2 = ddx * ddx + ddy * ddy
                         if d2 < dMinSq {
-                            crossPairs.append((i, j, d2))
+                            if !filteredSites[i].isOverhang && !filteredSites[j].isOverhang {
+                                primaryPairs.append((i, j, d2))
+                            } else if filteredSites[i].isOverhang && filteredSites[j].isOverhang {
+                                deadzonePairs.append((i, j, d2))
+                            }
                         }
                     }
                 }
             }
-            crossPairs.sort { $0.2 < $1.2 }
+            primaryPairs.sort { $0.2 < $1.2 }
+            deadzonePairs.sort { $0.2 < $1.2 }
 
-            for (i, j, _) in crossPairs {
-                if removed[i] || removed[j] { continue }
-                let (dx, dy) = sep(filteredSites[i].xPhys, filteredSites[i].yPhys, filteredSites[j].xPhys, filteredSites[j].yPhys)
-                if dx * dx + dy * dy >= dMinSq { continue }
+            func resolveCrossPairList(_ pairs: [(Int, Int, Double)], isDeadzonePass: Bool) {
+                for (i, j, _) in pairs {
+                    if removed[i] || removed[j] { continue }
+                    if isDeadzonePass && (filteredSites[i].isMergedSeam || filteredSites[j].isMergedSeam) { continue }
+                    let (dx, dy) = sep(filteredSites[i].xPhys, filteredSites[i].yPhys, filteredSites[j].xPhys, filteredSites[j].yPhys)
+                    if dx * dx + dy * dy >= dMinSq { continue }
 
-                if micro.seam_resolution == .mergeMidpoint {
-                    var mx = filteredSites[i].xPhys + 0.5 * dx
-                    var my = filteredSites[i].yPhys + 0.5 * dy
-                    if periodicSeams {
-                        mx -= Lx * floor(mx / Lx)
-                        my -= Ly * floor(my / Ly)
-                    }
-                    let (mix, miy) = cellCoord(mx, my)
-                    var crowded = false
-                    outerCheck: for b in neighbourBuckets(mix, miy) {
-                        for k in buckets[b] where !removed[k] && k != i && k != j {
-                            let (kx, ky) = sep(mx, my, filteredSites[k].xPhys, filteredSites[k].yPhys)
-                            let sameOrSeam = (filteredSites[k].gid == filteredSites[i].gid) || filteredSites[k].isMergedSeam
-                            let tol2 = sameOrSeam ? dSameSafeSq : dMinSq
-                            if kx * kx + ky * ky < tol2 {
-                                crowded = true
-                                break outerCheck
+                    if micro.seam_resolution == .mergeMidpoint {
+                        var mx = filteredSites[i].xPhys + 0.5 * dx
+                        var my = filteredSites[i].yPhys + 0.5 * dy
+                        if periodicSeams {
+                            mx -= Lx * floor(mx / Lx)
+                            my -= Ly * floor(my / Ly)
+                        }
+                        let (mix, miy) = cellCoord(mx, my)
+                        var crowded = false
+                        outerCheck: for b in neighbourBuckets(mix, miy) {
+                            for k in buckets[b] where !removed[k] && k != i && k != j {
+                                if filteredSites[k].isOverhang && !filteredSites[k].isMergedSeam { continue }
+                                let (kx, ky) = sep(mx, my, filteredSites[k].xPhys, filteredSites[k].yPhys)
+                                let sameOrSeam = (filteredSites[k].gid == filteredSites[i].gid) || filteredSites[k].isMergedSeam
+                                let tol2 = sameOrSeam ? dSameSafeSq : dMinSq
+                                if kx * kx + ky * ky < tol2 {
+                                    crowded = true
+                                    break outerCheck
+                                }
                             }
                         }
+                        if isDeadzonePass && crowded { continue }
+                        if !crowded {
+                            filteredSites[i].xPhys = mx
+                            filteredSites[i].yPhys = my
+                            filteredSites[i].isOverhang = false
+                            buckets[miy * gNx + mix].append(i)
+                        }
+                        filteredSites[i].isMergedSeam = true
+                    } else if isDeadzonePass {
+                        continue
                     }
-                    if !crowded {
-                        filteredSites[i].xPhys = mx
-                        filteredSites[i].yPhys = my
-                        buckets[miy * gNx + mix].append(i)
-                    }
-                    filteredSites[i].isMergedSeam = true
+                    removed[j] = true
                 }
-                removed[j] = true
+            }
+
+            resolveCrossPairList(primaryPairs, isDeadzonePass: false)
+            if micro.seam_resolution == .mergeMidpoint && !deadzonePairs.isEmpty {
+                resolveCrossPairList(deadzonePairs, isDeadzonePass: true)
+            }
+            for k in 0..<n where filteredSites[k].isOverhang && !filteredSites[k].isMergedSeam {
+                removed[k] = true
             }
 
             // Secondary cleanup pass on spatial buckets to guarantee zero overlapping nodes at Voronoi triple junctions
@@ -2963,6 +3030,7 @@ public struct GeometryBuilderView: View {
             let phiSep = micro.gb_angle_deg * .pi / 180.0
             let nxSep = cos(phiSep), nySep = sin(phiSep)
             let deltaPerp = (micro.mode == .bicrystal) ? (micro.gb_normal_gap_a0 * aCanvas) : 0.0
+            let survivorBoundTol = 1e-4 * aCanvas
 
             var survivors: [CanvasLatticeSite] = []
             survivors.reserveCapacity(n)
@@ -2973,7 +3041,7 @@ public struct GeometryBuilderView: View {
                     site.xPhys += sgn * deltaPerp * nxSep
                     site.yPhys += sgn * deltaPerp * nySep
                 }
-                if site.xPhys >= -1e-4 && site.xPhys <= Lx + 1e-4 && site.yPhys >= -1e-4 && site.yPhys <= Ly + 1e-4 {
+                if site.xPhys >= -survivorBoundTol && site.xPhys <= Lx + survivorBoundTol && site.yPhys >= -survivorBoundTol && site.yPhys <= Ly + survivorBoundTol {
                     survivors.append(site)
                 }
             }

@@ -18,6 +18,14 @@ void AdaptiveMesher::setGlobalGeometryFilter(const MacroscopicGeometryConfig* ge
   g_active_geometry_ref_points = ref_points;
 }
 
+const MacroscopicGeometryConfig* AdaptiveMesher::getGlobalGeometryFilter() {
+  return g_active_geometry_filter;
+}
+
+const std::vector<Point2D>* AdaptiveMesher::getGlobalGeometryRefPoints() {
+  return g_active_geometry_ref_points;
+}
+
 /**
  * Constructor for AdaptiveMesher
  */
@@ -119,7 +127,7 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
       for (int j = 0; j < n_pts; ++j) {
         if (idx == j) continue;
         double d = (square_points[idx].coord - square_points[j].coord).norm();
-        if (d > 1e-4 && d < d_i) {
+        if (d > 1e-9 && d < d_i) {
           d_i = d;
         }
       }
@@ -168,10 +176,6 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
         if (std::abs(a.y() - cy_max) < wall_tol && std::abs(b.y() - cy_max) < wall_tol) return true;
         return false;
       };
-      auto nearOuterWall = [&](const Eigen::Vector2d& a) -> bool {
-        return std::abs(a.x() - cx_min) < wall_tol || std::abs(a.x() - cx_max) < wall_tol ||
-               std::abs(a.y() - cy_min) < wall_tol || std::abs(a.y() - cy_max) < wall_tol;
-      };
 
       std::vector<Triangle> filtered_tris;
       filtered_tris.reserve(unique_triangles.size());
@@ -195,31 +199,37 @@ std::vector<size_t> AdaptiveMesher::generateMesh(
         double l_max = std::max({l01, l12, l20});
         double two_area = std::abs((p1.x() - p0.x()) * (p2.y() - p0.y()) -
                                    (p1.y() - p0.y()) * (p2.x() - p0.x()));
-        double h_min = two_area / std::max(1e-12, l_max);
+        double h_min = two_area / std::max(1e-12 * median_nn, l_max);
+
+        double r01 = (r1 - r0).norm();
+        double r12 = (r2 - r1).norm();
+        double r20 = (r0 - r2).norm();
+        double r_l_max = std::max({r01, r12, r20});
+        double r_two_area = std::abs((r1.x() - r0.x()) * (r2.y() - r0.y()) -
+                                     (r1.y() - r0.y()) * (r2.x() - r0.x()));
+        double r_h_min = r_two_area / std::max(1e-12 * median_nn, r_l_max);
 
         bool same_grain = (check_pts[i0].grain_id == check_pts[i1].grain_id &&
                            check_pts[i1].grain_id == check_pts[i2].grain_id);
         bool outer_wall_edge = onSameOuterWall(r0, r1) || onSameOuterWall(r1, r2) || onSameOuterWall(r2, r0);
-        bool touches_outer_wall = nearOuterWall(r0) || nearOuterWall(r1) || nearOuterWall(r2);
+        bool is_rotated_grain = (std::abs(check_pts[i0].grain_theta_deg) > 1e-3 ||
+                                 std::abs(check_pts[i1].grain_theta_deg) > 1e-3 ||
+                                 std::abs(check_pts[i2].grain_theta_deg) > 1e-3);
 
-        if (!same_grain && touches_outer_wall) {
-          // Where a grain boundary meets an outer wall, strip V-notch bridge triangles
-          // that span across the truncated kite (> 1.48 a0) while keeping genuine kite bonds.
-          if (l_max > 1.48 * median_nn || h_min < 0.28 * median_nn) {
+        if (outer_wall_edge) {
+          // Strip outer-wall convex-hull staircase / V-notch bridge slivers while keeping
+          // genuine relaxed wall-adjacent GB bonds. Unrelaxed reference checks apply only
+          // within the same grain (rotated-crystal staircase edges), not across a relaxed GB seam.
+          if (l_max > base_max_edge || (same_grain && r_l_max > base_max_edge)) {
             continue;
           }
-        } else if (outer_wall_edge) {
-          bool is_rotated_grain = (std::abs(check_pts[i0].grain_theta_deg) > 1e-3);
-          if (!is_rotated_grain) {
-            if (l_max > base_max_edge) continue;
-          } else {
-            // Along a rotated outer wall, strip convex-hull staircase bridges (l_max > base_max_edge)
-            if (l_max > base_max_edge || h_min < 0.28 * median_nn) {
-              continue;
-            }
+          if ((!same_grain && h_min < 0.24 * median_nn) ||
+              (same_grain && is_rotated_grain &&
+               (h_min < 0.24 * median_nn || r_h_min < 0.24 * median_nn))) {
+            continue;
           }
         } else {
-          // Interior bulk and cross-grain-boundary elements: preserve up to gb_max_edge
+          // Interior bulk and GB-wall-apex elements: preserve up to gb_max_edge
           if (l_max > gb_max_edge || h_min < 0.08 * median_nn) {
             continue;
           }

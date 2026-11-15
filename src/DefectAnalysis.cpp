@@ -1,4 +1,5 @@
 #include "../include/defects/Defectanalysis.h"
+#include "../include/geometry/MacroscopicGeometry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -213,12 +214,13 @@ DefectAnalysis::computeBurgersCircuits(const UserData *userData) {
 
       int n_a = tri.nodes[k];
       int n_b = tri.nodes[k_next];
+      const double a0_safe = std::max(1e-8, a0);
       Eigen::Vector2d dt =
           (n_a <= n_b) ? (tri.trans[k_next] - tri.trans[k])
                        : (tri.trans[k] - tri.trans[k_next]);
       EdgeKey key{std::min(n_a, n_b), std::max(n_a, n_b),
-                   static_cast<long long>(std::llround(dt.x() * 1e4)),
-                  static_cast<long long>(std::llround(dt.y() * 1e4))};
+                  static_cast<long long>(std::llround((dt.x() / a0_safe) * 1e4)),
+                  static_cast<long long>(std::llround((dt.y() / a0_safe) * 1e4))};
       edge_to_tris[key].push_back({t_idx, tri.edge_len[k]});
     }
     result.element_burgers_int[t_idx] = B_T;
@@ -322,14 +324,24 @@ DefectAnalysis::analyzeDefectsInReferenceConfig(
                              userData->interior_mapping, n_vars);
 
   // 4. REMESH in reference configuration
+  const double a0_scale = (userData->ideal_lattice_parameter > 1e-8) ? userData->ideal_lattice_parameter : 1.0;
   AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
-                        translation_map, userData->full_mapping, 1e-6, pbc);
+                        translation_map, userData->full_mapping, 1e-6 * a0_scale * a0_scale, pbc);
 
+  const bool applied_temp_geom_filter =
+      (AdaptiveMesher::getGlobalGeometryFilter() == nullptr && !pbc &&
+       userData->macro_geom_ptr != nullptr && userData->macro_geom_ptr->enabled);
+  if (applied_temp_geom_filter) {
+    AdaptiveMesher::setGlobalGeometryFilter(userData->macro_geom_ptr, &reference_points);
+  }
   Eigen::Matrix2d F_identity = Eigen::Matrix2d::Identity();
   auto [ref_elements, ref_active_elements] = mesher.createMesh(
       reference_points, x_ref,
       F_identity, // Identity because we're in reference config
       &dndx);
+  if (applied_temp_geom_filter) {
+    AdaptiveMesher::setGlobalGeometryFilter(nullptr, nullptr);
+  }
 
   if (verbose_log) {
     std::cout << "Created " << ref_elements.size()
@@ -345,6 +357,7 @@ DefectAnalysis::analyzeDefectsInReferenceConfig(
                        ref_active_elements,
                        false // plasticity flag
   );
+  refUserData.macro_geom_ptr = userData->macro_geom_ptr;
 
   // 6. Compute Method 2 Discrete Burgers Circuits on reference mesh
   BurgersCircuitResult burgers = computeBurgersCircuits(&refUserData);

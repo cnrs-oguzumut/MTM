@@ -186,6 +186,8 @@ public:
 
     static void setGlobalGeometryFilter(const MacroscopicGeometryConfig* geom,
                                         const std::vector<Point2D>* ref_points = nullptr);
+    static const MacroscopicGeometryConfig* getGlobalGeometryFilter();
+    static const std::vector<Point2D>* getGlobalGeometryRefPoints();
 
 private:
     Point2D domain_dims;

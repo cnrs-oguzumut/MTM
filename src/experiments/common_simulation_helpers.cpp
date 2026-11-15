@@ -346,6 +346,9 @@ void transferPlasticityMemoryHybrid(
       double total_overlap_w = 0.0;
       int max_old_gen = 0;
 
+      const double ref_area = std::max(1e-12, new_el.getReferenceArea());
+      const double overlap_eps = 1e-10 * ref_area;
+
       // Primary Case 2 transfer: exact 2D polygon intersection area on the replaced cavity T_{m-1} \ T_m
       for (size_t old_idx : cand_old) {
         const auto &old_el = old_elements[old_idx];
@@ -368,7 +371,7 @@ void transferPlasticityMemoryHybrid(
             old_deformed_verts[old_idx][2] + shift};
 
         const double overlap_area = triangleIntersectionArea2D(tri_new_verts, tri_old_shifted);
-        if (overlap_area > 1e-10) {
+        if (overlap_area > overlap_eps) {
           F_tot_before += overlap_area * old_F_tot[old_idx];
           F_p_before += overlap_area * old_el.getPlasticDeformationGradient();
           slip_before += overlap_area * old_el.getCumulativePlasticSlip();
@@ -378,7 +381,7 @@ void transferPlasticityMemoryHybrid(
       }
 
       // Secondary Case 2 fallback: cavity triangles sharing >= 2 vertices (an edge) with new_el
-      if (total_overlap_w <= 1e-10) {
+      if (total_overlap_w <= overlap_eps) {
         for (size_t old_idx : cand_old) {
           const auto &old_el = old_elements[old_idx];
           int shared = 0;
@@ -391,7 +394,7 @@ void transferPlasticityMemoryHybrid(
             }
           }
           if (shared >= 2) {
-            const double w = std::max(1e-12, old_el.getReferenceArea());
+            const double w = std::max(1e-12 * ref_area, old_el.getReferenceArea());
             F_tot_before += w * old_F_tot[old_idx];
             F_p_before += w * old_el.getPlasticDeformationGradient();
             slip_before += w * old_el.getCumulativePlasticSlip();
@@ -401,7 +404,7 @@ void transferPlasticityMemoryHybrid(
         }
       }
 
-      if (total_overlap_w > 1e-10) {
+      if (total_overlap_w > overlap_eps) {
         F_tot_before /= total_overlap_w;
         F_p_before /= total_overlap_w;
         slip_before /= total_overlap_w;
@@ -495,8 +498,8 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     const std::vector<int> &original_domain_map,
     const std::vector<std::tuple<double, double>> &translation_map,
     const Point2D &domain_dims_point, int &has_changes,
-    int max_iterations = 100, double reference_area = 0.5, bool pbc = false,
-    bool optimize_interior = true) {
+    int max_iterations, double reference_area, bool pbc,
+    bool optimize_interior) {
 
   bool should_remesh = true;
   int mesh_iteration = 0;
@@ -570,10 +573,11 @@ std::tuple<double, Eigen::Matrix2d, int> perform_remeshing_loop_reduction(
     }
 
     // === PERFORM REMESHING ===
+    const double a0_scale = (ideal_lattice_parameter > 1e-8) ? ideal_lattice_parameter : 1.0;
     AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
                           translation_map, full_mapping,
-                          1e-6, // Tolerance
-                          pbc   // Use periodic copies
+                          1e-6 * a0_scale * a0_scale, // Tolerance scaled by a0^2
+                          pbc                         // Use periodic copies
     );
     mesher.setUsePeriodicCopies(pbc);
 

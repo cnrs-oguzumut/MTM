@@ -672,15 +672,17 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
     }
 
     const double a = (lattice_a0 > 0.0) ? lattice_a0 : 1.0;
+    a0 = a;
     const double sqrt3 = std::sqrt(3.0);
     const double size_x = nx * a;
     const double size_y = (lattice_type == "triangular") ? (ny * a * sqrt3 * 0.5) : (ny * a);
     const double d_lat = (lattice_type == "triangular") ? (a * sqrt3 * 0.5) : a;
     const double r_box = std::hypot(size_x, size_y);
     const int n_span = static_cast<int>(std::ceil(r_box / d_lat)) + 4;
-    const double tol = 1e-5;
+    const double tol = 1e-5 * a;
 
     std::vector<Point2D> raw_points;
+    std::vector<bool> raw_is_overhang;
 
     auto appendGrainPoints = [&](int gid, double theta_deg, double origin_x, double origin_y,
                                  const std::function<bool(double, double)>& region_pred) {
@@ -716,31 +718,57 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         const double ny_gb = std::sin(phi_rad);
 
         // General (m, n) CSL Rationalizer (gb_code / aimsgb):
-        // Snap near-CSL angles (within 0.02 deg of exact atan(n/m) for coprime 1 <= n <= m <= 18)
+        // Snap near-CSL angles (within 0.025 deg of exact CSL angles for coprime m <= 18)
         // relative to the GB plane so that UI-rounded values produce exact CSL periodicity
         // along the entire boundary without drift between the two halves.
         int matched_csl_m = 0;
         int matched_csl_n = 0;
+        bool matched_csl_tri = false;
         auto snapNearCSLAngle = [&](double theta_in_deg) -> double {
-            if (lattice_type != "square") return theta_in_deg;
             const double rel_deg = theta_in_deg - microstructure.gb_angle_deg;
             double best_diff = 0.025;
             double best_target_rel = rel_deg;
-            for (int m = 1; m <= 18; ++m) {
-                for (int n = 1; n <= m; ++n) {
-                    if (std::gcd(m, n) != 1) continue;
-                    const double exact_abs = std::atan2(static_cast<double>(n), static_cast<double>(m)) * 180.0 / M_PI;
-                    for (double sgn : {-1.0, 1.0}) {
-                        const double target_rel = sgn * exact_abs;
-                        const double diff = std::abs(rel_deg - target_rel);
-                        if (diff < best_diff) {
-                            best_diff = diff;
-                            best_target_rel = target_rel;
-                            matched_csl_m = m;
-                            matched_csl_n = n;
+            if (lattice_type == "triangular") {
+                for (int m = 1; m <= 18; ++m) {
+                    for (int n = 0; n <= m; ++n) {
+                        if (n == 0 && m > 1) continue;
+                        if (n == m && m > 1) continue;
+                        if (n > 0 && std::gcd(m, n) != 1) continue;
+                        const double exact_abs =
+                            std::atan2(sqrt3 * static_cast<double>(n), static_cast<double>(2 * m + n)) * 180.0 / M_PI;
+                        for (double sgn : {-1.0, 1.0}) {
+                            const double target_rel = sgn * exact_abs;
+                            const double diff = std::abs(rel_deg - target_rel);
+                            if (diff < best_diff) {
+                                best_diff = diff;
+                                best_target_rel = target_rel;
+                                matched_csl_m = m;
+                                matched_csl_n = n;
+                                matched_csl_tri = true;
+                            }
                         }
                     }
                 }
+            } else if (lattice_type == "square") {
+                for (int m = 1; m <= 18; ++m) {
+                    for (int n = 1; n <= m; ++n) {
+                        if (std::gcd(m, n) != 1) continue;
+                        const double exact_abs = std::atan2(static_cast<double>(n), static_cast<double>(m)) * 180.0 / M_PI;
+                        for (double sgn : {-1.0, 1.0}) {
+                            const double target_rel = sgn * exact_abs;
+                            const double diff = std::abs(rel_deg - target_rel);
+                            if (diff < best_diff) {
+                                best_diff = diff;
+                                best_target_rel = target_rel;
+                                matched_csl_m = m;
+                                matched_csl_n = n;
+                                matched_csl_tri = false;
+                            }
+                        }
+                    }
+                }
+            } else {
+                return theta_in_deg;
             }
             if (best_diff < 0.025) {
                 return microstructure.gb_angle_deg + best_target_rel;
@@ -751,31 +779,45 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         const double th1_exact = snapNearCSLAngle(microstructure.theta1_deg);
         const double th2_exact = snapNearCSLAngle(microstructure.theta2_deg);
 
-        // Include a small coincidence capture band (±0.02 * a) on the GB plane for both grains
-        // so coincidence lattice sites on the boundary are never dropped due to floating-point drift,
-        // and are then merged symmetrically onto the GB plane by the seam filter.
+        // Include a small coincidence capture band (±0.02 * a) on the GB plane for both grains,
+        // plus an extended half-seam overhang capture band (0.5 * d_min) in MergeMidpoint mode so
+        // symmetric/low-angle twin pairs straddling the plane (0.02a < |dist| <= 0.5*d_min) can merge
+        // back onto the boundary rather than leaving monovacancy gaps. Unmerged overhangs are discarded.
         const double gb_coincidence_band = 0.02 * a;
+        const double d_min_prelim = std::clamp(microstructure.min_seam_distance_a0, 0.15, 0.98) * a;
+        const double gb_capture_band = (microstructure.seam_resolution == SeamOverlapResolution::MergeMidpoint)
+            ? std::max(gb_coincidence_band, 0.5 * d_min_prelim)
+            : gb_coincidence_band;
         const double tx_gb = -ny_gb;
         const double ty_gb = nx_gb;
         const double delta_par = microstructure.gb_tangential_shift_a0 * a;
 
-        // Grain 0: left/lower half-space (dist <= +gb_coincidence_band)
+        // Grain 0: left/lower half-space (dist <= +gb_capture_band)
         appendGrainPoints(0, th1_exact,
                           p_gb_x - 0.5 * delta_par * tx_gb,
                           p_gb_y - 0.5 * delta_par * ty_gb,
                           [&](double x, double y) {
                               double dist = (x - p_gb_x) * nx_gb + (y - p_gb_y) * ny_gb;
-                              return dist <= gb_coincidence_band;
+                              return dist <= gb_capture_band;
                           });
 
-        // Grain 1: right/upper half-space (dist >= -gb_coincidence_band)
+        // Grain 1: right/upper half-space (dist >= -gb_capture_band)
         appendGrainPoints(1, th2_exact,
                           p_gb_x + 0.5 * delta_par * tx_gb,
                           p_gb_y + 0.5 * delta_par * ty_gb,
                           [&](double x, double y) {
                               double dist = (x - p_gb_x) * nx_gb + (y - p_gb_y) * ny_gb;
-                              return dist >= -gb_coincidence_band;
+                              return dist >= -gb_capture_band;
                           });
+
+        raw_is_overhang.resize(raw_points.size(), false);
+        for (size_t idx = 0; idx < raw_points.size(); ++idx) {
+            const double dist = (raw_points[idx].coord.x() - p_gb_x) * nx_gb +
+                                (raw_points[idx].coord.y() - p_gb_y) * ny_gb;
+            raw_is_overhang[idx] = (raw_points[idx].grain_id == 0)
+                ? (dist > gb_coincidence_band)
+                : (dist < -gb_coincidence_band);
+        }
 
         std::cout << "[Microstructure] Generated Bicrystal: GB center=(" << microstructure.gb_cx << ", "
                   << microstructure.gb_cy << "), phi_GB=" << microstructure.gb_angle_deg
@@ -783,14 +825,24 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                   << "°, gap_perp=" << microstructure.gb_normal_gap_a0
                   << " a0, shift_par=" << microstructure.gb_tangential_shift_a0
                   << " a0 (raw points before seam filter: " << raw_points.size() << ")\n";
-        if (matched_csl_m > 0 && matched_csl_n > 0) {
-            const int sum_sq = matched_csl_m * matched_csl_m + matched_csl_n * matched_csl_n;
-            const int sigma = sum_sq / std::gcd(sum_sq, 2);
-            const double l_csl = std::sqrt(static_cast<double>(sum_sq));
-            const double d_mn = 1.0 / l_csl;
-            std::cout << "[Microstructure] CSL Rationalizer: Σ" << sigma << " (" << matched_csl_m
-                      << " " << matched_csl_n << " 0), L_CSL = " << l_csl
-                      << " a0, d_(mn) = " << d_mn << " a0\n";
+        if (matched_csl_m > 0 && (matched_csl_n > 0 || matched_csl_tri)) {
+            if (matched_csl_tri) {
+                const int s_val = matched_csl_m * matched_csl_m + matched_csl_m * matched_csl_n + matched_csl_n * matched_csl_n;
+                const int sigma = s_val / std::gcd(s_val, 3);
+                const double l_csl = (s_val % 3 == 0)
+                    ? std::sqrt(static_cast<double>(sigma))
+                    : std::sqrt(3.0 * static_cast<double>(sigma));
+                std::cout << "[Microstructure] CSL Rationalizer (Triangular): Σ" << sigma << " (" << matched_csl_m
+                          << " " << matched_csl_n << " 0), L_CSL = " << l_csl << " a0\n";
+            } else {
+                const int sum_sq = matched_csl_m * matched_csl_m + matched_csl_n * matched_csl_n;
+                const int sigma = sum_sq / std::gcd(sum_sq, 2);
+                const double l_csl = std::sqrt(static_cast<double>(sum_sq));
+                const double d_mn = 1.0 / l_csl;
+                std::cout << "[Microstructure] CSL Rationalizer: Σ" << sigma << " (" << matched_csl_m
+                          << " " << matched_csl_n << " 0), L_CSL = " << l_csl
+                          << " a0, d_(mn) = " << d_mn << " a0\n";
+            }
         }
 
     } else if (microstructure.mode == MicrostructureMode::VoronoiPolycrystal) {
@@ -916,6 +968,7 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
             // Each grain is one continuous lattice anchored at its seed, built over the seed-centred half-period
             // box (half-open, so every torus point is visited once) and folded into [0, Lx) x [0, Ly).
             // The box edges never cut a grain, so the only seams are true grain boundaries.
+            const double voronoi_tie_eps = 1e-10 * a * a;
             const double half_x = 0.5 * size_x, half_y = 0.5 * size_y;
             const int n_span_p = static_cast<int>(std::ceil(std::hypot(half_x, half_y) / d_lat)) + 4;
             for (int k = 0; k < ng; ++k) {
@@ -938,8 +991,8 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                             const double dx = minImage(px - seed_phys[q].x(), size_x);
                             const double dy = minImage(py - seed_phys[q].y(), size_y);
                             const double d_q = dx * dx + dy * dy;
-                            if (d_q < d_k - 1e-10) own = false;
-                            else if (std::abs(d_q - d_k) <= 1e-10 && q < k) own = false;
+                            if (d_q < d_k - voronoi_tie_eps) own = false;
+                            else if (std::abs(d_q - d_k) <= voronoi_tie_eps && q < k) own = false;
                         }
                         if (!own) continue;
                         px -= size_x * std::floor(px / size_x);
@@ -952,6 +1005,7 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
             }
         }
 
+        const double voronoi_tie_eps_np = 1e-10 * a * a;
         for (int k = 0; k < ng && !periodic_voronoi; ++k) {
             appendGrainPoints(k, seeds[k].theta_deg, seed_phys[k].x(), seed_phys[k].y(),
                               [&](double x, double y) {
@@ -960,8 +1014,8 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                                   for (int j = 0; j < ng; ++j) {
                                       if (j == k) continue;
                                       double d_j = (p - seed_phys[j]).squaredNorm();
-                                      if (d_j < d_k - 1e-10) return false;
-                                      if (std::abs(d_j - d_k) <= 1e-10 && j < k) return false;
+                                      if (d_j < d_k - voronoi_tie_eps_np) return false;
+                                      if (std::abs(d_j - d_k) <= voronoi_tie_eps_np && j < k) return false;
                                   }
                                   return true;
                               });
@@ -976,6 +1030,8 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                           [](double, double) { return true; });
         return {raw_points, DomainDimensions(size_x, size_y)};
     }
+
+    raw_is_overhang.resize(raw_points.size(), false);
 
     // ==================== SEAM OVERLAP FILTER (r_ij < d_min * a0) ====================
     // Multi-pass, distance-sorted overlap resolution for Bicrystals and 2D Voronoi Polycrystals
@@ -1056,13 +1112,15 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
 
     rebuildBuckets();
 
-    // Collect all cross-grain candidate pairs within d_min and sort by distance (closest first)
+    // Collect cross-grain candidate pairs within d_min, split into primary seam pairs
+    // and overhang-overhang dead-zone twin pairs, sorted by distance (closest first).
     struct OverlapPair {
         size_t i;
         size_t j;
         double d2;
     };
-    std::vector<OverlapPair> candidate_pairs;
+    std::vector<OverlapPair> primary_pairs;
+    std::vector<OverlapPair> deadzone_pairs;
     for (size_t i = 0; i < N; ++i) {
         auto [ix, iy] = cellIndex(raw_points[i].coord.x(), raw_points[i].coord.y());
         for (int b : neighbourBuckets(ix, iy)) {
@@ -1071,19 +1129,26 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
                 if (raw_points[i].grain_id == raw_points[j].grain_id) continue;
                 double d2 = separation(raw_points[i].coord, raw_points[j].coord).squaredNorm();
                 if (d2 < d_min_sq) {
-                    candidate_pairs.push_back({i, j, d2});
+                    if (!raw_is_overhang[i] && !raw_is_overhang[j]) {
+                        primary_pairs.push_back({i, j, d2});
+                    } else if (raw_is_overhang[i] && raw_is_overhang[j]) {
+                        deadzone_pairs.push_back({i, j, d2});
+                    }
                 }
             }
         }
     }
-    std::sort(candidate_pairs.begin(), candidate_pairs.end(),
-              [](const OverlapPair& a, const OverlapPair& b) { return a.d2 < b.d2; });
+    auto pairDistLess = [](const OverlapPair& a, const OverlapPair& b) { return a.d2 < b.d2; };
+    std::sort(primary_pairs.begin(), primary_pairs.end(), pairDistLess);
+    std::sort(deadzone_pairs.begin(), deadzone_pairs.end(), pairDistLess);
 
     auto isPositionCrowded = [&](const Eigen::Vector2d& pos, size_t ignore_a, size_t ignore_b, int keep_gid) -> bool {
         auto [ix, iy] = cellIndex(pos.x(), pos.y());
         for (int b : neighbourBuckets(ix, iy)) {
             for (size_t k : buckets[static_cast<size_t>(b)]) {
                 if (removed[k] || k == ignore_a || k == ignore_b) continue;
+                // Unmerged overhang ghosts must not block real or dead-zone midpoint merges
+                if (raw_is_overhang[k] && !is_merged_seam[k]) continue;
                 double d2 = separation(pos, raw_points[k].coord).squaredNorm();
                 double tol2 = (raw_points[k].grain_id == keep_gid || is_merged_seam[k]) ? d_same_safe_sq : d_min_sq;
                 if (d2 < tol2) return true;
@@ -1092,33 +1157,55 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         return false;
     };
 
-    // Pass 1: Resolve sorted cross-grain overlaps (closest pairs first)
-    for (const auto& pair : candidate_pairs) {
-        size_t i = pair.i;
-        size_t j = pair.j;
-        if (removed[i] || removed[j]) continue;
-        const Eigen::Vector2d sep = separation(raw_points[i].coord, raw_points[j].coord);
-        if (sep.squaredNorm() >= d_min_sq) continue;
+    auto resolvePairList = [&](const std::vector<OverlapPair>& pairs, bool is_deadzone_pass) {
+        for (const auto& pair : pairs) {
+            size_t i = pair.i;
+            size_t j = pair.j;
+            if (removed[i] || removed[j]) continue;
+            if (is_deadzone_pass && (is_merged_seam[i] || is_merged_seam[j])) continue;
+            const Eigen::Vector2d sep = separation(raw_points[i].coord, raw_points[j].coord);
+            if (sep.squaredNorm() >= d_min_sq) continue;
 
-        if (microstructure.seam_resolution == SeamOverlapResolution::MergeMidpoint) {
-            Eigen::Vector2d mid = raw_points[i].coord + 0.5 * sep;
-            if (periodic_seams) {
-                mid.x() -= size_x * std::floor(mid.x() / size_x);
-                mid.y() -= size_y * std::floor(mid.y() / size_y);
-                if (mid.x() >= size_x) mid.x() -= size_x;
-                if (mid.y() >= size_y) mid.y() -= size_y;
+            if (microstructure.seam_resolution == SeamOverlapResolution::MergeMidpoint) {
+                Eigen::Vector2d mid = raw_points[i].coord + 0.5 * sep;
+                if (periodic_seams) {
+                    mid.x() -= size_x * std::floor(mid.x() / size_x);
+                    mid.y() -= size_y * std::floor(mid.y() / size_y);
+                    if (mid.x() >= size_x) mid.x() -= size_x;
+                    if (mid.y() >= size_y) mid.y() -= size_y;
+                }
+                const bool crowded = isPositionCrowded(mid, i, j, raw_points[i].grain_id);
+                if (is_deadzone_pass && crowded) {
+                    continue;
+                }
+                // Only shift i to midpoint if it doesn't crowd another existing node;
+                // otherwise keep i at its lattice position and delete j.
+                if (!crowded) {
+                    raw_points[i].coord = mid;
+                    raw_is_overhang[i] = false;
+                    is_merged_seam[i] = true;
+                    auto [nix, niy] = cellIndex(mid.x(), mid.y());
+                    buckets[static_cast<size_t>(niy * grid_nx + nix)].push_back(i);
+                }
+            } else if (is_deadzone_pass) {
+                continue;
             }
-            // Only shift i to midpoint if it doesn't crowd another existing node;
-            // otherwise keep i at its lattice position and delete j.
-            if (!isPositionCrowded(mid, i, j, raw_points[i].grain_id)) {
-                raw_points[i].coord = mid;
-                is_merged_seam[i] = true;
-                auto [nix, niy] = cellIndex(mid.x(), mid.y());
-                buckets[static_cast<size_t>(niy * grid_nx + nix)].push_back(i);
-            }
+            removed[j] = true;
+            ++merged_or_removed_count;
         }
-        removed[j] = true;
-        ++merged_or_removed_count;
+    };
+
+    // Pass 1a: Resolve sorted primary cross-grain overlaps (closest pairs first)
+    resolvePairList(primary_pairs, /*is_deadzone_pass=*/false);
+    // Pass 1b: Rescue dead-zone twin pairs straddling the GB plane where uncrowded
+    if (microstructure.seam_resolution == SeamOverlapResolution::MergeMidpoint && !deadzone_pairs.empty()) {
+        resolvePairList(deadzone_pairs, /*is_deadzone_pass=*/true);
+    }
+    // Discard any remaining unmerged overhang ghosts before exhaustive Pass 2 cleanup
+    for (size_t k = 0; k < N; ++k) {
+        if (raw_is_overhang[k] && !is_merged_seam[k]) {
+            removed[k] = true;
+        }
     }
 
     // Pass 2: Exhaustive cleanup sweep (guarantees zero remaining cross-grain or triple-junction overlaps)
@@ -1153,8 +1240,12 @@ MacroscopicGeometryConfig::generateMicrostructureLattice(
         ? (microstructure.gb_normal_gap_a0 * a)
         : 0.0;
 
+    size_t surviving_count = 0;
+    for (size_t i = 0; i < N; ++i) {
+        if (!removed[i]) ++surviving_count;
+    }
     std::vector<Point2D> filtered_points;
-    filtered_points.reserve(N - static_cast<size_t>(merged_or_removed_count));
+    filtered_points.reserve(surviving_count);
     for (size_t i = 0; i < N; ++i) {
         if (!removed[i]) {
             Point2D pt = raw_points[i];
@@ -1193,6 +1284,7 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
     int potential_mode) {
 
     const double a = (lattice_a0 > 0.0) ? lattice_a0 : 1.0;
+    a0 = a;
     const bool is_triangular = (lattice_type == "triangular");
     const double sqrt3 = std::sqrt(3.0);
     const double h_y = is_triangular ? (a * sqrt3 * 0.5) : a;
@@ -1444,7 +1536,7 @@ MacroscopicGeometryConfig::generatePeriodicDislocationLattice(
 void MacroscopicGeometryConfig::setupIndenterBounds(double lattice_a0,
                                                     const std::vector<Point2D>* carved_points) {
     a0 = (lattice_a0 > 1e-8) ? lattice_a0 : 1.0;
-    indenter.physical_radius = std::max(1e-4, indenter.radius_a0 * a0);
+    indenter.physical_radius = std::max(1e-4 * a0, indenter.radius_a0 * a0);
     indenter.physical_max_depth = std::max(0.0, indenter.max_depth_a0 * a0);
     indenter.physical_cx = x_min + indenter.cx * Lx;
     indenter.physical_cushion_offset = std::max(0.0, indenter.cushion_offset_a0 * a0);
@@ -1665,15 +1757,16 @@ void MacroscopicGeometryConfig::updateIndenterContactKinematics(
     }
 
     const double y_cutoff = carved_y_min + 0.4 * std::max(1e-8, carved_y_max - carved_y_min);
+    const double contact_band = 1e-5 * ((a0 > 1e-8) ? a0 : 1.0);
     std::vector<int> direct_contact;
     for (size_t i = 0; i < current_points.size(); ++i) {
         if (node_bc_role[i] != 0) continue; // Only unconstrained nodes can enter indenter contact
         if (points_ref[i].coord.y() >= y_cutoff) {
-            auto contact = evaluateIndenterContact(current_points[i].coord, alpha, 1e-5);
+            auto contact = evaluateIndenterContact(current_points[i].coord, alpha, contact_band);
             if (contact.in_contact) {
-                // Place atom 0.5e-5 inside the 1e-5 detection band (on the exact surface)
+                // Place atom 0.5 * contact_band inside the contact_band detection band (on the exact surface)
                 // so re-evaluating at the same alpha never drops contact due to roundoff.
-                current_points[i].coord = contact.surface_point - 0.5e-5 * contact.normal;
+                current_points[i].coord = contact.surface_point - 0.5 * contact_band * contact.normal;
                 node_bc_role[i] = 1; // Pinned on indenter surface
                 direct_contact.push_back(static_cast<int>(i));
             }
@@ -3185,7 +3278,8 @@ void MacroscopicGeometryConfig::applyLoadStep(
     }
 
     std::mt19937 gen(seed);
-    std::normal_distribution<double> noise_dist(0.0, std::max(0.0, noise_level));
+    const double a0_scale = (a0 > 1e-8) ? a0 : 1.0;
+    std::normal_distribution<double> noise_dist(0.0, std::max(0.0, noise_level) * a0_scale);
 
     for (size_t j = 0; j < n_pts; ++j) {
         Eigen::Vector2d noise_vec = (is_first_step && noise_level > 0.0)

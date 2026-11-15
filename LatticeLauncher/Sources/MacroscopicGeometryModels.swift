@@ -1989,11 +1989,39 @@ public struct CSLRationalMatch: Equatable, Identifiable {
     public let halfAngleDeg: Double
     public let fullMisoriDeg: Double
     public let periodA0: Double
+    public let normalPeriodA0: Double
     public let layerSpacingA0: Double
     public let recommendedDMinA0: Double
     public let recommendedGapA0: Double
+    public let isTriangular: Bool
 
-    public var id: String { String(format: "%.3f_%d_%d", fullMisoriDeg, m, n) }
+    public init(
+        m: Int,
+        n: Int,
+        sigma: Int,
+        halfAngleDeg: Double,
+        fullMisoriDeg: Double,
+        periodA0: Double,
+        normalPeriodA0: Double? = nil,
+        layerSpacingA0: Double,
+        recommendedDMinA0: Double,
+        recommendedGapA0: Double,
+        isTriangular: Bool = false
+    ) {
+        self.m = m
+        self.n = n
+        self.sigma = sigma
+        self.halfAngleDeg = halfAngleDeg
+        self.fullMisoriDeg = fullMisoriDeg
+        self.periodA0 = periodA0
+        self.normalPeriodA0 = normalPeriodA0 ?? periodA0
+        self.layerSpacingA0 = layerSpacingA0
+        self.recommendedDMinA0 = recommendedDMinA0
+        self.recommendedGapA0 = recommendedGapA0
+        self.isTriangular = isTriangular
+    }
+
+    public var id: String { String(format: "%@_%.3f_%d_%d", isTriangular ? "tri" : "sq", fullMisoriDeg, m, n) }
 
     public var shortLabel: String {
         if sigma > 0 {
@@ -2004,6 +2032,29 @@ public struct CSLRationalMatch: Equatable, Identifiable {
 
     public func commensurateSize(periods k: Int) -> Int {
         max(16, Int(round(Double(max(1, k)) * periodA0)))
+    }
+
+    public func commensurateBoxSizes(aroundNx targetNx: Int, aroundNy targetNy: Int, isVerticalGB: Bool = true) -> (nx: Int, ny: Int) {
+        let rowH = isTriangular ? (0.5 * sqrt(3.0)) : 1.0
+        let targetLx = Double(max(16, targetNx))
+        let targetLy = Double(max(16, targetNy)) * rowH
+        let perX = max(1.0, isVerticalGB ? normalPeriodA0 : periodA0)
+        let perY = max(1.0, isVerticalGB ? periodA0 : normalPeriodA0)
+        let kX = max(2, Int(round(targetLx / perX)))
+        let kY = max(2, Int(round(targetLy / perY)))
+        let nx = max(16, Int(round(Double(kX) * perX)))
+        let ny = max(16, Int(round(Double(kY) * perY / rowH)))
+        return (nx, ny)
+    }
+
+    public func commensurateBoxForPeriods(_ k: Int, isVerticalGB: Bool = true) -> (nx: Int, ny: Int) {
+        let rowH = isTriangular ? (0.5 * sqrt(3.0)) : 1.0
+        let perX = max(1.0, isVerticalGB ? normalPeriodA0 : periodA0)
+        let perY = max(1.0, isVerticalGB ? periodA0 : normalPeriodA0)
+        let kk = Double(max(1, k))
+        let nx = max(16, Int(round(kk * perX)))
+        let ny = max(16, Int(round(kk * perY / rowH)))
+        return (nx, ny)
     }
 
     public func suggestedPeriodCounts(around targetN: Int) -> [Int] {
@@ -2069,20 +2120,7 @@ public enum CSLRationalizer {
         } else {
             recDMin = min(0.60, max(0.48, (round((1.12 * dLayer) * 100.0) / 100.0)))
         }
-        let recGap: Double
-        if m == 3 && n == 1 {
-            recGap = 0.26
-        } else if m == 2 && n == 1 {
-            recGap = 0.0
-        } else if m - n == 1 && m >= 4 {
-            // High-angle (m, m-1) branch approaching (110) single crystal at Δθ = 90°
-            recGap = min(0.16, max(0.0, (round((0.68 / Double(m)) * 50.0) / 50.0)))
-        } else {
-            let kFirst = max(1, Int(ceil((recDMin - 1e-6) / (2.0 * dLayer))))
-            let rFirst = 2.0 * Double(kFirst) * dLayer
-            let rawGap = max(0.0, 0.94 - rFirst)
-            recGap = min(0.38, max(0.0, (round(rawGap * 50.0) / 50.0)))
-        }
+        let recGap: Double = 0.0
         return CSLRationalMatch(
             m: m,
             n: n,
@@ -2137,10 +2175,102 @@ public enum CSLRationalizer {
         return pairs.map { makeMatch(m: $0.0, n: $0.1) }
     }()
 
-    public static func closestMatch(forHalfAngleDeg targetDeg: Double, maxIndex: Int = 18) -> CSLRationalMatch {
+    public static func makeTriangularMatch(m: Int, n: Int) -> CSLRationalMatch {
+        let sqrt3 = sqrt(3.0)
+        if n <= 0 {
+            return CSLRationalMatch(
+                m: 1, n: 0, sigma: 1,
+                halfAngleDeg: 0.0, fullMisoriDeg: 0.0,
+                periodA0: sqrt3, normalPeriodA0: 1.0, layerSpacingA0: 0.5,
+                recommendedDMinA0: 0.52, recommendedGapA0: 0.0, isTriangular: true
+            )
+        }
+        if m == n {
+            return CSLRationalMatch(
+                m: 1, n: 1, sigma: 1,
+                halfAngleDeg: 30.0, fullMisoriDeg: 60.0,
+                periodA0: 1.0, normalPeriodA0: sqrt3, layerSpacingA0: 0.5 * sqrt3,
+                recommendedDMinA0: 0.52, recommendedGapA0: 0.0, isTriangular: true
+            )
+        }
+        let sVal = m * m + m * n + n * n
+        let g3 = gcd(sVal, 3)
+        let sigma = sVal / g3
+        let halfDeg = atan2(sqrt3 * Double(n), Double(2 * m + n)) * 180.0 / .pi
+        let perPar = (sVal % 3 == 0) ? sqrt(Double(sigma)) : sqrt(3.0 * Double(sigma))
+        let perNorm = sqrt(Double(sVal))
+        return CSLRationalMatch(
+            m: m, n: n, sigma: sigma,
+            halfAngleDeg: halfDeg, fullMisoriDeg: 2.0 * halfDeg,
+            periodA0: perPar, normalPeriodA0: perNorm, layerSpacingA0: 0.5 * sqrt3 / max(1.0, perNorm),
+            recommendedDMinA0: 0.52, recommendedGapA0: 0.0, isTriangular: true
+        )
+    }
+
+    public static let allTriangularCandidates: [CSLRationalMatch] = {
+        var list: [CSLRationalMatch] = [makeTriangularMatch(m: 1, n: 0), makeTriangularMatch(m: 1, n: 1)]
+        for m in 2...18 {
+            for n in 1..<m {
+                if gcd(m, n) == 1 {
+                    list.append(makeTriangularMatch(m: m, n: n))
+                }
+            }
+        }
+        list.sort { $0.halfAngleDeg < $1.halfAngleDeg }
+        return list
+    }()
+
+    /// Curated CSL sequence spanning the full [0°, 60°] misorientation arch on a 2D Triangular Lattice
+    public static let curatedTriangularCatalog: [CSLRationalMatch] = {
+        let pairs: [(Int, Int)] = [
+            (1, 0),   // ±0.00°  (Δθ = 0.00°,  Σ1 Close-Packed Single Crystal)
+            (14, 1),  // ±3.42°  (Δθ = 6.84°,  Σ211)
+            (11, 1),  // ±4.31°  (Δθ = 8.61°,  Σ133)
+            (9, 1),   // ±5.21°  (Δθ = 10.42°, Σ91)
+            (7, 1),   // ±6.59°  (Δθ = 13.17°, Σ19)
+            (5, 1),   // ±8.95°  (Δθ = 17.90°, Σ31)
+            (4, 1),   // ±10.89° (Δθ = 21.79°, Σ7 Primary Cusp)
+            (3, 1),   // ±13.90° (Δθ = 27.80°, Σ13 Cusp)
+            (5, 2),   // ±16.10° (Δθ = 32.20°, Σ13 Cusp)
+            (2, 1),   // ±19.11° (Δθ = 38.21°, Σ7 Primary Cusp)
+            (7, 4),   // ±21.05° (Δθ = 42.10°, Σ31)
+            (3, 2),   // ±23.41° (Δθ = 46.83°, Σ19)
+            (4, 3),   // ±25.28° (Δθ = 50.57°, Σ37)
+            (5, 4),   // ±26.33° (Δθ = 52.66°, Σ61)
+            (1, 1)    // ±30.00° (Δθ = 60.00°, Σ1 Symmetric Single Crystal)
+        ]
+        return pairs.map { makeTriangularMatch(m: $0.0, n: $0.1) }.sorted { $0.halfAngleDeg < $1.halfAngleDeg }
+    }()
+
+    public static func closestMatch(forHalfAngleDeg targetDeg: Double, maxIndex: Int = 18, isTriangular: Bool = false) -> CSLRationalMatch {
+        if isTriangular {
+            let absTarget = max(0.0, min(30.0, abs(targetDeg)))
+            if absTarget < 0.20 {
+                return makeTriangularMatch(m: 1, n: 0)
+            }
+            if absTarget > 29.80 {
+                return makeTriangularMatch(m: 1, n: 1)
+            }
+            var best = makeTriangularMatch(m: 4, n: 1)
+            var bestErr = Double.infinity
+            for cand in allTriangularCandidates where cand.m <= maxIndex && cand.n > 0 && cand.m > cand.n {
+                let angleErr = abs(cand.halfAngleDeg - absTarget)
+                let complexityPenalty = 0.006 * Double(cand.m)
+                let score = angleErr + complexityPenalty
+                if score < bestErr {
+                    bestErr = score
+                    best = cand
+                }
+            }
+            return best
+        }
+
         let absTarget = max(0.0, min(45.0, abs(targetDeg)))
         if absTarget < 0.25 {
             return makeMatch(m: 1, n: 0)
+        }
+        if absTarget > 44.75 {
+            return makeMatch(m: 1, n: 1)
         }
         var best = makeMatch(m: 3, n: 1)
         var bestErr = Double.infinity
@@ -2163,19 +2293,18 @@ public enum CSLRationalizer {
         sigma: Int = 0,
         m: Int = 0,
         n: Int = 0,
-        periodA0: Double = 1.0
+        periodA0: Double? = nil,
+        normalPeriodA0: Double? = nil
     ) -> CSLRationalMatch {
         let symDeg = isTriangular ? 60.0 : 90.0
         let clampedDTheta = min(symDeg, max(0.0, fullMisoriDeg))
         let halfDeg = 0.5 * clampedDTheta
         let isEndpoint = (clampedDTheta <= 0.05 || clampedDTheta >= symDeg - 0.05)
         let dMin = isTriangular ? 0.52 : 0.50
-        let gap: Double = isEndpoint
-            ? 0.0
-            : (round((0.08 * sin(.pi * clampedDTheta / symDeg)) * 100.0) / 100.0)
-        let effPeriod: Double = (periodA0 > 1.01 || isEndpoint)
-            ? max(1.0, periodA0)
-            : closestMatch(forHalfAngleDeg: halfDeg).periodA0
+        let gap: Double = 0.0
+        let matched = closestMatch(forHalfAngleDeg: halfDeg, isTriangular: isTriangular)
+        let effPeriod = max(1.0, periodA0 ?? matched.periodA0)
+        let effNormPeriod = max(1.0, normalPeriodA0 ?? matched.normalPeriodA0)
         return CSLRationalMatch(
             m: m,
             n: n,
@@ -2183,9 +2312,11 @@ public enum CSLRationalizer {
             halfAngleDeg: halfDeg,
             fullMisoriDeg: clampedDTheta,
             periodA0: effPeriod,
-            layerSpacingA0: 1.0 / max(1.0, effPeriod),
+            normalPeriodA0: effNormPeriod,
+            layerSpacingA0: 1.0 / effPeriod,
             recommendedDMinA0: dMin,
-            recommendedGapA0: gap
+            recommendedGapA0: gap,
+            isTriangular: isTriangular
         )
     }
 
@@ -2202,23 +2333,23 @@ public enum CSLRationalizer {
         let step = max(0.5, min(30.0, stepDeltaThetaDeg))
 
         // Major cusps for Square (0-90°) vs Triangular (0-60°)
-        let exactCusps: [(dtheta: Double, sigma: Int, m: Int, n: Int, per: Double)] = isTriangular
+        let exactCusps: [(dtheta: Double, sigma: Int, m: Int, n: Int, per: Double, normPer: Double)] = isTriangular
             ? [
-                (0.0, 1, 1, 0, 1.0),
-                (21.786789, 7, 2, 1, sqrt(7.0)),
-                (27.795772, 13, 3, 1, sqrt(13.0)),
-                (32.204228, 13, 3, 2, sqrt(13.0)),
-                (38.213211, 7, 3, 2, sqrt(7.0)),
-                (60.0, 1, 1, 1, 1.0)
+                (0.0, 1, 1, 0, sqrt(3.0), 1.0),
+                (21.786789, 7, 4, 1, sqrt(7.0), sqrt(21.0)),
+                (27.795772, 13, 3, 1, sqrt(39.0), sqrt(13.0)),
+                (32.204228, 13, 5, 2, sqrt(13.0), sqrt(39.0)),
+                (38.213211, 7, 2, 1, sqrt(21.0), sqrt(7.0)),
+                (60.0, 1, 1, 1, 1.0, sqrt(3.0))
             ]
             : [
-                (0.0, 1, 1, 0, 1.0),
-                (22.619865, 13, 5, 1, sqrt(26.0)),
-                (28.072487, 17, 4, 1, sqrt(17.0)),
-                (36.869898, 5, 3, 1, sqrt(10.0)),
-                (53.130102, 5, 2, 1, sqrt(5.0)),
-                (67.380135, 13, 3, 2, sqrt(13.0)),
-                (90.0, 1, 1, 1, sqrt(2.0))
+                (0.0, 1, 1, 0, 1.0, 1.0),
+                (22.619865, 13, 5, 1, sqrt(26.0), sqrt(26.0)),
+                (28.072487, 17, 4, 1, sqrt(17.0), sqrt(17.0)),
+                (36.869898, 5, 3, 1, sqrt(10.0), sqrt(10.0)),
+                (53.130102, 5, 2, 1, sqrt(5.0), sqrt(5.0)),
+                (67.380135, 13, 3, 2, sqrt(13.0), sqrt(13.0)),
+                (90.0, 1, 1, 1, sqrt(2.0), sqrt(2.0))
             ]
 
         var angles: [Double] = []
@@ -2248,7 +2379,8 @@ public enum CSLRationalizer {
                     sigma: cusp.sigma,
                     m: cusp.m,
                     n: cusp.n,
-                    periodA0: cusp.per
+                    periodA0: cusp.per,
+                    normalPeriodA0: cusp.normPer
                 )
             }
             return makeContinuousCandidate(fullMisoriDeg: ang, isTriangular: isTriangular)

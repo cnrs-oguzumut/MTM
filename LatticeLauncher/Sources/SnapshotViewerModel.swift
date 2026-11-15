@@ -363,8 +363,9 @@ final class SnapshotViewerModel: ObservableObject {
                 let geo = MeshGeometry(dataset: ds)
                 let loc = TriangleLocator(triPositions: geo.triPositions)
                 let a0 = Self.estimateLatticeSpacing(dataset: ds)
-                var loaded = LoadedFrame(url: url, dataset: ds, geometry: geo, locator: loc, latticeSpacing: a0)
-                loaded.latticeAnglePeriod = SnapshotViewerModel.detectLatticeAnglePeriod(ds)
+                var frame = LoadedFrame(url: url, dataset: ds, geometry: geo, locator: loc, latticeSpacing: a0)
+                frame.latticeAnglePeriod = SnapshotViewerModel.detectLatticeAnglePeriod(ds)
+                let loaded = frame
                 await MainActor.run {
                     guard let self, self.currentURL == url else { return }
                     self.store(loaded)

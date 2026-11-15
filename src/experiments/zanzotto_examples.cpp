@@ -797,7 +797,7 @@ void example_1_conti_zanzotto_loading(
   // 1. Create the AdaptiveMesher instance
   AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
                         translation_map, full_mapping,
-                        1e-6, // Tolerance
+                        1e-6 * lattice_constant * lattice_constant, // Tolerance scaled by a0^2
                         pbc   // Use periodic copies
   );
   mesher.setUsePeriodicCopies(
@@ -1245,9 +1245,9 @@ void example_1_conti_zanzotto_loading(
       if (effective_noise_level > 0.0 && !is_periodic_micro) {
         // Use deterministic seed so both positive and negative runs share the exact same initial noise
         std::mt19937 gen(seed);
-        std::normal_distribution<double> noise_dist(0.0, effective_noise_level);
+        std::normal_distribution<double> noise_dist(0.0, effective_noise_level * optimal_lattice_parameter);
         std::cout << "[Setup] Seeded loading-stage thermal/positional noise (seed = " << seed
-                  << ", σ = " << effective_noise_level << ")" << std::endl;
+                  << ", σ = " << effective_noise_level << " a0)" << std::endl;
 
         for (size_t j = 0; j < square_points.size(); j++) {
           Eigen::Vector2d noise(noise_dist(gen), noise_dist(gen));

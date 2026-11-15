@@ -309,6 +309,32 @@ struct StressStrainChartView: View {
     private func gbEnergyValue(for pt: GBEnergyPoint) -> Double {
         useInteriorGBGauge ? pt.gbEnergyInterior : pt.gbEnergyTotal
     }
+
+    private func shouldAnnotateGBPoint(_ pt: GBEnergyPoint, totalCount: Int) -> Bool {
+        showGBSigmaLabels && ((pt.sigma >= 1 && pt.sigma <= 19) || totalCount <= 20)
+    }
+
+    private func gbAnnotationPlacement(for idx: Int, in pts: [GBEnergyPoint]) -> (position: AnnotationPosition, alignment: Alignment) {
+        let pt = pts[idx]
+        let yVal = gbEnergyValue(for: pt)
+        let alignment: Alignment
+        if idx == 0 || pt.misorientationDeg <= xDomain.lowerBound + 2.5 {
+            alignment = .leading
+        } else if idx == pts.count - 1 || pt.misorientationDeg >= xDomain.upperBound - 2.5 {
+            alignment = .trailing
+        } else {
+            alignment = .center
+        }
+        if idx > 0 && idx < pts.count - 1 {
+            let prevY = gbEnergyValue(for: pts[idx - 1])
+            let nextY = gbEnergyValue(for: pts[idx + 1])
+            let ySpan = max(1e-6, yDomain.upperBound - yDomain.lowerBound)
+            if yVal < prevY - 1e-6 && yVal < nextY - 1e-6 && yVal > yDomain.lowerBound + 0.10 * ySpan {
+                return (.bottom, alignment)
+            }
+        }
+        return (.top, alignment)
+    }
     
     private var displayGBPoints: [GBEnergyPoint] {
         if !runner.gbEnergyPoints.isEmpty {
@@ -440,8 +466,8 @@ struct StressStrainChartView: View {
             let minY = vals.min() ?? 0.0
             let maxY = vals.max() ?? 0.5
             let span = max(0.05, maxY - minY)
-            let lo = scaleMode == .fromZero ? 0.0 : max(0.0, minY - span * 0.12)
-            let hi = maxY + span * 0.14
+            let lo = scaleMode == .fromZero ? 0.0 : max(0.0, minY - span * (showGBSigmaLabels ? 0.20 : 0.12))
+            let hi = maxY + span * (showGBSigmaLabels ? 0.18 : 0.14)
             return lo < hi ? lo...hi : 0.0...max(0.5, maxY * 1.2)
             
         case .stress, .rotation:
@@ -1229,8 +1255,9 @@ struct StressStrainChartView: View {
 
                 Chart {
                     if chartMode == .gbEnergy {
-                        ForEach(displayGBPoints) { pt in
+                        ForEach(Array(displayGBPoints.enumerated()), id: \.element.id) { idx, pt in
                             let yVal = gbEnergyValue(for: pt)
+                            let annotateThis = shouldAnnotateGBPoint(pt, totalCount: displayGBPoints.count)
                             if showLine {
                                 LineMark(
                                     x: .value("Misorientation Δθ (°)", pt.misorientationDeg),
@@ -1241,22 +1268,30 @@ struct StressStrainChartView: View {
                                 .interpolationMethod(.linear)
                             }
                             
-                            if showPoints {
+                            if showPoints || annotateThis {
+                                let isMajorCusp = (pt.sigma >= 1 && pt.sigma <= 19)
+                                let placement = gbAnnotationPlacement(for: idx, in: displayGBPoints)
                                 PointMark(
                                     x: .value("Misorientation Δθ (°)", pt.misorientationDeg),
                                     y: .value("Grain Boundary Energy γ_GB", yVal)
                                 )
-                                .symbol(pointSymbol.chartSymbol)
-                                .symbolSize(pointSymbolArea)
-                                .foregroundStyle(currentPointColor)
-                                .annotation(position: .top) {
-                                    let isMajorCusp = (pt.sigma > 1 && pt.sigma <= 17)
-                                    if showGBSigmaLabels && (displayGBPoints.count <= 22 || isMajorCusp) {
+                                .symbol(showPoints ? pointSymbol.chartSymbol : .circle)
+                                .symbolSize(showPoints ? pointSymbolArea : 34)
+                                .foregroundStyle(
+                                    (showGBSigmaLabels && isMajorCusp)
+                                        ? Color(red: 0.98, green: 0.82, blue: 0.36)
+                                        : currentPointColor
+                                )
+                                .annotation(position: placement.position, alignment: placement.alignment, spacing: 5) {
+                                    if annotateThis {
                                         Text(pt.sigma > 0
                                              ? String(format: "Σ%d (%.1f°)", pt.sigma, pt.misorientationDeg)
                                              : String(format: "%.1f°", pt.misorientationDeg))
-                                            .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                            .foregroundColor(.secondary)
+                                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                            .foregroundColor(pt.sigma > 0 ? Color(red: 0.98, green: 0.86, blue: 0.48) : BlueHour.mist)
+                                            .padding(.horizontal, 3.5)
+                                            .padding(.vertical, 1.5)
+                                            .background(BlueHour.canvasBackground.opacity(0.82), in: RoundedRectangle(cornerRadius: 3))
                                     }
                                 }
                             }

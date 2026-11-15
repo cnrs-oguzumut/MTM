@@ -518,11 +518,6 @@ static void transformed_energy(const alglib::real_1d_array &z, double &func,
   const double *gx = ctx->gx_work.getcontent();
   if (factor) {
     factor->apply_inverse(gx, grad.getcontent(), n);
-    if (ctx->userData->macro_geom_ptr != nullptr &&
-        ctx->userData->macro_geom_ptr->hasPartialDOFConstraints()) {
-      ctx->userData->macro_geom_ptr->zeroConstrainedComponentGradients(
-          ctx->userData->interior_mapping, grad);
-    }
   } else {
     std::copy(gx, gx + n, grad.getcontent());
   }

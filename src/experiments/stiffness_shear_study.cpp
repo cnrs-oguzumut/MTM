@@ -137,6 +137,7 @@ static void exportInitialMeshJSON(
     double min_shear = 1e30, max_shear = -1e30;
     double min_press = 1e30, max_press = -1e30;
 
+    const double wrap_eps = 1e-6 * std::max(1e-8, std::min(box_Lx, box_Ly));
     out << "  \"elements\": [\n";
     for (size_t idx = 0; idx < elements.size(); ++idx) {
         const auto& elem = elements[idx];
@@ -152,7 +153,7 @@ static void exportInitialMeshJSON(
         Eigen::Vector2d p1 = points_ref[n1].coord + t1;
         Eigen::Vector2d p2 = points_ref[n2].coord + t2;
 
-        bool crosses = (t0.norm() > 1e-6 || t1.norm() > 1e-6 || t2.norm() > 1e-6);
+        bool crosses = (t0.norm() > wrap_eps || t1.norm() > wrap_eps || t2.norm() > wrap_eps);
         double area = elem.getReferenceArea();
 
         Eigen::Matrix2d C = elem.getMetricTensor();
@@ -461,9 +462,12 @@ StiffnessShearResults runStiffnessShearStudy(const StiffnessShearConfig &config)
     const int free_nodes = static_cast<int>(interior_mapping.size());
     const int total_dofs = 2 * free_nodes;
 
+    if (has_custom_geom) {
+        macro_geom.a0 = a_0;
+    }
     Point2D domain_dims_point(domain_dims.size_x, domain_dims.size_y);
     AdaptiveMesher mesher(domain_dims_point, offsets, original_domain_map,
-                          translation_map, full_mapping, 1e-6, pbc);
+                          translation_map, full_mapping, 1e-6 * a_0 * a_0, pbc);
     mesher.setUsePeriodicCopies(pbc);
     if (has_custom_geom && !is_periodic_micro) {
         AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &points_ref);

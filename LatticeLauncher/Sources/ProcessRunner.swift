@@ -497,13 +497,18 @@ public class ProcessRunner: ObservableObject {
         currentStageLabel = sweepProgressText
         
         // Commensurate box size K * L_CSL closest to user's System Geometry NX/NY
+        let phiRad = cfg.geometryConfig.microstructure.gb_angle_deg * .pi / 180.0
+        let isVerticalGB = abs(cos(phiRad)) >= abs(sin(phiRad))
         let runNx: Int
         let runNy: Int
-        if cfg.sweepAutoCommensurateBox && cand.periodA0 > 1.01 {
-            let kPeriodsX = max(2, Int(round(Double(sweepSavedBaseNx) / max(2.0, cand.periodA0))))
-            let kPeriodsY = max(2, Int(round(Double(sweepSavedBaseNy) / max(2.0, cand.periodA0))))
-            runNx = cand.commensurateSize(periods: kPeriodsX)
-            runNy = cand.commensurateSize(periods: kPeriodsY)
+        if cfg.sweepAutoCommensurateBox && (cand.periodA0 > 1.01 || cand.normalPeriodA0 > 1.01) {
+            let box = cand.commensurateBoxSizes(
+                aroundNx: sweepSavedBaseNx,
+                aroundNy: sweepSavedBaseNy,
+                isVerticalGB: isVerticalGB
+            )
+            runNx = box.nx
+            runNy = box.ny
         } else {
             runNx = sweepSavedBaseNx
             runNy = sweepSavedBaseNy
@@ -520,6 +525,7 @@ public class ProcessRunner: ObservableObject {
         sweepGeom.microstructure.min_seam_distance_a0 = cand.recommendedDMinA0
         sweepGeom.microstructure.gb_normal_gap_a0 = cand.recommendedGapA0
         sweepGeom.microstructure.gb_tangential_shift_a0 = 0.0
+        sweepGeom.applyGBFrameRollerBCs(forAngleDeg: sweepGeom.microstructure.gb_angle_deg)
         
         let angleSubfolder = String(
             format: "angle_%02d_dtheta_%05.2fdeg_Sigma%d_%d%d0",
@@ -559,9 +565,12 @@ public class ProcessRunner: ObservableObject {
         }
         
         // Copy the relaxed VTK configuration into relaxed_configurations/ and baseTargetDir
+        let srcPrimaryVTK = "\(outputDirectory)/vtk_output/configuration_00000.vtk"
         let srcPostVTK = "\(outputDirectory)/vtk_files/configuration_0_post.vtk"
         let srcFallbackVTK = "\(outputDirectory)/vtk_files/configuration_0.vtk"
-        let srcVTK = fm.fileExists(atPath: srcPostVTK) ? srcPostVTK : (fm.fileExists(atPath: srcFallbackVTK) ? srcFallbackVTK : "")
+        let srcVTK = fm.fileExists(atPath: srcPrimaryVTK)
+            ? srcPrimaryVTK
+            : (fm.fileExists(atPath: srcPostVTK) ? srcPostVTK : (fm.fileExists(atPath: srcFallbackVTK) ? srcFallbackVTK : ""))
         
         if !srcVTK.isEmpty {
             let vtkFileName = String(
@@ -861,6 +870,11 @@ public class ProcessRunner: ObservableObject {
         let mVal = parts.count > 16 ? Int(parts[16].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
         let nVal = parts.count > 17 ? Int(parts[17].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
         let vtkPath = parts.count > 18 ? parts[18].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let dirLower = outputDirectory.lowercased()
+        let isTri = (activeConfig?.latticeSymmetry == .triangular)
+            || dirLower.contains("_tri_")
+            || dirLower.hasSuffix("_tri")
+            || dirLower.contains("tri_pot")
         return GBEnergyPoint(
             misorientationDeg: misori,
             halfAngleDeg: halfA,
@@ -880,7 +894,8 @@ public class ProcessRunner: ObservableObject {
             sigma: sig,
             m: mVal,
             n: nVal,
-            relaxedVTKPath: vtkPath
+            relaxedVTKPath: vtkPath,
+            isTriangular: isTri
         )
     }
     

@@ -242,7 +242,8 @@ public struct GBEnergyPoint: Identifiable, Equatable {
         sigma: Int? = nil,
         m: Int? = nil,
         n: Int? = nil,
-        relaxedVTKPath: String = ""
+        relaxedVTKPath: String = "",
+        isTriangular: Bool = false
     ) {
         self.misorientationDeg = misorientationDeg
         self.halfAngleDeg = halfAngleDeg
@@ -259,8 +260,12 @@ public struct GBEnergyPoint: Identifiable, Equatable {
         self.gbEnergyInterior = gbEnergyInterior
         self.normalGapA0 = normalGapA0
         self.seamDMinA0 = seamDMinA0
-        let match = CSLRationalizer.closestMatch(forHalfAngleDeg: max(0.5, halfAngleDeg), maxIndex: 18)
-        let isClose = abs(match.halfAngleDeg - halfAngleDeg) < 0.15
+        let match = CSLRationalizer.closestMatch(
+            forHalfAngleDeg: abs(halfAngleDeg),
+            maxIndex: 18,
+            isTriangular: isTriangular
+        )
+        let isClose = abs(match.halfAngleDeg - abs(halfAngleDeg)) < 0.15
         self.sigma = sigma ?? (isClose ? match.sigma : 0)
         self.m = m ?? (isClose ? match.m : 0)
         self.n = n ?? (isClose ? match.n : 0)
