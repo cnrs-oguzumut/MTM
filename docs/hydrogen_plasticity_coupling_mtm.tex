@@ -67,7 +67,7 @@
 
 \begin{abstract}
 \noindent
-Hydrogen embrittlement in crystalline metals arises from the multiscale interplay of discrete dislocation cores, grain-boundary disconnections, stress-driven interstitial diffusion, deep microstructural trapping, and bond decohesion. Neither molecular dynamics (restricted to nanosecond timescales where dislocations outrun diffusion) nor continuum crystal plasticity (which smears out discrete dislocation stress singularities and avalanche statistics) can resolve all of these ingredients simultaneously. This document formulates a thermodynamically consistent chemo-mechanical extension of the 2D Mesoscopic Tensorial Model (MTM) that couples $\mathrm{GL}(2,\Z)$-invariant finite-strain crystal plasticity and adaptive CGAL Delaunay remeshing with stress-assisted hydrogen transport and Oriani/McNabb--Foster trapping. We explain in detail: (i) how FEM dislocation energy minimization (preconditioned L-BFGS + Delaunay surgery) couples variationally to the hydrogen chemical potential and modifies the tangent Hessian soft modes; (ii) \emph{at which spatial FEM order} the hydrogen equations must be discretized ($P_1$ nodal / Voronoi control-volume FEM with $L^2$-projected hydrostatic stress and Scharfetter--Gummel edge stabilization) to overcome the $P_0$ stress-gradient paradox without breaking MTM's discrete lattice topology; (iii) why storing hydrogen per host atom at mesh nodes guarantees exact machine-precision mass conservation across arbitrary Delaunay edge-flip avalanches; and (iv) \emph{at which temporal and operator-splitting order} (L-stable BDF1 across avalanches, 2nd-order TR-BDF2 on elastic branches, quadratic Newton--CHOLMOD inner solves) the coupled equations should be integrated.
+Hydrogen embrittlement in crystalline metals arises from the multiscale interplay of discrete dislocation cores, grain-boundary disconnections, stress-driven interstitial diffusion, deep microstructural trapping, and bond decohesion. Neither molecular dynamics (restricted to nanosecond timescales where dislocations outrun diffusion) nor continuum crystal plasticity (which smears out discrete dislocation stress singularities and avalanche statistics) can resolve all of these ingredients simultaneously. This document formulates a thermodynamically consistent chemo-mechanical extension of the 2D Mesoscopic Tensorial Model (MTM) that couples $\mathrm{GL}(2,\Z)$-invariant finite-strain crystal plasticity and adaptive CGAL Delaunay remeshing with stress-driven hydrogen transport (the chemical potential follows from the same energy $W$ that governs plasticity, with an optional residual core-trapping term). We explain in detail: (i) how FEM dislocation energy minimization (preconditioned L-BFGS + Delaunay surgery) couples variationally to the hydrogen chemical potential and modifies the tangent Hessian soft modes; (ii) \emph{at which spatial FEM order} the hydrogen equations must be discretized ($P_1$ nodal / Voronoi control-volume FEM with $L^2$-projected hydrostatic stress and Scharfetter--Gummel / Bessemoulin-Chatard edge stabilization) to overcome the $P_0$ stress-gradient paradox without breaking MTM's discrete lattice topology; (iii) why storing hydrogen per host atom at mesh nodes guarantees exact machine-precision mass conservation across arbitrary Delaunay edge-flip avalanches; (iv) \emph{at which temporal and operator-splitting order} (L-stable BDF1 across avalanches, 2nd-order TR-BDF2 on elastic branches, quadratic Newton--CHOLMOD inner solves) the coupled equations should be integrated; and (v) the completed standalone Python MTM validation suite (\code{hydrogen\_proto/}) using the isotropic triangular Lennard-Jones~v3 potential (\code{lennard\_jones\_energy\_v3}) alongside Zanzotto $\mathrm{GL}(2,\Z)$ cross-checks across equilibrium Cottrell atmospheres (with Cai et al.\ Eshelby self-stress subtraction), Cottrell--Bilby $t^{2/3}$ kinetics and steric core saturation, 2D logarithmic Cottrell--Jaswon solute drag, Harper--Louat static strain ageing, and a verified C++ codebase audit.
 \end{abstract}
 
 \tableofcontents
@@ -167,10 +167,11 @@ defines the single governing dimensionless competition parameter between diffusi
 \end{equation}
 where $a_0$ is the reference lattice spacing. Varying $\Pi$ spans three physically distinct regimes within one unified model:
 \begin{enumerate}[nosep]
-  \item \textbf{Fast-loading / Undrained limit ($\Pi \ll 1$):} Dislocations nucleate and glide much faster than hydrogen can hop; hydrogen acts as a frozen random/segregated field during deformation.
-  \item \textbf{Dynamic strain-aging / Solute-drag regime ($\Pi \sim 1$):} Between avalanches, hydrogen diffuses into the tensile hydrostatic cores of arrested dislocations and grain-boundary disconnections, deepening their pinning wells and triggering jerky Portevin--Le Chatelier-like serrations and supercritical avalanche bursts upon unpinning.
-  \item \textbf{Slow-loading / Drained limit ($\Pi \gg 1$):} Hydrogen atmospheres co-migrate quasi-instantaneously with pre-instability soft modes and moving dislocations, shielding elastic pileups and promoting shear-band localization (\textbf{HELP}: Hydrogen-Enhanced Localized Plasticity) or grain-boundary opening (\textbf{HEDE}: Hydrogen-Enhanced Decohesion).
+  \item \textbf{Fast-loading / Undrained limit ($\Pi \ll 1$):} Dislocations nucleate and glide much faster than hydrogen can hop; hydrogen acts as a frozen field during deformation (dislocations tear away from their atmospheres).
+  \item \textbf{Dynamic strain-aging / Solute-drag regime ($\Pi \sim 1$):} Between avalanches, hydrogen diffuses into the tensile cores of arrested dislocations (Cottrell--Bilby atmosphere formation), and moving dislocations drag part of their atmosphere (Cottrell--Jaswon solute drag); this is the dynamic-strain-ageing / Portevin--Le Chatelier window. Quantitative classical benchmarks are given in Sec.~\ref{sec:validation}.
+  \item \textbf{Slow-loading / Drained limit ($\Pi \gg 1$):} Hydrogen stays in local equilibrium with the instantaneous stress field (equilibrium Cottrell atmosphere that follows the dislocation).
 \end{enumerate}
+\noindent\textbf{Important:} $\Pi$ only decides whether the hydrogen field is frozen, dragged, or in equilibrium. It does \emph{not} by itself select HELP or HEDE. Those are \emph{constitutive} effects of the local hydrogen content on the energy $W$ (shear-barrier change, cohesion change) and act in all three regimes; slow diffusion merely gives hydrogen the time to reach the cores where such effects are largest.
 
 % ============================================================================
 \section{Coupled Chemo-Mechanical Thermodynamics in MTM}
@@ -240,9 +241,21 @@ Notice two remarkable consequences of \eqref{eq:mtm_existing}:
     }
     \label{eq:w_mech_coupled}
   \end{equation}
-  with linear or saturating laws $s_{\text{HELP}}(\theta_L) = 1 - \alpha_{\text{HELP}}\theta_L$ and $K(\theta_{\text{tot}}) = K_0(1 - \alpha_{\text{HEDE}}\theta_{\text{tot}})$, where $\theta_{\text{tot}} = \theta_L + \frac{N_T}{N_L}\theta_T$. Setting $\alpha_{\text{HELP}} = \alpha_{\text{HEDE}} = 0$ retains pure first-principles elastic Cottrell-atmosphere coupling via $\eta_H$ alone!
+  with linear or saturating laws $s_{\text{HELP}}(\theta_L) = 1 - \alpha_{\text{HELP}}\theta_L$ and $K(\theta_{\text{tot}}) = K_0(1 - \alpha_{\text{HEDE}}\theta_{\text{tot}})$, where $\theta_{\text{tot}} = \theta_L + \frac{N_T}{N_L}\theta_T$. Setting $\alpha_{\text{HELP}} = \alpha_{\text{HEDE}} = 0$ is the \emph{baseline}: the only hydrogen input is the partial atomic area $\eta_H$ (an atomistic quantity), yet it already gives the elastic Cottrell atmosphere, swelling, and elastic shielding of dislocation interactions. The linear laws above are placeholders, \emph{not} free fit knobs: the clean route is to obtain $\beta(\theta_L)$ and $K(\theta_{\text{tot}})$ from the atomistic energy of the H-loaded lattice at fixed $\theta_L$ (i.e.\ tabulate $\Phi(\mathbf{C};\theta_L)$), so that HELP and HEDE come from data rather than ad hoc parameters. Hence the formalism is parameter-light compared to phase-field models.
 \end{enumerate}
 \end{keyidea}
+
+\paragraph{Atomistic Pair Potentials and the \code{EnergyFunctions.h} Volumetric Baseline.}
+MTM also supports short-range isotropic bond-sum potentials through \code{TriangularLatticeCalculator} (notably the isotropic triangular potential \code{lennard\_jones\_energy\_v3} with $r_{\text{cut}} = 1.8660254$ at \code{potential\_mode == 2} in \code{src/inter\_atomic.cpp}), which evaluate a pairwise sum $W_{\text{pair}}(\mathbf{C}_e)$ over crystal bond vectors without explicitly splitting $\Phi_{\text{dev}}(\bar{\mathbf{C}}_e) + \Phi_{\text{vol}}(\det\mathbf{C}_e)$. For any such potential, the multiplicative chemical decomposition $\mathbf{F}_e = \mathbf{F}_e^{\text{mech}}\,\mathbf{F}_c$ with $\mathbf{F}_c = J_H^{1/2}\mathbf{I}$ implies isotropic metric scaling:
+\begin{align}
+  W_{\text{mech}}^{\text{pair}}(\mathbf{C}_e, \theta_{L,e}, \theta_{T,e})
+  &= s_{\text{HELP}}(\theta_{L,e})\, K_{\text{scale}}(\theta_{\text{tot},e})\, W_{\text{pair}}\!\left(\frac{\mathbf{C}_e}{J_H(\theta_{L,e})}\right), \nonumber \\
+  \frac{\partial W_{\text{mech}}^{\text{pair}}}{\partial \mathbf{C}_e}
+  &= \frac{s_{\text{HELP}}(\theta_{L,e})\, K_{\text{scale}}(\theta_{\text{tot},e})}{J_H(\theta_{L,e})}
+    \left.\frac{\partial W_{\text{pair}}}{\partial \mathbf{C}}\right|_{\mathbf{C}_e/J_H(\theta_{L,e})},
+  \label{eq:pair_swelling}
+\end{align}
+and the element hydrostatic Cauchy stress is evaluated from the general virial relation $\sigma_{h,e} = \frac{1}{2J_e}\tr(\mathbf{P}_e\mathbf{F}_e\T)$, which equals Eq.~\eqref{eq:sigma_h} identically for Zanzotto's volumetric form. Notice also one implementation detail in \code{include/lattice\_energy/EnergyFunctions.h} (line~27): the existing code writes $-K[\ln(\det\mathbf{C}_e/b_0) - \det\mathbf{C}_e/b_0]$ without the $+1$ offset of \eqref{eq:mtm_existing}. That constant shift is harmless at fixed $K$, but restoring $+1$ is essential whenever HEDE ($\alpha_{\text{HEDE}} \neq 0$, varying $K(\theta_{\text{tot}})$) is enabled so $\partial W_{\text{mech}}/\partial\theta_L$ vanishes identically at stress-free equilibrium $\det\mathbf{C}_e = J_H^2$.
 
 \subsection{Total Helmholtz Free Energy, Stress, and Chemical Potential}
 
@@ -260,7 +273,7 @@ where $E_B \equiv \mu_L^0 - \mu_T^0 > 0$ is the trap binding energy ($E_B \appro
 Differentiating $\Psi$ with respect to $\mathbf{C}$ at fixed $(\theta_L, \theta_T)$ yields the Second Piola--Kirchhoff stress $\mathbf{S} = 2\,\partial \Psi / \partial \mathbf{C}$, the First Piola--Kirchhoff stress $\mathbf{P} = \mathbf{F}_e \mathbf{S}$, and the Cauchy stress $\boldsymbol{\sigma} = J_e^{-1}\mathbf{F}_e \mathbf{S} \mathbf{F}_e\T$. From \eqref{eq:w_mech_coupled}, the 2D hydrostatic Cauchy stress $\sigma_h \equiv \frac{1}{2}\tr\boldsymbol{\sigma}$ is exact and closed-form:
 \begin{equation}
   \sigma_{h,e} = \frac{1}{2}\tr\boldsymbol{\sigma}_e
-  = \frac{K(\theta_{\text{tot},e})}{J_e}\left(\frac{\det\mathbf{C}_e}{J_H^2(\theta_{L,e})} - 1\right).
+  = \frac{2K(\theta_{\text{tot},e})}{J_e}\left(\frac{\det\mathbf{C}_e}{J_H^2(\theta_{L,e})} - 1\right).
   \label{eq:sigma_h}
 \end{equation}
 Notice the sign: for tensile dilatation ($\det\mathbf{C}_e > J_H^2$), $\sigma_{h,e} > 0$.
@@ -271,12 +284,12 @@ Differentiating $\Psi$ with respect to $C_L = N_L \theta_L$ at fixed $(\mathbf{C
   = \mu_L^0 + k_B T \ln\!\left(\frac{\theta_L}{1 - \theta_L}\right)
     + \frac{1}{N_L}\frac{\partial W_{\text{mech}}}{\partial \theta_L} \nonumber\\
   &= \mu_L^0 + k_B T \ln\!\left(\frac{\theta_L}{1 - \theta_L}\right)
-    - \underbrace{\frac{2\eta_H}{N_L}\frac{K(\theta_{\text{tot}})}{J_H(\theta_L)}\left(\frac{\det\mathbf{C}}{J_H^2(\theta_L)} - 1\right)}_{\displaystyle \frac{2 J_e}{J_H}\Omega_H \sigma_h \;\approx\; 2\Omega_H^{\text{lin}}\sigma_h}
+    - \underbrace{\frac{2\eta_H}{N_L}\frac{K(\theta_{\text{tot}})}{J_H(\theta_L)}\left(\frac{\det\mathbf{C}}{J_H^2(\theta_L)} - 1\right)}_{\displaystyle \frac{J_e}{J_H}\Omega_H \sigma_h \;\approx\; \Omega_H\sigma_h}
     + \frac{s_{\text{HELP}}'(\theta_L)}{N_L}\Phi_{\text{dev}}(\bar{\mathbf{C}})
     + \frac{K'(\theta_{\text{tot}})}{N_L}\phi_{\text{vol}}.
   \label{eq:mu_exact}
 \end{align}
-In the standard small-swelling regime ($J_e / J_H \approx 1$, defining $\bar{\Omega}_H \equiv 2\eta_H / N_L = \partial J_H^2 / \partial C_L|_{0}$ so $W_{\text{vol}} \approx \frac{1}{2}\kappa_{\text{2D}}(\varepsilon_{\text{vol}} - C_L\bar{\Omega}_H)^2$), Eq.~\eqref{eq:mu_exact} reduces to the classical thermodynamically exact potential
+In the standard small-swelling regime ($J_e / J_H \approx 1$, with $\bar{\Omega}_H \equiv \Omega_H = \eta_H/N_L$ the partial atomic area, so $J_H = 1+\Omega_H C_L$), Eq.~\eqref{eq:mu_exact} reduces to the classical thermodynamically exact potential
 \begin{equation}
   \boxed{
   \mu_L = \mu_L^0 + k_B T \ln\!\left(\frac{\theta_L}{1 - \theta_L}\right)
@@ -288,7 +301,22 @@ In the standard small-swelling regime ($J_e / J_H \approx 1$, defining $\bar{\Om
 \end{equation}
 showing that hydrogen is thermodynamically driven \emph{both} into tensile hydrostatic cores ($\sigma_h > 0$) \emph{and} into high-shear-energy cores ($\Phi_{\text{dev}} > 0$) when $\alpha_{\text{HELP}} > 0$.
 
-\subsection{Oriani Equilibrium vs.\ McNabb--Foster Trapping Driven by MTM Plasticity}
+\begin{cautionbox}[Two-Way Coupling Subtlety: Subtracting Eshelby Solute Self-Stress]
+In two-way coupled runs where swelling $\mathbf{F}_c = J_H^{1/2}\mathbf{I}$ feeds back into atomic relaxation, a mesoscopic nodal field $\tilde{\sigma}_{h,i}^{\text{tot}}$ includes the \textbf{Eshelby eigenstrain self-stress} generated by the solute cloud's own expansion against the constrained lattice (Cai, Sills, Barnett, \& Nix, \emph{J.\ Mech.\ Phys.\ Solids} \textbf{66}, 154--171, 2014). Physically, a diffusing solute atom does not feel its own local dilatation singularity. On a 2D elastic sheet with bulk modulus $B_2 = \frac{1}{2}(C_{11}+C_{12})$, shear modulus $\mu = C_{66}$, and 2D Poisson ratio $\nu_{2\mathrm{D}} = C_{12}/C_{11}$, a locally uniform excess concentration $\eta_H(\theta_{L,i} - \theta_0)$ creates the compressive Eshelby inclusion self-stress
+\begin{equation}
+  \sigma_{h,i}^{\text{self}}(\theta_{L,i})
+  = -\frac{\mu B_2}{B_2 + \mu}\,\eta_H(\theta_{L,i} - \theta_0)
+  = -\frac{1}{2} B_2(1 - \nu_{2\mathrm{D}})\,\eta_H(\theta_{L,i} - \theta_0).
+  \label{eq:eshelby_self_2d}
+\end{equation}
+Using naive $\tilde{\sigma}_{h,i}^{\text{tot}}$ directly in $\mu_L$ double-counts this local image pressure and artificially depresses equilibrium core occupancy (by $-9.8\%$ in Benchmark~2, Sec.~\ref{sec:validation}); subtracting $\sigma_{h,i}^{\text{self}}$ so diffusion sees only $\tilde{\sigma}_{h,i}^{\text{ext}} = \tilde{\sigma}_{h,i}^{\text{tot}} - \sigma_{h,i}^{\text{self}}(\theta_{L,i})$ eliminates this artifact cleanly while preserving genuine non-local dislocation--solute shielding.
+\end{cautionbox}
+
+\subsection{Optional Residual Core Trapping (Oriani)}
+
+\begin{cautionbox}[Double-counting warning]
+In MTM the dislocation core is resolved by the nonlinear energy $W$ and the mesh, so most of the binding energy of hydrogen to a core is \emph{already} contained in $\mu_L$ through the stress/dilatation term. Adding a separate trap population $\theta_T$ with binding energy $E_B$ and densities $\kappa_b,\kappa_p$ would double-count the elastic part and introduces ad hoc parameters. The kinetic McNabb--Foster model is not needed here (diffusion is already resolved on the mesh). Keep this subsection only as an \emph{optional} correction for the genuinely non-elastic part of the core binding (to be fixed by atomistics), and set $\theta_T\equiv 0$ in the baseline.
+\end{cautionbox}
 
 In MTM, two endogenous defect fields are already available at every load step:
 \begin{enumerate}[nosep]
@@ -355,7 +383,7 @@ During the mechanical minimization \eqref{eq:mech_min}, $\theta_{L,e} = \frac{1}
     \mathbf{K}_{uu} = \left.\frac{\partial^2 \mathcal{E}_{\text{mech}}}{\partial \mathbf{x}^2}\right|_{\boldsymbol{\theta}_L}
     \label{eq:kuu_undrained}
   \end{equation}
-  is assembled by evaluating the existing \code{create\_d2phi\_components\_func} with the local element parameters $(s_{\text{HELP}}, \tilde{K}, J_H^2)$. Thus CHOLMOD preconditioning (\code{PreconditionedLBFGS}) retains its full $15\times$ speedup with zero structural change to the $2N \times 2N$ sparsity pattern.
+  is assembled by evaluating the existing Hessian-component factory \code{create\_\allowbreak d2phi\_\allowbreak components\_\allowbreak func} with the local element parameters $(s_{\text{HELP}}, \tilde{K}, J_H^2)$---and for atomistic bond-sum potentials, via scaled second metric derivatives $s_{\text{HELP}} K_{\text{scale}} J_H^{-2}\,\partial^2 W_{\text{pair}}/\partial\mathbf{C}^2|_{\mathbf{C}_e/J_H}$. Note that \code{Strain\_\allowbreak Energy\_\allowbreak LatticeCalculator.cpp} (lines~19--41) currently reads the global function pointers \code{phi\_func}, \code{dphi\_func}, \code{ddphi\_func}, and \code{ddphi\_\allowbreak components\_\allowbreak func} defined in \code{EnergyFunctions.h} (lines~228--231), so exposing stateless element-parameterized overloads is needed to preserve thread-safe \code{\#pragma omp parallel} assembly (\code{LatticeOptimizer.cpp}, lines~587--596). CHOLMOD preconditioning (\code{PreconditionedLBFGS}) then retains its full $15\times$ speedup with zero structural change to the $2N \times 2N$ sparsity pattern.
 \end{itemize}
 
 \subsection{Undrained vs.\ Drained Soft Modes (\texorpdfstring{$\lambda_{\min}$}{lambda\_min} Bifurcation Theory)}
@@ -420,7 +448,7 @@ In MTM, CGAL Delaunay surgery (\code{Remesher}) flips diagonals between existing
   \sum_{i=1}^{N} M_{H,i}^{\text{after flip}} \;\equiv\; \sum_{i=1}^{N} M_{H,i}^{\text{before flip}}
   \label{eq:mass_conservation_flip}
 \end{equation}
-to machine precision ($10^{-16}$) without any element-to-element geometric intersection or interpolation!
+to machine precision ($10^{-16}$) without any element-to-element geometric intersection or interpolation! A subtle geometric point must be watched when converting nodal inventory $M_{H,i}$ back to occupancy $\theta_{L,i}$: on any non-parallelogram quadrilateral, flipping its internal diagonal alters the incident barycentric element areas $\frac{1}{3}\sum_{e \ni i} A_{0,e}$ even while the host atoms $\mathbf{x}_i^{\text{frozen}}$ remain fixed. Because each bulk MTM vertex is a physical host atom owning fixed crystal area $\Omega_0$ (or, on general graded triangulations, a Voronoi dual cell area $V_i$ consistent with the cotangent matrix $\tau_{ij}$, which stays invariant across edge flips of co-circular quads), pairing $M_{H,i}$ with fixed host-atom weights $\Omega_0$ (or Voronoi $V_i$) preserves \emph{both} total hydrogen inventory $\sum_i M_{H,i}$ and uniform baseline occupancy $\theta_{L,i} \equiv \theta_0$ across arbitrary Delaunay avalanches.
 
 \subsection{Resolving the \texorpdfstring{$P_1$}{P1} Stress-Gradient Paradox via Lumped \texorpdfstring{$L^2$}{L2} Recovery}
 
@@ -478,16 +506,16 @@ where for dilute-to-moderate lattice occupancy ($\theta_L \ll 1$, standard in BC
     \Biggr],
   \label{eq:fd_log_mean}
 \end{equation}
-with logarithmic-mean mobility $M_{ij}^{\text{log}}(u, v)$ chosen so that $F_{ij}^{\text{FD}} \equiv 0$ \emph{if and only if} $\ln\frac{\theta_{L,i}}{1-\theta_{L,i}} + \psi_i = \ln\frac{\theta_{L,j}}{1-\theta_{L,j}} + \psi_j$:
+with logarithmic-mean mobility $M_{ij}^{\text{log}}(u, v)$ chosen so that $F_{ij}^{\text{FD}} \equiv 0$ \emph{if and only if} $\ln\frac{\theta_{L,i}}{1-\theta_{L,i}} + \psi_i = \ln\frac{\theta_{L,j}}{1-\theta_{L,j}} + \psi_j$. Letting $m = \frac{1}{2}(u + v)$, $u_{\min} = \min(u, v)$, and $u_{\max} = \max(u, v)$, a smooth, scale-invariant diagonal branch prevents premature switching when $u, v \ll 10^{-10}$ in strongly compressed cores:
 \begin{equation}
   M_{ij}^{\text{log}}(u, v) =
   \begin{cases}
-    u(1-u), & |u - v| < 10^{-10}, \\[4pt]
+    m(1-m)\!\left[1 - \dfrac{1 - 3m(1-m)}{12}\left(\dfrac{u - v}{m(1-m)}\right)^2\right], & |u - v| < 10^{-5}\, u_{\min}(1 - u_{\max}), \\[8pt]
     \dfrac{u - v}{\ln\!\left(\dfrac{u(1-v)}{v(1-u)}\right)}, & \text{otherwise.}
   \end{cases}
   \label{eq:log_mean_mobility}
 \end{equation}
-Look at \eqref{eq:fd_log_mean}--\eqref{eq:log_mean_mobility}: it is symmetric, smooth, second-order accurate ($O(a_0^2)$), vanishes as $u,v \to 0^+$ or $1^-$ (guaranteeing $0 < \theta_{L,i} < 1$ strictly!), and reproduces the \textbf{exact discrete Fermi--Dirac Cottrell atmosphere} $\frac{\theta_{L,i}}{1-\theta_{L,i}} = \frac{\theta_0}{1-\theta_0}e^{-\psi_i}$ with zero parasitic currents!
+Look at \eqref{eq:fd_log_mean}--\eqref{eq:log_mean_mobility}: the relative threshold ensures exact second-order continuity even across $10^{-20} \le \theta_L \le 10^{-10}$ in deep compressive zones (where an unscaled cutoff $|u-v| < 10^{-10}$ would falsely jump to $u(1-u)$ for $u/v \gg 1$), it is symmetric and strictly guarantees $0 < \theta_{L,i} < 1$, and it reproduces the \textbf{exact discrete Fermi--Dirac Cottrell atmosphere} $\frac{\theta_{L,i}}{1-\theta_{L,i}} = \frac{\theta_0}{1-\theta_0}e^{-\psi_i}$ with zero parasitic currents!
 
 % ============================================================================
 \section{Execution Order, Temporal Order, and Nonlinear Newton--CHOLMOD Solver}
@@ -525,7 +553,7 @@ Notice Step~3's local conservation detail: when an avalanche increases $z_{T,i}^
 
 \subsection{Temporal Integration Order: Why L-Stability Matters Across Avalanches}
 
-Let $A_i = \frac{1}{3}\sum_{e \ni i} A_{0,e}$ be the lumped nodal reference area ($N_L A_i = z_L A_i / \Omega_0$). Semi-discretizing \eqref{eq:h_conservation} gives the stiff nonlinear ODE system
+Let $A_i$ denote the nodal reference area ($A_i \approx \Omega_0$ per bulk host atom on uniform lattices, $\frac{1}{3}\sum_{e \ni i} A_{0,e}$ on static triangulations, or Voronoi dual area $V_i$ across remeshing; $N_L A_i = z_L A_i / \Omega_0$). Semi-discretizing \eqref{eq:h_conservation} gives the stiff nonlinear ODE system
 \begin{equation}
   \frac{A_i}{\Omega_0}\frac{d M_{H,i}(\theta_{L,i})}{dt} + \sum_{j \in \mathcal{N}(i)} F_{ij}^{\text{FD}}(\boldsymbol{\theta}_L) = 0,
   \qquad i = 1, \dots, N.
@@ -550,7 +578,7 @@ Which temporal order should integrate \eqref{eq:ode_system}?
 
 \subsection{Quadratic Newton--Raphson Inner Loop with Sparse Factorization}
 
-At each implicit diffusion step, solve $\mathbf{R}(\boldsymbol{\theta}_L) = \mathbf{0}$ in \eqref{eq:bdf1_residual} via damped Newton--Raphson ($\boldsymbol{\theta}_L^{(k+1)} = \boldsymbol{\theta}_L^{(k)} + \omega \Delta\boldsymbol{\theta}_L$, clamping line-search $\omega \in (0,1]$ so $\theta_{L,i}^{(k+1)} \in [10^{-15}, 1 - 10^{-12}]$). From \eqref{eq:ceff} and \eqref{eq:fd_log_mean}, the exact $N \times N$ sparse Jacobian $\mathbf{J} = \partial \mathbf{R} / \partial \boldsymbol{\theta}_L$ has entries
+At each implicit diffusion step, solve $\mathbf{R}(\boldsymbol{\theta}_L) = \mathbf{0}$ in \eqref{eq:bdf1_residual} via damped Newton--Raphson ($\boldsymbol{\theta}_L^{(k+1)} = \boldsymbol{\theta}_L^{(k)} + \omega \Delta\boldsymbol{\theta}_L$, clamping line-search $\omega \in (0,1]$ so $\theta_{L,i}^{(k+1)} \in [10^{-60}, 1 - 10^{-12}]$). Notice why the lower floor must be $10^{-60}$ rather than $10^{-15}$: at strong couplings or low temperatures (e.g.\ $r_c = 40\,a_0$ in Benchmark~3, where compressive core bias reaches $\psi_{\max} \approx +31.2$), equilibrium depletion above the extra half-plane drives $\theta_L \approx 3 \times 10^{-18} \ll 10^{-15}$, so a higher floor triggers spurious clamping ($\omega \to 10^{-6}$) and stalls convergence. From \eqref{eq:ceff} and \eqref{eq:fd_log_mean}, the exact $N \times N$ sparse Jacobian $\mathbf{J} = \partial \mathbf{R} / \partial \boldsymbol{\theta}_L$ has entries
 \begin{align}
   J_{ii} &= \frac{A_i}{\Omega_0}\left(z_L + z_{T,i}\frac{d\theta_T}{d\theta_L}\Big|_i\right)
            + \Delta t \sum_{j \in \mathcal{N}(i)} D_H N_L \tau_{ij}
@@ -568,29 +596,221 @@ Note a key linear-algebra detail:
 \end{itemize}
 
 % ============================================================================
-\section{Codebase Integration Map}
-\label{sec:code_map}
+\section{Validation Against Classical Solute--Dislocation Theory}
+\label{sec:validation}
 % ============================================================================
 
-Table~\ref{tab:codebase} summarizes how each mathematical component maps cleanly onto the existing MTM C++ architecture without breaking backward compatibility when hydrogen is disabled ($\theta_L \equiv 0$).
+To validate the coupled chemo-mechanical formalism end-to-end without modifying any production MTM C++ source files, we built a self-contained Python MTM prototype (\code{hydrogen\_proto/}) reproducing every ingredient of Sections~\ref{sec:visual_guide}--\ref{sec:temporal_order} and executed all four classical solute--dislocation benchmarks (``Tasks~1--4'') alongside a literature formula and C++ codebase audit (``Task~5''). Throughout all baseline benchmarks ($\alpha_{\text{HELP}} = \alpha_{\text{HEDE}} = 0$, $\theta_T \equiv 0$), zero ad hoc fitting parameters are introduced beyond the physical inputs $(\eta_H, D_H, T)$.
+
+\subsection{Standalone Python MTM Prototype Architecture (\code{hydrogen\_proto/})}
+\label{subsec:proto_arch}
+
+The prototype mirrors the C++ pipeline across five self-contained modules inside \code{hydrogen\_proto/}:
+\begin{enumerate}[nosep]
+  \item \textbf{Lattice Potentials (\code{mtm\_potentials.py}):} Implements exact analytical energies $W(\mathbf{C}_e)$ and metric gradients $\partial W/\partial\mathbf{C}_e$ for (a) the isotropic triangular short-range potential \code{lennard\_jones\_energy\_v3} (\code{potential\_mode == 2} in \code{src/inter\_atomic.cpp}, $r_{\text{cut}} = \frac{\sqrt{3}+2}{2} \approx 1.86602540378444$) summed over the equilibrium crystal neighbor shell using MTM's strain-metric scaling \eqref{eq:pair_swelling}, and (b) Zanzotto's $\mathrm{GL}(2,\Z)$-invariant polynomial + logarithmic volumetric energy \code{EnergyFunctions.h} with element-wise \code{burgers} $= J_H^2(\theta_{L,e})$ for direct analytical cross-checks. Computing the unstrained ground-state lattice parameter $a_0$ and exact second elastic moduli around $\mathbf{C}_e = \mathbf{I}$ establishes the reference properties:
+  \begin{itemize}[nosep]
+    \item \code{LJ\_V3\_Triangular} (primary potential): $a_0 = b = 0.996407$, $\Omega_0 = \frac{\sqrt{3}}{2}a_0^2 = 0.859814$, $C_{11} = 37.2120$, $C_{12} = C_{66} = 12.4040$, 2D bulk modulus $B_2 = \frac{1}{2}(C_{11}+C_{12}) = 24.8080$, 2D Poisson ratio $\nu_{2\mathrm{D}} = C_{12}/C_{11} = 1/3$ ($0.333333$), and Zener anisotropy $A_Z = 2C_{66}/(C_{11}-C_{12}) = 1.000000$ (strictly isotropic, obeying Cauchy's 2D central-force relation $C_{11} = 3C_{12}$).
+    \item \code{Zanzotto\_GL2Z} ($\beta = -0.25$ / $\beta = 4.0$, $K = 5.0$, triangular reference $a_0 = 1$): $B_2 = 20.000002 = 4K$, $A_Z = 1.000000$.
+  \end{itemize}
+  \item \textbf{Dislocation Mesh, L-BFGS, Delaunay Flips \& Macro-Stress Zeroing (\code{mtm\_\allowbreak mesh\_\allowbreak relax.py}):} Generates Peierls-centered (\code{shift\_b = 0.5}) 2D triangular meshes seeded by the isotropic Volterra edge-dislocation displacement field on an active free disk of radius $R_{\text{free}}$ surrounded by an annular clamped Dirichlet sleeve. Alternating L-BFGS minimization (\code{g\_tol} $\sim 10^{-5}$) and topological Lawson Delaunay edge flips (maintaining strictly non-negative active cotangent conductances) relax each dislocation core, followed by \textbf{macroscopic box-strain relaxation} ($\bar{\boldsymbol{\sigma}}_{\text{cyl}} \to \mathbf{0}$, matching \code{dislocation\_\allowbreak study.cpp} Step~2) to eliminate the spurious negative hydrostatic image pressure caused by nonlinear anharmonic core expansion inside a rigidly clamped outer ring. For $54 \times 60$ ($3{,}240$ nodes, $1{,}750$ active nodes, $6{,}311$ triangles, $R_{\text{free}} = 22\,a_0$), relaxation reduces total elastic energy from $E_{\text{vol}} = 7.0675$ to $E_{\text{rel}} = 5.5745$ and clears the clamped image hydrostatic stress from $-8.93 \times 10^{-3}$ to $2.06 \times 10^{-5}$ inside the active disk around a compact $5$--$7$ disclination dipole at $(x_c, y_c) = (27.1536, 25.4406)$.
+  \item \textbf{Stress Recovery \& Diffusion Solver (\code{hydrogen\_solver.py}):} Evaluates element PK1 stress $\mathbf{P}_e = 2\mathbf{F}_e\mathbf{m}_e(\partial W/\partial\mathbf{C}_{\text{red}})\mathbf{m}_e\T$ (under Lagrange reduction $\mathbf{m}_e \in \mathrm{GL}(2,\Z)$), general virial hydrostatic stress $\sigma_{h,e} = \frac{1}{2J_e}\tr(\mathbf{P}_e\mathbf{F}_e\T)$, reference-area-weighted lumped $L^2$ nodal projection \eqref{eq:l2_stress_recovery}, Voronoi cotangent weights $\tau_{ij}$ \eqref{eq:cotangent} in current deformed coordinates, and damped Newton--BiCGSTAB implicit BDF1 solves with either exact Bessemoulin-Chatard Fermi--Dirac logarithmic-mean mobility \eqref{eq:log_mean_mobility} (relative diagonal switch and Newton box floor $10^{-60}$) or Scharfetter--Gummel Bernoulli fluxes \eqref{eq:sg_flux}.
+  \item \textbf{Benchmark Runner \& Vector Publication Figures (\code{run\_all\_benchmarks.py}, \code{make\_figures.py}):} Executes Tasks~1--4 reproducibly, archives all quantitative profiles in \code{hydrogen\_proto/results/*.csv} and \code{summary\_metrics.json}, and generates standalone PGFPlots/TikZ PDF figures.
+\end{enumerate}
+
+\subsection{Corrections to Classical 2D Solute--Dislocation Literature Formulas}
+\label{subsec:lit_corrections}
+
+Checking the analytical formulas cited in the earlier draft of this document against the governing MTM kinematics and original derivations revealed four necessary corrections:
+\begin{enumerate}[nosep]
+  \item \textbf{2D Poisson ratio ($\nu_{2\mathrm{D}}$ vs.\ $\nu_{3\mathrm{D}}$) and bulk modulus ($B_2$ vs.\ $4K$):}
+  From the 2D Volterra edge-dislocation displacement field $u_1 = \frac{b}{2\pi}\bigl[\theta + \frac{(1+\nu)xy}{2r^2}\bigr]$, $u_2 = -\frac{b}{2\pi}\bigl[\frac{1-\nu}{4}\ln r^2 + \frac{(1+\nu)(x^2-y^2)}{4r^2}\bigr]$ used in \code{src/dislocation\_utils.cpp}, the areal dilatation is $\nabla\cdot\mathbf{u} = -\frac{b(1-\nu_{2\mathrm{D}})}{2\pi}\frac{\sin\phi}{r}$, so $\sigma_h = B_2\nabla\cdot\mathbf{u}$ and the elastic interaction energy is
+  \begin{equation}
+    U(r,\phi) = -\Omega_H\sigma_h = A\,\frac{\sin\phi}{r}, \qquad
+    A = \frac{\Omega_H B_2\, b\,(1 - \nu_{2\mathrm{D}})}{2\pi}, \qquad
+    B_2 = \frac{C_{11}+C_{12}}{2}, \qquad
+    \nu_{2\mathrm{D}} = \frac{C_{12}}{C_{11}}.
+    \label{eq:cottrell_U}
+  \end{equation}
+  Here $\nu$ \emph{must} be the strictly 2D Poisson ratio $\nu_{2\mathrm{D}} = C_{12}/C_{11}$ ($1/3$ for Cauchy triangular crystals, matching \code{dislocation\_utils.cpp} line~27), \emph{not} the 3D plane-strain ratio $\nu_{3\mathrm{D}} = C_{12}/(C_{11}+C_{12})$ ($1/4$ logged erroneously in \code{dislocation\_study.cpp} line~1109), nor does $B_2 = 4K$ hold outside Zanzotto's volumetric split ($B_2 = 24.8080$ for \code{lennard\_jones\_energy\_v3} vs.\ $4K_{\text{def}} = 20.0$). Note for reference the classical 3D Cottrell--Bilby / Hirth--Lothe form $A_{3\mathrm{D}} = \frac{\mu b \Delta v}{3\pi}\frac{1+\nu_{3\mathrm{D}}}{1-\nu_{3\mathrm{D}}}$, which differs in prefactor because 3D hydrostatic pressure averages three diagonal stresses ($\frac{1}{3}\tr\boldsymbol{\sigma}_{3\mathrm{D}}$) rather than two.
+  \item \textbf{Fermi--Dirac vs.\ Boltzmann equilibrium and Eshelby self-stress:}
+  At moderate or low $T$, Boltzmann enrichment $c/c_0 = \exp(-U/k_B T)$ exceeds unphysical unity near $r < r_c \equiv A/(k_B T)$, whereas Eq.~\eqref{eq:mu_canonical} yields bounded Fermi--Dirac equilibrium $\frac{\theta}{1-\theta} = \frac{\theta_0}{1-\theta_0}e^{-U/k_B T}$. In two-way coupled runs, the Cai et al.\ Eshelby self-stress correction \eqref{eq:eshelby_self_2d} must be subtracted so the H cloud does not artificially repel itself.
+  \item \textbf{Cottrell--Bilby $t^{2/3}$ sink capture vs.\ conservative core saturation:}
+  For an idealized absorbing zero-concentration line sink at $r = 0$, pure 2D $1/r$ drift gives
+  \begin{equation}
+    N_{\text{CB}}(t) = 3\left(\frac{\pi}{2}\right)^{1/3} c_0 \left(\frac{A D_H t}{k_B T}\right)^{2/3}
+    \label{eq:cottrell_bilby}
+  \end{equation}
+  with exact prefactor $3(\pi/2)^{1/3} \approx 3.487$. Without an artificial external sink, MTM's conservative lattice transport naturally captures both early-time $t^{2/3}$ inflow and smooth Harper / Bullough--Newman core saturation bounded below $\theta_L < 1$ via steric $(1-\theta_L)$ exclusion---with zero McNabb--Foster trap populations.
+  \item \textbf{2D Cottrell--Jaswon solute drag logarithmic divergence (major correction):}
+  Writing a velocity-independent prefactor $\kappa = O(1)$ in $F_{\mathrm{drag}}(v) \simeq \kappa\, c_0 \frac{A^2}{D_H k_B T} v$ ($v \ll v^* = D_H k_B T/A$) \textbf{breaks down asymptotically in 2D}. Because the $1/r$ hydrostatic field decays slowly in two dimensions, long-range modes down to the Oseen wake wavenumber $k \sim v / (2D_H)$ (cut off by outer radius $R$) diverge logarithmically in linear response. Evaluating the exact 2D Fourier integral of Fuentes-Samaniego, Gasca-Neri, \& Hirth (1984) and Sills \& Cai (2016) with Gaussian core width $r_0$ gives
+  \begin{equation}
+    F_{\mathrm{drag}}^{2\mathrm{D}}(v)
+    = \frac{\pi c_0 A^2 v}{D_H k_B T}\int_{k_{\min}}^{k_{\max}} \frac{dk}{k}\,
+      \frac{e^{-k^2 r_0^2}}{\bigl[1 + \sqrt{1 + (v / D_H k)^2}\bigr]^2}
+    \;\underset{v \to 0}{\propto}\;
+    c_0\frac{A^2}{D_H k_B T}\,v\,\ln\!\left(\frac{\min(2D_H/v,\, R)}{r_0}\right),
+    \label{eq:cj_drag}
+  \end{equation}
+  where $k_{\min} = 2.4048/R$. Moreover, the drag maximum velocity $v_{\text{peak}}$ is \emph{not} universally equal to $v^* = D_H k_B T/A$, but shifts with the ratio $r_c/r_0$ (from $v_{\text{peak}} = 0.25\,v^*$ at $r_c = 0.25\,a_0$ to $4.0\,v^*$ at $r_c = 4.0\,a_0$ in Benchmark~4A). Meanwhile, the static strain ageing unpinning saturation law $\Delta\tau(t_w) = \Delta\tau_{\mathrm{sat}}\bigl[1 - \exp(-(t_w/t_0)^{2/3})\bigr]$ (Harper / Louat / McCormick) holds cleanly once pinning saturation includes Fermi--Dirac core occupancy limits.
+\end{enumerate}
+
+\subsection{Benchmark 1: Swelling Verification \& Relaxed Edge Dislocation Core Stress}
+\label{subsec:bench_task1}
+
+Passing $b_0 = J_H^2(\theta_{L,e})$ ($\eta_H = 0.08$, $\theta_L \in [0, 0.20]$) into Zanzotto's volumetric law at $\mathbf{F}_e = \mathbf{I}$ reproduces the analytical swelling formulas of Section~\ref{sec:visual_guide} ($\mathbf{P}_e = -2K(1 - 1/b_0)\mathbf{I}$ and $\sigma_{h,e} = 2K(1/b_0 - 1)$) to machine precision ($\max|\mathbf{P} - \mathbf{P}_{\text{ex}}| = 4.50 \times 10^{-15}$, $\max|\sigma_h - \sigma_{h,\text{ex}}| = 4.44 \times 10^{-15}$). For the isotropic triangular pair potential \code{LJ\_V3} on a $14 \times 16$ strained crystal under metric scaling \eqref{eq:pair_swelling}, centered finite differences verify chemo-mechanical work-conjugacy $\partial\mathcal{E}_{\text{mech}}/\partial\theta_{L,i}$ to $2.27 \times 10^{-6}$ relative error; spatially uniform $\theta_L \equiv 0.05$ produces vanishing interior nodal forces ($\|\mathbf{f}_{\text{int}}\|_\infty = 7.56 \times 10^{-11}$), whereas a central Gaussian H cloud generates outward swelling forces ($\|\mathbf{f}_{\text{int}}\|_\infty = 0.02258$) that relax cleanly under L-BFGS.
+
+\begin{figure}[ht!]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_task1_dislocation_sigma_h.pdf}
+\caption{\textbf{Benchmark 1: Relaxed MTM edge dislocation core and hydrostatic stress field (\code{LJ\_V3\_Triangular}, $54 \times 60$, $R_{\text{free}} = 22\,a_0$, $\eta_H = 0.08$).} \textbf{(a)} Deformed core triangulation colored by $\sigma_{h,e}/B_2$, resolving the relaxed $5$--$7$ disclination dipole ($Z=7$ at $\Delta y = -0.465\,a_0$, $Z=5$ at $+0.465\,a_0$) after L-BFGS, Delaunay flips, and macro-stress zeroing ($E_{\text{vol}} = 7.0675 \to E_{\text{rel}} = 5.5745$). \textbf{(b)} Radial decay of $|\tilde{\sigma}_h/\sin\phi|/B_2$ along steep compressive ($y > y_c$) and tensile ($y < y_c$) sectors versus the 2D Volterra $(1-\nu_{2\mathrm{D}})/(2\pi r/a_0)$ law ($\nu_{2\mathrm{D}} = 1/3$): far-field MTM matches continuum Volterra to $2.69\%$ median error ($r \in [5, 14]\,a_0$), while nonlinear core regularization caps tension at $+1.014$ vs.\ compression at $-2.052$ for $r \lesssim 3.5\,a_0$.}
+\label{fig:task1}
+\end{figure}
+
+Figure~\ref{fig:task1} shows the relaxed \code{LJ\_V3} $54 \times 60$ edge dislocation. Across the far field $r \in [5, 14]\,a_0$, lumped $L^2$-projected nodal stress $\tilde{\sigma}_{h,i}$ matches the exact 2D Volterra field \eqref{eq:cottrell_U} with only \textbf{$2.69\%$ median relative error} (a $36\times 40$ \code{Zanzotto\_GL2Z} cross-check at $\beta=4.0, K=5.0$ likewise confirms $13.37\%$ far-field median agreement on a smaller $R_{\text{free}} = 14\,a_0$ disk). Inside the discrete core ($r < 3.5\,a_0$), anharmonic tension--compression asymmetry breaks $1/r$ anti-symmetry: tensile opening beneath $Z=7$ softens and caps at $\tilde{\sigma}_h^{\max} = +1.0141$ ($0.0409\,B_2$), whereas atomic crowding atop the extra half-plane ($Z=5$) stiffens to $\tilde{\sigma}_h^{\min} = -2.0516$ ($-0.0827\,B_2$).
+
+\subsection{Benchmark 2: Equilibrium Cottrell Atmosphere, Core Cutoff \& Two-Way Self-Stress}
+\label{subsec:bench_task2}
+
+Holding the relaxed $54 \times 60$ core fixed with $\eta_H = 0.08$ ($\Omega_H = 0.068785$, $N_L = 1/\Omega_0 = 1.16304$), Eq.~\eqref{eq:cottrell_U} gives $A = 0.180406$; setting $r_c \equiv A/(k_B T) = 6.0\,a_0$ ($k_B T = 0.030176$) places a strong Cottrell atmosphere squarely inside the active mesh whose minimum deformed cotangent conductance is strictly positive ($\min \tau_{ij} = 0.13068 > 0$). Figures~\ref{fig:task2} and~\ref{fig:task2_map} summarize all steady-state tests:
+\begin{itemize}[nosep]
+  \item \textbf{Operator Exactness \& Far-Field Verification:} With matched outer potential boundary conditions, the steady Bessemoulin-Chatard Fermi--Dirac (FD) solver reproduces exact nodal equilibrium $\frac{\theta}{1-\theta} = \frac{\theta_0}{1-\theta_0}e^{\Omega_H\tilde{\sigma}_{h,i}/k_B T}$ to machine precision ($3.34 \times 10^{-17}$). Relative to outer-ring continuum Volterra boundary values, maximum interior error from harmonic image shift is $1.77 \times 10^{-4}$ at $\theta_0 = 10^{-3}$ ($\theta_{\max} = 0.009823$) and $3.25 \times 10^{-3}$ (FD) / $5.10 \times 10^{-3}$ (SG) at $\theta_0 = 0.03$. Outside $r \ge 3.5\,a_0$, MTM coincides cleanly with analytical 2D Volterra FD (Figure~\ref{fig:task2}a).
+  \item \textbf{Core Cutoff vs.\ Continuum Singularities:} At $\theta_0 = 0.03$, dilute Boltzmann blows up $> 1$ and even singular Volterra FD reaches $\theta_{\text{Vol}}(r\approx 0.5\,a_0) = 0.99992$, whereas finite nonlinear MTM tensile stress limits peak lattice occupancy to \textbf{$\theta_{\max} = 0.23460$} (a $76.5\%$ reduction in peak occupancy driven purely by nonlinear core relaxation).
+  \item \textbf{Two-Way Coupling \& Cai et al.\ Eshelby Subtraction ($\theta_0 = 0.03$):} Running $4$ staggered L-BFGS + steady diffusion passes using naive total stress $\tilde{\sigma}_{h}^{\text{tot}}$ creates artificial Eshelby self-repulsion, depressing the peak by \textbf{$-9.8\%$} to $\theta_{\max} = 0.21165$ (tensile excess $\Delta N_{r\le 5a_0} = 2.7199$ vs.\ one-way $2.9991$). Subtracting the 2D Eshelby self-stress \eqref{eq:eshelby_self_2d} removes this artifact cleanly and predicts genuine non-local chemo-elastic core-expansion attraction: \textbf{$\theta_{\max} = 0.26894$} ($\Delta N_{r\le 5a_0} = 3.1698$, Figure~\ref{fig:task2}b).
+  \item \textbf{2D Spatial Cloud \& Lattice Expansion Map:} Figure~\ref{fig:task2_map} reveals the 2D triangulation of the converged two-way Cottrell cloud around the $5$--$7$ core ($0$ Delaunay flips relative to the H-free dislocation, core center shifting subtly to $(27.1536, 25.4605)$). Element occupancy spans $\theta_{L,e} \in [5.87 \times 10^{-4}, 0.24622]$ (nodal min $2.35 \times 10^{-4}$ in the compressive core above $Z=5$, nodal peak $0.26894$ below $Z=7$), expanding local triangles underneath the core by up to \textbf{$+1.10\%$} ($\Delta A_e / A_e^{\text{bare}}$) while slightly compressing dilated-depletion zones above the slip plane down to $-0.28\%$.
+\end{itemize}
+
+\begin{figure}[ht!]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_task2_cottrell_equilibrium.pdf}
+\caption{\textbf{Benchmark 2: Equilibrium Cottrell atmosphere at $r_c = 6\,a_0$ (\code{LJ\_V3\_Triangular}).} \textbf{(a)} Radial tensile occupancy $\theta_L(r)$ at $\theta_0 = 10^{-3}$ and $0.03$: outside $r \ge 3.5\,a_0$, MTM matches 2D Volterra FD; inside the core, finite MTM peak tensile stress caps one-way $\theta_{\max} = 0.23460$, whereas singular Volterra Boltzmann blows up $> 1$ and Volterra FD hits $0.99992$. \textbf{(b)} Two-way chemo-mechanical comparison ($\theta_0 = 0.03$, $4$ staggered iterations): naive total stress suffers $-9.8\%$ Eshelby self-repulsion ($\theta_{\max} = 0.21165$), whereas Cai et al.\ self-stress subtraction \eqref{eq:eshelby_self_2d} removes self-repulsion and yields elastic shielding enhancement ($\theta_{\max} = 0.26894$, $\Delta N = 3.1698$).}
+\label{fig:task2}
+\end{figure}
+
+\begin{figure}[ht!]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_task2_cottrell_2d_map.pdf}
+\caption{\textbf{Benchmark 2: 2D spatial Cottrell cloud and chemo-elastic core swelling around the relaxed $5$--$7$ dislocation ($\theta_0 = 0.03$, Eshelby-corrected two-way equilibrium).} \textbf{(a)} Element-averaged hydrogen occupancy $\theta_{L,e} = \frac{1}{3}(\theta_{L,i_1}+\theta_{L,i_2}+\theta_{L,i_3})$ showing depleted zone above the slip plane ($\min \theta_{L,e} = 5.87 \times 10^{-4}$) and concentrated pocket beneath the $Z=7$ vertex (nodal peak $\theta_{L,\max} = 0.26894$). \textbf{(b)} Relative triangle area expansion $\Delta A_e / A_e^{\text{bare}}$ driven by passing $b_0 = J_H^2(\theta_{L,e})$ into the unchanged MTM force solver ($0$ flips, peak local area swelling $+1.10\%$, compression $-0.28\%$).}
+\label{fig:task2_map}
+\end{figure}
+
+\subsection{Benchmark 3: Cottrell--Bilby \texorpdfstring{$t^{2/3}$}{t\^(2/3)} Kinetics vs.\ Conservative Core Saturation}
+\label{subsec:bench_task3}
+
+Increasing the drift-to-diffusion strength to $r_c = 40\,a_0$ ($k_B T = 4.5264 \times 10^{-3}$, $D_H = 1.0$) cleanly separates the core scale from $R_{\text{free}} = 22\,a_0$ so that the Cottrell--Bilby drift length $L_{\text{drift}}(t) = (A D_H t / k_B T)^{1/3}$ passes through an asymptotic intermediate window $r_{\text{sink}} \ll L_{\text{drift}} \ll R_{\text{free}}$. Figure~\ref{fig:task3} tests both sink-absorbing and fully conservative core kinetics:
+\begin{itemize}[nosep]
+  \item \textbf{Task 3A --- Absorbing Core Sink ($r_{\text{sink}} = 1.5\,a_0$, $10$ sink nodes, $\theta_0 = 10^{-4}$, SG fluxes):} Note that forcing an artificial $\theta_{\text{sink}} \to 0$ Dirichlet core creates a spurious $1/|\ln\theta_{\text{sink}}|$ resistance in $M_{ij}^{\text{log}}$, whereas standard Scharfetter--Gummel edge drift fluxes \eqref{eq:sg_flux} capture pure radial drift cleanly. After the initial radial diffusive transient ($L_{\text{drift}} \lesssim 3\,a_0$), total absorbed hydrogen enters the Cottrell--Bilby drift window $L_{\text{drift}} \in [6.0, 10.5]\,a_0$ with log--log exponent \textbf{$0.7517$} (approaching exact $2/3 = 0.6667$) and zero-fit prefactor ratio \textbf{$N_{\text{sink}}(t)/N_{\text{CB}}(t) = 0.9649$} against Eq.~\eqref{eq:cottrell_bilby}.
+  \item \textbf{Task 3B --- Conservative MTM Core Without Sinks or Trap Populations ($t \in [10^{-3}, 80]$):} In this extreme regime, equilibrium depletion above the slip plane reaches $\theta_L \approx 3 \times 10^{-18}$; lowering the Newton clamp to $10^{-60}$ and applying scale-invariant mobility \eqref{eq:log_mean_mobility} eliminates compressive-core stalling completely across all $76$ geometric BDF1 steps. With no external sink and zero McNabb--Foster traps ($\theta_T \equiv 0$), the tensile core excess $\Delta N_{\text{core}}(t)$ at dilute $\theta_0 = 10^{-4}$ follows $N_{\text{CB}}(t)$ closely up to $\Delta N_{\text{core}}(80) = 0.09374$ ($\theta_{\max} = 0.03988$, vs.\ $N_{\text{CB}} = 0.08786$), while at concentrated bulk $\theta_0 = 0.02$ steric $(1-\theta_L)$ exclusion smoothly caps peak occupancy at \textbf{$\theta_{\max} = 0.99859 < 1$} and bends cumulative capture below unbounded $N_{\text{CB}}(80) = 17.573$ to \textbf{$\Delta N_{\text{core}}(80) = 15.774$}.
+\end{itemize}
+
+\begin{figure}[ht!]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_task3_cottrell_bilby.pdf}
+\caption{\textbf{Benchmark 3: Cottrell--Bilby $t^{2/3}$ capture kinetics at $r_c = 40\,a_0$ ($k_B T = 4.526 \times 10^{-3}$, $D_H = 1.0$).} \textbf{(a)} Absorbing core sink ($r_{\text{sink}} = 1.5\,a_0$, $10$ sink nodes, SG edge fluxes) matching exact $N_{\text{CB}}(t) = 3(\pi/2)^{1/3} c_0 (A D_H t / k_B T)^{2/3}$ in the asymptotic window $L_{\text{drift}} \in [6.0, 10.5]\,a_0$ with zero-fit amplitude ratio $0.9649$ and slope $0.7517$. \textbf{(b)} Conservative Bessemoulin-Chatard MTM core kinetics without sinks or McNabb--Foster traps ($\theta_T \equiv 0$): dilute $\theta_0 = 10^{-4}$ tracks $t^{2/3}$ capture, whereas concentrated $\theta_0 = 0.02$ naturally exhibits Fermi--Dirac core saturation ($\theta_{\max} = 0.99859 < 1$, $\Delta N_{\text{core}}(80) = 15.774 < 17.573$).}
+\label{fig:task3}
+\end{figure}
+
+\subsection{Benchmark 4: 2D Solute Drag Spectrum \& Static Strain Ageing Unpinning}
+\label{subsec:bench_task4}
+
+Figure~\ref{fig:task4} validates both dynamic solute drag during steady glide (Task~4A) and static pinning buildup during arrest (Task~4B):
+\begin{itemize}[nosep]
+  \item \textbf{Task 4A --- 2D Solute Drag Spectrum ($42 \times 46$, $R_{\text{free}} = 17\,a_0$, $\theta_0 = 10^{-3}$):}
+  In the dislocation's co-moving steady frame ($v \mathbf{e}_x$ advection discretized via Voronoi cotangent upwind + Bessemoulin-Chatard diffusion), two independent drag measures agree quantitatively across all velocities: the direct integrated Peach--Koehler interaction force $F_{\text{PK}} = -\int (\theta_L - \theta_0)N_L \partial_x U\,dA_0$ and the exact entropy dissipation identity $F_{\text{dissip}} = \frac{k_B T}{v}\sum_{(i,j)} D_H N_L \tau_{ij} M_{ij}^{\text{log}}(\Delta\hat{\mu}_{ij})^2$. With outer Dirichlet ring matched to zero-velocity equilibrium (eliminating parasitic $1/v$ drift), the MTM drag spectrum quantitatively validates the corrected 2D Fourier integral \eqref{eq:cj_drag} (evaluated with effective core cutoff $r_{0,\text{eff}} = 1.05\,a_0$, $R = 17\,a_0$):
+  \begin{itemize}[nosep]
+    \item Weak coupling ($r_c = 0.25\,a_0$, $v^* = 4.0144$): MTM peaks at $2.176 \times 10^{-5}$ ($v/v^* = 0.25$), matching 2D linear theory $1.969 \times 10^{-5}$ ($0.25\,v^*$).
+    \item Moderate coupling ($r_c = 1.0\,a_0$, $v^* = 1.0036$): MTM peaks at $8.045 \times 10^{-5}$ ($1.4\,v^*$) vs.\ 2D linear integral $7.872 \times 10^{-5}$ ($0.9\,v^*$). Crucially, four independent \textbf{discrete staggered time-marching Burgers-hop BDF1} runs ($32$ consecutive $1\,b$ glide hops at dwell interval $\Delta t_{\text{hop}} = b/v$, orange diamonds in Figure~\ref{fig:task4}a) yield $F_{\text{PK}} = 2.534\times 10^{-5}$ ($0.12\,v^*$), $6.754\times 10^{-5}$ ($0.50\,v^*$), $7.960\times 10^{-5}$ ($1.30\,v^*$), and $6.567\times 10^{-5}$ ($3.50\,v^*$), falling cleanly on top of the co-moving MTM branch!
+    \item Strong core ($r_c = 4.0\,a_0$, $v^* = 0.2509$): Fermi--Dirac steric crowding caps the nonlinear MTM drag peak at $2.527 \times 10^{-4}$ (vs.\ linear response $3.150 \times 10^{-4}$, both peaking at $v/v^* = 4.0$).
+  \end{itemize}
+  \item \textbf{Task 4B --- Static Strain Ageing Unpinning ($36 \times 40$, $R_{\text{free}} = 13.5\,a_0$, $\theta_0 = 0.015$, $r_c = 10\,a_0$):}
+  Starting from an arrested relaxed dislocation held at zero shear for waiting times $t_w \in [0, 20]$ (plus steady-state $t_w \to \infty$), frozen-$M_H$ simple-shear loading with $6$-step binary-search refinement resolves the critical avalanche unpinning shear strain to $\pm 4.7 \times 10^{-6}$. Bare H-free crystal unpins at nominal Peierls stress $\tau_P^0 = C_{66}\gamma_P^0 = 0.072118$ ($\gamma_P^0 = 0.005814$); unaged uniform H ($t_w = 0$) slightly lowers the barrier to $\tau_c(0) = 0.071071$ due to uniform lattice swelling; as H segregates toward the core, critical unpinning stress increases monotonically through $\tau_c(1.3) = 0.074327$ and $\tau_c(20.0) = 0.083281$ ($+16.9\%\,\tau_P^0$) to the fully aged saturation stress $\tau_c(\infty) = 0.093863$ ($\Delta\tau_{\mathrm{sat}} = 0.022792$, \textbf{$+31.6\%$ of $\tau_P^0$}). Fitting $\Delta\tau(t_w) = \Delta\tau_{\mathrm{sat}}\bigl[1 - \exp(-(t_w/t_0)^{2/3})\bigr]$ yields \textbf{$t_0 = 26.45\,a_0^2/D_H$} (Figure~\ref{fig:task4}b).
+\end{itemize}
+
+\begin{figure}[ht!]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_task4_solute_drag_ageing.pdf}
+\caption{\textbf{Benchmark 4: 2D solute drag spectrum and static strain ageing unpinning (\code{LJ\_V3\_Triangular}).} \textbf{(a)} Steady co-moving MTM solute drag $F_{\text{PK}}(v)$ across three coupling strengths ($r_c/a_0 = 0.25, 1.0, 4.0$, $\theta_0 = 10^{-3}$) versus exact 2D Fourier integral curves \eqref{eq:cj_drag}, naive constant-$\kappa$ asymptote, and $4$ discrete staggered time-marching $1\,b$ Burgers-hop BDF1 points at $r_c = 1.0\,a_0$ ($v/v^* = 0.12, 0.50, 1.30, 3.50$). \textbf{(b)} Normalized static unpinning stress increment $\Delta\tau_{\text{unpin}}(t_w)/\tau_P^0$ vs.\ $(D_H t_w/a_0^2)^{2/3}$ ($\theta_0 = 0.015$, $r_c = 10\,a_0$, $\tau_P^0 = 0.072118$): monotonic hardening to $\Delta\tau_{\mathrm{sat}}/\tau_P^0 = +31.6\%$ with Harper--Louat relaxation time $t_0 = 26.45\,a_0^2/D_H$.}
+\label{fig:task4}
+\end{figure}
+
+Table~\ref{tab:validation_summary} summarizes the corrected classical laws, benchmark configurations, and verified quantitative results replacing the earlier unexecuted proposal.
 
 \begin{table}[ht!]
 \centering
 \small
 \renewcommand{\arraystretch}{1.22}
-\begin{tabular}{@{}p{4.1cm}p{5.3cm}p{5.8cm}@{}}
+\begin{tabular}{@{} >{\raggedright\arraybackslash}p{3.1cm} >{\raggedright\arraybackslash}p{5.2cm} >{\raggedright\arraybackslash}p{6.5cm} @{}}
 \toprule
-\textbf{MTM Module / File} & \textbf{Added State / Parameter} & \textbf{Role in Coupled Algorithm} \\
+\textbf{Classical Result} & \textbf{Verified / Corrected Law} & \textbf{MTM Benchmark Quantitative Outcome} \\
 \midrule
-\code{Point2D.h} & \code{double theta\_L}, \code{theta\_T}, \code{M\_H} & Conserved nodal H state ($P_1$ DOFs); invariant across Delaunay flips. \\
-\code{ElementTriangle2D.h} & \code{double theta\_L\_elem}, \code{theta\_tot\_elem} & Element averages $\frac{1}{3}\sum_{a=1}^3 \theta_{i_a}$; exposes \code{cumulative\_plastic\_slip} $\gamma_p$. \\
-\code{EnergyFunctions.h} & Per-element $b_0 = J_H^2(\theta_L)$, $s_{\text{HELP}}$, $K(\theta_{\text{tot}})$ & Evaluates $W_{\text{mech}}$, $\partial W_{\text{mech}}/\partial\mathbf{C}$, and $\partial^2 W_{\text{mech}}/\partial\mathbf{C}^2$ in \eqref{eq:w_mech_coupled}. \\
-\code{FEMHessianAssembler.h} & Reads element $(s_{\text{HELP}}, \tilde{K}, J_H^2)$ & Assembles exact $2N\times 2N$ $\mathbf{K}_{uu}$ (and optional $\mathbf{K}_{\text{drained}}$ Schur complement). \\
-\code{HydrogenSolver.h/.cpp} \emph{(new)} & $\eta_H$, $D_H$, $\dot{\alpha}$, $T$, $E_B$, $\alpha_{\text{HELP}}$, $\alpha_{\text{HEDE}}$ & Lumped $L^2$ $\tilde{\sigma}_{h,i}$ projection \eqref{eq:l2_stress_recovery}, cotangent $\tau_{ij}$ \eqref{eq:cotangent}, BDF1/TR-BDF2 + CHOLMOD solve. \\
-\code{triangulation\_to\_vtk.h} & \code{POINT\_DATA} scalars $\theta_L$, $\theta_T$, $C_{\text{tot}}$, $\tilde{\sigma}_h$ & Visualizes Cottrell atmospheres, GB segregation, and soft-mode quiver arrows in \code{Lattice Launcher}. \\
+Chemo-elastic swelling & $\mathbf{P}_e(\mathbf{I}) = -2K(1 - 1/b_0)\mathbf{I}$ (Zanzotto), $\mathbf{C}_{\text{mech}} = J_H^{-1}\mathbf{C}_e$ (\code{LJ\_V3}) & Machine-exact ($4.5\times 10^{-15}$); work-conjugacy $2.27\times 10^{-6}$; uniform $\theta_L$ interior force $7.56\times 10^{-11}$ vs.\ gradient $0.0226$. \\
+\addlinespace[2pt]
+Edge core $\tilde{\sigma}_h$ & Eq.~\eqref{eq:cottrell_U} with $\nu_{2\mathrm{D}} = C_{12}/C_{11} = 1/3$, $B_2 = \frac{1}{2}(C_{11}+C_{12})$ & Far-field ($5\text{--}14\,a_0$) median error \textbf{$2.69\%$}; core caps at $+1.014$ (tensile) / $-2.052$ (compressive) for $r < 3.5\,a_0$. \\
+\addlinespace[2pt]
+Equilibrium Cottrell & Fermi--Dirac $\frac{\theta}{1-\theta} = \frac{\theta_0}{1-\theta_0}e^{\Omega_H \tilde{\sigma}_h/k_BT}$ $+$ Eshelby self-stress subtraction \eqref{eq:eshelby_self_2d} & Discrete FD exactness $3.3\times 10^{-17}$; core caps 1-way $\theta_{\max} = 0.2346$ vs.\ Volterra $0.9999$; 2-way naive $-9.8\%$ self-repulsion fixed to $\theta_{\max} = 0.2689$ ($+1.10\%$ swelling, $0$ flips). \\
+\addlinespace[2pt]
+Cottrell--Bilby kinetics & Eq.~\eqref{eq:cottrell_bilby}, $t^{2/3}$ sink capture vs.\ conservative FD core saturation & Sink ($r_{\text{sink}} = 1.5\,a_0$): slope $0.7517$, $N_{\text{sink}}/N_{\text{CB}} = 0.9649$ (zero fit); conservative ($\theta_0=0.02$): $\theta_{\max}=0.99859 < 1$ without traps. \\
+\addlinespace[2pt]
+2D Cottrell--Jaswon drag & Eq.~\eqref{eq:cj_drag}, $\propto v\ln(\min(2D_H/v,R)/r_0)$, $v_{\text{peak}}(r_c/r_0)$ & $F_{\text{PK}} = F_{\text{dissip}}$ matches 2D Fourier integral across $r_c/a_0 = 0.25, 1.0, 4.0$ and $4$ staggered Burgers-hop runs. \\
+\addlinespace[2pt]
+Static strain ageing & $\Delta\tau(t_w) = \Delta\tau_{\mathrm{sat}}\bigl[1 - \exp(-(t_w/t_0)^{2/3})\bigr]$ & Unpinning rises from $\tau_c(0)=0.07107$ to $\tau_c(\infty)=0.09386$ ($+31.6\%\,\tau_P^0$), best-fit $t_0 = 26.45\,a_0^2/D_H$. \\
 \bottomrule
 \end{tabular}
-\caption{Direct mapping of the coupled hydrogen--plasticity formulation into the MTM C++ repository.}
+\caption{Summary of completed MTM prototype validation benchmarks (\code{LJ\_V3\_Triangular} + \code{Zanzotto\_GL2Z}).}
+\label{tab:validation_summary}
+\end{table}
+
+% ============================================================================
+\section{Codebase Audit and C++ Integration Roadmap}
+\label{sec:code_map}
+% ============================================================================
+
+\textbf{Repository Constraint Notice:} All prototype benchmarks in Sec.~\ref{sec:validation} were executed strictly outside MTM's C++ sources; \emph{zero} existing C++ headers or implementation files were modified. Below we summarize both the six concrete discrepancies verified between the current C++ repository and the design equations, and the exact file-by-file C++ integration plan.
+
+\subsection{Verified Discrepancies Between Existing C++ Sources and Design Equations}
+\label{subsec:cpp_discrepancies}
+
+\begin{enumerate}[nosep]
+  \item \textbf{Missing $+1$ volumetric baseline in \code{EnergyFunctions.h}:} \code{include/\allowbreak lattice\_\allowbreak energy/\allowbreak EnergyFunctions.h} (line~27) evaluates \code{-K*(log(detC/burgers)\allowbreak -detC/burgers)} without the $+1$ offset of Eq.~\eqref{eq:mtm_existing}. Leaving $+1$ out shifts $\Phi$ by $+K$ and would inject a spurious $-\partial K/\partial\theta$ term into $\mu_L$ under spatial HEDE softening.
+  \item \textbf{Stateful global potential pointers blocking OpenMP per-element swelling:} Although \code{EnergyFunctions.h} provides factory lambdas including \code{create\_\allowbreak d2phi\_\allowbreak components\_\allowbreak func} (line~87), lines~228--231 instantiate mutable global callables \code{phi\_func}, \code{dphi\_func}, \code{ddphi\_func}, and \code{ddphi\_\allowbreak components\_\allowbreak func} bound to globals \code{current\_beta}, \code{current\_K}, and \code{current\_burgers}. \code{src/\allowbreak Strain\_\allowbreak Energy\_\allowbreak LatticeCalculator.cpp} (lines~19--41) calls those globals directly instead of reading per-element $(b_0, s_{\text{HELP}}, K_{\text{scale}})$, preventing thread-safe \code{\#pragma omp parallel} element-varying swelling inside \code{src/\allowbreak optimization/\allowbreak LatticeOptimizer.cpp} (lines~587--596). Likewise, \code{Triangular\allowbreak LatticeCalculator.h} and \code{Square\allowbreak LatticeCalculator.h} have no element-parameterized overloads yet for bond-sum scaling \eqref{eq:pair_swelling}.
+  \item \textbf{2D vs.\ 3D Poisson ratio logging \& $B_2 \neq 4K$ for pair potentials:} \code{src/\allowbreak dislocation\_\allowbreak utils.cpp} (line~27) correctly sets the 2D Poisson ratio \code{p.poisson\_ratio = c12 / c11} ($1/3$), matching Eq.~\eqref{eq:cottrell_U}. However, \code{src/\allowbreak experiments/\allowbreak dislocation\_\allowbreak study.cpp} (line~1109, \code{potential\_mode == 3}) logs \code{ec.C12 / (ec.C11 + ec.C12)} ($1/4$, 3D plane strain). Additionally, $B_2 = 4K$ applies only to Zanzotto's volumetric form; \code{lennard\_\allowbreak jones\_\allowbreak energy\_\allowbreak v3} (\code{potential\_mode == 2}) requires computing $B_2 = \frac{1}{2}(C_{11}+C_{12})$ directly from elastic constants.
+  \item \textbf{General virial $\sigma_{h,e}$ and unweighted vs.\ area-weighted nodal stress averaging:} Eq.~\eqref{eq:sigma_h} is closed-form only for Zanzotto's logarithmic penalty; bond-sum pair potentials require computing $\sigma_{h,e} = \frac{1}{2J_e}\tr(\mathbf{P}_e\mathbf{F}_e\T)$ from element $\mathbf{P}_e$ and $\mathbf{F}_e$. Furthermore, \code{src/\allowbreak experiments/\allowbreak dislocation\_\allowbreak study.cpp} (lines~420--442) divides summed triangle Cauchy stresses by integer \code{node\_count} rather than using the triangle-area-weighted lumped $L^2$ projection \eqref{eq:l2_stress_recovery} needed for conservative diffusion parity.
+  \item \textbf{Barycentric vs.\ Voronoi/host-atom areas across Delaunay flips and $(J_e/J_H)$ factor:} Replacing $\frac{1}{3}\sum_{e\ni i}A_{0,e}$ with fixed atomic area $\Omega_0$ per bulk node (or Voronoi dual cell area $V_i$) ensures that remeshing non-parallelogram quads preserves both $\sum_i M_{H,i}$ and uniform $\theta_{L,i}$. In large-swelling regimes, Eq.~\eqref{eq:mu_exact}'s $(J_e/J_H)$ multiplier on $\Omega_H\sigma_h$ must be retained alongside Eshelby self-stress subtraction \eqref{eq:eshelby_self_2d}.
+  \item \textbf{Mobility diagonal threshold \& Newton clamp floors:} As documented in Sections~\ref{sec:spatial_order}--\ref{sec:temporal_order}, C++ diffusion must implement the relative diagonal mobility check $|u - v| < 10^{-5}u_{\min}(1 - u_{\max})$ in \eqref{eq:log_mean_mobility} and lower the Newton positivity clamp from $10^{-15}$ to $10^{-60}$ to handle deeply depleted cold dislocation cores ($r_c \ge 40\,a_0$).
+\end{enumerate}
+
+\subsection{File-by-File C++ Integration Plan}
+\label{subsec:cpp_plan}
+
+Table~\ref{tab:codebase} summarizes how each mathematical component maps cleanly onto the existing MTM C++ repository while keeping pure mechanical runs ($\theta_L \equiv 0$) bit-for-bit backward compatible.
+
+\begin{table}[ht!]
+\centering
+\small
+\renewcommand{\arraystretch}{1.22}
+\begin{tabular}{@{} >{\raggedright\arraybackslash}p{4.4cm} >{\raggedright\arraybackslash}p{4.8cm} >{\raggedright\arraybackslash}p{6.0cm} @{}}
+\toprule
+\textbf{MTM File(s)} & \textbf{Planned State / API Change} & \textbf{Role in Coupled C++ Solver} \\
+\midrule
+\code{include/geometry/\allowbreak Point2D.h} & \code{double theta\_L}, \code{theta\_L\_prev}, \code{theta\_T}, \code{M\_H}, \code{sigma\_h\_node}, \code{mu\_L\_node} (default $0$) & Conserved nodal $P_1$ H inventory ($M_{H,i} = z_L \theta_{L,i}$); strictly invariant across Delaunay flips. \\
+\addlinespace[2pt]
+\code{ElementTriangle2D.h/.cpp} & Cache \code{theta\_L\_elem}, \code{b0\_elem}, \code{sigma\_h\_elem}; expose $\gamma_p$ & Computes $\frac{1}{3}\sum_{a=1}^3 \theta_{L,i_a}$ and virial $\sigma_{h,e} = \frac{1}{2J_e}\tr(\mathbf{P}_e\mathbf{F}_e\T)$. \\
+\addlinespace[2pt]
+\code{EnergyFunctions.h} & Restore $+1$ in \code{create\_phi\_func} (line~27); stateless overloads & Evaluates $W_{\text{mech}}, \partial W_{\text{mech}}/\partial\mathbf{C}, \partial^2 W_{\text{mech}}/\partial\mathbf{C}^2$ thread-safely without mutating globals. \\
+\addlinespace[2pt]
+\code{Triangular-}, \code{Square-}, \code{Strain\_Energy\_\allowbreak LatticeCalculator} & Overloads accepting element $(J_H, s_{\text{HELP}}, K_{\text{scale}})$ & Applies $\mathbf{C}_{\text{mech}} = J_H^{-1}\mathbf{C}_{\text{red}}$ (and $J_H^{-1}, J_H^{-2}$ chain-rule factors) for pair potentials, or per-element $b_0 = J_H^2$ for $\mathrm{GL}(2,\Z)$. \\
+\addlinespace[2pt]
+\code{LatticeOptimizer.h/.cpp}, \code{FEMHessianAssembler.h} & Forward element $(J_H, s_{\text{HELP}}, K_{\text{scale}})$ inside OpenMP loops; store $\sigma_{h,e}$ & Preserves CHOLMOD L-BFGS preconditioning and $2N \times 2N$ sparsity; enables $\mathbf{K}_{\text{drained}}$ Schur inspection. \\
+\addlinespace[2pt]
+\code{include/mesh/\allowbreak Remesher.h/.cpp} & Preserve nodal $(\theta_L, M_H)$ across CGAL flips \& vertex reindexing & Enforces exact mass conservation \eqref{eq:mass_conservation_flip} and refreshes element averages on flipped triangles. \\
+\addlinespace[2pt]
+\code{HydrogenSolver.h/.cpp} \emph{(new)} & $\eta_H, D_H, \dot{\alpha}, T, E_B, \alpha_{\text{HELP}}, \alpha_{\text{HEDE}}$; \code{SparseCholesky} / Eigen & Area-weighted lumped $L^2$ $\tilde{\sigma}_{h,i}$ (with Eshelby subtraction \eqref{eq:eshelby_self_2d}), $\tau_{ij}$, relative $M_{ij}^{\text{log}}$, BDF1/TR-BDF2 ($[10^{-60}, 1-10^{-12}]$). \\
+\addlinespace[2pt]
+\code{dislocation\_study.cpp} & Alternating driver; area-weighted $\tilde{\sigma}_{h,i}$; unify 2D $\nu = C_{12}/C_{11}$ & Orchestrates frozen-$\theta$ L-BFGS+Remesh $\to$ \code{HydrogenSolver} $\to$ swelling polish; fixes lines~420--442 and line~1109. \\
+\addlinespace[2pt]
+\code{triangulation\_\allowbreak to\_vtk.h/.cpp}, \code{configuration\_\allowbreak saver.cpp} & \code{POINT\_DATA} scalars ($\theta_L, \theta_T, \tilde{\sigma}_h, \mu_L$) & Streams Cottrell clouds, core swelling, and restart fields for ParaView / \code{Lattice Launcher}. \\
+\bottomrule
+\end{tabular}
+\caption{Verified file-by-file C++ integration blueprint (not yet applied to repository C++ files).}
 \label{tab:codebase}
 \end{table}
 
