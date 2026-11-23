@@ -569,6 +569,8 @@ public struct MicrostructureConfigModel: Codable, Equatable {
     public var theta2_deg: Double = +15.0
     public var gb_normal_gap_a0: Double = 0.0
     public var gb_tangential_shift_a0: Double = 0.0
+    public var auto_scan_gb_shift: Bool = false
+    public var gb_shift_scan_steps: Int = 9
     
     // Voronoi Polycrystal parameters
     public var num_grains: Int = 6
@@ -608,6 +610,8 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         case theta2_deg
         case gb_normal_gap_a0
         case gb_tangential_shift_a0
+        case auto_scan_gb_shift
+        case gb_shift_scan_steps
         case num_grains
         case random_seed
         case theta_min_deg
@@ -648,6 +652,8 @@ public struct MicrostructureConfigModel: Codable, Equatable {
         self.theta2_deg = try c.decodeIfPresent(Double.self, forKey: .theta2_deg) ?? +15.0
         self.gb_normal_gap_a0 = try c.decodeIfPresent(Double.self, forKey: .gb_normal_gap_a0) ?? 0.0
         self.gb_tangential_shift_a0 = try c.decodeIfPresent(Double.self, forKey: .gb_tangential_shift_a0) ?? 0.0
+        self.auto_scan_gb_shift = try c.decodeIfPresent(Bool.self, forKey: .auto_scan_gb_shift) ?? false
+        self.gb_shift_scan_steps = try c.decodeIfPresent(Int.self, forKey: .gb_shift_scan_steps) ?? 9
         self.num_grains = try c.decodeIfPresent(Int.self, forKey: .num_grains) ?? 6
         self.random_seed = try c.decodeIfPresent(Int.self, forKey: .random_seed) ?? 42
         self.theta_min_deg = try c.decodeIfPresent(Double.self, forKey: .theta_min_deg) ?? -30.0

@@ -204,6 +204,8 @@ struct MicrostructureConfig {
     double theta2_deg = +15.0;  // Grain 2 orientation (degrees)
     double gb_normal_gap_a0 = 0.0;       // Normal separation δ_⊥ between Grain 1 and Grain 2 (in units of a_0)
     double gb_tangential_shift_a0 = 0.0; // Relative tangential shift δ_∥ along GB plane (in units of a_0)
+    bool auto_scan_gb_shift = false;     // Stage 1: automatically scan δ_∥ and pick minimum γ_GB(Interior)
+    int gb_shift_scan_steps = 9;         // Number of candidate δ_∥ trial shifts when auto_scan_gb_shift is enabled
 
     // 2D Voronoi Polycrystal parameters (Method C)
     int num_grains = 6;
@@ -426,6 +428,9 @@ struct MacroscopicGeometryConfig {
 
     // Build Stage 1 (alpha = 0) relaxation boundary rules (GB-Frame Roller for Bicrystals)
     std::vector<BoundaryZoneRule> buildStage1RelaxationRules() const;
+
+    // Candidate tangential shifts δ_∥ (in units of a_0) for Stage-1 global GB energy minimization
+    std::vector<double> computeTangentialShiftCandidates(const std::string& lattice_type) const;
 
     // Build Stage 2 (alpha > 0) loading boundary rules from loading_bc_preset (or keep studio rules)
     std::vector<BoundaryZoneRule> buildStage2LoadingRules(const std::string& fallback_affine_mode = "simple_shear_x") const;

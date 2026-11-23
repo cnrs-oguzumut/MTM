@@ -864,6 +864,306 @@ void example_1_conti_zanzotto_loading(
   }
   double element_area = elements.empty() ? ref_setup.element_area : elements[0].getReferenceArea();
 
+  struct GBEnergyMetrics {
+    double L_gb_a0 = 1.0;
+    double L_int_a0 = 1.0;
+    double total_excess = 0.0;
+    double interior_excess = 0.0;
+    double gamma_gb_total = 0.0;
+    double gamma_gb_interior = 0.0;
+  };
+  auto compute_gb_energy_metrics = [&](const MacroscopicGeometryConfig &geom_ref,
+                                       const std::vector<Point2D> &pts_ref,
+                                       std::vector<ElementTriangle2D> &elems_ref,
+                                       const std::vector<size_t> &act_elems_ref,
+                                       const Eigen::Matrix2d &F_mat,
+                                       double total_post_energy) -> GBEnergyMetrics {
+    GBEnergyMetrics m;
+    if (pts_ref.empty()) return m;
+    const double a0_gb = (optimal_lattice_parameter > 1e-8) ? optimal_lattice_parameter : 1.0;
+    const double phi_rad = geom_ref.microstructure.gb_angle_deg * M_PI / 180.0;
+    const Eigen::Vector2d t_gb(-std::sin(phi_rad), std::cos(phi_rad));
+    const Eigen::Vector2d p_gb(
+        geom_ref.x_min + geom_ref.microstructure.gb_cx * geom_ref.Lx,
+        geom_ref.y_min + geom_ref.microstructure.gb_cy * geom_ref.Ly);
+
+    double s_min = 1e30, s_max = -1e30;
+    for (const auto &pt : pts_ref) {
+      const double s = (pt.coord - p_gb).dot(t_gb);
+      s_min = std::min(s_min, s);
+      s_max = std::max(s_max, s);
+    }
+    const double L_gb_phys = std::max(a0_gb, s_max - s_min);
+    m.L_gb_a0 = L_gb_phys / a0_gb;
+    const double collar_phys = std::min(4.0 * a0_gb, 0.15 * L_gb_phys);
+    m.L_int_a0 = std::max(a0_gb, L_gb_phys - 2.0 * collar_phys) / a0_gb;
+
+    double interior_energy = 0.0;
+    double interior_ref_area = 0.0;
+    double total_ref_area = 0.0;
+    const double norm_area = ref_setup.calc->getUnitCellArea();
+    for (size_t elem_idx : act_elems_ref) {
+      if (elem_idx < elems_ref.size() && elems_ref[elem_idx].isInitialized())
+        total_ref_area += elems_ref[elem_idx].getReferenceArea();
+    }
+    for (size_t elem_idx : act_elems_ref) {
+      if (elem_idx >= elems_ref.size()) continue;
+      auto &el = elems_ref[elem_idx];
+      if (!el.isInitialized()) continue;
+      const Eigen::Vector2d c_el =
+          (pts_ref[el.getNodeIndex(0)].coord +
+           pts_ref[el.getNodeIndex(1)].coord +
+           pts_ref[el.getNodeIndex(2)].coord) / 3.0;
+      const double s_c = (c_el - p_gb).dot(t_gb);
+      if (s_c >= s_min + collar_phys && s_c <= s_max - collar_phys) {
+        el.setExternalDeformation(F_mat);
+        el.calculate_deformation_gradient(pts_ref);
+        const Eigen::Matrix2d F_el = el.getDeformationGradient();
+        const Eigen::Matrix2d C_el = F_el.transpose() * F_el;
+        const auto red = reduce_metric(C_el);
+        const double e_el = ref_setup.calc->calculate_energy(
+                                red.C_reduced, potential_func, ref_setup.zero) /
+                            norm_area;
+        interior_energy += e_el * el.getReferenceArea();
+        interior_ref_area += el.getReferenceArea();
+      }
+    }
+
+    const double bulk_density = ref_setup.reference_excess / norm_area;
+    m.total_excess = total_post_energy - bulk_density * total_ref_area;
+    m.interior_excess = interior_energy - bulk_density * interior_ref_area;
+    m.gamma_gb_total = m.total_excess / m.L_gb_a0;
+    m.gamma_gb_interior = m.interior_excess / m.L_int_a0;
+    return m;
+  };
+
+  // ==================== OPTIONAL STAGE-1 AUTOMATIC TANGENTIAL SHIFT SCAN (δ_∥) ====================
+  // Mirrors Coffman & Sethna (2008) γ-surface minimization along the GB plane: tests candidate
+  // parallel shifts δ_∥ at α = 0, relaxes each (with remeshing if enabled), and selects the
+  // configuration with minimum γ_GB(Interior) so Stage 1 avoids mirror-locked metastable basins.
+  bool stage1_pre_relaxed_by_shift_scan = false;
+  int stage1_scan_has_changes = 0;
+  int stage1_scan_remesh_iters = 0;
+  if (stage1_pre_relax_active && !is_periodic_micro && restart_chk == nullptr &&
+      macro_geom.microstructure.mode == MicrostructureMode::Bicrystal &&
+      macro_geom.microstructure.auto_scan_gb_shift) {
+    const std::vector<double> shift_candidates =
+        macro_geom.computeTangentialShiftCandidates(lattice_type);
+    if (shift_candidates.size() > 1) {
+      std::cout << "\n[GB Shift Scan] Scanning " << shift_candidates.size()
+                << " tangential shifts δ_∥ (in a0) at α = 0 to minimize γ_GB(Interior)..."
+                << std::endl;
+      struct ShiftScanRow {
+        double shift_a0 = 0.0;
+        GBEnergyMetrics metrics;
+        size_t n_atoms = 0;
+        size_t n_active = 0;
+      };
+      std::vector<ShiftScanRow> scan_rows;
+      scan_rows.reserve(shift_candidates.size());
+
+      bool has_best = false;
+      size_t best_idx = 0;
+      double best_gamma_int = 1e30;
+      double baseline_gamma_int = 0.0;
+      bool has_baseline = false;
+
+      MacroscopicGeometryConfig best_geom = macro_geom;
+      std::vector<Point2D> best_pts, best_pts_ref;
+      DomainDimensions best_dims(0.0, 0.0);
+      std::vector<int> best_orig_map;
+      std::vector<std::tuple<double, double>> best_trans_map;
+      std::vector<std::pair<int, int>> best_int_map, best_full_map;
+      std::vector<int> best_bc_role, best_base_bc_role;
+      std::vector<Eigen::Vector2d> best_bc_vel;
+      std::vector<ElementTriangle2D> best_elems;
+      std::vector<size_t> best_act_elems;
+      double best_elem_area = element_area;
+      int best_has_changes = 0;
+      int best_remesh_iters = 0;
+
+      const bool saved_trace = AvalancheRecorder::instance().isEnabled();
+      const bool saved_surgery = AvalancheRecorder::instance().isSurgeryVTKEnabled();
+      AvalancheRecorder::instance().setEnabled(false);
+      AvalancheRecorder::instance().setSaveSurgeryVTK(false);
+      relaxation_begin_step(0);
+
+      for (size_t s_idx = 0; s_idx < shift_candidates.size(); ++s_idx) {
+        const double sh = shift_candidates[s_idx];
+        MacroscopicGeometryConfig trial_geom = macro_geom;
+        trial_geom.microstructure.gb_tangential_shift_a0 = sh;
+        trial_geom.boundary_rules = trial_geom.buildStage1RelaxationRules();
+        trial_geom.indenter.enabled = false;
+
+        auto [trial_pts, trial_dims] = trial_geom.generateMicrostructureLattice(
+            lattice_type, nx, ny, lattice_constant,
+            use_rotation ? rotation_angle : 0.0, potential_mode);
+        trial_pts = trial_geom.carveLatticePoints(trial_pts, lattice_constant);
+        std::vector<Point2D> trial_pts_ref = trial_pts;
+
+        auto [trial_orig_map, trial_trans_map] =
+            MeshGenerator::create_domain_maps(trial_pts.size(), trial_dims, offsets);
+        Point2D trial_dims_pt(trial_dims.size_x, trial_dims.size_y);
+
+        std::vector<std::pair<int, int>> trial_int_map, trial_full_map;
+        std::vector<int> trial_bc_role;
+        std::vector<Eigen::Vector2d> trial_bc_vel;
+        trial_geom.buildBoundaryDOFs(trial_pts, trial_int_map, trial_full_map,
+                                     trial_bc_role, trial_bc_vel);
+        std::vector<int> trial_base_bc_role = trial_bc_role;
+
+        AdaptiveMesher::setGlobalGeometryFilter(&trial_geom, &trial_pts_ref);
+        AdaptiveMesher trial_mesher(trial_dims_pt, offsets, trial_orig_map,
+                                    trial_trans_map, trial_full_map,
+                                    1e-6 * lattice_constant * lattice_constant, pbc);
+        trial_mesher.setUsePeriodicCopies(pbc);
+        if (triangulation_perturbation != 0.0) {
+          trial_mesher.setTriangulationPerturbation(triangulation_perturbation);
+        }
+
+        alglib::real_1d_array trial_x;
+        const int trial_nvars = static_cast<int>(trial_int_map.size());
+        trial_x.setlength(2 * trial_nvars);
+        map_points_to_solver_array(trial_x, trial_pts, trial_int_map, trial_nvars);
+
+        auto [trial_elems, trial_act_elems] = trial_mesher.createMesh(
+            trial_pts, trial_x, Eigen::Matrix2d::Identity(), &dndx);
+        for (auto &el : trial_elems) {
+          el.set_reference_mesh(trial_pts);
+          el.set_dof_mapping(trial_full_map);
+        }
+        double trial_elem_area =
+            trial_elems.empty() ? ref_setup.element_area : trial_elems[0].getReferenceArea();
+
+        UserData trialUserData(trial_pts, trial_elems, *ref_setup.calc, potential_func,
+                               potential_func_der, ref_setup.zero, optimal_lattice_parameter,
+                               Eigen::Matrix2d::Identity(), trial_int_map, trial_full_map,
+                               trial_act_elems, false);
+        trialUserData.second_derivative_function = &potential_func_sder;
+        trialUserData.macro_geom_ptr = &trial_geom;
+        trialUserData.current_alpha = 0.0;
+
+        relax_configuration(trial_x, &trialUserData, 13);
+        map_solver_array_to_points(trial_x, trial_pts, trial_int_map, trial_nvars);
+
+        int trial_has_changes = 0;
+        int trial_remesh_iters = 0;
+        double trial_energy = 0.0;
+        Eigen::Matrix2d trial_stress = Eigen::Matrix2d::Zero();
+        if (enable_remeshing) {
+          std::vector<int> empty_contacts, empty_fixed;
+          std::tie(trial_energy, trial_stress, trial_remesh_iters) =
+              perform_remeshing_loop_reduction(
+                  trial_x, &trialUserData, empty_contacts, empty_fixed,
+                  Eigen::Matrix2d::Identity(), dndx, offsets, trial_orig_map,
+                  trial_trans_map, trial_dims_pt, trial_has_changes, 50,
+                  trial_elem_area, pbc, true);
+          trial_pts = trialUserData.points;
+          trial_elems = trialUserData.elements;
+          trial_act_elems = trialUserData.active_elements;
+          if (!trial_elems.empty()) {
+            trial_elem_area = trial_elems[0].getReferenceArea();
+          }
+        } else {
+          ConfigurationSaver::calculateEnergyAndStress(&trialUserData, trial_energy,
+                                                       trial_stress, true);
+        }
+
+        const GBEnergyMetrics m = compute_gb_energy_metrics(
+            trial_geom, trial_pts, trial_elems, trial_act_elems,
+            Eigen::Matrix2d::Identity(), trial_energy);
+        scan_rows.push_back({sh, m, trial_pts.size(), trial_act_elems.size()});
+
+        if (std::abs(sh) < 1e-6) {
+          baseline_gamma_int = m.gamma_gb_interior;
+          has_baseline = true;
+        }
+        std::cout << "  [GB Shift Scan " << (s_idx + 1) << "/" << shift_candidates.size()
+                  << "] δ_∥ = " << std::fixed << std::setprecision(4) << sh
+                  << " a0 -> γ_GB(Int) = " << std::setprecision(6) << m.gamma_gb_interior
+                  << ", γ_GB(Tot) = " << m.gamma_gb_total
+                  << " (N=" << trial_pts.size() << ", tris=" << trial_act_elems.size() << ")"
+                  << std::endl;
+
+        if (!has_best || m.gamma_gb_interior < best_gamma_int - 1e-9) {
+          has_best = true;
+          best_idx = s_idx;
+          best_gamma_int = m.gamma_gb_interior;
+          best_geom = trial_geom;
+          best_pts = std::move(trial_pts);
+          best_pts_ref = std::move(trial_pts_ref);
+          best_dims = trial_dims;
+          best_orig_map = std::move(trial_orig_map);
+          best_trans_map = std::move(trial_trans_map);
+          best_int_map = std::move(trial_int_map);
+          best_full_map = std::move(trial_full_map);
+          best_bc_role = std::move(trial_bc_role);
+          best_base_bc_role = std::move(trial_base_bc_role);
+          best_bc_vel = std::move(trial_bc_vel);
+          best_elems = std::move(trial_elems);
+          best_act_elems = std::move(trial_act_elems);
+          best_elem_area = trial_elem_area;
+          best_has_changes = trial_has_changes;
+          best_remesh_iters = trial_remesh_iters;
+        }
+      }
+
+      AvalancheRecorder::instance().setEnabled(saved_trace);
+      AvalancheRecorder::instance().setSaveSurgeryVTK(saved_surgery);
+
+      if (has_best) {
+        {
+          std::ofstream scan_csv("gb_shift_scan.csv");
+          scan_csv << "ShiftParA0,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NumAtoms,ActiveElements,Selected\n";
+          scan_csv << std::fixed << std::setprecision(8);
+          for (size_t k = 0; k < scan_rows.size(); ++k) {
+            const auto &r = scan_rows[k];
+            scan_csv << r.shift_a0 << "," << r.metrics.L_gb_a0 << "," << r.metrics.L_int_a0 << ","
+                     << r.metrics.total_excess << "," << r.metrics.interior_excess << ","
+                     << r.metrics.gamma_gb_total << "," << r.metrics.gamma_gb_interior << ","
+                     << r.n_atoms << "," << r.n_active << "," << (k == best_idx ? 1 : 0) << "\n";
+          }
+        }
+
+        macro_geom = std::move(best_geom);
+        square_points = std::move(best_pts);
+        square_points_ref = std::move(best_pts_ref);
+        original_domain_size = static_cast<int>(square_points.size());
+        domain_dims = best_dims;
+        domain_dims_point = Point2D(domain_dims.size_x, domain_dims.size_y);
+        original_domain_map = std::move(best_orig_map);
+        translation_map = std::move(best_trans_map);
+        interior_mapping = std::move(best_int_map);
+        full_mapping = std::move(best_full_map);
+        node_bc_role = std::move(best_bc_role);
+        baseline_node_bc_role = std::move(best_base_bc_role);
+        node_bc_velocity = std::move(best_bc_vel);
+        elements = std::move(best_elems);
+        active_elements = std::move(best_act_elems);
+        element_area = best_elem_area;
+        for (auto &el : elements) {
+          el.set_reference_mesh(square_points);
+          el.set_dof_mapping(full_mapping);
+        }
+        AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &square_points_ref);
+        stage1_pre_relaxed_by_shift_scan = true;
+        stage1_scan_has_changes = best_has_changes;
+        stage1_scan_remesh_iters = best_remesh_iters;
+
+        std::cout << "[GB Shift Scan] Winner: δ_∥ = " << std::fixed << std::setprecision(4)
+                  << macro_geom.microstructure.gb_tangential_shift_a0
+                  << " a0 -> γ_GB(Int) = " << std::setprecision(6) << best_gamma_int;
+        if (has_baseline) {
+          std::cout << " (Δγ_int vs δ_∥=0: " << std::showpos
+                    << (best_gamma_int - baseline_gamma_int) << std::noshowpos << ")";
+        }
+        std::cout << " | saved gb_shift_scan.csv\n" << std::endl;
+      } else {
+        AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &square_points_ref);
+      }
+    }
+  }
+
   // Dead-load tractions need the reference boundary edges, so they are assembled once the mesh exists
   if (has_custom_geom && !is_periodic_micro &&
       !macro_geom.finalizeBoundaryTractions(square_points_ref, elements)) {
@@ -1366,15 +1666,20 @@ void example_1_conti_zanzotto_loading(
       std::cout << "[Traction GradCheck] alpha = " << alpha << " | " << 2 * probe.size()
                 << " DOFs | max relative error = " << std::scientific << worst << std::defaultfloat << std::endl;
     }
-    relax_configuration(x, &userData, 13);
+    const bool skip_stage1_solve = is_stage1_relax_step && stage1_pre_relaxed_by_shift_scan;
+    if (!skip_stage1_solve) {
+      relax_configuration(x, &userData, 13);
+    }
 
     auto wall_end = std::chrono::high_resolution_clock::now();
     double wall_time =
         std::chrono::duration<double>(wall_end - wall_start).count();
 
-    map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+    if (!skip_stage1_solve) {
+      map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
+    }
 
-    int hasChanges = 0;
+    int hasChanges = skip_stage1_solve ? stage1_scan_has_changes : 0;
 
     // ==================== POST-OPTIMIZATION ENERGY ====================
     double post_energy = 0.0;
@@ -1408,12 +1713,12 @@ void example_1_conti_zanzotto_loading(
         (macro_geom.exceedsRunawayLimit(square_points) || (stress_force_step && stress_ctrl.exceedsLimit(F_ext)));
 
     // ==================== REMESHING DECISION ====================
-    bool shouldRemesh = enable_remeshing && !runaway_before_cascade;
+    bool shouldRemesh = enable_remeshing && !runaway_before_cascade && !skip_stage1_solve;
     if (const char *gate = std::getenv("MTM_REMESH_GATE")) {
       if (std::string(gate) == "energy") // legacy gate, for A/B comparison only
-        shouldRemesh = enable_remeshing && (post_energy < post_energy_previous || i == 0);
+        shouldRemesh = enable_remeshing && !skip_stage1_solve && (post_energy < post_energy_previous || i == 0);
     }
-    int remesh_iterations = 0;
+    int remesh_iterations = skip_stage1_solve ? stage1_scan_remesh_iters : 0;
 
     if (shouldRemesh) {
       auto remesh_start = std::chrono::high_resolution_clock::now();
@@ -1675,62 +1980,14 @@ void example_1_conti_zanzotto_loading(
     if (i == 0 && has_custom_geom &&
         macro_geom.microstructure.mode == MicrostructureMode::Bicrystal &&
         !square_points.empty()) {
-      const double a0_gb = (optimal_lattice_parameter > 1e-8) ? optimal_lattice_parameter : 1.0;
-      const double phi_rad = macro_geom.microstructure.gb_angle_deg * M_PI / 180.0;
-      const Eigen::Vector2d t_gb(-std::sin(phi_rad), std::cos(phi_rad));
-      const Eigen::Vector2d p_gb(
-          macro_geom.x_min + macro_geom.microstructure.gb_cx * macro_geom.Lx,
-          macro_geom.y_min + macro_geom.microstructure.gb_cy * macro_geom.Ly);
-
-      double s_min = 1e30, s_max = -1e30;
-      for (const auto &pt : square_points) {
-        const double s = (pt.coord - p_gb).dot(t_gb);
-        s_min = std::min(s_min, s);
-        s_max = std::max(s_max, s);
-      }
-      const double L_gb_phys = std::max(a0_gb, s_max - s_min);
-      const double L_gb_a0 = L_gb_phys / a0_gb;
-      const double collar_phys = std::min(4.0 * a0_gb, 0.15 * L_gb_phys);
-      const double L_int_a0 = std::max(a0_gb, L_gb_phys - 2.0 * collar_phys) / a0_gb;
-
-      double interior_energy = 0.0;
-      double interior_ref_area = 0.0;
-      double total_ref_area = 0.0;
-      const double norm_area = calculator.getUnitCellArea();
-      for (size_t elem_idx : active_elements) {
-        if (elem_idx < elements.size() && elements[elem_idx].isInitialized())
-          total_ref_area += elements[elem_idx].getReferenceArea();
-      }
-      for (size_t elem_idx : active_elements) {
-        if (elem_idx >= elements.size()) continue;
-        auto &el = elements[elem_idx];
-        if (!el.isInitialized()) continue;
-        const Eigen::Vector2d c_el =
-            (square_points[el.getNodeIndex(0)].coord +
-             square_points[el.getNodeIndex(1)].coord +
-             square_points[el.getNodeIndex(2)].coord) / 3.0;
-        const double s_c = (c_el - p_gb).dot(t_gb);
-        if (s_c >= s_min + collar_phys && s_c <= s_max - collar_phys) {
-          el.setExternalDeformation(F_ext);
-          el.calculate_deformation_gradient(square_points);
-          const Eigen::Matrix2d F_el = el.getDeformationGradient();
-          const Eigen::Matrix2d C_el = F_el.transpose() * F_el;
-          const auto red = reduce_metric(C_el);
-          const double e_el = calculator.calculate_energy(
-                                  red.C_reduced, potential_func, zero) /
-                              norm_area;
-          interior_energy += e_el * el.getReferenceArea();
-          interior_ref_area += el.getReferenceArea();
-        }
-      }
-
-      // The energy zero is the potential's ground state; when the reference lattice lies above it
-      // (reference_excess > 0) the perfect bulk carries that energy too, and gamma_GB is the excess over it
-      const double bulk_density = ref_setup.reference_excess / norm_area;
-      const double total_excess = post_energy - bulk_density * total_ref_area;
-      const double interior_excess = interior_energy - bulk_density * interior_ref_area;
-      const double gamma_gb_total = total_excess / L_gb_a0;
-      const double gamma_gb_interior = interior_excess / L_int_a0;
+      const GBEnergyMetrics gb_m = compute_gb_energy_metrics(
+          macro_geom, square_points, elements, active_elements, F_ext, post_energy);
+      const double L_gb_a0 = gb_m.L_gb_a0;
+      const double L_int_a0 = gb_m.L_int_a0;
+      const double total_excess = gb_m.total_excess;
+      const double interior_excess = gb_m.interior_excess;
+      const double gamma_gb_total = gb_m.gamma_gb_total;
+      const double gamma_gb_interior = gb_m.gamma_gb_interior;
       const double th1_deg = macro_geom.microstructure.theta1_deg;
       const double th2_deg = macro_geom.microstructure.theta2_deg;
       const double misori_deg = std::abs(th2_deg - th1_deg);
@@ -1741,6 +1998,9 @@ void example_1_conti_zanzotto_loading(
                 << "  Misorientation Δθ       = " << std::fixed << std::setprecision(4) << misori_deg
                 << "° (θ1 = " << th1_deg << "°, θ2 = " << th2_deg
                 << "°, φ_GB = " << macro_geom.microstructure.gb_angle_deg << "°)\n"
+                << "  GB Parallel Shift δ_∥   = " << std::fixed << std::setprecision(4)
+                << macro_geom.microstructure.gb_tangential_shift_a0 << " a0"
+                << (stage1_pre_relaxed_by_shift_scan ? " (auto-selected minimum)" : "") << "\n"
                 << "  GB Length L_GB          = " << std::fixed << std::setprecision(3) << L_gb_a0
                 << " a0 (Interior Gauge L_int = " << L_int_a0 << " a0)\n"
                 << "  Total Excess Energy E   = " << std::scientific << std::setprecision(6) << total_excess << "\n"

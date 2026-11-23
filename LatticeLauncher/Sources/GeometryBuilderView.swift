@@ -2043,14 +2043,29 @@ public struct GeometryBuilderView: View {
                             Text("GB Parallel Shift δ_∥ (in a₀):")
                                 .font(.caption2.bold())
                             Spacer()
-                            Slider(value: $config.geometryConfig.microstructure.gb_tangential_shift_a0, in: -0.50...0.50, step: 0.02)
+                            Slider(value: $config.geometryConfig.microstructure.gb_tangential_shift_a0, in: -1.50...1.50, step: 0.02)
                                 .frame(width: 78)
-                            DoubleField(title: "0.0", value: $config.geometryConfig.microstructure.gb_tangential_shift_a0, width: 44, minValue: -1.00, maxValue: 1.00)
+                            DoubleField(title: "0.0", value: $config.geometryConfig.microstructure.gb_tangential_shift_a0, width: 44, minValue: -5.00, maxValue: 5.00)
                             Button("0") {
                                 config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
+                        }
+                        .disabled(config.geometryConfig.microstructure.auto_scan_gb_shift)
+                        .opacity(config.geometryConfig.microstructure.auto_scan_gb_shift ? 0.55 : 1.0)
+                        
+                        HStack(spacing: 6) {
+                            Toggle("Auto-scan δ_∥ (min γ_GB)", isOn: $config.geometryConfig.microstructure.auto_scan_gb_shift)
+                                .font(.caption2)
+                                .help("At Stage 1 (α = 0), automatically test parallel shifts δ_∥ across the CSL period and keep the configuration with lowest interior GB energy γ_GB(Int).")
+                            if config.geometryConfig.microstructure.auto_scan_gb_shift {
+                                Spacer()
+                                Stepper("N=\(config.geometryConfig.microstructure.gb_shift_scan_steps)",
+                                        value: $config.geometryConfig.microstructure.gb_shift_scan_steps,
+                                        in: 3...17)
+                                    .font(.caption2.monospacedDigit())
+                            }
                         }
                         
                         let misori = abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg)

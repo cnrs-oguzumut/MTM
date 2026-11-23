@@ -458,6 +458,57 @@ static void test_square_calculator_dynamic_cutoff() {
     std::cout << "[PASS] SquareLatticeCalculator dynamic cutoff tests passed." << std::endl;
 }
 
+static void test_gb_tangential_shift_candidates() {
+    MacroscopicGeometryConfig cfg;
+    cfg.enabled = true;
+    cfg.microstructure.mode = MicrostructureMode::Bicrystal;
+    cfg.microstructure.auto_scan_gb_shift = true;
+    cfg.microstructure.gb_shift_scan_steps = 9;
+    cfg.microstructure.gb_angle_deg = 0.0;
+    cfg.microstructure.gb_tangential_shift_a0 = 0.0;
+
+    // 1) Perfect crystal -> trivial {0.0}
+    cfg.microstructure.theta1_deg = 0.0;
+    cfg.microstructure.theta2_deg = 0.0;
+    auto c0 = cfg.computeTangentialShiftCandidates("triangular");
+    assert(c0.size() == 1 && std::abs(c0[0]) < 1e-12);
+
+    cfg.microstructure.theta1_deg = -30.0;
+    cfg.microstructure.theta2_deg = 30.0;
+    auto c60 = cfg.computeTangentialShiftCandidates("triangular");
+    assert(c60.size() == 1 && std::abs(c60[0]) < 1e-12);
+
+    // 2) Symmetric Σ13 (32.2042 deg) -> half period = 0.5 * sqrt(13) ≈ 1.80278
+    cfg.microstructure.theta1_deg = -16.102114;
+    cfg.microstructure.theta2_deg = +16.102114;
+    auto c13 = cfg.computeTangentialShiftCandidates("triangular");
+    assert(c13.size() == 9);
+    assert(std::abs(c13.front() - 0.0) < 1e-9);
+    assert(std::abs(c13.back() - 0.5 * std::sqrt(13.0)) < 1e-6);
+
+    // 3) Symmetric Σ5 square (36.8699 deg) -> half period = 0.5 * sqrt(10) ≈ 1.58114
+    cfg.microstructure.theta1_deg = -18.434949;
+    cfg.microstructure.theta2_deg = +18.434949;
+    auto c5 = cfg.computeTangentialShiftCandidates("square");
+    assert(c5.size() == 9);
+    assert(std::abs(c5.back() - 0.5 * std::sqrt(10.0)) < 1e-6);
+
+    // 4) Asymmetric tilt -> spans negative and positive around 0.0
+    cfg.microstructure.theta1_deg = -8.0;
+    cfg.microstructure.theta2_deg = +22.0;
+    auto casym = cfg.computeTangentialShiftCandidates("triangular");
+    assert(casym.size() >= 9);
+    assert(std::abs(casym[0]) < 1e-12);
+    bool has_neg = false, has_pos = false;
+    for (double s : casym) {
+        if (s < -1e-4) has_neg = true;
+        if (s > +1e-4) has_pos = true;
+    }
+    assert(has_neg && has_pos);
+
+    std::cout << "[PASS] GB tangential shift candidate generator tests passed." << std::endl;
+}
+
 void run_triangular_reference_tests();
 
 int main() {
@@ -492,6 +543,7 @@ int main() {
     test_bicrystal_seam_deadzone_and_triangular_csl();
     test_microstructure_a0_scale_invariance();
     test_square_calculator_dynamic_cutoff();
+    test_gb_tangential_shift_candidates();
     run_triangular_reference_tests();
 
     std::cout << "All tests passed!" << std::endl;

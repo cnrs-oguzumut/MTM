@@ -2315,6 +2315,19 @@ struct SidebarControlsView: View {
                                         .font(.caption2)
                                         .help("Automatically sets each angle's box size to K·round(L_CSL) closest to your System Geometry NX×NY.")
                                     
+                                    HStack(spacing: 6) {
+                                        Toggle("Auto-scan parallel shift δ_∥ (min γ_GB per angle)", isOn: $config.geometryConfig.microstructure.auto_scan_gb_shift)
+                                            .font(.caption2)
+                                            .help("Coffman–Sethna γ-surface scan: tries N tangential shifts δ_∥ at α = 0 for each angle and keeps the global minimum γ_GB(Int) (saves gb_shift_scan.csv).")
+                                        if config.geometryConfig.microstructure.auto_scan_gb_shift {
+                                            Spacer()
+                                            Stepper("N=\(config.geometryConfig.microstructure.gb_shift_scan_steps)",
+                                                    value: $config.geometryConfig.microstructure.gb_shift_scan_steps,
+                                                    in: 3...17)
+                                                .font(.caption2.monospacedDigit())
+                                        }
+                                    }
+                                    
                                     let cands = config.sweepCSLCandidates
                                     let previewStr = cands.prefix(8).map {
                                         $0.sigma > 0 ? String(format: "%.1f°(Σ%d)", $0.fullMisoriDeg, $0.sigma) : String(format: "%.1f°", $0.fullMisoriDeg)
