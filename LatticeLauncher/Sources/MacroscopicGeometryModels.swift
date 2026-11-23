@@ -1205,6 +1205,8 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             microstructure.gb_angle_deg = 0.0
             microstructure.theta1_deg = -15.0
             microstructure.theta2_deg = +15.0
+            microstructure.gb_tangential_shift_a0 = 0.0
+            microstructure.auto_scan_gb_shift = false
             primary_stress_component = "sigma_yy"
             
         case .bicrystalIndentation:
@@ -1228,6 +1230,8 @@ public struct MacroscopicGeometryConfigModel: Codable, Equatable {
             microstructure.gb_angle_deg = 90.0
             microstructure.theta1_deg = -12.0
             microstructure.theta2_deg = +12.0
+            microstructure.gb_tangential_shift_a0 = 0.0
+            microstructure.auto_scan_gb_shift = false
             primary_stress_component = "indentation_load"
             
         case .voronoiPolycrystalDogbone:

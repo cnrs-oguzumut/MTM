@@ -286,6 +286,7 @@ public class ProcessRunner: ObservableObject {
             try? fm.removeItem(atPath: "\(runDir)/energy_stress_log.csv")
             try? fm.removeItem(atPath: "\(runDir)/eigen_log.csv")
             try? fm.removeItem(atPath: "\(runDir)/gb_energy_summary.csv")
+            try? fm.removeItem(atPath: "\(runDir)/gb_shift_scan.csv")
         } catch {
             self.status = .failed(error: "Cannot create output directory: \(error.localizedDescription)")
             return
@@ -550,8 +551,14 @@ public class ProcessRunner: ObservableObject {
             return
         }
         var parsedPt: GBEnergyPoint? = nil
+        var headerCols: [String]? = nil
         for line in content.components(separatedBy: .newlines) {
-            if let pt = parseGBEnergyLine(line) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("MisorientationDeg") {
+                headerCols = trimmed.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                continue
+            }
+            if let pt = parseGBEnergyLine(line, headerColumns: headerCols) {
                 parsedPt = pt
                 break
             }
@@ -591,10 +598,11 @@ public class ProcessRunner: ObservableObject {
         
         upsertGBEnergyPointAndWriteFiles(pt)
         let vtkShort = (pt.relaxedVTKPath as NSString).lastPathComponent
+        let shiftTag = abs(pt.tangentialShiftA0) > 1e-6 ? String(format: " | δ_∥ = %.4f a₀", pt.tangentialShiftA0) : ""
         appendLog(text: String(
-            format: "✅ [Sweep %d/%d] Δθ = %.2f° (Σ%d, %d %d 0) | γ_GB(int) = %.6f | γ_GB(tot) = %.6f | VTK: %@",
+            format: "✅ [Sweep %d/%d] Δθ = %.2f° (Σ%d, %d %d 0) | γ_GB(int) = %.6f | γ_GB(tot) = %.6f%@ | VTK: %@",
             currentSweepIndex, totalSweepCount, pt.misorientationDeg, pt.sigma, pt.m, pt.n,
-            pt.gbEnergyInterior, pt.gbEnergyTotal, vtkShort
+            pt.gbEnergyInterior, pt.gbEnergyTotal, shiftTag, vtkShort
         ))
     }
     
@@ -616,30 +624,30 @@ public class ProcessRunner: ObservableObject {
         let fm = FileManager.default
         
         // 1. Human & Gnuplot/Python-readable ASCII table: angle_vs_energy.txt
-        var txt = "# =====================================================================================================================\n"
+        var txt = "# ==================================================================================================================================\n"
         txt += "# Symmetric Tilt Grain Boundary Energy vs. Misorientation Angle (Relaxed Equilibrium at alpha = 0)\n"
         txt += "# Columns:\n"
-        txt += "#  1:DeltaTheta_deg  2:HalfAngle_deg  3:Sigma  4:m  5:n  6:Gamma_GB_interior  7:Gamma_GB_total  8:E_total_relaxed  9:E_interior_relaxed  10:L_GB_a0  11:NX  12:NY  13:Gap_a0  14:d_min_a0  15:Relaxed_VTK_File\n"
-        txt += "# =====================================================================================================================\n"
+        txt += "#  1:DeltaTheta_deg  2:HalfAngle_deg  3:Sigma  4:m  5:n  6:Gamma_GB_interior  7:Gamma_GB_total  8:E_total_relaxed  9:E_interior_relaxed  10:L_GB_a0  11:NX  12:NY  13:Gap_a0  14:d_min_a0  15:ShiftPar_a0  16:Relaxed_VTK_File\n"
+        txt += "# ==================================================================================================================================\n"
         for p in points {
             let vtkName = p.relaxedVTKPath.isEmpty ? "configuration_0_post.vtk" : (p.relaxedVTKPath as NSString).lastPathComponent
             txt += String(
-                format: "%10.4f %10.4f %6d %4d %4d %16.8f %16.8f %16.8f %16.8f %10.2f %5d %5d %9.4f %9.4f  %@\n",
+                format: "%10.4f %10.4f %6d %4d %4d %16.8f %16.8f %16.8f %16.8f %10.2f %5d %5d %9.4f %9.4f %10.4f  %@\n",
                 p.misorientationDeg, p.halfAngleDeg, p.sigma, p.m, p.n,
                 p.gbEnergyInterior, p.gbEnergyTotal, p.totalEnergy, p.interiorEnergy,
-                p.lengthGBA0, p.nx, p.ny, p.normalGapA0, p.seamDMinA0, vtkName
+                p.lengthGBA0, p.nx, p.ny, p.normalGapA0, p.seamDMinA0, p.tangentialShiftA0, vtkName
             )
         }
         
         // 2. Standard CSV: gb_energy_vs_misorientation.csv
-        var csv = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0,Sigma,m,n,RelaxedVTKPath\n"
+        var csv = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0,Sigma,m,n,RelaxedVTKPath,ShiftParA0\n"
         for p in points {
             csv += String(
-                format: "%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%.4f,%.4f,%.8f,%.8f,%.8f,%.8f,%.4f,%.4f,%d,%d,%d,%@\n",
+                format: "%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%.4f,%.4f,%.8f,%.8f,%.8f,%.8f,%.4f,%.4f,%d,%d,%d,%@,%.6f\n",
                 p.misorientationDeg, p.halfAngleDeg, p.theta1Deg, p.theta2Deg, p.gbAngleDeg,
                 p.nx, p.ny, p.lengthGBA0, p.lengthIntA0, p.totalEnergy, p.interiorEnergy,
                 p.gbEnergyTotal, p.gbEnergyInterior, p.normalGapA0, p.seamDMinA0,
-                p.sigma, p.m, p.n, p.relaxedVTKPath
+                p.sigma, p.m, p.n, p.relaxedVTKPath, p.tangentialShiftA0
             )
         }
         
@@ -840,7 +848,7 @@ public class ProcessRunner: ObservableObject {
         }
     }
     
-    private func parseGBEnergyLine(_ line: String) -> GBEnergyPoint? {
+    private func parseGBEnergyLine(_ line: String, headerColumns: [String]? = nil) -> GBEnergyPoint? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed.hasPrefix("MisorientationDeg") { return nil }
         let parts = trimmed.components(separatedBy: ",")
@@ -866,10 +874,27 @@ public class ProcessRunner: ObservableObject {
         }
         let gap = d(13) ?? 0.0
         let dmin = d(14) ?? 0.0
-        let sig = parts.count > 15 ? Int(parts[15].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
-        let mVal = parts.count > 16 ? Int(parts[16].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
-        let nVal = parts.count > 17 ? Int(parts[17].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
-        let vtkPath = parts.count > 18 ? parts[18].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        var shiftPar = 0.0
+        var sig: Int? = nil
+        var mVal: Int? = nil
+        var nVal: Int? = nil
+        var vtkPath = ""
+
+        if let cols = headerColumns {
+            if let i = cols.firstIndex(of: "ShiftParA0"), let v = d(i) { shiftPar = v }
+            if let i = cols.firstIndex(of: "Sigma"), i < parts.count { sig = Int(parts[i].trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if let i = cols.firstIndex(of: "m"), i < parts.count { mVal = Int(parts[i].trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if let i = cols.firstIndex(of: "n"), i < parts.count { nVal = Int(parts[i].trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if let i = cols.firstIndex(of: "RelaxedVTKPath"), i < parts.count { vtkPath = parts[i].trimmingCharacters(in: .whitespacesAndNewlines) }
+        } else if parts.count == 16 {
+            shiftPar = d(15) ?? 0.0
+        } else {
+            sig = parts.count > 15 ? Int(parts[15].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+            mVal = parts.count > 16 ? Int(parts[16].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+            nVal = parts.count > 17 ? Int(parts[17].trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+            vtkPath = parts.count > 18 ? parts[18].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            shiftPar = d(19) ?? 0.0
+        }
         let dirLower = outputDirectory.lowercased()
         let isTri = (activeConfig?.latticeSymmetry == .triangular)
             || dirLower.contains("_tri_")
@@ -891,6 +916,7 @@ public class ProcessRunner: ObservableObject {
             gbEnergyInterior: gbInt,
             normalGapA0: gap,
             seamDMinA0: dmin,
+            tangentialShiftA0: shiftPar,
             sigma: sig,
             m: mVal,
             n: nVal,
@@ -905,8 +931,14 @@ public class ProcessRunner: ObservableObject {
             let sumPath = "\(outputDirectory)/gb_energy_summary.csv"
             if fm.fileExists(atPath: sumPath),
                let content = try? String(contentsOfFile: sumPath, encoding: .utf8) {
+                var headerCols: [String]? = nil
                 for line in content.components(separatedBy: .newlines) {
-                    if let pt = parseGBEnergyLine(line) {
+                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.hasPrefix("MisorientationDeg") {
+                        headerCols = trimmed.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        continue
+                    }
+                    if let pt = parseGBEnergyLine(line, headerColumns: headerCols) {
                         if self.currentGBEnergy != pt {
                             self.currentGBEnergy = pt
                         }
@@ -930,8 +962,14 @@ public class ProcessRunner: ObservableObject {
             if fm.fileExists(atPath: cPath),
                let content = try? String(contentsOfFile: cPath, encoding: .utf8) {
                 var pts: [GBEnergyPoint] = []
+                var headerCols: [String]? = nil
                 for line in content.components(separatedBy: .newlines) {
-                    if let pt = parseGBEnergyLine(line) {
+                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.hasPrefix("MisorientationDeg") {
+                        headerCols = trimmed.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        continue
+                    }
+                    if let pt = parseGBEnergyLine(line, headerColumns: headerCols) {
                         pts.append(pt)
                     }
                 }

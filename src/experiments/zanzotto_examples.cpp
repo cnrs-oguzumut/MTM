@@ -1,3 +1,5 @@
+#include <cstdint>
+#include <cstring>
 #include "../../include/experiments/experiment_includes.h"
 #include "../../include/experiments/stability_monitor.h"
 #include "../../include/geometry/MacroscopicGeometry.h"
@@ -583,6 +585,14 @@ void example_1_conti_zanzotto_loading(
   double theta_rot = 0.0;
 
   if (has_custom_geom && macro_geom.microstructure.mode != MicrostructureMode::SingleCrystal) {
+    if (restart_chk != nullptr && restart_chk->has_gb_tangential_shift &&
+        macro_geom.microstructure.mode == MicrostructureMode::Bicrystal) {
+      macro_geom.microstructure.gb_tangential_shift_a0 = restart_chk->gb_tangential_shift_a0;
+      std::cout << "[RESTART] Restored bicrystal tangential shift δ_∥ = "
+                << std::fixed << std::setprecision(4)
+                << macro_geom.microstructure.gb_tangential_shift_a0
+                << " a0 from checkpoint." << std::defaultfloat << std::endl;
+    }
     auto [pts, dims] = macro_geom.generateMicrostructureLattice(
         lattice_type, nx, ny, lattice_constant, use_rotation ? rotation_angle : 0.0, potential_mode);
     square_points = pts;
@@ -709,6 +719,10 @@ void example_1_conti_zanzotto_loading(
     if (restart_chk->ref_points.size() == square_points_ref.size()) {
       for (size_t j = 0; j < square_points_ref.size(); ++j) {
         square_points_ref[j].coord = restart_chk->ref_points[j];
+        if (j < restart_chk->points.size()) {
+          square_points_ref[j].grain_id = restart_chk->points[j].grain_id;
+          square_points_ref[j].grain_theta_deg = restart_chk->points[j].grain_theta_deg;
+        }
       }
       square_points = square_points_ref;
       if ((macro_geom.microstructure.relax_only || macro_geom.microstructure.pre_relax_gb) &&
@@ -871,6 +885,15 @@ void example_1_conti_zanzotto_loading(
     double interior_excess = 0.0;
     double gamma_gb_total = 0.0;
     double gamma_gb_interior = 0.0;
+    double interior_ref_area = 0.0;
+    size_t interior_elem_count = 0;
+    size_t interior_cross_grain_count = 0;
+  };
+  // Bit-level IEEE-754 finiteness check (safe even when compiled with -ffast-math / -ffinite-math-only)
+  auto is_finite_bits = [](double v) -> bool {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &v, sizeof(bits));
+    return (bits & 0x7FF0000000000000ULL) != 0x7FF0000000000000ULL;
   };
   auto compute_gb_energy_metrics = [&](const MacroscopicGeometryConfig &geom_ref,
                                        const std::vector<Point2D> &pts_ref,
@@ -910,10 +933,15 @@ void example_1_conti_zanzotto_loading(
       if (elem_idx >= elems_ref.size()) continue;
       auto &el = elems_ref[elem_idx];
       if (!el.isInitialized()) continue;
+      const int n0 = el.getNodeIndex(0);
+      const int n1 = el.getNodeIndex(1);
+      const int n2 = el.getNodeIndex(2);
+      if (n0 < 0 || n1 < 0 || n2 < 0 ||
+          n0 >= static_cast<int>(pts_ref.size()) ||
+          n1 >= static_cast<int>(pts_ref.size()) ||
+          n2 >= static_cast<int>(pts_ref.size())) continue;
       const Eigen::Vector2d c_el =
-          (pts_ref[el.getNodeIndex(0)].coord +
-           pts_ref[el.getNodeIndex(1)].coord +
-           pts_ref[el.getNodeIndex(2)].coord) / 3.0;
+          (pts_ref[n0].coord + pts_ref[n1].coord + pts_ref[n2].coord) / 3.0;
       const double s_c = (c_el - p_gb).dot(t_gb);
       if (s_c >= s_min + collar_phys && s_c <= s_max - collar_phys) {
         el.setExternalDeformation(F_mat);
@@ -926,6 +954,13 @@ void example_1_conti_zanzotto_loading(
                             norm_area;
         interior_energy += e_el * el.getReferenceArea();
         interior_ref_area += el.getReferenceArea();
+        ++m.interior_elem_count;
+        const int g0 = pts_ref[n0].grain_id;
+        const int g1 = pts_ref[n1].grain_id;
+        const int g2 = pts_ref[n2].grain_id;
+        if (g0 != g1 || g1 != g2) {
+          ++m.interior_cross_grain_count;
+        }
       }
     }
 
@@ -934,6 +969,7 @@ void example_1_conti_zanzotto_loading(
     m.interior_excess = interior_energy - bulk_density * interior_ref_area;
     m.gamma_gb_total = m.total_excess / m.L_gb_a0;
     m.gamma_gb_interior = m.interior_excess / m.L_int_a0;
+    m.interior_ref_area = interior_ref_area;
     return m;
   };
 
@@ -944,12 +980,23 @@ void example_1_conti_zanzotto_loading(
   bool stage1_pre_relaxed_by_shift_scan = false;
   int stage1_scan_has_changes = 0;
   int stage1_scan_remesh_iters = 0;
+  double stage1_scan_pre_energy = 0.0;
+  double stage1_scan_pre_stress = 0.0;
+  double stage1_scan_pre_area = 0.0;
+  double stage1_scan_wall_time = 0.0;
+  if (has_custom_geom && !is_periodic_micro && restart_chk == nullptr &&
+      macro_geom.microstructure.mode == MicrostructureMode::Bicrystal &&
+      macro_geom.microstructure.auto_scan_gb_shift && !stage1_pre_relax_active) {
+    std::cout << "[GB Shift Scan] Skipping auto_scan_gb_shift because Stage-1 pre-relaxation is inactive "
+                 "(pre_relax_gb=false and relax_only=false)." << std::endl;
+  }
   if (stage1_pre_relax_active && !is_periodic_micro && restart_chk == nullptr &&
       macro_geom.microstructure.mode == MicrostructureMode::Bicrystal &&
       macro_geom.microstructure.auto_scan_gb_shift) {
     const std::vector<double> shift_candidates =
         macro_geom.computeTangentialShiftCandidates(lattice_type);
     if (shift_candidates.size() > 1) {
+      const auto scan_wall_start = std::chrono::high_resolution_clock::now();
       std::cout << "\n[GB Shift Scan] Scanning " << shift_candidates.size()
                 << " tangential shifts δ_∥ (in a0) at α = 0 to minimize γ_GB(Interior)..."
                 << std::endl;
@@ -958,13 +1005,16 @@ void example_1_conti_zanzotto_loading(
         GBEnergyMetrics metrics;
         size_t n_atoms = 0;
         size_t n_active = 0;
+        bool valid = false;
       };
       std::vector<ShiftScanRow> scan_rows;
       scan_rows.reserve(shift_candidates.size());
 
       bool has_best = false;
-      size_t best_idx = 0;
+      size_t best_row_idx = 0;
       double best_gamma_int = 1e30;
+      size_t best_cross_grain = 0;
+      size_t max_ref_cross_grain = 0;
       double baseline_gamma_int = 0.0;
       bool has_baseline = false;
 
@@ -981,7 +1031,11 @@ void example_1_conti_zanzotto_loading(
       double best_elem_area = element_area;
       int best_has_changes = 0;
       int best_remesh_iters = 0;
+      double best_pre_energy = 0.0;
+      double best_pre_stress = 0.0;
+      double best_pre_area = 0.0;
 
+      const Eigen::Matrix2d F_identity = Eigen::Matrix2d::Identity();
       const bool saved_trace = AvalancheRecorder::instance().isEnabled();
       const bool saved_surgery = AvalancheRecorder::instance().isSurgeryVTKEnabled();
       AvalancheRecorder::instance().setEnabled(false);
@@ -1027,21 +1081,39 @@ void example_1_conti_zanzotto_loading(
         map_points_to_solver_array(trial_x, trial_pts, trial_int_map, trial_nvars);
 
         auto [trial_elems, trial_act_elems] = trial_mesher.createMesh(
-            trial_pts, trial_x, Eigen::Matrix2d::Identity(), &dndx);
+            trial_pts, trial_x, F_identity, &dndx);
         for (auto &el : trial_elems) {
           el.set_reference_mesh(trial_pts);
           el.set_dof_mapping(trial_full_map);
+        }
+        if (!trial_geom.finalizeBoundaryTractions(trial_pts_ref, trial_elems)) {
+          std::cout << "  [GB Shift Scan " << (s_idx + 1) << "/" << shift_candidates.size()
+                    << "] δ_∥ = " << std::fixed << std::setprecision(4) << sh
+                    << " a0 -> SKIPPED (unbalanced Stage-1 boundary tractions)" << std::endl;
+          scan_rows.push_back({sh, GBEnergyMetrics{}, trial_pts.size(), trial_act_elems.size(), false});
+          continue;
         }
         double trial_elem_area =
             trial_elems.empty() ? ref_setup.element_area : trial_elems[0].getReferenceArea();
 
         UserData trialUserData(trial_pts, trial_elems, *ref_setup.calc, potential_func,
                                potential_func_der, ref_setup.zero, optimal_lattice_parameter,
-                               Eigen::Matrix2d::Identity(), trial_int_map, trial_full_map,
+                               F_identity, trial_int_map, trial_full_map,
                                trial_act_elems, false);
         trialUserData.second_derivative_function = &potential_func_sder;
         trialUserData.macro_geom_ptr = &trial_geom;
         trialUserData.current_alpha = 0.0;
+
+        // Baseline unrelaxed coverage & telemetry before relaxation/remeshing
+        double trial_pre_energy = 0.0;
+        Eigen::Matrix2d trial_pre_stress_mat = Eigen::Matrix2d::Zero();
+        ConfigurationSaver::calculateEnergyAndStress(&trialUserData, trial_pre_energy,
+                                                     trial_pre_stress_mat, true);
+        const double trial_pre_stress =
+            trial_geom.extractPrimaryStress(trial_pre_stress_mat, &trial_pts, 0.0, &trialUserData, nullptr);
+        const double trial_pre_area = ConfigurationSaver::calculateTotalArea2D(&trialUserData);
+        const GBEnergyMetrics m_init = compute_gb_energy_metrics(
+            trial_geom, trial_pts, trial_elems, trial_act_elems, F_identity, trial_pre_energy);
 
         relax_configuration(trial_x, &trialUserData, 13);
         map_solver_array_to_points(trial_x, trial_pts, trial_int_map, trial_nvars);
@@ -1055,9 +1127,10 @@ void example_1_conti_zanzotto_loading(
           std::tie(trial_energy, trial_stress, trial_remesh_iters) =
               perform_remeshing_loop_reduction(
                   trial_x, &trialUserData, empty_contacts, empty_fixed,
-                  Eigen::Matrix2d::Identity(), dndx, offsets, trial_orig_map,
+                  F_identity, dndx, offsets, trial_orig_map,
                   trial_trans_map, trial_dims_pt, trial_has_changes, 50,
                   trial_elem_area, pbc, true);
+          trial_remesh_iters = std::abs(trial_remesh_iters);
           trial_pts = trialUserData.points;
           trial_elems = trialUserData.elements;
           trial_act_elems = trialUserData.active_elements;
@@ -1070,11 +1143,42 @@ void example_1_conti_zanzotto_loading(
         }
 
         const GBEnergyMetrics m = compute_gb_energy_metrics(
-            trial_geom, trial_pts, trial_elems, trial_act_elems,
-            Eigen::Matrix2d::Identity(), trial_energy);
-        scan_rows.push_back({sh, m, trial_pts.size(), trial_act_elems.size()});
+            trial_geom, trial_pts, trial_elems, trial_act_elems, F_identity, trial_energy);
 
-        if (std::abs(sh) < 1e-6) {
+        // Guard against NaN/Inf, empty interior gauge, or torn/disconnected GB mesh stripping high-energy triangles
+        bool has_grain0 = false, has_grain1 = false;
+        for (const auto &pt : trial_pts) {
+          if (pt.grain_id == 0) has_grain0 = true;
+          else if (pt.grain_id == 1) has_grain1 = true;
+          if (has_grain0 && has_grain1) break;
+        }
+        max_ref_cross_grain = std::max(max_ref_cross_grain, m_init.interior_cross_grain_count);
+        const size_t ref_cross_grain = std::max(m_init.interior_cross_grain_count, max_ref_cross_grain);
+        const size_t min_interior_elems =
+            std::max<size_t>(1, static_cast<size_t>(0.90 * static_cast<double>(m_init.interior_elem_count)));
+        const size_t min_cross_grain =
+            (has_grain0 && has_grain1)
+                ? std::max<size_t>(1, static_cast<size_t>(0.50 * static_cast<double>(ref_cross_grain)))
+                : 0;
+        const bool trial_valid =
+            is_finite_bits(trial_energy) &&
+            is_finite_bits(m.gamma_gb_interior) &&
+            is_finite_bits(m.gamma_gb_total) &&
+            !trial_act_elems.empty() &&
+            m.interior_ref_area > 0.0 &&
+            m.interior_elem_count >= min_interior_elems &&
+            m.interior_cross_grain_count >= min_cross_grain;
+
+        // If a later trial reveals a fuller stitched GB, supersede any earlier partially-disconnected winner
+        if (has_best && (has_grain0 && has_grain1) &&
+            best_cross_grain < static_cast<size_t>(0.50 * static_cast<double>(max_ref_cross_grain))) {
+          has_best = false;
+        }
+
+        const size_t row_idx = scan_rows.size();
+        scan_rows.push_back({sh, m, trial_pts.size(), trial_act_elems.size(), trial_valid});
+
+        if (trial_valid && std::abs(sh) < 1e-6) {
           baseline_gamma_int = m.gamma_gb_interior;
           has_baseline = true;
         }
@@ -1082,13 +1186,16 @@ void example_1_conti_zanzotto_loading(
                   << "] δ_∥ = " << std::fixed << std::setprecision(4) << sh
                   << " a0 -> γ_GB(Int) = " << std::setprecision(6) << m.gamma_gb_interior
                   << ", γ_GB(Tot) = " << m.gamma_gb_total
-                  << " (N=" << trial_pts.size() << ", tris=" << trial_act_elems.size() << ")"
+                  << " (N=" << trial_pts.size() << ", tris=" << trial_act_elems.size()
+                  << ", seam=" << m.interior_cross_grain_count << ")"
+                  << (trial_valid ? "" : " [REJECTED: invalid/collapsed mesh]")
                   << std::endl;
 
-        if (!has_best || m.gamma_gb_interior < best_gamma_int - 1e-9) {
+        if (trial_valid && (!has_best || m.gamma_gb_interior < best_gamma_int - 1e-9)) {
           has_best = true;
-          best_idx = s_idx;
+          best_row_idx = row_idx;
           best_gamma_int = m.gamma_gb_interior;
+          best_cross_grain = m.interior_cross_grain_count;
           best_geom = trial_geom;
           best_pts = std::move(trial_pts);
           best_pts_ref = std::move(trial_pts_ref);
@@ -1105,11 +1212,16 @@ void example_1_conti_zanzotto_loading(
           best_elem_area = trial_elem_area;
           best_has_changes = trial_has_changes;
           best_remesh_iters = trial_remesh_iters;
+          best_pre_energy = trial_pre_energy;
+          best_pre_stress = trial_pre_stress;
+          best_pre_area = trial_pre_area;
         }
       }
 
       AvalancheRecorder::instance().setEnabled(saved_trace);
       AvalancheRecorder::instance().setSaveSurgeryVTK(saved_surgery);
+      const auto scan_wall_end = std::chrono::high_resolution_clock::now();
+      stage1_scan_wall_time = std::chrono::duration<double>(scan_wall_end - scan_wall_start).count();
 
       if (has_best) {
         {
@@ -1121,7 +1233,7 @@ void example_1_conti_zanzotto_loading(
             scan_csv << r.shift_a0 << "," << r.metrics.L_gb_a0 << "," << r.metrics.L_int_a0 << ","
                      << r.metrics.total_excess << "," << r.metrics.interior_excess << ","
                      << r.metrics.gamma_gb_total << "," << r.metrics.gamma_gb_interior << ","
-                     << r.n_atoms << "," << r.n_active << "," << (k == best_idx ? 1 : 0) << "\n";
+                     << r.n_atoms << "," << r.n_active << "," << (k == best_row_idx ? 1 : 0) << "\n";
           }
         }
 
@@ -1149,6 +1261,9 @@ void example_1_conti_zanzotto_loading(
         stage1_pre_relaxed_by_shift_scan = true;
         stage1_scan_has_changes = best_has_changes;
         stage1_scan_remesh_iters = best_remesh_iters;
+        stage1_scan_pre_energy = best_pre_energy;
+        stage1_scan_pre_stress = best_pre_stress;
+        stage1_scan_pre_area = best_pre_area;
 
         std::cout << "[GB Shift Scan] Winner: δ_∥ = " << std::fixed << std::setprecision(4)
                   << macro_geom.microstructure.gb_tangential_shift_a0
@@ -1157,8 +1272,11 @@ void example_1_conti_zanzotto_loading(
           std::cout << " (Δγ_int vs δ_∥=0: " << std::showpos
                     << (best_gamma_int - baseline_gamma_int) << std::noshowpos << ")";
         }
-        std::cout << " | saved gb_shift_scan.csv\n" << std::endl;
+        std::cout << " | elapsed " << std::fixed << std::setprecision(2) << stage1_scan_wall_time
+                  << "s | saved gb_shift_scan.csv\n" << std::endl;
       } else {
+        std::cerr << "[GB Shift Scan] WARNING: No valid shift candidate converged; falling back to initial configuration."
+                  << std::endl;
         AdaptiveMesher::setGlobalGeometryFilter(&macro_geom, &square_points_ref);
       }
     }
@@ -1590,11 +1708,18 @@ void example_1_conti_zanzotto_loading(
     double pre_energy = 0.0;
     double pre_stress = 0.0;
     Eigen::Matrix2d stress_tensor = Eigen::Matrix2d::Zero();
+    const bool skip_stage1_solve = is_stage1_relax_step && stage1_pre_relaxed_by_shift_scan;
 
-    ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
-                                                 stress_tensor, true);
-    pre_stress = (has_custom_geom && !is_periodic_micro) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor);
-    pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
+    if (skip_stage1_solve) {
+      pre_energy = stage1_scan_pre_energy;
+      pre_stress = stage1_scan_pre_stress;
+      pre_area = stage1_scan_pre_area;
+    } else {
+      ConfigurationSaver::calculateEnergyAndStress(&userData, pre_energy,
+                                                   stress_tensor, true);
+      pre_stress = (has_custom_geom && !is_periodic_micro) ? macro_geom.extractPrimaryStress(stress_tensor, &square_points, alpha, &userData, &indenter_contacts) : pbc_primary_stress(stress_tensor);
+      pre_area = ConfigurationSaver::calculateTotalArea2D(&userData);
+    }
 
     if (verbose_log) {
       std::cout << "Pre-optimization - Energy: " << pre_energy
@@ -1666,14 +1791,15 @@ void example_1_conti_zanzotto_loading(
       std::cout << "[Traction GradCheck] alpha = " << alpha << " | " << 2 * probe.size()
                 << " DOFs | max relative error = " << std::scientific << worst << std::defaultfloat << std::endl;
     }
-    const bool skip_stage1_solve = is_stage1_relax_step && stage1_pre_relaxed_by_shift_scan;
     if (!skip_stage1_solve) {
       relax_configuration(x, &userData, 13);
     }
 
     auto wall_end = std::chrono::high_resolution_clock::now();
     double wall_time =
-        std::chrono::duration<double>(wall_end - wall_start).count();
+        skip_stage1_solve
+            ? stage1_scan_wall_time
+            : std::chrono::duration<double>(wall_end - wall_start).count();
 
     if (!skip_stage1_solve) {
       map_solver_array_to_points(x, square_points, interior_mapping, n_vars);
@@ -1938,6 +2064,10 @@ void example_1_conti_zanzotto_loading(
       chk_eq.F_ext = F_ext; chk_eq.points = square_points;
       chk_eq.F_stage1 = F_stage1; chk_eq.has_F_stage1 = stress_ctrl_enabled;
       chk_eq.relaxation_step = (i == 0 && step0_is_relaxation);
+      if (has_custom_geom && macro_geom.microstructure.mode == MicrostructureMode::Bicrystal) {
+        chk_eq.gb_tangential_shift_a0 = macro_geom.microstructure.gb_tangential_shift_a0;
+        chk_eq.has_gb_tangential_shift = true;
+      }
       if (has_custom_geom && !is_periodic_micro) {
         for (const auto &p : square_points_ref) chk_eq.ref_points.push_back(p.coord);
       }
@@ -2012,7 +2142,7 @@ void example_1_conti_zanzotto_loading(
       // 1) Write per-run gb_energy_summary.csv
       {
         std::ofstream gb_out("gb_energy_summary.csv");
-        gb_out << "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0\n";
+        gb_out << "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0,ShiftParA0\n";
         gb_out << std::fixed << std::setprecision(8)
                << misori_deg << "," << half_tilt_deg << "," << th1_deg << "," << th2_deg << ","
                << macro_geom.microstructure.gb_angle_deg << "," << nx << "," << ny << ","
@@ -2020,7 +2150,8 @@ void example_1_conti_zanzotto_loading(
                << total_excess << "," << interior_excess << ","
                << gamma_gb_total << "," << gamma_gb_interior << ","
                << macro_geom.microstructure.gb_normal_gap_a0 << ","
-               << macro_geom.microstructure.min_seam_distance_a0 << "\n";
+               << macro_geom.microstructure.min_seam_distance_a0 << ","
+               << macro_geom.microstructure.gb_tangential_shift_a0 << "\n";
       }
 
       // 2) Update cumulative ../gb_energy_vs_misorientation.csv sorted by MisorientationDeg
@@ -2031,12 +2162,20 @@ void example_1_conti_zanzotto_loading(
           std::string line;
         };
         std::vector<GBRow> rows;
-        std::string header = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0";
+        std::string header = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0,ShiftParA0";
+        bool preserve_swift_schema = false;
         if (std::filesystem::exists(cum_path)) {
           std::ifstream in_cum(cum_path);
           std::string ln;
           while (std::getline(in_cum, ln)) {
-            if (ln.empty() || ln.rfind("MisorientationDeg", 0) == 0) continue;
+            if (ln.empty()) continue;
+            if (ln.rfind("MisorientationDeg", 0) == 0) {
+              if (ln.find(",Sigma,") != std::string::npos) {
+                preserve_swift_schema = true;
+                header = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0,Sigma,m,n,RelaxedVTKPath,ShiftParA0";
+              }
+              continue;
+            }
             std::stringstream ss(ln);
             std::string first_tok;
             if (std::getline(ss, first_tok, ',')) {
@@ -2058,6 +2197,11 @@ void example_1_conti_zanzotto_loading(
                << gamma_gb_total << "," << gamma_gb_interior << ","
                << macro_geom.microstructure.gb_normal_gap_a0 << ","
                << macro_geom.microstructure.min_seam_distance_a0;
+        if (preserve_swift_schema) {
+          new_ln << ",0,0,0,," << macro_geom.microstructure.gb_tangential_shift_a0;
+        } else {
+          new_ln << "," << macro_geom.microstructure.gb_tangential_shift_a0;
+        }
         rows.push_back({misori_deg, new_ln.str()});
         std::sort(rows.begin(), rows.end(), [](const GBRow &a, const GBRow &b) {
           return a.misori < b.misori;
@@ -2134,6 +2278,10 @@ void example_1_conti_zanzotto_loading(
           chk_pre.F_ext = pre_F_ext; chk_pre.points = pre_points;
           chk_pre.F_stage1 = F_stage1; chk_pre.has_F_stage1 = stress_ctrl_enabled;
           chk_pre.relaxation_step = (i == 0 && step0_is_relaxation);
+          if (has_custom_geom && macro_geom.microstructure.mode == MicrostructureMode::Bicrystal) {
+            chk_pre.gb_tangential_shift_a0 = macro_geom.microstructure.gb_tangential_shift_a0;
+            chk_pre.has_gb_tangential_shift = true;
+          }
           if (has_custom_geom && !is_periodic_micro) {
             for (const auto &p : square_points_ref) chk_pre.ref_points.push_back(p.coord);
           }
@@ -2178,6 +2326,10 @@ void example_1_conti_zanzotto_loading(
         chk_post.F_ext = F_ext; chk_post.points = square_points;
         chk_post.F_stage1 = F_stage1; chk_post.has_F_stage1 = stress_ctrl_enabled;
         chk_post.relaxation_step = (i == 0 && step0_is_relaxation);
+        if (has_custom_geom && macro_geom.microstructure.mode == MicrostructureMode::Bicrystal) {
+          chk_post.gb_tangential_shift_a0 = macro_geom.microstructure.gb_tangential_shift_a0;
+          chk_post.has_gb_tangential_shift = true;
+        }
         if (has_custom_geom && !is_periodic_micro) {
           for (const auto &p : square_points_ref) chk_post.ref_points.push_back(p.coord);
         }
@@ -2288,6 +2440,10 @@ void example_1_conti_zanzotto_loading(
         chk_periodic.F_ext = F_ext; chk_periodic.points = square_points;
         chk_periodic.F_stage1 = F_stage1; chk_periodic.has_F_stage1 = stress_ctrl_enabled;
         chk_periodic.relaxation_step = (i == 0 && step0_is_relaxation);
+        if (has_custom_geom && macro_geom.microstructure.mode == MicrostructureMode::Bicrystal) {
+          chk_periodic.gb_tangential_shift_a0 = macro_geom.microstructure.gb_tangential_shift_a0;
+          chk_periodic.has_gb_tangential_shift = true;
+        }
         if (has_custom_geom && !is_periodic_micro) {
           for (const auto &p : square_points_ref) chk_periodic.ref_points.push_back(p.coord);
         }

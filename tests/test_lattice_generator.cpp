@@ -1,4 +1,6 @@
 #include <iostream>
+#include <fstream>
+#include <cstdio>
 #include <cassert>
 #include <cmath>
 #include <array>
@@ -12,6 +14,7 @@
 #include "../include/lattice_energy/SquareLatticeCalculator.h"
 #include "../include/mesh/MeshGenerator.h"
 #include "../include/mesh/Remesher.h"
+#include "../include/output/configuration_saver.h"
 
 static void test_polygon_ray_casting_and_cutouts() {
     MacroscopicGeometryConfig geo;
@@ -493,11 +496,11 @@ static void test_gb_tangential_shift_candidates() {
     assert(c5.size() == 9);
     assert(std::abs(c5.back() - 0.5 * std::sqrt(10.0)) < 1e-6);
 
-    // 4) Asymmetric tilt -> spans negative and positive around 0.0
+    // 4) Asymmetric tilt -> exact `steps` count, spans negative and positive around 0.0
     cfg.microstructure.theta1_deg = -8.0;
     cfg.microstructure.theta2_deg = +22.0;
     auto casym = cfg.computeTangentialShiftCandidates("triangular");
-    assert(casym.size() >= 9);
+    assert(casym.size() == 9);
     assert(std::abs(casym[0]) < 1e-12);
     bool has_neg = false, has_pos = false;
     for (double s : casym) {
@@ -506,7 +509,111 @@ static void test_gb_tangential_shift_candidates() {
     }
     assert(has_neg && has_pos);
 
-    std::cout << "[PASS] GB tangential shift candidate generator tests passed." << std::endl;
+    cfg.microstructure.gb_shift_scan_steps = 8;
+    auto casym8 = cfg.computeTangentialShiftCandidates("triangular");
+    assert(casym8.size() == 8);
+    assert(std::abs(casym8[0]) < 1e-12);
+    cfg.microstructure.gb_shift_scan_steps = 9;
+
+    // 5) Horizontal GB (gb_angle_deg = 90 deg, e.g. bicrystalIndentation preset): symmetry-folded
+    cfg.microstructure.gb_angle_deg = 90.0;
+    cfg.microstructure.theta1_deg = -12.0;
+    cfg.microstructure.theta2_deg = +12.0;
+    auto ch_sq = cfg.computeTangentialShiftCandidates("square");
+    assert(ch_sq.size() == 9);
+    assert(std::abs(ch_sq.front() - 0.0) < 1e-9);
+    assert(ch_sq.back() > 0.5);
+    for (double s : ch_sq) assert(s >= -1e-12); // symmetric -> non-negative [0, max_shift]
+    auto ch_tri = cfg.computeTangentialShiftCandidates("triangular");
+    assert(ch_tri.size() == 9);
+    for (double s : ch_tri) assert(s >= -1e-12);
+
+    // 6) Symmetry-folded angle outside [-30, 30] deg: triangular Σ13 at ±43.8979 deg
+    cfg.microstructure.gb_angle_deg = 0.0;
+    cfg.microstructure.theta1_deg = -43.897886;
+    cfg.microstructure.theta2_deg = +43.897886;
+    auto c13_fold = cfg.computeTangentialShiftCandidates("triangular");
+    assert(c13_fold.size() == 9);
+    assert(std::abs(c13_fold.back() - 0.5 * std::sqrt(13.0)) < 1e-6);
+
+    // 7) Smooth clamp for L_CSL > 5.0 (no cliff drop back to 1.0):
+    //    triangular Σ13 (3,1) at ±13.8979 deg -> L_CSL = sqrt(39) ≈ 6.245 -> half = 3.122 -> clamped to 2.5
+    cfg.microstructure.theta1_deg = -13.897886;
+    cfg.microstructure.theta2_deg = +13.897886;
+    auto c13_31 = cfg.computeTangentialShiftCandidates("triangular");
+    assert(c13_31.size() == 9);
+    assert(std::abs(c13_31.back() - 2.5) < 1e-6);
+
+    //    square Σ13 (5,1) at ±11.3099 deg -> L_CSL = sqrt(26) ≈ 5.099 -> half = 2.550 -> clamped to 2.5
+    cfg.microstructure.theta1_deg = -11.309932;
+    cfg.microstructure.theta2_deg = +11.309932;
+    auto c13_sq = cfg.computeTangentialShiftCandidates("square");
+    assert(c13_sq.size() == 9);
+    assert(std::abs(c13_sq.back() - 2.5) < 1e-6);
+
+    // 8) Square (1,0) asymmetric bicrystal (0 deg + 26.565 deg -> D1=1, D2=sqrt(5), Δ = sqrt(5)-2 ≈ 0.236 -> clamped 0.5)
+    cfg.microstructure.theta1_deg = 0.0;
+    cfg.microstructure.theta2_deg = 26.565051;
+    auto csq_asym = cfg.computeTangentialShiftCandidates("square");
+    assert(csq_asym.size() == 9);
+    double max_abs_sq = 0.0;
+    for (double s : csq_asym) max_abs_sq = std::max(max_abs_sq, std::abs(s));
+    assert(max_abs_sq <= 0.26); // span clamped to 0.5 -> |s| <= 0.25
+
+    // 9) Disabled auto_scan_gb_shift and non-Bicrystal mode return single shift
+    cfg.microstructure.gb_tangential_shift_a0 = 0.33;
+    cfg.microstructure.auto_scan_gb_shift = false;
+    auto c_off = cfg.computeTangentialShiftCandidates("triangular");
+    assert(c_off.size() == 1 && std::abs(c_off[0] - 0.33) < 1e-12);
+    cfg.microstructure.auto_scan_gb_shift = true;
+    cfg.microstructure.mode = MicrostructureMode::VoronoiPolycrystal;
+    auto c_vor = cfg.computeTangentialShiftCandidates("triangular");
+    assert(c_vor.size() == 1 && std::abs(c_vor[0] - 0.33) < 1e-12);
+
+    // 10) JSON round-trip and clamping for gb_tangential_shift_a0 / auto_scan_gb_shift / gb_shift_scan_steps
+    {
+        const std::string tmp_json = "/tmp/test_gb_shift_scan_cfg.json";
+        {
+            std::ofstream out(tmp_json);
+            out << R"({
+              "enabled": true,
+              "microstructure": {
+                "mode": "bicrystal",
+                "gb_tangential_shift_a0": 1.8028,
+                "auto_scan_gb_shift": true,
+                "gb_shift_scan_steps": 99
+              }
+            })";
+        }
+        MacroscopicGeometryConfig loaded;
+        assert(MacroscopicGeometryConfig::loadFromJSON(tmp_json, loaded));
+        assert(loaded.microstructure.auto_scan_gb_shift == true);
+        assert(loaded.microstructure.gb_shift_scan_steps == 25); // clamped to 25
+        assert(std::abs(loaded.microstructure.gb_tangential_shift_a0 - 1.8028) < 1e-6);
+        std::remove(tmp_json.c_str());
+    }
+
+    // 11) Checkpoint round-trip of gb_tangential_shift_a0
+    {
+        const std::string tmp_chk = "/tmp/test_gb_shift_roundtrip.chk";
+        ConfigurationSaver::CheckpointData chk_out;
+        chk_out.nx = 4; chk_out.ny = 4;
+        chk_out.gb_tangential_shift_a0 = 0.90138782;
+        chk_out.has_gb_tangential_shift = true;
+        Point2D p(0.0, 0.0); p.grain_id = 1; p.grain_theta_deg = 16.1021;
+        chk_out.points.push_back(p);
+        ConfigurationSaver::saveCheckpoint(tmp_chk, chk_out);
+
+        ConfigurationSaver::CheckpointData chk_in;
+        Eigen::Matrix<double, 3, 2> dndx = Eigen::Matrix<double, 3, 2>::Zero();
+        assert(ConfigurationSaver::loadCheckpoint(tmp_chk, chk_in, dndx));
+        assert(chk_in.has_gb_tangential_shift == true);
+        assert(std::abs(chk_in.gb_tangential_shift_a0 - 0.90138782) < 1e-12);
+        assert(chk_in.points.size() == 1 && chk_in.points[0].grain_id == 1);
+        std::remove(tmp_chk.c_str());
+    }
+
+    std::cout << "[PASS] GB tangential shift candidate & checkpoint tests passed." << std::endl;
 }
 
 void run_triangular_reference_tests();

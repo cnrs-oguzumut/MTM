@@ -67,6 +67,10 @@ public:
         bool relaxation_step = false;
         // Reference frame used when saving the checkpoint ("square" or "triangular"; missing line -> "square").
         std::string reference_frame_tag = "square";
+        // Bicrystal tangential shift δ_∥ (in a_0) resolved at Stage 1 (e.g. by auto_scan_gb_shift).
+        // Optional gb_tangential_shift_a0 line so restart regenerates the exact same atom layout.
+        double gb_tangential_shift_a0 = 0.0;
+        bool has_gb_tangential_shift = false;
     };
 
     static Eigen::Matrix2d alignDeformationGradient(const Eigen::Matrix2d& F, double theta_rad = 0.0);

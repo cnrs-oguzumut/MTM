@@ -2938,9 +2938,16 @@ std::vector<double> MacroscopicGeometryConfig::computeTangentialShiftCandidates(
     const int steps = std::clamp(microstructure.gb_shift_scan_steps, 2, 25);
     const double sqrt3 = std::sqrt(3.0);
 
-    // Match repeat length D (in units of a0) along the GB plane for a single grain angle
-    auto matchRepeatLengthA0 = [&](double theta_deg) -> double {
-        const double rel_deg = theta_deg - microstructure.gb_angle_deg;
+    // Fold any angle into (-sym_period/2, +sym_period/2] under the crystal's rotational symmetry
+    auto wrapSym = [](double deg, double sym) -> double {
+        double r = std::fmod(deg, sym);
+        if (r > 0.5 * sym) r -= sym;
+        if (r <= -0.5 * sym) r += sym;
+        return r;
+    };
+
+    // Match repeat length D (in units of a0) along the GB plane for a symmetry-folded relative angle
+    auto matchRepeatLengthFromAbsRel = [&](double abs_rel_deg) -> double {
         double best_diff = 0.025;
         double best_L = -1.0;
         if (lattice_type == "triangular") {
@@ -2951,30 +2958,28 @@ std::vector<double> MacroscopicGeometryConfig::computeTangentialShiftCandidates(
                     if (n > 0 && std::gcd(m, n) != 1) continue;
                     const double exact_abs =
                         std::atan2(sqrt3 * static_cast<double>(n), static_cast<double>(2 * m + n)) * 180.0 / M_PI;
-                    for (double sgn : {-1.0, 1.0}) {
-                        const double diff = std::abs(rel_deg - sgn * exact_abs);
-                        if (diff < best_diff) {
-                            best_diff = diff;
-                            const int s_val = m * m + m * n + n * n;
-                            const int sigma = s_val / std::gcd(s_val, 3);
-                            best_L = (s_val % 3 == 0)
-                                ? std::sqrt(static_cast<double>(sigma))
-                                : std::sqrt(3.0 * static_cast<double>(sigma));
-                        }
+                    const double diff = std::abs(abs_rel_deg - exact_abs);
+                    if (diff < best_diff) {
+                        best_diff = diff;
+                        const int s_val = m * m + m * n + n * n;
+                        const int sigma = s_val / std::gcd(s_val, 3);
+                        best_L = (s_val % 3 == 0)
+                            ? std::sqrt(static_cast<double>(sigma))
+                            : std::sqrt(3.0 * static_cast<double>(sigma));
                     }
                 }
             }
         } else if (lattice_type == "square") {
             for (int m = 1; m <= 18; ++m) {
-                for (int n = 1; n <= m; ++n) {
-                    if (std::gcd(m, n) != 1) continue;
+                for (int n = 0; n <= m; ++n) {
+                    if (n == 0 && m > 1) continue;
+                    if (n == m && m > 1) continue;
+                    if (n > 0 && std::gcd(m, n) != 1) continue;
                     const double exact_abs = std::atan2(static_cast<double>(n), static_cast<double>(m)) * 180.0 / M_PI;
-                    for (double sgn : {-1.0, 1.0}) {
-                        const double diff = std::abs(rel_deg - sgn * exact_abs);
-                        if (diff < best_diff) {
-                            best_diff = diff;
-                            best_L = std::sqrt(static_cast<double>(m * m + n * n));
-                        }
+                    const double diff = std::abs(abs_rel_deg - exact_abs);
+                    if (diff < best_diff) {
+                        best_diff = diff;
+                        best_L = std::sqrt(static_cast<double>(m * m + n * n));
                     }
                 }
             }
@@ -2982,17 +2987,21 @@ std::vector<double> MacroscopicGeometryConfig::computeTangentialShiftCandidates(
         return best_L;
     };
 
-    const double rel1 = microstructure.theta1_deg - microstructure.gb_angle_deg;
-    const double rel2 = microstructure.theta2_deg - microstructure.gb_angle_deg;
-    const bool is_symmetric = (std::abs(rel1 + rel2) < 0.05);
+    const double rel1 = wrapSym(microstructure.theta1_deg - microstructure.gb_angle_deg, sym_period);
+    const double rel2 = wrapSym(microstructure.theta2_deg - microstructure.gb_angle_deg, sym_period);
+    const bool is_symmetric = (std::abs(wrapSym(rel1 + rel2, sym_period)) < 0.05);
 
     std::vector<double> candidates;
     candidates.reserve(static_cast<size_t>(steps) + 1);
 
     if (is_symmetric) {
-        // Symmetric tilt: δ_∥ and -δ_∥ are mirror images, so scanning [0, half_period] covers all distinct registries
-        const double L_csl = matchRepeatLengthA0(microstructure.theta1_deg);
-        const double max_shift = (L_csl > 0.5 && L_csl <= 5.0) ? (0.5 * L_csl) : 1.0;
+        // Symmetric tilt: δ_∥ and -δ_∥ are mirror images, so scanning [0, half_period] covers all distinct registries.
+        // Match using the mean half-angle (falling back to individual grains) and clamp smoothly to <= 2.5 a0.
+        const double mean_abs_rel = 0.5 * (std::abs(rel1) + std::abs(rel2));
+        double L_csl = matchRepeatLengthFromAbsRel(mean_abs_rel);
+        if (L_csl <= 0.5) L_csl = matchRepeatLengthFromAbsRel(std::abs(rel1));
+        if (L_csl <= 0.5) L_csl = matchRepeatLengthFromAbsRel(std::abs(rel2));
+        const double max_shift = (L_csl > 0.5) ? std::min(0.5 * L_csl, 2.5) : 1.0;
         for (int k = 0; k < steps; ++k) {
             const double t = static_cast<double>(k) / static_cast<double>(steps - 1);
             candidates.push_back(t * max_shift);
@@ -3000,8 +3009,8 @@ std::vector<double> MacroscopicGeometryConfig::computeTangentialShiftCandidates(
     } else {
         // Asymmetric tilt: use Coffman & Sethna Eq. (1) minimal non-redundant range Δ, centered around 0
         double span = 1.0;
-        const double d1_raw = matchRepeatLengthA0(microstructure.theta1_deg);
-        const double d2_raw = matchRepeatLengthA0(microstructure.theta2_deg);
+        const double d1_raw = matchRepeatLengthFromAbsRel(std::abs(rel1));
+        const double d2_raw = matchRepeatLengthFromAbsRel(std::abs(rel2));
         if (d1_raw > 0.5 && d2_raw > 0.5) {
             const double d_small = std::min(d1_raw, d2_raw);
             const double d_large = std::max(d1_raw, d2_raw);
@@ -3013,13 +3022,12 @@ std::vector<double> MacroscopicGeometryConfig::computeTangentialShiftCandidates(
                 : std::min(rem_floor, rem_ceil);
             span = std::clamp(delta, 0.5, 2.5);
         }
-        // Always put 0.0 first, then scan [-0.5*span, +0.5*span)
+        // Exactly `steps` candidates covering [-0.5*span, +0.5*span) with 0.0 placed first
         candidates.push_back(0.0);
         for (int k = 0; k < steps; ++k) {
-            const double sh = -0.5 * span + (static_cast<double>(k) / static_cast<double>(steps)) * span;
-            if (std::abs(sh) > 1e-6) {
-                candidates.push_back(sh);
-            }
+            const int offset = k - (steps / 2);
+            if (offset == 0) continue;
+            candidates.push_back((static_cast<double>(offset) / static_cast<double>(steps)) * span);
         }
     }
 

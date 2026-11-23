@@ -2788,6 +2788,9 @@ void ConfigurationSaver::saveCheckpoint(const std::string& filename, const Check
              << data.F_stage1(1,0) << " " << data.F_stage1(1,1) << "\n";
     }
     if (data.relaxation_step) file << "relaxation_step 1\n";
+    if (data.has_gb_tangential_shift) {
+        file << "gb_tangential_shift_a0 " << data.gb_tangential_shift_a0 << "\n";
+    }
     file << "reference_frame "
          << (reference_frame() == ReferenceFrame::Triangular ? "triangular" : "square") << "\n";
 
@@ -2862,6 +2865,8 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
     data.active_elements.clear();
     data.ref_points.clear();
     data.reference_frame_tag = "square";
+    data.gb_tangential_shift_a0 = 0.0;
+    data.has_gb_tangential_shift = false;
 
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') continue;
@@ -2900,6 +2905,13 @@ bool ConfigurationSaver::loadCheckpoint(const std::string& filename, CheckpointD
                 int r = 0;
                 iss >> r;
                 data.relaxation_step = (r != 0);
+            }
+            else if (key == "gb_tangential_shift_a0") {
+                double sh = 0.0;
+                if (iss >> sh) {
+                    data.gb_tangential_shift_a0 = sh;
+                    data.has_gb_tangential_shift = true;
+                }
             }
             else if (key == "reference_frame") {
                 std::string rf;

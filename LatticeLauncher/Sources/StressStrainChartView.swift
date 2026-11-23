@@ -1850,23 +1850,23 @@ struct StressStrainChartView: View {
     }
     
     private func generateGBEnergyCSV() -> String {
-        var csv = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0,Sigma,m,n,RelaxedVTKPath\n"
+        var csv = "MisorientationDeg,HalfAngleDeg,Theta1Deg,Theta2Deg,GBAngleDeg,Nx,Ny,L_GB_a0,L_Int_a0,TotalEnergy,InteriorEnergy,GBEnergyTotal,GBEnergyInterior,NormalGapA0,SeamDMinA0,Sigma,m,n,RelaxedVTKPath,ShiftParA0\n"
         for pt in displayGBPoints {
-            csv += "\(pt.misorientationDeg),\(pt.halfAngleDeg),\(pt.theta1Deg),\(pt.theta2Deg),\(pt.gbAngleDeg),\(pt.nx),\(pt.ny),\(pt.lengthGBA0),\(pt.lengthIntA0),\(pt.totalEnergy),\(pt.interiorEnergy),\(pt.gbEnergyTotal),\(pt.gbEnergyInterior),\(pt.normalGapA0),\(pt.seamDMinA0),\(pt.sigma),\(pt.m),\(pt.n),\(pt.relaxedVTKPath)\n"
+            csv += "\(pt.misorientationDeg),\(pt.halfAngleDeg),\(pt.theta1Deg),\(pt.theta2Deg),\(pt.gbAngleDeg),\(pt.nx),\(pt.ny),\(pt.lengthGBA0),\(pt.lengthIntA0),\(pt.totalEnergy),\(pt.interiorEnergy),\(pt.gbEnergyTotal),\(pt.gbEnergyInterior),\(pt.normalGapA0),\(pt.seamDMinA0),\(pt.sigma),\(pt.m),\(pt.n),\(pt.relaxedVTKPath),\(pt.tangentialShiftA0)\n"
         }
         return csv
     }
     
     private func generateGBEnergyText() -> String {
         var txt = "# Symmetric Tilt Grain Boundary Energy vs. Misorientation Angle (alpha = 0)\n"
-        txt += "#  1:DeltaTheta_deg  2:HalfAngle_deg  3:Sigma  4:m  5:n  6:Gamma_GB_interior  7:Gamma_GB_total  8:E_total_relaxed  9:E_interior_relaxed  10:L_GB_a0  11:NX  12:NY  13:Gap_a0  14:d_min_a0  15:Relaxed_VTK_File\n"
+        txt += "#  1:DeltaTheta_deg  2:HalfAngle_deg  3:Sigma  4:m  5:n  6:Gamma_GB_interior  7:Gamma_GB_total  8:E_total_relaxed  9:E_interior_relaxed  10:L_GB_a0  11:NX  12:NY  13:Gap_a0  14:d_min_a0  15:ShiftPar_a0  16:Relaxed_VTK_File\n"
         for p in displayGBPoints {
             let vtkName = p.relaxedVTKPath.isEmpty ? "configuration_0_post.vtk" : (p.relaxedVTKPath as NSString).lastPathComponent
             txt += String(
-                format: "%10.4f %10.4f %6d %4d %4d %16.8f %16.8f %16.8f %16.8f %10.2f %5d %5d %9.4f %9.4f  %@\n",
+                format: "%10.4f %10.4f %6d %4d %4d %16.8f %16.8f %16.8f %16.8f %10.2f %5d %5d %9.4f %9.4f %10.4f  %@\n",
                 p.misorientationDeg, p.halfAngleDeg, p.sigma, p.m, p.n,
                 p.gbEnergyInterior, p.gbEnergyTotal, p.totalEnergy, p.interiorEnergy,
-                p.lengthGBA0, p.nx, p.ny, p.normalGapA0, p.seamDMinA0, vtkName
+                p.lengthGBA0, p.nx, p.ny, p.normalGapA0, p.seamDMinA0, p.tangentialShiftA0, vtkName
             )
         }
         return txt

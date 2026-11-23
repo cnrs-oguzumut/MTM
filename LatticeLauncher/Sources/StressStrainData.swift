@@ -218,6 +218,7 @@ public struct GBEnergyPoint: Identifiable, Equatable {
     public let gbEnergyInterior: Double
     public let normalGapA0: Double
     public let seamDMinA0: Double
+    public let tangentialShiftA0: Double
     public var sigma: Int
     public var m: Int
     public var n: Int
@@ -239,6 +240,7 @@ public struct GBEnergyPoint: Identifiable, Equatable {
         gbEnergyInterior: Double,
         normalGapA0: Double,
         seamDMinA0: Double,
+        tangentialShiftA0: Double = 0.0,
         sigma: Int? = nil,
         m: Int? = nil,
         n: Int? = nil,
@@ -260,6 +262,7 @@ public struct GBEnergyPoint: Identifiable, Equatable {
         self.gbEnergyInterior = gbEnergyInterior
         self.normalGapA0 = normalGapA0
         self.seamDMinA0 = seamDMinA0
+        self.tangentialShiftA0 = tangentialShiftA0
         let match = CSLRationalizer.closestMatch(
             forHalfAngleDeg: abs(halfAngleDeg),
             maxIndex: 18,

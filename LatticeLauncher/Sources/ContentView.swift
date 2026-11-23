@@ -2323,7 +2323,7 @@ struct SidebarControlsView: View {
                                             Spacer()
                                             Stepper("N=\(config.geometryConfig.microstructure.gb_shift_scan_steps)",
                                                     value: $config.geometryConfig.microstructure.gb_shift_scan_steps,
-                                                    in: 3...17)
+                                                    in: 2...25)
                                                 .font(.caption2.monospacedDigit())
                                         }
                                     }

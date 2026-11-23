@@ -2059,13 +2059,26 @@ public struct GeometryBuilderView: View {
                             Toggle("Auto-scan δ_∥ (min γ_GB)", isOn: $config.geometryConfig.microstructure.auto_scan_gb_shift)
                                 .font(.caption2)
                                 .help("At Stage 1 (α = 0), automatically test parallel shifts δ_∥ across the CSL period and keep the configuration with lowest interior GB energy γ_GB(Int).")
+                                .onChange(of: config.geometryConfig.microstructure.auto_scan_gb_shift) { enabled in
+                                    if enabled {
+                                        config.geometryConfig.microstructure.gb_tangential_shift_a0 = 0.0
+                                        config.geometryConfig.microstructure.pre_relax_gb = true
+                                    }
+                                }
                             if config.geometryConfig.microstructure.auto_scan_gb_shift {
                                 Spacer()
                                 Stepper("N=\(config.geometryConfig.microstructure.gb_shift_scan_steps)",
                                         value: $config.geometryConfig.microstructure.gb_shift_scan_steps,
-                                        in: 3...17)
+                                        in: 2...25)
                                     .font(.caption2.monospacedDigit())
                             }
+                        }
+                        if config.geometryConfig.microstructure.auto_scan_gb_shift &&
+                           config.protocolMode == .relaxThenLoad &&
+                           !config.geometryConfig.microstructure.pre_relax_gb {
+                            Text("Enable Stage-1 GB equilibration (pre_relax_gb) for δ_∥ scan to run.")
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.orange)
                         }
                         
                         let misori = abs(config.geometryConfig.microstructure.theta2_deg - config.geometryConfig.microstructure.theta1_deg)
@@ -2752,7 +2765,7 @@ public struct GeometryBuilderView: View {
             let phi = micro.gb_angle_deg * .pi / 180.0
             let nx = cos(phi), ny = sin(phi)
             let tx = -ny, ty = nx
-            let deltaPar = micro.gb_tangential_shift_a0 * aCanvas
+            let deltaPar = (micro.auto_scan_gb_shift ? 0.0 : micro.gb_tangential_shift_a0) * aCanvas
             let x0 = micro.gb_cx * Lx
             let y0 = micro.gb_cy * Ly
             let cslBand = 0.02 * aCanvas
